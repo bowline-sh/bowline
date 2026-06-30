@@ -1,13 +1,25 @@
+<p align="center">
+  <picture>
+    <source
+      media="(prefers-color-scheme: dark)"
+      srcset="assets/bowline-icon-dark.png"
+    />
+    <img src="assets/bowline-icon-light.png" alt="Bowline" width="96" />
+  </picture>
+</p>
+
 # Bowline
 
-Bowline keeps the same developer workspace available across your machines and
-agents. Use `~/Code` like a normal local folder; Bowline handles device trust,
-workspace sync, generated-file policy, and agent work isolation underneath.
+Bowline keeps one developer workspace available across all your machines and
+coding agents. You work in `~/Code` like a normal local folder, and Bowline
+handles device trust, workspace sync, generated-file policy, and agent work
+isolation underneath.
 
-This repository contains Bowline's public client and runtime source. It is a
-generated export for release builds, audits, and local contribution against the
-client boundary. Private product notes, hosted deployment wiring, credentials,
-research packets, and unreleased plans are intentionally not part of this repo.
+This repository holds Bowline's public client and runtime source. It's a
+generated export from a private canonical repo, meant for release builds,
+audits, and contributions to the public client. It leaves out private product
+notes, hosted deployment wiring, credentials, research packets, and unreleased
+plans by design.
 
 ## Install
 
@@ -23,14 +35,14 @@ On Linux, download the `bowline-x86_64-unknown-linux-gnu.tar.xz` archive from
 the latest GitHub release, unpack it, and put `bowline` and `bowline-daemon` on
 your `PATH`.
 
-Check the install:
+Verify the install:
 
 ```bash
 bowline --version
 bowline-daemon --version
 ```
 
-## First Machine
+## First machine
 
 Create or adopt your workspace:
 
@@ -43,7 +55,7 @@ bowline status
 trusts the first device. `bowline status` shows sync state, pending device
 approvals, agent work, and recovery actions.
 
-## Second Machine
+## Second machine
 
 Install Bowline on the second machine, then run:
 
@@ -52,23 +64,25 @@ bowline login --root ~/Code
 bowline status
 ```
 
-Approve the new device from an already trusted machine when prompted. After
+When prompted, approve the new device from a machine you already trust. After
 approval, edits under `~/Code` sync through the hosted control plane and object
 store. Generated folders such as `node_modules` stay local by default.
 
-## Agent Work
+## Agent work
 
-Agents should use leases instead of writing directly into the live workspace:
+Agents work through leases instead of writing directly into the live workspace:
 
 ```bash
 bowline agent lease create ~/Code/my-project --task "describe the work"
 bowline work list
 ```
 
-Leases give agents a scoped workspace, hydration budget, freshness checks, and a
-review path before changes land back in the main project.
+A lease gives an agent a scoped workspace, a hydration budget, freshness checks,
+and a review path before changes land back in the main project.
 
-## Build From Source
+## Build from source
+
+You need pnpm and a Rust toolchain installed. Then build the release binaries:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -81,9 +95,9 @@ The release binaries are:
 - `target/release/bowline`
 - `target/release/bowline-daemon`
 
-## Repository Boundary
+## Repository boundary
 
-The public repo is generated from Bowline's private canonical repo. Do not add
-private deployment configuration, raw env files, internal plans, transcripts, or
-research material here. Public source changes should be made in the canonical
-repo and exported.
+The public repo is a generated export of Bowline's private canonical repo. Don't
+add private deployment config, raw env files, internal plans, transcripts, or
+research material here. Make public source changes in the canonical repo, then
+export them.
