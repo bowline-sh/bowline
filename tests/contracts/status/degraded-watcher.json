@@ -1,0 +1,47 @@
+{
+  "contractVersion": 3,
+  "command": "status",
+  "generatedAt": "2026-06-23T12:00:00Z",
+  "workspaceId": "ws_code",
+  "projectId": "proj_acme_web",
+  "status": {
+    "level": "limited",
+    "attentionItems": [
+      "Native file watching is degraded; reconciliation still works."
+    ]
+  },
+  "items": [
+    {
+      "kind": "watcher",
+      "summary": "The watcher is degraded, so bowline is using scheduled reconciliation.",
+      "eventName": "daemon.degraded"
+    }
+  ],
+  "limits": [
+    {
+      "capability": "watch",
+      "unavailableBecause": "native watcher unavailable",
+      "stillWorks": [
+        "manual status",
+        "scheduled reconciliation",
+        "local reads"
+      ]
+    }
+  ],
+  "eventWatermarks": {
+    "lastScanAt": "2026-06-23T11:59:55Z",
+    "lastEventId": "evt_status_watcher_001",
+    "eventLagMs": 5000,
+    "syncState": "ready",
+    "watcherState": "degraded",
+    "networkState": "online"
+  },
+  "nextActions": [
+    {
+      "label": "Inspect daemon status",
+      "command": "bowline status --watch",
+      "effectCategory": "inspect",
+      "targetKind": "workspace"
+    }
+  ]
+}

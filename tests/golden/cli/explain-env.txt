@@ -1,0 +1,4 @@
+Path: apps/web/.env.local
+Policy: project-env via .env*
+State: observed
+Summary: project-env files sync automatically with redacted status and env-aware merge.

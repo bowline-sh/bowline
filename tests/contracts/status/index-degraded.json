@@ -1,0 +1,75 @@
+{
+  "contractVersion": 3,
+  "command": "status",
+  "generatedAt": "2026-06-25T13:03:00Z",
+  "workspaceId": "ws_code",
+  "projectId": "proj_acme_web",
+  "index": {
+    "state": "degraded",
+    "source": "none",
+    "updatedAt": "2026-06-25T13:02:00Z",
+    "pathCount": 0,
+    "fileCount": 0,
+    "indexedBytes": 0,
+    "pendingPathCount": 1842,
+    "degradedReason": "missing",
+    "summary": "Index pack is missing; search is limited to bounded fallback scans.",
+    "nextAction": {
+      "label": "Inspect search state",
+      "effectCategory": "inspect",
+      "targetKind": "unknown"
+    }
+  },
+  "hydrationBudget": {
+    "state": "available",
+    "limitBytes": 524288000,
+    "usedBytes": 4194304,
+    "reservedBytes": 0,
+    "remainingBytes": 520093696,
+    "scope": "lease",
+    "leaseId": "lease_auth_callback",
+    "projectId": "proj_acme_web"
+  },
+  "status": {
+    "level": "attention",
+    "attentionItems": [
+      "Index pack is missing; search and symbol lookup are degraded."
+    ]
+  },
+  "items": [
+    {
+      "kind": "index",
+      "summary": "Index pack is missing; search is limited to bounded fallback scans.",
+      "subject": {
+        "kind": "index",
+        "id": "missing"
+      },
+      "eventName": "index.degraded"
+    }
+  ],
+  "limits": [
+    {
+      "capability": "search",
+      "unavailableBecause": "Index pack is missing.",
+      "stillWorks": [
+        "bounded fallback scan",
+        "precise file reads"
+      ]
+    }
+  ],
+  "eventWatermarks": {
+    "lastScanAt": "2026-06-25T13:02:00Z",
+    "lastEventId": "evt_index_degraded_001",
+    "eventLagMs": 0,
+    "syncState": "ready",
+    "watcherState": "ready",
+    "networkState": "online"
+  },
+  "nextActions": [
+    {
+      "label": "Inspect search state",
+      "effectCategory": "inspect",
+      "targetKind": "unknown"
+    }
+  ]
+}

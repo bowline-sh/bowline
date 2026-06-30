@@ -1,0 +1,56 @@
+{
+  "contractVersion": 3,
+  "command": "status",
+  "generatedAt": "2026-06-26T12:00:00Z",
+  "workspaceId": "ws_code",
+  "scope": "workspace",
+  "resolvedWorkspaceRoot": "~/Code",
+  "syncQueue": {
+    "queued": 1,
+    "claimed": 0,
+    "waitingRetry": 1,
+    "blockedOffline": 0,
+    "attention": 0,
+    "completed": 0
+  },
+  "status": {
+    "level": "limited",
+    "attentionItems": [
+      "Sync queue is waiting for retry."
+    ]
+  },
+  "items": [
+    {
+      "kind": "materialization",
+      "summary": "Sync queue: 1 queued, 0 running, 1 waiting retry, 0 offline, 0 attention.",
+      "subject": {
+        "kind": "workspace",
+        "id": "ws_code"
+      }
+    }
+  ],
+  "limits": [
+    {
+      "capability": "sync",
+      "unavailableBecause": "sync queue is waiting for retry",
+      "stillWorks": [
+        "local files",
+        "status",
+        "scheduled retry"
+      ]
+    }
+  ],
+  "eventWatermarks": {
+    "syncState": "degraded",
+    "watcherState": "ready",
+    "networkState": "online"
+  },
+  "nextActions": [
+    {
+      "label": "Inspect recent events",
+      "command": "bowline status --watch",
+      "effectCategory": "inspect",
+      "targetKind": "workspace"
+    }
+  ]
+}

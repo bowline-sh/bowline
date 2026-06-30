@@ -1,0 +1,86 @@
+{
+  "contractVersion": 3,
+  "command": "agent start",
+  "generatedAt": "2026-06-25T12:00:00Z",
+  "workspaceId": "ws_code",
+  "projectId": "proj_acme_web",
+  "lease": {
+    "id": "lease_auth_callback",
+    "workspaceId": "ws_code",
+    "projectId": "proj_acme_web",
+    "deviceId": "dev_mac",
+    "writeTargetMode": "work-view",
+    "writeTargetPath": "~/Code/.work/acme/web/lease_auth_callback",
+    "workViewId": "work_auth_callback",
+    "workViewPath": "~/Code/.work/acme/web/lease_auth_callback",
+    "task": "Fix auth callback handling",
+    "base": "latest-workspace",
+    "baseSnapshotId": "snap_workspace_123",
+    "executionState": "active",
+    "outputState": "empty",
+    "scopes": {
+      "read": {
+        "roots": ["."],
+        "classifications": ["workspace-sync", "project-env"],
+        "maxBytesPerRead": 65536,
+        "maxFilesPerRequest": 200,
+        "maxDepth": 8
+      },
+      "write": {
+        "roots": ["src", "tests"],
+        "classifications": ["workspace-sync"],
+        "maxBytesPerRead": 65536,
+        "maxFilesPerRequest": 50,
+        "maxDepth": 6
+      }
+    },
+    "hydrateBudgetBytes": 524288000,
+    "envProfile": {
+      "name": "default",
+      "materialization": "lease-work-view",
+      "availableKeys": ["DATABASE_URL", "PUBLIC_APP_URL"],
+      "restrictions": [
+        {
+          "kind": "blocked-secret",
+          "key": "STRIPE_SECRET_KEY",
+          "reason": "secret values stay local and are not included in context"
+        }
+      ],
+      "grantIds": ["env_grant_default"]
+    },
+    "envRestrictions": [
+      {
+        "kind": "blocked-secret",
+        "key": "STRIPE_SECRET_KEY",
+        "reason": "secret values stay local and are not included in context"
+      }
+    ],
+    "outputTarget": {
+      "kind": "work-view",
+      "workViewId": "work_auth_callback",
+      "path": "~/Code/.work/acme/web/lease_auth_callback"
+    },
+    "audit": {
+      "localEventId": "evt_lease_created_001",
+      "localReceiptId": "receipt_lease_create_001",
+      "encryptedObjectPointer": "obj_lease_compact_001"
+    },
+    "cleanupState": "current",
+    "statusSummary": "Lease is active and bound to a work view.",
+    "expiresAt": "2026-06-25T18:00:00Z",
+    "createdAt": "2026-06-25T12:00:00Z",
+    "updatedAt": "2026-06-25T12:00:00Z"
+  },
+  "status": {
+    "level": "healthy",
+    "attentionItems": []
+  },
+  "nextActions": [
+    {
+      "label": "Open agent context",
+      "command": "bowline agent context --lease lease_auth_callback --json",
+      "effectCategory": "inspect",
+      "targetKind": "agent"
+    }
+  ]
+}

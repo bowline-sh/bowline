@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 3,
+  "id": "evt_metadata_corrupt_001",
+  "name": "metadata.corrupt",
+  "occurredAt": "2026-06-23T12:00:00Z",
+  "severity": "limited",
+  "summary": "Local metadata could not be opened; source files were not modified.",
+  "workspaceId": "ws_code",
+  "subject": {
+    "kind": "metadata",
+    "id": "metadata-local"
+  },
+  "actor": {
+    "kind": "daemon",
+    "id": "daemon-local"
+  },
+  "payload": {
+    "databaseState": "corrupt",
+    "recoveryAction": "check local metadata"
+  },
+  "correlationId": "evt_metadata_corrupt_001",
+  "redaction": {
+    "status": "applied",
+    "rules": [
+      "secret-values",
+      "absolute-home-paths"
+    ]
+  }
+}

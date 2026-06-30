@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/bowline",
+  "crates/bowline-control-plane",
+  "crates/bowline-core",
+  "crates/bowline-daemon",
+  "crates/bowline-index",
+  "crates/bowline-local",
+  "crates/bowline-storage",
+]
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.88"
+version = "0.0.0"

@@ -1,0 +1,5 @@
+Workspace: local
+Status: healthy
+Attention: none
+Details:
+  Local edits and new files are encrypted workspace state.

@@ -1,0 +1,3 @@
+# Paths here are relative to tests/fixtures/public-export/content.
+README.md
+packages/contracts/src/index.ts

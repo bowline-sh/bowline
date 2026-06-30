@@ -1,0 +1,52 @@
+{
+  "name": "bowline",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.30.0",
+  "scripts": {
+    "build": "turbo build",
+    "check:architecture": "pnpm check:package-scripts && pnpm check:generated-artifacts && pnpm check:architecture-imports && pnpm check:rust-boundaries && pnpm check:public-export && pnpm check:architecture-fixtures",
+    "check:architecture-imports": "node scripts/check-architecture-imports.mjs",
+    "check:architecture-fixtures": "node scripts/check-architecture-fixtures.mjs",
+    "check:generated-artifacts": "node scripts/check-generated-artifacts.mjs",
+    "check:package-scripts": "node scripts/check-package-scripts.mjs",
+    "check:public-export": "node scripts/check-public-export.mjs",
+    "check:rust-boundaries": "node scripts/check-rust-boundaries.mjs",
+    "deploy:public": "node scripts/deploy-public.mjs",
+    "export:public": "node scripts/export-public.mjs",
+    "format": "prettier --write package.json pnpm-workspace.yaml turbo.json tsconfig.json tsconfig.base.json eslint.config.js .prettierrc.json README.md \"docs/**/*.md\" \"apps/**/*.{json,ts,tsx}\" \"packages/**/*.{json,ts,tsx}\" \"scripts/**/*.mjs\"",
+    "format:check": "prettier --check package.json pnpm-workspace.yaml turbo.json tsconfig.json tsconfig.base.json eslint.config.js .prettierrc.json README.md \"docs/**/*.md\" \"apps/**/*.{json,ts,tsx}\" \"packages/**/*.{json,ts,tsx}\" \"scripts/**/*.mjs\"",
+    "lint": "eslint --max-warnings=0 .",
+    "report:usage-curve": "node scripts/usage-curve-report.mjs",
+    "rust:verify": "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-dev-target} cargo fmt --check && CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-dev-target} cargo clippy --workspace --all-targets --all-features -- -D warnings && CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-dev-target} cargo test --workspace",
+    "smoke:hosted-daemon-loop": "node scripts/hosted-daemon-loop-smoke.mjs --run",
+    "smoke:phase12d-macos": "bash scripts/phase12d-macos-distribution-smoke.sh",
+    "smoke:phase12e-linux": "bash scripts/phase12e-linux-service-notifications-smoke.sh",
+    "smoke:watcher-wake": "node scripts/watcher-wake-smoke.mjs --run",
+    "test": "turbo test",
+    "typecheck": "turbo typecheck",
+    "verify:dev": "bash scripts/dev-loop-check.sh",
+    "verify:fast": "bash scripts/dev-check.sh",
+    "verify": "pnpm verify:fast",
+    "verify:public": "pnpm --filter @bowline/config test && pnpm --filter @bowline/contracts test && pnpm --filter @bowline/contracts build && pnpm --filter @bowline/control-plane typecheck && CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-dev-target} cargo test --workspace && pnpm check:public-export && pnpm check:architecture"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-s3": "^3.1070.0",
+    "@aws-sdk/s3-request-presigner": "^3.1070.0",
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^24.10.1",
+    "convex": "^1.41.0",
+    "eslint": "^9.39.1",
+    "prettier": "^3.6.2",
+    "tslib": "^2.8.1",
+    "turbo": "^2.8.17",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.48.0",
+    "vitest": "^4.1.6"
+  },
+  "dependencies": {
+    "jose": "^6.2.3"
+  }
+}

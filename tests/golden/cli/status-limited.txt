@@ -1,0 +1,6 @@
+Workspace: ~/Code
+Status: limited
+Attention:
+  fixtures/demo.sqlite cannot hydrate while the network is offline.
+Limited capabilities:
+  hydrate: network offline; still works: project structure, local cached reads

@@ -1,0 +1,44 @@
+{
+  "contractVersion": 3,
+  "command": "status",
+  "generatedAt": "2026-06-23T12:00:00Z",
+  "workspaceId": "ws_code",
+  "projectId": "proj_acme_web",
+  "status": {
+    "level": "attention",
+    "attentionItems": [
+      "certs/dev.pem is hidden from agents until granted."
+    ]
+  },
+  "items": [
+    {
+      "kind": "policy",
+      "summary": "certs/dev.pem looks secret-like and is agent-hidden.",
+      "path": "certs/dev.pem",
+      "classification": "secret-looking",
+      "mode": "encrypted-sync",
+      "access": [
+        "human-readable",
+        "agent-hidden"
+      ],
+      "eventName": "policy.needs_approval"
+    }
+  ],
+  "limits": [],
+  "eventWatermarks": {
+    "lastScanAt": "2026-06-23T11:59:55Z",
+    "lastEventId": "evt_status_attention_001",
+    "eventLagMs": 0,
+    "syncState": "ready",
+    "watcherState": "ready",
+    "networkState": "online"
+  },
+  "nextActions": [
+    {
+      "label": "Explain the secret-looking file",
+      "command": "bowline explain ~/Code/acme/web/certs/dev.pem",
+      "effectCategory": "inspect",
+      "targetKind": "workspace"
+    }
+  ]
+}

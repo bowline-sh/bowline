@@ -1,0 +1,36 @@
+{
+  "contractVersion": 3,
+  "command": "help",
+  "generatedAt": "2026-06-29T12:00:00Z",
+  "topic": "agent start",
+  "groups": [
+    {
+      "name": "Agent",
+      "commands": ["agent start"]
+    }
+  ],
+  "commands": [
+    {
+      "group": "Agent",
+      "name": "agent start",
+      "aliases": ["agent lease create"],
+      "summary": "Create an agent lease and return context/prompt commands.",
+      "usage": "bowline agent start [project] --task <task> [--json] [--dry-run] [--idempotency-key <key>]",
+      "options": [
+        {
+          "name": "--task",
+          "valueName": "task",
+          "summary": "Task description for the lease.",
+          "required": true,
+          "repeatable": false
+        }
+      ],
+      "jsonOutputType": "AgentLeaseCreateCommandOutput",
+      "sideEffectLevel": "mutation",
+      "supportsJson": true,
+      "supportsDryRun": true,
+      "supportsIdempotencyKey": true,
+      "relatedCommands": ["agent context", "agent prompt"]
+    }
+  ]
+}

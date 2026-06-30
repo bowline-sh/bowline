@@ -1,0 +1,54 @@
+{
+  "contractVersion": 3,
+  "command": "status",
+  "generatedAt": "2026-06-23T12:00:00Z",
+  "workspaceId": "ws_code",
+  "projectId": "proj_acme_web",
+  "status": {
+    "level": "limited",
+    "attentionItems": [
+      "fixtures/demo.sqlite cannot hydrate while the network is offline."
+    ]
+  },
+  "items": [
+    {
+      "kind": "hydration",
+      "summary": "Large file content is available as structure only until the network returns.",
+      "path": "fixtures/demo.sqlite",
+      "classification": "large-file",
+      "mode": "lazy",
+      "access": [
+        "human-readable",
+        "agent-readable"
+      ],
+      "eventName": "hydration.blocked"
+    }
+  ],
+  "limits": [
+    {
+      "capability": "hydrate",
+      "unavailableBecause": "network offline",
+      "stillWorks": [
+        "project structure",
+        "local cached reads"
+      ],
+      "path": "fixtures/demo.sqlite"
+    }
+  ],
+  "eventWatermarks": {
+    "lastScanAt": "2026-06-23T11:59:55Z",
+    "lastEventId": "evt_status_limited_001",
+    "eventLagMs": 1200,
+    "syncState": "ready",
+    "watcherState": "ready",
+    "networkState": "offline"
+  },
+  "nextActions": [
+    {
+      "label": "Retry hydration when online",
+      "command": "bowline explain ~/Code/acme/web/fixtures/demo.sqlite",
+      "effectCategory": "inspect",
+      "targetKind": "workspace"
+    }
+  ]
+}

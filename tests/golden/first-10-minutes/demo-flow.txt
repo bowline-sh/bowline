@@ -1,0 +1,10 @@
+brew install bowline
+bowline login
+bowline approve
+bowline connect linux-server-1
+cd ~/Code/acme/web
+pnpm dev
+bowline workon auth-fix
+bowline agent start . --task "fix auth callback race"
+bowline review
+bowline accept

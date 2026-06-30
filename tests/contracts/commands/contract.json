@@ -1,0 +1,84 @@
+{
+  "contractVersion": 3,
+  "command": "contract",
+  "generatedAt": "2026-06-29T12:00:00Z",
+  "cliVersion": "0.0.0",
+  "protocol": "bowline.local",
+  "protocolVersion": 1,
+  "eventSchemaVersion": 1,
+  "package": "bowline",
+  "packageContractSource": "packages/contracts/src/index.ts",
+  "commandOutputTypes": [
+    "ActionsCommandOutput",
+    "AgentBudgetCommandOutput",
+    "AgentContextCommandOutput",
+    "AgentLeaseCreateCommandOutput",
+    "AgentPromptCommandOutput",
+    "AgentToolResult",
+    "BootstrapSshCommandOutput",
+    "ContractCommandOutput",
+    "DaemonCommandOutput",
+    "DaemonServiceOutput",
+    "DaemonStatusOutput",
+    "DevicesCommandOutput",
+    "DiagnosticsCollectCommandOutput",
+    "DryRunCommandOutput",
+    "EventsCommandOutput",
+    "ExplainCommandOutput",
+    "HelpCommandOutput",
+    "InitCommandOutput",
+    "LoginCommandOutput",
+    "PrewarmCommandOutput",
+    "RecoveryCommandOutput",
+    "ResolveCommandOutput",
+    "SearchCommandOutput",
+    "StatusCommandOutput",
+    "SymbolCommandOutput",
+    "VersionCommandOutput",
+    "WorkCleanupCommandOutput",
+    "WorkDiffCommandOutput",
+    "WorkLifecycleCommandOutput",
+    "WorkListCommandOutput",
+    "WorkonCommandOutput"
+  ],
+  "commands": [
+    {
+      "group": "Discovery",
+      "name": "contract",
+      "aliases": ["schema"],
+      "summary": "Print the machine-readable CLI command and output contract.",
+      "usage": "bowline contract --json",
+      "jsonOutputType": "ContractCommandOutput",
+      "sideEffectLevel": "none",
+      "supportsJson": true,
+      "supportsDryRun": false,
+      "supportsIdempotencyKey": false,
+      "relatedCommands": ["help", "version"]
+    },
+    {
+      "group": "Workspace",
+      "name": "search",
+      "summary": "Search indexed project text with bounded, cursored results.",
+      "usage": "bowline search <query> [path] [--limit <n>] [--cursor <cursor>] [--path-prefix <prefix>] [--json]",
+      "jsonOutputType": "SearchCommandOutput",
+      "sideEffectLevel": "read",
+      "supportsJson": true,
+      "supportsDryRun": false,
+      "supportsIdempotencyKey": false,
+      "boundedOutput": {
+        "defaultLimit": 20,
+        "maxLimit": 100,
+        "cursorFormat": "v1:<offset>",
+        "pathPrefix": true
+      },
+      "relatedCommands": ["symbols"]
+    }
+  ],
+  "fixtures": [
+    {
+      "name": "help",
+      "path": "tests/contracts/commands/help.json",
+      "outputType": "HelpCommandOutput"
+    }
+  ]
+}

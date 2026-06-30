@@ -1,0 +1,49 @@
+{
+  "contractVersion": 3,
+  "command": "status",
+  "generatedAt": "2026-06-23T12:00:00Z",
+  "workspaceId": "ws_local_limited",
+  "scope": "workspace",
+  "requestedPath": "~/Code",
+  "resolvedWorkspaceRoot": "~/Code",
+  "workspaceSummary": {
+    "totalProjects": 0
+  },
+  "status": {
+    "level": "limited",
+    "attentionItems": [
+      "Local metadata is limited: metadata database is corrupt."
+    ]
+  },
+  "items": [
+    {
+      "kind": "metadata",
+      "summary": "Local metadata could not be opened; source files were not modified.",
+      "subject": {
+        "kind": "metadata",
+        "id": "metadata-local"
+      },
+      "eventName": "metadata.corrupt"
+    }
+  ],
+  "limits": [
+    {
+      "capability": "local metadata",
+      "unavailableBecause": "metadata database is corrupt",
+      "stillWorks": [
+        "source files stay readable",
+        "status can report recovery guidance"
+      ]
+    }
+  ],
+  "eventWatermarks": {
+    "eventLagMs": 0
+  },
+  "nextActions": [
+    {
+      "label": "Check local metadata",
+      "effectCategory": "inspect",
+      "targetKind": "unknown"
+    }
+  ]
+}

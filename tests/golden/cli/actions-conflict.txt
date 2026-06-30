@@ -1,0 +1,2 @@
+Actions: Attention
+  Resolve the conflict: bowline resolve ~/Code/acme/web

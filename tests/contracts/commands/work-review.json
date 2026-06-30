@@ -1,0 +1,57 @@
+{
+  "contractVersion": 3,
+  "command": "review",
+  "generatedAt": "2026-06-25T12:00:02Z",
+  "action": "diffed",
+  "workView": {
+    "id": "work_auth_fix",
+    "workspaceId": "ws_code",
+    "projectId": "proj_acme_web",
+    "projectPath": "acme/web",
+    "name": "auth-fix",
+    "visiblePath": "~/Code/.work/acme/web/auth-fix",
+    "baseSnapshotId": "snap_main_123",
+    "overlayHead": "overlay_changed",
+    "overlayVersion": 1,
+    "envProfile": "default",
+    "lifecycle": "review-ready",
+    "visibility": "default-visible",
+    "syncState": "synced",
+    "retention": {
+      "state": "current",
+      "restorable": true
+    },
+    "ownerDeviceId": "dev_mac",
+    "followedBy": [],
+    "hostMaterializations": ["macbook"],
+    "attention": [],
+    "createdAt": "2026-06-25T12:00:00Z",
+    "updatedAt": "2026-06-25T12:00:02Z"
+  },
+  "changes": [
+    {
+      "path": "src/auth.ts",
+      "kind": "modified",
+      "summary": "modified in work view overlay",
+      "containsSecrets": false
+    },
+    {
+      "path": ".env.local",
+      "kind": "policy-review",
+      "summary": "project env changed; values redacted",
+      "containsSecrets": true
+    }
+  ],
+  "status": {
+    "level": "healthy",
+    "attentionItems": []
+  },
+  "nextActions": [
+    {
+      "label": "Accept auth-fix",
+      "command": "bowline accept auth-fix",
+      "effectCategory": "mutate",
+      "targetKind": "work-view"
+    }
+  ]
+}

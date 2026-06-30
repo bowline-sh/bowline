@@ -1,0 +1,4 @@
+# This fixture models an accidental tracked generated build output.
+apps/web/dist/index.js
+packages/contracts/tsconfig.tsbuildinfo
+README.md

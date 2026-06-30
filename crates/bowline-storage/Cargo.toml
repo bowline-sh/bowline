@@ -1,0 +1,18 @@
+[package]
+name = "bowline-storage"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+blake3 = "1.8"
+chacha20poly1305 = "0.10"
+bowline-core = { path = "../bowline-core" }
+getrandom = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+zstd = "0.13"
+
+[lib]
+path = "src/lib.rs"

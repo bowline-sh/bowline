@@ -1,0 +1,41 @@
+{
+  "contractVersion": 3,
+  "command": "status",
+  "generatedAt": "2026-06-23T12:00:00Z",
+  "workspaceId": "ws_code",
+  "projectId": "proj_acme_web",
+  "status": {
+    "level": "healthy",
+    "attentionItems": []
+  },
+  "items": [
+    {
+      "kind": "continuity",
+      "summary": "Local edits and new files are encrypted workspace state.",
+      "classification": "workspace-sync",
+      "mode": "encrypted-sync",
+      "access": [
+        "human-readable",
+        "agent-readable"
+      ],
+      "eventName": "policy.classified"
+    }
+  ],
+  "limits": [],
+  "hydrationProgress": [
+    {
+      "bytesDone": 4096,
+      "bytesRemaining": 0,
+      "cause": "remote-import"
+    }
+  ],
+  "eventWatermarks": {
+    "lastScanAt": "2026-06-23T11:59:55Z",
+    "lastEventId": "evt_status_healthy_001",
+    "eventLagMs": 0,
+    "syncState": "ready",
+    "watcherState": "ready",
+    "networkState": "online"
+  },
+  "nextActions": []
+}

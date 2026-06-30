@@ -1,0 +1,62 @@
+bowline command shell
+
+Discovery:
+  bowline help [topic] [--json]
+  bowline version [--json]
+  bowline contract --json
+
+Workspace:
+  bowline login [--root <path>] [--headless] [--no-poll]
+  bowline status [path] [--watch] [--workspace|--all] [--json]
+  bowline init [path] [--json]
+  bowline setup [path] [--yes] [--json]
+  bowline prewarm <project> [--approve-setup] [--json]
+  bowline actions [path] [--workspace] [--json]
+  bowline search <query> [path] [--limit <n>] [--cursor <cursor>] [--path-prefix <prefix>] [--json]
+  bowline symbols <name> [path] [--limit <n>] [--cursor <cursor>] [--path-prefix <prefix>] [--json]
+  bowline explain <path> [--json]
+  bowline events [path] [--workspace] [--limit <n>] [--json]
+  bowline resolve [path] [--tui|--copy-prompt|--diff <conflict>] [--json]
+  bowline tui [path]
+
+Trust:
+  bowline approve [request] [--yes] [--json] [--dry-run] [--idempotency-key <key>]
+  bowline revoke <device> [--json] [--dry-run] [--idempotency-key <key>]
+  bowline recover [status|create|verify <id>|rotate|revoke <id>|use <id>] [--json] [--dry-run] [--idempotency-key <key>]
+  bowline devices [list|request|approve|accept|deny|revoke] [--json]
+  bowline connect <host> [--root <path>] [--project <project> --task <task> --agent <agent>] [--json] [--dry-run] [--idempotency-key <key>]
+
+Work:
+  bowline workon [project] <name> [--json] [--dry-run] [--idempotency-key <key>]
+  bowline work [--include-hidden] [--json]
+  bowline diff <target> [--json]
+  bowline review <target> [--json]
+  bowline accept <target> [--json] [--dry-run] [--idempotency-key <key>]
+  bowline discard <target> [--json] [--dry-run] [--idempotency-key <key>]
+  bowline restore <target> [--json] [--dry-run] [--idempotency-key <key>]
+  bowline cleanup [--apply] [--json] [--dry-run] [--idempotency-key <key>]
+
+Agent:
+  bowline agent start [project] --task <task> [--base <base>] [--hydrate-budget <bytes>] [--work-view] [--json] [--dry-run] [--idempotency-key <key>]
+  bowline agent context --lease <id> [--json]
+  bowline agent prompt --lease <id> [--json]
+  bowline agent publish --lease <id> [--json] [--dry-run] [--idempotency-key <key>]
+  bowline agent complete --lease <id> [--json] [--dry-run] [--idempotency-key <key>]
+  bowline agent budget --lease <id> --add <bytes> [--json] [--dry-run] [--idempotency-key <key>]
+
+Daemon:
+  bowline daemon start [--json]
+  bowline daemon stop [--json]
+  bowline daemon status [--json]
+  bowline daemon install [--json] [--dry-run] [--idempotency-key <key>]
+  bowline daemon restart [--json] [--dry-run] [--idempotency-key <key>]
+  bowline daemon uninstall [--json] [--dry-run] [--idempotency-key <key>]
+
+Support:
+  bowline diagnostics collect [--json]
+
+Global options:
+  --json
+  --socket <path>
+  --dry-run
+  --idempotency-key <key>

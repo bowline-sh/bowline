@@ -1,0 +1,7 @@
+# Paths here are relative to tests/fixtures/public-export/content.
+AGENTS.md
+.env.local
+.github/workflows/deploy-public.yml
+docs/plans/private-plan.md
+reports/generated.md
+transcripts/session.md

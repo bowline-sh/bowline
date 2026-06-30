@@ -1,0 +1,294 @@
+{
+  "contractVersion": 3,
+  "command": "agent context",
+  "generatedAt": "2026-06-25T12:10:00Z",
+  "workspaceId": "ws_code",
+  "projectId": "proj_acme_web",
+  "context": {
+    "workspaceId": "ws_code",
+    "projectId": "proj_acme_web",
+    "lease": {
+      "id": "lease_auth_callback",
+      "workspaceId": "ws_code",
+      "projectId": "proj_acme_web",
+      "deviceId": "dev_mac",
+      "writeTargetMode": "work-view",
+      "writeTargetPath": "~/Code/.work/acme/web/lease_auth_callback",
+      "workViewId": "work_auth_callback",
+      "workViewPath": "~/Code/.work/acme/web/lease_auth_callback",
+      "task": "Fix auth callback handling",
+      "base": "latest-workspace",
+      "baseSnapshotId": "snap_workspace_123",
+      "executionState": "blocked",
+      "outputState": "conflicted",
+      "scopes": {
+        "read": {
+          "roots": ["."],
+          "classifications": ["workspace-sync", "project-env"],
+          "maxBytesPerRead": 65536,
+          "maxFilesPerRequest": 200,
+          "maxDepth": 8
+        },
+        "write": {
+          "roots": ["src", "tests"],
+          "classifications": ["workspace-sync"],
+          "maxBytesPerRead": 65536,
+          "maxFilesPerRequest": 50,
+          "maxDepth": 6
+        }
+      },
+      "hydrateBudgetBytes": 524288000,
+      "envProfile": {
+        "name": "default",
+        "materialization": "lease-work-view",
+        "availableKeys": ["DATABASE_URL", "PUBLIC_APP_URL"],
+        "restrictions": [
+          {
+            "kind": "blocked-secret",
+            "key": "STRIPE_SECRET_KEY",
+            "reason": "secret values stay local and are not included in context"
+          },
+          {
+            "kind": "grant-required",
+            "key": "DATABASE_URL",
+            "grantId": "env_grant_default"
+          }
+        ],
+        "grantIds": ["env_grant_default"]
+      },
+      "envRestrictions": [
+        {
+          "kind": "blocked-secret",
+          "key": "STRIPE_SECRET_KEY",
+          "reason": "secret values stay local and are not included in context"
+        },
+        {
+          "kind": "grant-required",
+          "key": "DATABASE_URL",
+          "grantId": "env_grant_default"
+        }
+      ],
+      "outputTarget": {
+        "kind": "work-view",
+        "workViewId": "work_auth_callback",
+        "path": "~/Code/.work/acme/web/lease_auth_callback"
+      },
+      "audit": {
+        "localEventId": "evt_lease_blocked_001",
+        "localReceiptId": "receipt_tool_denied_001",
+        "encryptedObjectPointer": "obj_lease_compact_001"
+      },
+      "cleanupState": "retained",
+      "statusSummary": "Lease is blocked on a restricted env grant and has conflicted output.",
+      "expiresAt": "2026-06-25T18:00:00Z",
+      "createdAt": "2026-06-25T12:00:00Z",
+      "updatedAt": "2026-06-25T12:10:00Z"
+    },
+    "policyVersion": "policy_v3",
+    "status": {
+      "level": "attention",
+      "attentionItems": [
+        "A requested env grant is restricted.",
+        "Lease output has a conflict that needs review."
+      ]
+    },
+    "writeTargetPath": "~/Code/.work/acme/web/lease_auth_callback",
+    "workViewPath": "~/Code/.work/acme/web/lease_auth_callback",
+    "attention": [
+      {
+        "kind": "env",
+        "summary": "DATABASE_URL requires an env grant before command execution.",
+        "subject": {
+          "kind": "lease",
+          "id": "lease_auth_callback"
+        },
+        "leaseId": "lease_auth_callback",
+        "eventName": "lease.tool_denied",
+        "envRecordId": "env_default"
+      }
+    ],
+    "capabilities": [
+      {
+        "name": "workspace_status",
+        "category": "inspection",
+        "state": "available"
+      },
+      {
+        "name": "search_workspace",
+        "category": "exploration",
+        "state": "degraded",
+        "bounds": {
+          "maxBytes": 65536,
+          "maxFiles": 200,
+          "maxDepth": 8,
+          "truncationReason": "index-backed search is not available yet",
+          "continuation": "request narrower paths",
+          "safeNextAction": {
+            "label": "List available capabilities",
+            "command": "bowline agent tool list_capabilities --lease lease_auth_callback",
+            "effectCategory": "inspect",
+            "targetKind": "agent"
+          },
+          "indexBackedSearchUnavailable": true
+        }
+      },
+      {
+        "name": "write_overlay_file",
+        "category": "write",
+        "state": "available"
+      },
+      {
+        "name": "run_command_with_receipt",
+        "category": "execution",
+        "state": "available"
+      }
+    ],
+    "setupReceipts": ["setup_pnpm_install_001"],
+    "env": {
+      "name": "default",
+      "materialization": "lease-work-view",
+      "availableKeys": ["DATABASE_URL", "PUBLIC_APP_URL"],
+      "restrictions": [
+        {
+          "kind": "blocked-secret",
+          "key": "STRIPE_SECRET_KEY",
+          "reason": "secret values stay local and are not included in context"
+        },
+        {
+          "kind": "grant-required",
+          "key": "DATABASE_URL",
+          "grantId": "env_grant_default"
+        }
+      ],
+      "grantIds": ["env_grant_default"]
+    },
+    "scopes": {
+      "read": {
+        "roots": ["."],
+        "classifications": ["workspace-sync", "project-env"],
+        "maxBytesPerRead": 65536,
+        "maxFilesPerRequest": 200,
+        "maxDepth": 8
+      },
+      "write": {
+        "roots": ["src", "tests"],
+        "classifications": ["workspace-sync"],
+        "maxBytesPerRead": 65536,
+        "maxFilesPerRequest": 50,
+        "maxDepth": 6
+      }
+    },
+    "readiness": {
+      "state": "blocked",
+      "signals": [
+        {
+          "name": "lease",
+          "state": "blocked",
+          "summary": "Lease is blocked on a restricted env grant and has conflicted output.",
+          "nextAction": {
+            "label": "Inspect lease context",
+            "command": "bowline agent context --lease lease_auth_callback",
+            "effectCategory": "inspect",
+            "targetKind": "agent"
+          }
+        },
+        {
+          "name": "work-view",
+          "state": "ready",
+          "summary": "Agent writes are isolated to the lease work view.",
+          "nextAction": {
+            "label": "Open work view",
+            "command": "cd ~/Code/.work/acme/web/lease_auth_callback",
+            "effectCategory": "inspect",
+            "targetKind": "workspace"
+          }
+        },
+        {
+          "name": "setup-receipts",
+          "state": "ready",
+          "summary": "1 setup receipt(s) are visible to this lease.",
+          "nextAction": {
+            "label": "Inspect setup receipts",
+            "command": "bowline agent context --lease lease_auth_callback",
+            "effectCategory": "inspect",
+            "targetKind": "agent"
+          }
+        },
+        {
+          "name": "output",
+          "state": "blocked",
+          "summary": "Agent output state is Conflicted.",
+          "nextAction": {
+            "label": "Inspect work view diff",
+            "command": "bowline review work_auth_callback",
+            "effectCategory": "inspect",
+            "targetKind": "work-view"
+          }
+        }
+      ]
+    },
+    "startWork": {
+      "cwd": "~/Code/.work/acme/web/lease_auth_callback",
+      "contextCommand": "bowline agent context --lease lease_auth_callback",
+      "promptCommand": "bowline agent prompt --lease lease_auth_callback",
+      "safeNextActions": [
+        {
+          "label": "Open the lease work view",
+          "command": "cd ~/Code/.work/acme/web/lease_auth_callback",
+          "effectCategory": "inspect",
+          "targetKind": "workspace"
+        },
+        {
+          "label": "Read agent context",
+          "command": "bowline agent context --lease lease_auth_callback",
+          "effectCategory": "inspect",
+          "targetKind": "agent"
+        },
+        {
+          "label": "Render agent prompt",
+          "command": "bowline agent prompt --lease lease_auth_callback",
+          "effectCategory": "inspect",
+          "targetKind": "agent"
+        }
+      ]
+    },
+    "adapterCapabilities": [
+      {
+        "name": "codex",
+        "available": true,
+        "command": "/usr/local/bin/codex",
+        "supportsPromptFileLaunch": false,
+        "supportsStdinLaunch": false,
+        "supportsCwdSelection": false,
+        "supportsNoninteractiveExecution": false,
+        "supportsReceiptCapture": false,
+        "degradedReason": "CLI is installed, but no safe launch mode has been proven; use copy-prompt."
+      },
+      {
+        "name": "claude",
+        "available": false,
+        "supportsPromptFileLaunch": false,
+        "supportsStdinLaunch": false,
+        "supportsCwdSelection": false,
+        "supportsNoninteractiveExecution": false,
+        "supportsReceiptCapture": false,
+        "degradedReason": "CLI is not available on PATH."
+      },
+      {
+        "name": "cursor",
+        "available": false,
+        "supportsPromptFileLaunch": false,
+        "supportsStdinLaunch": false,
+        "supportsCwdSelection": false,
+        "supportsNoninteractiveExecution": false,
+        "supportsReceiptCapture": false,
+        "degradedReason": "CLI is not available on PATH."
+      }
+    ],
+    "instructions": [
+      "Work inside ~/Code/.work/acme/web/lease_auth_callback.",
+      "Publish overlay output for review before completing the task.",
+      "Do not commit, push, branch, or mutate source-control refs."
+    ]
+  }
+}

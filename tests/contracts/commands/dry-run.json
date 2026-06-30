@@ -1,0 +1,18 @@
+{
+  "contractVersion": 3,
+  "command": "workon",
+  "generatedAt": "2026-06-29T12:00:00Z",
+  "status": "dry-run",
+  "allowed": true,
+  "risk": "workspace-metadata",
+  "target": "/tmp/project:agent-slice",
+  "wouldChange": ["create or reuse a work view"],
+  "applyCommand": "bowline workon /tmp/project agent-slice",
+  "nextActions": [
+    {
+      "label": "Run the command without --dry-run",
+      "effectCategory": "inspect",
+      "targetKind": "unknown"
+    }
+  ]
+}

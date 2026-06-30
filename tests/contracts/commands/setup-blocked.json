@@ -1,0 +1,15 @@
+{
+  "contractVersion": 3,
+  "command": "setup",
+  "generatedAt": "2026-06-25T12:00:00Z",
+  "outcome": {
+    "workspaceId": "ws_code",
+    "projectId": "proj_apps_web",
+    "projectPath": "apps/web",
+    "state": "setup-blocked",
+    "receiptIds": [
+      "setup_recipe_approval"
+    ],
+    "redactedSummary": "Setup recipe needs local approval before execution."
+  }
+}

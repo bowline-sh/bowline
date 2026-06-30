@@ -1,0 +1,44 @@
+{
+  "contractVersion": 3,
+  "command": "status",
+  "generatedAt": "2026-06-25T12:00:05Z",
+  "workspaceId": "ws_code",
+  "projectId": "proj_acme_web",
+  "status": {
+    "level": "attention",
+    "attentionItems": [
+      "auth-fix is ready for review."
+    ]
+  },
+  "items": [
+    {
+      "kind": "work-view",
+      "summary": "auth-fix is review-ready; workspace remains usable.",
+      "subject": {
+        "kind": "work-view",
+        "id": "work_auth_fix",
+        "path": "~/Code/.work/acme/web/auth-fix"
+      },
+      "path": "~/Code/.work/acme/web/auth-fix",
+      "projectId": "proj_acme_web",
+      "snapshotId": "snap_main_123",
+      "eventName": "work.review_ready"
+    }
+  ],
+  "limits": [],
+  "eventWatermarks": {
+    "lastEventId": "evt_work_ready_001",
+    "eventLagMs": 0,
+    "syncState": "ready",
+    "watcherState": "ready",
+    "networkState": "online"
+  },
+  "nextActions": [
+    {
+      "label": "Review auth-fix",
+      "command": "bowline review auth-fix",
+      "effectCategory": "inspect",
+      "targetKind": "work-view"
+    }
+  ]
+}

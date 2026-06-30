@@ -1,0 +1,48 @@
+{
+  "contractVersion": 3,
+  "command": "status",
+  "generatedAt": "2026-06-23T12:00:00Z",
+  "workspaceId": "ws_code",
+  "projectId": "proj_acme_web",
+  "status": {
+    "level": "attention",
+    "attentionItems": [
+      "Theo-Mac is waiting for workspace approval."
+    ]
+  },
+  "items": [
+    {
+      "kind": "device",
+      "summary": "Theo-Mac requested approval with matching code maple-river-4821.",
+      "subject": {
+        "kind": "device-approval-request",
+        "id": "device-request:ws_code:theo-mac"
+      },
+      "deviceId": "dev_theo_mac",
+      "eventName": "device.approval_requested"
+    }
+  ],
+  "limits": [],
+  "eventWatermarks": {
+    "lastScanAt": "2026-06-23T11:59:55Z",
+    "lastEventId": "evt_status_device_001",
+    "eventLagMs": 0,
+    "syncState": "ready",
+    "watcherState": "ready",
+    "networkState": "online"
+  },
+  "nextActions": [
+    {
+      "label": "Approve Theo-Mac",
+      "command": "bowline approve device-request:ws_code:theo-mac",
+      "effectCategory": "trust",
+      "targetKind": "device"
+    },
+    {
+      "label": "Inspect workspace status",
+      "command": "bowline status",
+      "effectCategory": "inspect",
+      "targetKind": "workspace"
+    }
+  ]
+}

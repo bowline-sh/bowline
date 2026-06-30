@@ -1,0 +1,44 @@
+{
+  "contractVersion": 3,
+  "command": "accept",
+  "generatedAt": "2026-06-25T12:00:03Z",
+  "action": "accepted",
+  "workView": {
+    "id": "work_auth_fix",
+    "workspaceId": "ws_code",
+    "projectId": "proj_acme_web",
+    "projectPath": "acme/web",
+    "name": "auth-fix",
+    "visiblePath": "~/Code/.work/acme/web/auth-fix",
+    "baseSnapshotId": "snap_main_123",
+    "overlayHead": "overlay_changed",
+    "overlayVersion": 1,
+    "envProfile": "default",
+    "lifecycle": "accepted",
+    "visibility": "hidden",
+    "syncState": "synced",
+    "retention": {
+      "state": "retained",
+      "retainUntil": "2026-07-25T12:00:03Z",
+      "restorable": true
+    },
+    "ownerDeviceId": "dev_mac",
+    "followedBy": [],
+    "hostMaterializations": ["macbook"],
+    "attention": [],
+    "createdAt": "2026-06-25T12:00:00Z",
+    "updatedAt": "2026-06-25T12:00:03Z"
+  },
+  "status": {
+    "level": "healthy",
+    "attentionItems": []
+  },
+  "nextActions": [
+    {
+      "label": "Inspect main view diff",
+      "command": "cd ~/Code/acme/web && git diff",
+      "effectCategory": "inspect",
+      "targetKind": "workspace"
+    }
+  ]
+}

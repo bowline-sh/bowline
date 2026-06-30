@@ -1,0 +1,45 @@
+{
+  "contractVersion": 3,
+  "command": "status",
+  "generatedAt": "2026-06-23T12:00:00Z",
+  "workspaceId": "ws_code",
+  "projectId": "proj_acme_web",
+  "scope": "project",
+  "requestedPath": "~/Code/acme/web",
+  "resolvedWorkspaceRoot": "~/Code",
+  "status": {
+    "level": "attention",
+    "attentionItems": [
+      "Agent lease lease_auth_callback is based on a stale workspace snapshot."
+    ]
+  },
+  "items": [
+    {
+      "kind": "lease",
+      "summary": "The lease can continue only after its base is refreshed or reviewed.",
+      "subject": {
+        "kind": "lease",
+        "id": "lease_auth_callback"
+      },
+      "leaseId": "lease_auth_callback",
+      "snapshotId": "snap_workspace_base_old",
+      "eventName": "source.stale"
+    }
+  ],
+  "limits": [],
+  "eventWatermarks": {
+    "lastEventId": "evt_stale_agent_base_001",
+    "eventLagMs": 0,
+    "syncState": "ready",
+    "watcherState": "ready",
+    "networkState": "online"
+  },
+  "nextActions": [
+    {
+      "label": "Inspect the lease",
+      "command": "bowline agent context --lease lease_auth_callback --json",
+      "effectCategory": "inspect",
+      "targetKind": "agent"
+    }
+  ]
+}

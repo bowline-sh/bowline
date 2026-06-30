@@ -1,0 +1,43 @@
+{
+  "contractVersion": 3,
+  "command": "accept",
+  "generatedAt": "2026-06-25T12:00:04Z",
+  "action": "review-ready",
+  "workView": {
+    "id": "work_auth_fix",
+    "workspaceId": "ws_code",
+    "projectId": "proj_acme_web",
+    "projectPath": "acme/web",
+    "name": "auth-fix",
+    "visiblePath": "~/Code/.work/acme/web/auth-fix",
+    "baseSnapshotId": "snap_main_123",
+    "overlayHead": "overlay_changed",
+    "overlayVersion": 1,
+    "envProfile": "default",
+    "lifecycle": "review-ready",
+    "visibility": "default-visible",
+    "syncState": "attention",
+    "retention": {
+      "state": "current",
+      "restorable": false
+    },
+    "ownerDeviceId": "dev_mac",
+    "followedBy": [],
+    "hostMaterializations": ["macbook"],
+    "attention": ["Manual review needed before accepting src/index.ts."],
+    "createdAt": "2026-06-25T12:00:00Z",
+    "updatedAt": "2026-06-25T12:00:04Z"
+  },
+  "status": {
+    "level": "attention",
+    "attentionItems": ["Accept needs review before touching the main view."]
+  },
+  "nextActions": [
+    {
+      "label": "Inspect work-view diff",
+      "command": "bowline review auth-fix",
+      "effectCategory": "inspect",
+      "targetKind": "work-view"
+    }
+  ]
+}
