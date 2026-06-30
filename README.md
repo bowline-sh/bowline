@@ -23,17 +23,26 @@ plans by design.
 
 ## Install
 
-On Apple Silicon macOS:
+On Apple Silicon macOS and Linux x86_64:
 
 ```bash
-brew tap bowline-sh/homebrew-tap
-brew trust --formula bowline-sh/tap/bowline
-brew install bowline-sh/tap/bowline
+curl -fsSL https://install.bowline.sh | sh
 ```
 
-On Linux, download the `bowline-x86_64-unknown-linux-gnu.tar.xz` archive from
-the latest GitHub release, unpack it, and put `bowline` and `bowline-daemon` on
-your `PATH`.
+On macOS, this installs `Bowline.app`, `bowline`, and `bowline-daemon`. On
+Linux, it installs `bowline` and `bowline-daemon` into `~/.local/bin`.
+
+For CLI-only installs on macOS:
+
+```bash
+curl -fsSL https://install.bowline.sh | sh -s -- --cli-only
+```
+
+If you prefer Homebrew:
+
+```bash
+brew install bowline-sh/tap/bowline
+```
 
 Verify the install:
 

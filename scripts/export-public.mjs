@@ -33,6 +33,7 @@ const publicRootScripts = [
   "check:architecture-imports",
   "check:architecture-fixtures",
   "check:generated-artifacts",
+  "check:install-script",
   "check:package-scripts",
   "check:public-export",
   "check:rust-boundaries",

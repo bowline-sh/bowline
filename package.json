@@ -7,10 +7,11 @@
   "packageManager": "pnpm@10.30.0",
   "scripts": {
     "build": "turbo build",
-    "check:architecture": "pnpm check:package-scripts && pnpm check:generated-artifacts && pnpm check:architecture-imports && pnpm check:rust-boundaries && pnpm check:public-export && pnpm check:architecture-fixtures",
+    "check:architecture": "pnpm check:package-scripts && pnpm check:install-script && pnpm check:generated-artifacts && pnpm check:architecture-imports && pnpm check:rust-boundaries && pnpm check:public-export && pnpm check:architecture-fixtures",
     "check:architecture-imports": "node scripts/check-architecture-imports.mjs",
     "check:architecture-fixtures": "node scripts/check-architecture-fixtures.mjs",
     "check:generated-artifacts": "node scripts/check-generated-artifacts.mjs",
+    "check:install-script": "node scripts/check-install-script.mjs",
     "check:package-scripts": "node scripts/check-package-scripts.mjs",
     "check:public-export": "node scripts/check-public-export.mjs",
     "check:rust-boundaries": "node scripts/check-rust-boundaries.mjs",
