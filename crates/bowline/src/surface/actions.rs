@@ -92,7 +92,7 @@ mod tests {
             pending_actions
                 .iter()
                 .any(|action| action.command.as_deref()
-                    == Some("bowline approve device-request:ws_code:theo-mac"))
+                    == Some("bowline approve device-request:ws_code:dev-mac"))
         );
         assert!(
             pending_actions

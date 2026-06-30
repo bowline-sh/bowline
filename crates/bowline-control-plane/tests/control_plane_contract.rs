@@ -1481,7 +1481,7 @@ fn compact_lease_metadata_rejects_pathlike_or_uncommitted_pointer_fields() {
 
     let pathlike_project = control_plane
         .create_lease(LeaseCreate {
-            project_id: "Users/tristan/Code/acme".to_string(),
+            project_id: "Users/user/Code/acme".to_string(),
             ..lease_create_input("workspace-lease-allowlist", "lease-bad-project", "device-1")
         })
         .expect_err("path-like project labels stay local-only");

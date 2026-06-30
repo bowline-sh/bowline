@@ -343,6 +343,7 @@ where
                 }
             },
             "-h" | "--help" => positionals.push("help".to_string()),
+            "-V" | "--version" => positionals.push("version".to_string()),
             _ => positionals.push(arg),
         }
     }
@@ -2878,6 +2879,16 @@ mod tests {
 
         assert_eq!(cli.socket, PathBuf::from("/tmp/bowline-daemon-test.sock"));
         assert_eq!(cli.command, Command::Serve { once: true });
+    }
+
+    #[test]
+    fn parses_version_flags() {
+        let cli = parse_args(["--version"]);
+        assert_eq!(cli.command, Command::Version);
+
+        let cli = parse_args(["-V", "--json"]);
+        assert!(cli.json);
+        assert_eq!(cli.command, Command::Version);
     }
 
     #[test]

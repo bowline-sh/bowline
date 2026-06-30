@@ -8273,7 +8273,7 @@ mod tests {
 
     #[test]
     fn diagnostics_redaction_removes_home_paths_and_tokens() {
-        let home_db = ["", "home", "theo", ".bowline", "local.sqlite3"].join("/");
+        let home_db = ["", "home", "user", ".bowline", "local.sqlite3"].join("/");
         let token = ["SECRET", "1234567890abcdef"].join("_");
         let redacted = redact_setup_text(&format!(
             "metadata_db={home_db} TOKEN_VALUE={token} project_file_contents=excluded"

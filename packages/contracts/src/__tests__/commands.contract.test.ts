@@ -159,7 +159,7 @@ describe("workspace command contracts", () => {
           socket: "/tmp/bowline.sock",
           protocol: "bowline.local",
           version: 1,
-          daemonVersion: "0.0.0",
+          daemonVersion: "0.1.0",
         },
         sync: { state: "ready" },
         service: {

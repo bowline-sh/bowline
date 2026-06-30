@@ -986,7 +986,7 @@ mod tests {
             "packs/abc",
             "packs_secret_0011223344556677",
             "packs_token_0011223344556677",
-            "Users_tristan_Code_acme",
+            "Users_user_Code_acme",
             "packs_src_auth",
             "packs_main_branch",
             "packs-package-json",

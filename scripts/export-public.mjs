@@ -8,6 +8,7 @@ import {
   readdir,
   realpath,
   rm,
+  writeFile,
 } from "node:fs/promises";
 import path from "node:path";
 
@@ -24,6 +25,23 @@ const ignoredFilePatterns = [
   /\.tsbuildinfo$/u,
   /(^|\/)\.DS_Store$/u,
   /(^|\/)(npm-debug|yarn-error|pnpm-debug)\.log$/u,
+];
+
+const publicRootScripts = [
+  "build",
+  "check:architecture",
+  "check:architecture-imports",
+  "check:architecture-fixtures",
+  "check:generated-artifacts",
+  "check:package-scripts",
+  "check:public-export",
+  "check:rust-boundaries",
+  "lint",
+  "rust:verify",
+  "test",
+  "typecheck",
+  "verify",
+  "verify:public",
 ];
 
 function parseArgs(argv) {
@@ -114,6 +132,45 @@ async function pruneTarget(targetRoot) {
   );
 }
 
+async function copyPublicOverrides(sourceRoot, targetRoot) {
+  const overridesRoot = path.join(sourceRoot, "public-overrides");
+  let entries;
+  try {
+    entries = await readdir(overridesRoot);
+  } catch (error) {
+    if (error && error.code === "ENOENT") return;
+    throw error;
+  }
+
+  for (const entry of entries) {
+    await copyEntry(
+      path.join(overridesRoot, entry),
+      path.join(targetRoot, entry),
+    );
+  }
+}
+
+async function rewritePublicRootPackage(targetRoot) {
+  const packagePath = path.join(targetRoot, "package.json");
+  let pkg;
+  try {
+    pkg = JSON.parse(await readFile(packagePath, "utf8"));
+  } catch (error) {
+    if (error && error.code === "ENOENT") return;
+    throw error;
+  }
+  const privateScripts = pkg.scripts ?? {};
+  const scripts = {};
+  for (const name of publicRootScripts) {
+    if (typeof privateScripts[name] === "string") {
+      scripts[name] = privateScripts[name];
+    }
+  }
+  scripts.verify = "pnpm verify:public";
+  pkg.scripts = scripts;
+  await writeFile(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
+}
+
 async function copyEntry(sourcePath, targetPath) {
   const normalizedSource = sourcePath.split(path.sep).join("/");
   if (ignoredFilePatterns.some((pattern) => pattern.test(normalizedSource))) {
@@ -197,6 +254,8 @@ async function main() {
   for (const entry of include) {
     await copyEntry(path.join(sourceRoot, entry), path.join(targetRoot, entry));
   }
+  await copyPublicOverrides(sourceRoot, targetRoot);
+  await rewritePublicRootPackage(targetRoot);
 
   console.log(
     `Exported ${include.length} allowlisted entries to ${targetRoot}`,

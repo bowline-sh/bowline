@@ -465,9 +465,9 @@ describe("internal Convex control-plane shapes", () => {
     const document = toConvexPendingDeviceDocument(
       createPendingDeviceAccountMapping({
         account: {
-          accountId: "account_theo" as AccountId,
+          accountId: "account_user" as AccountId,
           workOsOrganizationId: "org_acme" as WorkOsOrganizationId,
-          workOsUserId: "user_theo" as WorkOsUserId,
+          workOsUserId: "user_test" as WorkOsUserId,
         },
         deviceFingerprint: "fp_device_linux",
         deviceId: "device_linux" as never,
@@ -483,7 +483,7 @@ describe("internal Convex control-plane shapes", () => {
     );
 
     expect(document).toEqual({
-      accountId: "account_theo",
+      accountId: "account_user",
       decryptAuthority: "not-granted",
       deviceFingerprint: "fp_device_linux",
       deviceId: "device_linux",
@@ -497,7 +497,7 @@ describe("internal Convex control-plane shapes", () => {
       state: "pending",
       trustState: "pending",
       workOsOrganizationId: "org_acme",
-      workOsUserId: "user_theo",
+      workOsUserId: "user_test",
       workspaceId: "workspace_code",
     });
     expect(JSON.stringify(document)).not.toMatch(

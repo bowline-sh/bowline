@@ -94,12 +94,12 @@ mod tests {
             scope: Some(StatusScope::Workspace),
             status: WorkspaceStatus {
                 level: StatusLevel::Attention,
-                attention_items: vec!["Theo-Mac is waiting for approval.".to_string()],
+                attention_items: vec!["Dev-Mac is waiting for approval.".to_string()],
             },
             actions: vec![
                 SafeAction {
-                    label: "Approve Theo-Mac".to_string(),
-                    command: Some("bowline approve device-request:theo-mac".to_string()),
+                    label: "Approve Dev-Mac".to_string(),
+                    command: Some("bowline approve device-request:dev-mac".to_string()),
                 },
                 SafeAction {
                     label: "Inspect status".to_string(),
@@ -110,7 +110,7 @@ mod tests {
         };
         let snapshot = render_snapshot(&TuiModel::from_actions(&output), 72, 14);
 
-        assert!(snapshot.contains("Approve Theo-Mac"));
+        assert!(snapshot.contains("Approve Dev-Mac"));
         assert!(snapshot.contains("Inspect status"));
         assert!(snapshot.contains("[changes]"));
         assert!(snapshot.contains("A decision or repair path needs attention."));
@@ -212,11 +212,11 @@ mod tests {
             scope: Some(StatusScope::Workspace),
             status: WorkspaceStatus {
                 level: StatusLevel::Attention,
-                attention_items: vec!["Theo-Mac is waiting for approval.".to_string()],
+                attention_items: vec!["Dev-Mac is waiting for approval.".to_string()],
             },
             actions: vec![SafeAction {
-                label: "Approve Theo-Mac".to_string(),
-                command: Some("bowline approve device-request:theo-mac".to_string()),
+                label: "Approve Dev-Mac".to_string(),
+                command: Some("bowline approve device-request:dev-mac".to_string()),
             }],
             non_actions: Vec::new(),
         };
@@ -226,7 +226,7 @@ mod tests {
         let snapshot = render_snapshot(&model, 72, 12);
 
         assert!(snapshot.contains("Confirm"));
-        assert!(snapshot.contains("Command: bowline approve device-request:theo-mac"));
+        assert!(snapshot.contains("Command: bowline approve device-request:dev-mac"));
         assert!(snapshot.contains("Enter runs the selected command."));
         assert!(snapshot.contains("Esc cancels."));
     }
@@ -246,12 +246,12 @@ mod tests {
             },
             actions: vec![
                 SafeAction {
-                    label: "Approve Theo-Mac".to_string(),
-                    command: Some("bowline approve device-request:theo-mac".to_string()),
+                    label: "Approve Dev-Mac".to_string(),
+                    command: Some("bowline approve device-request:dev-mac".to_string()),
                 },
                 SafeAction {
-                    label: "Revoke Theo-Mac".to_string(),
-                    command: Some("bowline revoke device-request:theo-mac".to_string()),
+                    label: "Revoke Dev-Mac".to_string(),
+                    command: Some("bowline revoke device-request:dev-mac".to_string()),
                 },
             ],
             non_actions: Vec::new(),
@@ -262,8 +262,8 @@ mod tests {
 
         let snapshot = render_snapshot(&model, 96, 14);
 
-        assert!(snapshot.contains("Command: bowline approve device-request:theo-mac"));
-        assert!(!snapshot.contains("Command: bowline revoke device-request:theo-mac"));
+        assert!(snapshot.contains("Command: bowline approve device-request:dev-mac"));
+        assert!(!snapshot.contains("Command: bowline revoke device-request:dev-mac"));
     }
 
     #[test]

@@ -209,7 +209,7 @@ fn persist_scan(
     now: &str,
 ) -> Result<(), LocalInitError> {
     let report = workspace_scoped_scan_report(workspace_id, report);
-    store.insert_workspace(workspace_id, "Theo Code", now)?;
+    store.insert_workspace(workspace_id, "User Code", now)?;
     let root_path = root.display().to_string();
     let root_id = store
         .accepted_root_id_for_path(workspace_id, &root_path)?

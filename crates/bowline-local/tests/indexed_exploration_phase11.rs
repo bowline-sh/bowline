@@ -129,7 +129,7 @@ fn phase11_search_and_symbols_survive_restart_from_durable_rows() {
     let workspace_id = WorkspaceId::new("ws_code");
     let project_id = ProjectId::new("proj_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -267,7 +267,7 @@ fn phase11_local_source_change_queues_index_work_and_rebuild_clears_it() {
     let workspace_id = WorkspaceId::new("ws_code");
     let project_id = ProjectId::new("proj_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -376,7 +376,7 @@ fn phase11_durable_index_rows_are_project_scoped_for_same_relative_path() {
     let web_project_id = ProjectId::new("proj_web");
     let api_project_id = ProjectId::new("proj_api");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -481,7 +481,7 @@ fn phase11_durable_index_rows_are_scoped_to_current_snapshot() {
     let project_id = ProjectId::new("proj_web");
     let old_snapshot_id = SnapshotId::new("snap_old");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -588,7 +588,7 @@ fn phase11_durable_index_respects_subdirectory_scope() {
     let project_id = ProjectId::new("proj_web");
     let snapshot_id = SnapshotId::new("snap_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -696,7 +696,7 @@ fn phase11_scoped_rebuild_keeps_unrelated_durable_rows() {
     let project_id = ProjectId::new("proj_web");
     let snapshot_id = SnapshotId::new("snap_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -822,7 +822,7 @@ fn phase11_truncated_rebuild_keeps_unscanned_durable_rows() {
     let project_id = ProjectId::new("proj_web");
     let snapshot_id = SnapshotId::new("snap_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -941,7 +941,7 @@ fn phase11_rebuild_purges_deleted_durable_index_rows() {
     let workspace_id = WorkspaceId::new("ws_code");
     let project_id = ProjectId::new("proj_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -1058,7 +1058,7 @@ fn phase11_durable_index_revalidates_policy_before_returning_rows() {
     let workspace_id = WorkspaceId::new("ws_code");
     let project_id = ProjectId::new("proj_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -1152,7 +1152,7 @@ fn phase11_decrypted_index_pack_covers_cold_search_and_symbols() {
     let project_id = ProjectId::new("proj_web");
     let snapshot_id = SnapshotId::new("snap_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -1275,7 +1275,7 @@ fn phase11_partial_index_pack_does_not_hide_local_materialized_files() {
     let project_id = ProjectId::new("proj_web");
     let snapshot_id = SnapshotId::new("snap_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -1388,7 +1388,7 @@ fn phase11_rebuild_purges_cold_rows_without_projected_namespace_backing() {
     let project_id = ProjectId::new("proj_web");
     let snapshot_id = SnapshotId::new("snap_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -1480,7 +1480,7 @@ fn phase11_durable_cold_rows_require_current_projected_namespace_backing() {
     let project_id = ProjectId::new("proj_web");
     let snapshot_id = SnapshotId::new("snap_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -1599,7 +1599,7 @@ fn phase11_index_pack_import_clears_stale_symbols_for_replaced_document() {
     let project_id = ProjectId::new("proj_web");
     let snapshot_id = SnapshotId::new("snap_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -1751,7 +1751,7 @@ fn phase11_index_pack_import_composes_multiple_packs_for_same_snapshot() {
     let project_id = ProjectId::new("proj_web");
     let snapshot_id = SnapshotId::new("snap_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -1847,7 +1847,7 @@ fn phase11_index_pack_import_rejects_traversal_document_paths() {
     let project_id = ProjectId::new("proj_web");
     let snapshot_id = SnapshotId::new("snap_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -1925,7 +1925,7 @@ fn phase11_index_pack_import_rejects_traversal_symbol_paths() {
     let project_id = ProjectId::new("proj_web");
     let snapshot_id = SnapshotId::new("snap_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -2004,7 +2004,7 @@ fn phase11_index_pack_import_revalidates_current_local_policy() {
     let project_id = ProjectId::new("proj_web");
     let snapshot_id = SnapshotId::new("snap_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -2077,7 +2077,7 @@ fn phase11_index_pack_import_does_not_clear_unrelated_pending_work() {
     let project_id = ProjectId::new("proj_web");
     let snapshot_id = SnapshotId::new("snap_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -2186,7 +2186,7 @@ fn phase11_search_marks_local_index_stale_when_projected_files_are_cold() {
     let workspace_id = WorkspaceId::new("ws_code");
     let project_id = ProjectId::new("proj_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(
@@ -2262,7 +2262,7 @@ fn phase11_subdirectory_search_keeps_parent_project_policy() {
     let workspace_id = WorkspaceId::new("ws_code");
     let project_id = ProjectId::new("proj_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T13:30:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T13:30:00Z")
         .expect("workspace");
     store
         .insert_root(

@@ -205,11 +205,11 @@ mod tests {
 
         assert_eq!(payloads.len(), 1);
         assert_eq!(payloads[0].title, "bowline device approval");
-        assert!(payloads[0].body.contains("Theo-Mac"));
+        assert!(payloads[0].body.contains("Dev-Mac"));
         assert!(payloads[0].body.contains("maple-river-4821"));
         assert_eq!(
             payloads[0].action.as_deref(),
-            Some("bowline approve device-request:ws_code:theo-mac")
+            Some("bowline approve device-request:ws_code:dev-mac")
         );
         assert!(!format!("{payloads:?}").contains("secret"));
     }
@@ -223,7 +223,7 @@ mod tests {
 
         status.items[0].subject = Some(bowline_core::status::StatusSubject {
             kind: bowline_core::status::StatusSubjectKind::DeviceApprovalRequest,
-            id: "device-request:ws_code:theo-mac".to_string(),
+            id: "device-request:ws_code:dev-mac".to_string(),
             path: None,
         });
         let mut second = status.items[0].clone();
@@ -249,7 +249,7 @@ mod tests {
         assert_eq!(payloads.len(), 2);
         assert_eq!(
             payloads[0].action.as_deref(),
-            Some("bowline approve device-request:ws_code:theo-mac")
+            Some("bowline approve device-request:ws_code:dev-mac")
         );
         assert_eq!(
             payloads[1].action.as_deref(),
@@ -261,8 +261,8 @@ mod tests {
     fn dispatcher_sends_each_pending_action_once() {
         let payload = NotificationPayload {
             title: "bowline device approval".to_string(),
-            body: "Theo-Mac requested approval.".to_string(),
-            action: Some("bowline approve device-request:ws_code:theo-mac".to_string()),
+            body: "Dev-Mac requested approval.".to_string(),
+            action: Some("bowline approve device-request:ws_code:dev-mac".to_string()),
         };
         let sender = RecordingSender::new();
         let mut dedupe = NotificationDedupe::default();
@@ -282,8 +282,8 @@ mod tests {
     fn dispatcher_retries_failed_delivery_attempts() {
         let payload = NotificationPayload {
             title: "bowline device approval".to_string(),
-            body: "Theo-Mac requested approval.".to_string(),
-            action: Some("bowline approve device-request:ws_code:theo-mac".to_string()),
+            body: "Dev-Mac requested approval.".to_string(),
+            action: Some("bowline approve device-request:ws_code:dev-mac".to_string()),
         };
         let mut dedupe = NotificationDedupe::default();
 

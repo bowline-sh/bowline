@@ -640,7 +640,7 @@ mod tests {
 
         let store = MetadataStore::open(&db_path).expect("metadata opens");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-23T12:00:00Z")
             .expect("workspace insert");
         store
             .append_event(test_event(&workspace_id))
@@ -662,13 +662,13 @@ mod tests {
 
         let store = MetadataStore::open(&db_path).expect("metadata opens");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-23T12:00:00Z")
             .expect("workspace insert");
         store
             .insert_root(
                 "root_code",
                 &workspace_id,
-                &["", "home", "theo", "Code"].join("/"),
+                &["", "home", "user", "Code"].join("/"),
                 "2026-06-23T12:00:00Z",
             )
             .expect("root insert");
@@ -683,7 +683,7 @@ mod tests {
             .expect("project insert");
 
         let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0aGVvIn0.signatureValue";
-        let root_path = ["", "home", "theo", "Code"].join("/");
+        let root_path = ["", "home", "user", "Code"].join("/");
         let other_home = ["", "home", "linux_box"].join("/");
         let event_path = format!("{root_path}/acme/.env.local");
         let mut event = test_event(&workspace_id);
@@ -697,7 +697,7 @@ mod tests {
         event.actor = Some(EventActor {
             kind: EventActorKind::Agent,
             id: Some("agent TOKEN_super_secret".to_string()),
-            display_name: Some(format!("Theo {other_home} should stay private")),
+            display_name: Some(format!("User {other_home} should stay private")),
         });
         event.payload = json!({
             "OPENAI_API_KEY": "sk-test-secret-token",
@@ -733,10 +733,10 @@ mod tests {
         assert!(!raw_row.contains("OPENSSH PRIVATE KEY"));
         assert!(!raw_row.contains("raw-ssh-private-key-material"));
         assert!(!raw_row.contains(&root_path));
-        assert!(!raw_row.contains("Users/theo"));
-        assert!(!raw_row.contains("~/theo"));
+        assert!(!raw_row.contains("Users/user"));
+        assert!(!raw_row.contains("~/user"));
         assert!(!raw_row.contains(&other_home));
-        assert!(!raw_row.contains("home/theo"));
+        assert!(!raw_row.contains("home/user"));
         assert!(matches!(
             stored.redaction.status,
             bowline_core::events::EventRedactionStatus::Applied
@@ -751,7 +751,7 @@ mod tests {
 
         let store = MetadataStore::open(&db_path).expect("metadata opens");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-23T12:00:00Z")
             .expect("workspace insert");
 
         let mut event = test_event(&workspace_id);
@@ -775,7 +775,7 @@ mod tests {
 
         let store = MetadataStore::open(&db_path).expect("metadata opens");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-23T12:00:00Z")
             .expect("workspace insert");
         store
             .insert_root("root_code", &workspace_id, "~/Code", "2026-06-23T12:00:00Z")
@@ -790,7 +790,7 @@ mod tests {
             )
             .expect("project insert");
 
-        let root_path = ["", "home", "theo", "Code"].join("/");
+        let root_path = ["", "home", "user", "Code"].join("/");
         let event_path = format!("{root_path}/acme/.env.local");
         let mut event = test_event(&workspace_id);
         event.path = Some(event_path.clone());
@@ -814,8 +814,8 @@ mod tests {
 
         assert_eq!(stored.path.as_deref(), Some("acme/.env.local"));
         assert!(!raw_row.contains(&root_path));
-        assert!(!raw_row.contains("Users/theo"));
-        assert!(!raw_row.contains("~/theo"));
+        assert!(!raw_row.contains("Users/user"));
+        assert!(!raw_row.contains("~/user"));
     }
 
     #[test]
@@ -826,7 +826,7 @@ mod tests {
 
         let store = MetadataStore::open(&db_path).expect("metadata opens");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-23T12:00:00Z")
             .expect("workspace insert");
         store
             .append_event(test_event(&workspace_id))

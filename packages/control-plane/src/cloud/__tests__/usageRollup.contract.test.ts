@@ -13,7 +13,7 @@ function makeInputs(
   overrides: Partial<UsageRollupInputs> = {},
 ): UsageRollupInputs {
   return {
-    accountId: "account_theo",
+    accountId: "account_user",
     agentOverlayBytes: 0,
     authorizedDeviceCount: 0,
     conflictsDetectedCumulative: 0,

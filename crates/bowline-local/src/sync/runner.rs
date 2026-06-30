@@ -1682,7 +1682,7 @@ mod tests {
         let snapshot = snapshot_with_symlink(
             WorkspaceId::new("ws_code"),
             "app/config",
-            "/workspace/theo/.ssh/config",
+            "/workspace/user/.ssh/config",
         );
 
         let error =
@@ -1777,7 +1777,7 @@ mod tests {
         let workspace_id = WorkspaceId::new("ws_code");
         let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-29T04:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-29T04:00:00Z")
             .expect("workspace");
         store
             .insert_root(
@@ -1876,7 +1876,7 @@ mod tests {
         let workspace_id = WorkspaceId::new("ws_code");
         let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-29T04:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-29T04:00:00Z")
             .expect("workspace");
         store
             .insert_root(
@@ -1953,7 +1953,7 @@ mod tests {
         let workspace_id = WorkspaceId::new("ws_code");
         let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-29T04:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-29T04:00:00Z")
             .expect("workspace");
         store
             .insert_root(

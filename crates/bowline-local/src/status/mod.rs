@@ -2269,7 +2269,7 @@ mod tests {
         );
         // Absolute paths outside the workspace root are dropped entirely.
         assert_eq!(
-            redact_workspace_path("/workspace/theo/secret.txt", root),
+            redact_workspace_path("/workspace/user/secret.txt", root),
             None
         );
         assert_eq!(
@@ -2277,7 +2277,7 @@ mod tests {
             None
         );
         assert_eq!(redact_workspace_path("~/.ssh/id_ed25519", root), None);
-        assert_eq!(redact_workspace_path("C:\\Users\\theo\\app", root), None);
+        assert_eq!(redact_workspace_path("C:\\Users\\user\\app", root), None);
         // Env files are dropped even when workspace-relative.
         assert_eq!(redact_workspace_path("apps/web/.env.local", root), None);
         assert_eq!(redact_workspace_path("~/Code/api/.env", root), None);
@@ -2309,8 +2309,8 @@ mod tests {
         let mut secret_item = base_status_item(StatusItemKind::Env, "env file changed");
         secret_item.path = Some("~/Code/apps/web/.env.local".to_string());
         let mut absolute_item = base_status_item(StatusItemKind::Device, "external path");
-        absolute_item.summary = "external path: /workspace/theo/secret".to_string();
-        absolute_item.path = Some("/workspace/theo/secret".to_string());
+        absolute_item.summary = "external path: /workspace/user/secret".to_string();
+        absolute_item.path = Some("/workspace/user/secret".to_string());
         output.items = vec![visible_item, secret_item, absolute_item];
         output.limits = vec![LimitedCapability {
             capability: "search".to_string(),
@@ -2377,7 +2377,7 @@ mod tests {
         let workspace_id = WorkspaceId::new("ws_code");
         let store = MetadataStore::open(&db_path).expect("metadata opens");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-23T12:00:00Z")
             .expect("workspace insert");
         store
             .insert_root("root_code", &workspace_id, "~/Code", "2026-06-23T12:00:00Z")
@@ -2473,7 +2473,7 @@ mod tests {
         let workspace_id = WorkspaceId::new("ws_code");
         let store = MetadataStore::open(&db_path).expect("metadata opens");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-23T12:00:00Z")
             .expect("workspace insert");
         store
             .insert_root(
@@ -2599,7 +2599,7 @@ mod tests {
         std::fs::create_dir_all(temp.root().join("apps/web")).expect("project directory");
         let store = MetadataStore::open(&db_path).expect("metadata opens");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-23T12:00:00Z")
             .expect("workspace insert");
         store
             .insert_root(
@@ -2619,7 +2619,7 @@ mod tests {
             base: AgentLeaseBase::LatestWorkspace,
             hydrate_budget_bytes: 2048,
             work_view: true,
-            device_id: DeviceId::new("device_theo_mac"),
+            device_id: DeviceId::new("device_user_mac"),
             generated_at: "2026-06-23T12:00:01Z".to_string(),
         })
         .expect("lease created")
@@ -2645,7 +2645,7 @@ mod tests {
         let workspace_id = WorkspaceId::new("ws_code");
         let store = MetadataStore::open(&db_path).expect("metadata opens");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-23T12:00:00Z")
             .expect("workspace insert");
         store
             .insert_root("root_code", &workspace_id, "~/Code", "2026-06-23T12:00:00Z")
@@ -3547,7 +3547,7 @@ mod tests {
 
     fn seed_workspace_root(store: &MetadataStore, workspace_id: &WorkspaceId) {
         store
-            .insert_workspace(workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+            .insert_workspace(workspace_id, "User Code", "2026-06-23T12:00:00Z")
             .expect("workspace insert");
         store
             .insert_root("root_code", workspace_id, "~/Code", "2026-06-23T12:00:00Z")

@@ -4221,7 +4221,7 @@ mod tests {
         let workspace_id = WorkspaceId::new("ws_phase8");
         let project_id = ProjectId::new("proj_web");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T00:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-25T00:00:00Z")
             .expect("workspace");
         store
             .insert_root(
@@ -4353,7 +4353,7 @@ mod tests {
         let project_id = ProjectId::new("proj_acme_web");
 
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-23T12:00:00Z")
             .expect("workspace insert");
         store
             .insert_root("root_code", &workspace_id, "~/Code", "2026-06-23T12:00:00Z")
@@ -4404,10 +4404,10 @@ mod tests {
         let active_workspace_id = WorkspaceId::new("ws_code_account");
 
         store
-            .insert_workspace(&stale_workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+            .insert_workspace(&stale_workspace_id, "User Code", "2026-06-23T12:00:00Z")
             .expect("stale workspace insert");
         store
-            .insert_workspace(&active_workspace_id, "Theo Code", "2026-06-23T12:01:00Z")
+            .insert_workspace(&active_workspace_id, "User Code", "2026-06-23T12:01:00Z")
             .expect("active workspace insert");
         store
             .insert_root(
@@ -4438,7 +4438,7 @@ mod tests {
         let account_workspace_id = WorkspaceId::new("ws_code_account");
 
         store
-            .insert_workspace(&old_workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+            .insert_workspace(&old_workspace_id, "User Code", "2026-06-23T12:00:00Z")
             .expect("old workspace insert");
         store
             .insert_root(
@@ -4449,7 +4449,7 @@ mod tests {
             )
             .expect("old root insert");
         store
-            .insert_workspace(&account_workspace_id, "Theo Code", "2026-06-23T12:01:00Z")
+            .insert_workspace(&account_workspace_id, "User Code", "2026-06-23T12:01:00Z")
             .expect("account workspace insert");
         store
             .insert_root(
@@ -4478,7 +4478,7 @@ mod tests {
         let workspace_id = WorkspaceId::new("ws_code");
 
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-23T12:00:00Z")
             .expect("workspace insert");
         store
             .insert_root("root_code", &workspace_id, "~/Code", "2026-06-23T12:00:00Z")
@@ -4817,7 +4817,7 @@ mod tests {
         let second_pack_id = PackId::new("pk_source_00000002");
 
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-24T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-24T12:00:00Z")
             .expect("workspace insert");
         store
             .put_pack_record_with_metadata(
@@ -4985,7 +4985,7 @@ mod tests {
         let store = MetadataStore::open(&db_path).expect("metadata opens");
         let workspace_id = WorkspaceId::new("ws_code");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-24T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-24T12:00:00Z")
             .expect("workspace insert");
 
         let locator = ContentLocator {
@@ -5013,7 +5013,7 @@ mod tests {
         let pack_id = PackId::new("pk_0011223344556677");
         let content_id = ContentId::new("cid_source");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-24T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-24T12:00:00Z")
             .expect("workspace insert");
         store
             .put_pack_record(
@@ -5073,7 +5073,7 @@ mod tests {
         let code_root_string = code_root.display().to_string();
 
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-24T12:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-24T12:00:00Z")
             .expect("workspace insert");
         store
             .insert_root(

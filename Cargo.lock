@@ -459,7 +459,7 @@ dependencies = [
 
 [[package]]
 name = "bowline"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "bowline-control-plane",
@@ -475,7 +475,7 @@ dependencies = [
 
 [[package]]
 name = "bowline-control-plane"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "bowline-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "serde",
@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "bowline-daemon"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bowline-control-plane",
  "bowline-core",
@@ -516,7 +516,7 @@ dependencies = [
 
 [[package]]
 name = "bowline-index"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "serde",
  "tantivy",
@@ -530,7 +530,7 @@ dependencies = [
 
 [[package]]
 name = "bowline-local"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "age",
  "base64 0.22.1",
@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "bowline-storage"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "bowline-core",

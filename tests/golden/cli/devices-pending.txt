@@ -1,2 +1,2 @@
 Devices: 0 trusted, 1 pending, 0 revoked
-  Theo-Mac: waiting for approval, code maple-river-4821
+  Dev-Mac: waiting for approval, code maple-river-4821

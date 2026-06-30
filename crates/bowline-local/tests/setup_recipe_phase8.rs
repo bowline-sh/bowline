@@ -50,7 +50,7 @@ fn setup_recipe_rejects_cwd_outside_workspace() {
 
 #[test]
 fn setup_redactor_covers_env_assignments_tokens_and_home_paths() {
-    let home_app = ["", "home", "theo", "Code", "app"].join("/");
+    let home_app = ["", "home", "user", "Code", "app"].join("/");
     let redacted = redact_setup_text(&format!(
         "OPENAI_API_KEY=sk-abcdef1234567890 printf 'ANTHROPIC_API_KEY=sk-ant-api03-abcdef1234567890'; pnpm install --token ghp_abcdefghijklmnopqrstuvwxyz {home_app} eyJabc.def_123.ghi456"
     ));

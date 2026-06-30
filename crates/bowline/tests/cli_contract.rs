@@ -3287,7 +3287,7 @@ fn seed_daemon_component_status(db_path: &Path) {
     let workspace_id = WorkspaceId::new("ws_code");
     let store = MetadataStore::open(db_path).expect("metadata opens");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-26T12:00:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-26T12:00:00Z")
         .expect("workspace insert");
     store
         .insert_root("root_code", &workspace_id, "~/Code", "2026-06-26T12:00:00Z")
@@ -3307,7 +3307,7 @@ fn seed_sync_queue_workspace(db_path: &Path) {
     let workspace_id = WorkspaceId::new("ws_code");
     let store = MetadataStore::open(db_path).expect("metadata opens");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-26T12:00:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-26T12:00:00Z")
         .expect("workspace insert");
     store
         .insert_root("root_code", &workspace_id, "~/Code", "2026-06-26T12:00:00Z")
@@ -3348,7 +3348,7 @@ fn seed_daemon_start_workspace_with_id(db_path: &Path, code_root: &Path, workspa
     let workspace_id = WorkspaceId::new(workspace_id);
     let store = MetadataStore::open(db_path).expect("metadata opens");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-26T12:00:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-26T12:00:00Z")
         .expect("workspace insert");
     store
         .insert_root(
@@ -3366,7 +3366,7 @@ fn seed_two_project_events_with_root(db_path: &PathBuf, root_path: &str) {
     let backend_id = ProjectId::new("proj_backend");
     let store = MetadataStore::open(db_path).expect("metadata opens");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-23T12:00:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-23T12:00:00Z")
         .expect("workspace insert");
     store
         .insert_root(

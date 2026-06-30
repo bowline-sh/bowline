@@ -54,7 +54,7 @@ fn scanned_workspace_can_pack_manifest_persist_locators_and_range_hydrate() {
     let state_root = state.root();
     let metadata = MetadataStore::open(state_root.join("local.sqlite3")).expect("metadata opens");
     metadata
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-24T12:00:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-24T12:00:00Z")
         .expect("workspace insert");
     metadata
         .insert_root(

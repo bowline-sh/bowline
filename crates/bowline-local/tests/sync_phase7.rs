@@ -1085,7 +1085,7 @@ fn imported_manifest_rejects_paths_targeting_private_state() {
 fn imported_manifest_rejects_symlink_targets_outside_workspace() {
     let workspace_id = WorkspaceId::new("ws_code");
     for target in [
-        "/workspace/theo/.ssh/config",
+        "/workspace/user/.ssh/config",
         "../outside",
         "app/../outside",
     ] {

@@ -7,18 +7,18 @@
   "status": {
     "level": "attention",
     "attentionItems": [
-      "Theo-Mac is waiting for workspace approval."
+      "Dev-Mac is waiting for workspace approval."
     ]
   },
   "items": [
     {
       "kind": "device",
-      "summary": "Theo-Mac requested approval with matching code maple-river-4821.",
+      "summary": "Dev-Mac requested approval with matching code maple-river-4821.",
       "subject": {
         "kind": "device-approval-request",
-        "id": "device-request:ws_code:theo-mac"
+        "id": "device-request:ws_code:dev-mac"
       },
-      "deviceId": "dev_theo_mac",
+      "deviceId": "dev_user_mac",
       "eventName": "device.approval_requested"
     }
   ],
@@ -33,8 +33,8 @@
   },
   "nextActions": [
     {
-      "label": "Approve Theo-Mac",
-      "command": "bowline approve device-request:ws_code:theo-mac",
+      "label": "Approve Dev-Mac",
+      "command": "bowline approve device-request:ws_code:dev-mac",
       "effectCategory": "trust",
       "targetKind": "device"
     },

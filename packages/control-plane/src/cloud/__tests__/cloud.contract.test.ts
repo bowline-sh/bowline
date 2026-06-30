@@ -240,7 +240,7 @@ describe("cloud control-plane metadata contract", () => {
     for (const objectKey of [
       "packs/../secret",
       "packs_.env",
-      "Users_tristan_Code_acme",
+      "Users_user_Code_acme",
       "packs_src_auth",
       "packs_pk_acme_web",
       "manifests_mf_scan_0011223344556677",
@@ -662,13 +662,13 @@ describe("cloud control-plane metadata contract", () => {
 
     expect(mapping).toEqual({
       account: {
-        accountId: "account_theo",
-        email: "theo@example.com",
+        accountId: "account_user",
+        email: "user@example.com",
         workOsOrganizationId: "org_acme",
-        workOsUserId: "user_theo",
+        workOsUserId: "user_test",
       },
       pendingDevice: {
-        accountId: "account_theo",
+        accountId: "account_user",
         decryptAuthority: "not-granted",
         deviceFingerprint: "fp_device_linux",
         deviceId,
@@ -777,10 +777,10 @@ function leaseObjectPointer() {
 function pendingDeviceInput() {
   return {
     account: {
-      accountId: "account_theo" as AccountId,
-      email: "theo@example.com",
+      accountId: "account_user" as AccountId,
+      email: "user@example.com",
       workOsOrganizationId: "org_acme" as WorkOsOrganizationId,
-      workOsUserId: "user_theo" as WorkOsUserId,
+      workOsUserId: "user_test" as WorkOsUserId,
     },
     deviceFingerprint: "fp_device_linux",
     deviceId,

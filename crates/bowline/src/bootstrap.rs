@@ -1772,11 +1772,11 @@ mod tests {
     #[test]
     fn bootstrap_root_unexpands_local_home_for_remote_hosts() {
         assert_eq!(
-            normalize_remote_root_for_home("/workspace/theo/Code", "/workspace/theo"),
+            normalize_remote_root_for_home("/workspace/user/Code", "/workspace/user"),
             "~/Code"
         );
         assert_eq!(
-            normalize_remote_root_for_home("/srv/Code", "/workspace/theo"),
+            normalize_remote_root_for_home("/srv/Code", "/workspace/user"),
             "/srv/Code"
         );
     }
@@ -1942,7 +1942,7 @@ mod tests {
         let output = bootstrap_output(
             BootstrapOutputBase {
                 host: "linux box".to_string(),
-                root: "/workspace/theo/Code Projects".to_string(),
+                root: "/workspace/user/Code Projects".to_string(),
                 generated_at: "2026-06-24T12:00:00Z".to_string(),
                 steps: vec![step(
                     "approve",
@@ -1966,7 +1966,7 @@ mod tests {
             action.label == "Retry remote bootstrap"
                 && action.command.as_deref()
                     == Some(
-                        "bowline connect 'linux box' --root '/workspace/theo/Code Projects' --json",
+                        "bowline connect 'linux box' --root '/workspace/user/Code Projects' --json",
                     )
         }));
     }
@@ -1976,8 +1976,8 @@ mod tests {
         assert_eq!(remote_path_arg("~/Code"), "~/Code");
         assert_eq!(remote_path_arg("~/Code Projects"), "~/'Code Projects'");
         assert_eq!(
-            remote_path_arg("/workspace/theo/Code Projects"),
-            "'/workspace/theo/Code Projects'"
+            remote_path_arg("/workspace/user/Code Projects"),
+            "'/workspace/user/Code Projects'"
         );
     }
 

@@ -2,7 +2,7 @@
   "contractVersion": 3,
   "command": "contract",
   "generatedAt": "2026-06-29T12:00:00Z",
-  "cliVersion": "0.0.0",
+  "cliVersion": "0.1.0",
   "protocol": "bowline.local",
   "protocolVersion": 1,
   "eventSchemaVersion": 1,

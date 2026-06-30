@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -111,7 +111,7 @@ fn serve_once_answers_version_handshake() {
     assert_eq!(
         String::from_utf8(output.stdout).expect("json should be utf8"),
         format!(
-            "{{\"ok\":true,\"command\":\"status\",\"daemon\":{{\"state\":\"running\",\"socket\":{},\"protocol\":\"bowline.local\",\"version\":1,\"daemonVersion\":\"0.0.0\"}}}}\n",
+            "{{\"ok\":true,\"command\":\"status\",\"daemon\":{{\"state\":\"running\",\"socket\":{},\"protocol\":\"bowline.local\",\"version\":1,\"daemonVersion\":\"0.1.0\"}}}}\n",
             json_string(&socket.display().to_string())
         )
     );
@@ -148,7 +148,7 @@ fn default_serve_status_has_no_synthetic_mount_state() {
     assert_eq!(
         String::from_utf8(output.stdout).expect("json should be utf8"),
         format!(
-            "{{\"ok\":true,\"command\":\"status\",\"daemon\":{{\"state\":\"running\",\"socket\":{},\"protocol\":\"bowline.local\",\"version\":1,\"daemonVersion\":\"0.0.0\"}}}}\n",
+            "{{\"ok\":true,\"command\":\"status\",\"daemon\":{{\"state\":\"running\",\"socket\":{},\"protocol\":\"bowline.local\",\"version\":1,\"daemonVersion\":\"0.1.0\"}}}}\n",
             json_string(&socket.display().to_string())
         )
     );
@@ -525,7 +525,21 @@ fn serve_once_timestamps_agent_tool_mutations_with_request_time() {
 }
 
 fn socket_response(socket: &Path, request: &[u8]) -> String {
-    let mut stream = UnixStream::connect(socket).expect("socket connects");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut stream = loop {
+        match UnixStream::connect(socket) {
+            Ok(stream) => break stream,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::NotFound | ErrorKind::ConnectionRefused
+                ) && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("socket connects: {error}"),
+        }
+    };
     stream.write_all(request).expect("request writes");
     stream.flush().expect("flush");
     let mut response = String::new();
@@ -622,7 +636,7 @@ fn seed_agent_lease(db_path: &Path, code_root: &Path, project_path: &Path) {
     let workspace_id = WorkspaceId::new("ws_code");
     let project_id = ProjectId::new("proj_web");
     store
-        .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T00:00:00Z")
+        .insert_workspace(&workspace_id, "User Code", "2026-06-25T00:00:00Z")
         .expect("workspace");
     store
         .insert_root(

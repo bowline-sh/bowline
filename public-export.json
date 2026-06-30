@@ -17,7 +17,6 @@
     "crates/bowline-local",
     "crates/bowline-storage",
     "docs/architecture/oss-composition-and-build-boundaries.md",
-    "docs/architecture/source-control-and-forge-boundaries.md",
     "docs/architecture/trust-contract.md",
     "docs/repo-layout.md",
     "eslint.config.js",

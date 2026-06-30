@@ -592,7 +592,7 @@ mod tests {
         let project_id = ProjectId::new("proj_web");
         let lease_id = LeaseId::new("lease_auth");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T00:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-25T00:00:00Z")
             .expect("workspace");
         store
             .insert_root(
@@ -658,7 +658,7 @@ mod tests {
         let project_id = ProjectId::new("proj_web");
         let lease_id = LeaseId::new("lease_auth");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-25T00:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-25T00:00:00Z")
             .expect("workspace");
         store
             .insert_root(
@@ -774,7 +774,7 @@ mod tests {
         let workspace_id = WorkspaceId::new("ws_code");
         let project_id = ProjectId::new("proj_web");
         store
-            .insert_workspace(&workspace_id, "Theo Code", "2026-06-26T13:00:00Z")
+            .insert_workspace(&workspace_id, "User Code", "2026-06-26T13:00:00Z")
             .expect("workspace");
         store
             .insert_root(

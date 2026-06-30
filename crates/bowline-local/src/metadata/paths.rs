@@ -63,8 +63,8 @@ mod tests {
     #[test]
     fn macos_path_uses_application_support() {
         assert_eq!(
-            database_path_for_platform(Platform::Macos, Path::new("/workspace/theo"), None),
-            Path::new("/workspace/theo/Library/Application Support/bowline/local.sqlite3")
+            database_path_for_platform(Platform::Macos, Path::new("/workspace/user"), None),
+            Path::new("/workspace/user/Library/Application Support/bowline/local.sqlite3")
         );
     }
 
@@ -73,7 +73,7 @@ mod tests {
         assert_eq!(
             database_path_for_platform(
                 Platform::Linux,
-                Path::new("/workspace-linux/theo"),
+                Path::new("/workspace-linux/user"),
                 Some(Path::new("/state"))
             ),
             Path::new("/state/bowline/local.sqlite3")
@@ -83,8 +83,8 @@ mod tests {
     #[test]
     fn linux_path_falls_back_to_home_local_state() {
         assert_eq!(
-            database_path_for_platform(Platform::Linux, Path::new("/workspace-linux/theo"), None),
-            Path::new("/workspace-linux/theo/.local/state/bowline/local.sqlite3")
+            database_path_for_platform(Platform::Linux, Path::new("/workspace-linux/user"), None),
+            Path::new("/workspace-linux/user/.local/state/bowline/local.sqlite3")
         );
     }
 }
