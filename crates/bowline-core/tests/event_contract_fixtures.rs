@@ -39,7 +39,8 @@ fn fixture_json(name: &str) -> Value {
 
 fn fixture_text(name: &str) -> String {
     let path = fixtures_dir().join(name);
-    fs::read_to_string(&path).expect("fixture is readable")
+    fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("fixture is readable at {}: {error}", path.display()))
 }
 
 fn fixtures_dir() -> PathBuf {

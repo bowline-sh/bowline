@@ -14,9 +14,9 @@ research packets, and unreleased plans are intentionally not part of this repo.
 On Apple Silicon macOS:
 
 ```bash
-brew tap crowlabs-dev/homebrew-tap
-brew trust --formula crowlabs-dev/tap/bowline
-brew install crowlabs-dev/tap/bowline
+brew tap bowline-sh/homebrew-tap
+brew trust --formula bowline-sh/tap/bowline
+brew install bowline-sh/tap/bowline
 ```
 
 On Linux, download the `bowline-x86_64-unknown-linux-gnu.tar.xz` archive from

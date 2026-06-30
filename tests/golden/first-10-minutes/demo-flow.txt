@@ -1,4 +1,4 @@
-brew install bowline
+brew install bowline-sh/tap/bowline
 bowline login
 bowline approve
 bowline connect linux-server-1

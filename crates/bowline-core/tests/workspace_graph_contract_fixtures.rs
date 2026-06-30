@@ -39,7 +39,12 @@ fn path_normalization_keeps_workspace_relative_shape() {
 
 fn fixture_json(name: &str) -> Value {
     let path = fixtures_dir().join(format!("{name}.json"));
-    let json = fs::read_to_string(&path).expect("snapshot fixture is readable");
+    let json = fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "snapshot fixture is readable at {}: {error}",
+            path.display()
+        )
+    });
 
     serde_json::from_str(&json).expect("snapshot fixture is valid JSON")
 }

@@ -57,7 +57,9 @@ fn unknown_event_name_fails_to_deserialize() {
 
 fn fixture_json(name: &str) -> Value {
     let path = fixtures_dir().join(format!("{name}.json"));
-    let json = fs::read_to_string(&path).expect("status fixture is readable");
+    let json = fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!("status fixture is readable at {}: {error}", path.display())
+    });
 
     serde_json::from_str(&json).expect("status fixture is valid JSON")
 }

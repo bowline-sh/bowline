@@ -2547,7 +2547,7 @@ fn phase11_symbols_include_package_manifest_references() {
         .write_project_file(
             "app",
             "go.mod",
-            b"module github.com/crowlabs-dev/bowline-demo\n\nrequire (\n\tgithub.com/charmbracelet/bubbletea v1.3.4\n\tgolang.org/x/sync v0.12.0\n)\n",
+            b"module github.com/bowline-sh/bowline-demo\n\nrequire (\n\tgithub.com/charmbracelet/bubbletea v1.3.4\n\tgolang.org/x/sync v0.12.0\n)\n",
         )
         .expect("go mod");
 

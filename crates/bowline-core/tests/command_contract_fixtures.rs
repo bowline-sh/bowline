@@ -147,7 +147,9 @@ fn rust_dry_run_json_matches_shared_contract_fixture() {
 
 fn fixture_json(name: &str) -> Value {
     let path = fixtures_dir().join(format!("{name}.json"));
-    let json = fs::read_to_string(&path).expect("command fixture is readable");
+    let json = fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!("command fixture is readable at {}: {error}", path.display())
+    });
 
     serde_json::from_str(&json).expect("command fixture is valid JSON")
 }

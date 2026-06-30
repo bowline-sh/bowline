@@ -10,6 +10,7 @@ export default tseslint.config(
       "**/convex/_generated/**",
       "**/target/**",
       "**/routeTree.gen.ts",
+      "**/.source/**",
       "tests/fixtures/**",
     ],
   },
@@ -48,7 +49,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["scripts/**/*.mjs", "eslint.config.js"],
+    files: ["**/scripts/**/*.mjs", "eslint.config.js"],
     extends: [tseslint.configs.disableTypeChecked],
     languageOptions: {
       globals: {
