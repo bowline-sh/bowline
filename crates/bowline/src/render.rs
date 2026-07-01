@@ -81,6 +81,18 @@ pub(super) fn render_login_human(output: &bowline_core::commands::LoginCommandOu
     lines.join("\n")
 }
 
+pub(super) fn render_logout_human(output: &bowline_core::commands::LogoutCommandOutput) -> String {
+    let mut lines = Vec::new();
+    if output.signed_out {
+        lines.push("Logout: signed out".to_string());
+    } else {
+        lines.push("Logout: already signed out".to_string());
+    }
+    append_next_actions(&mut lines, &output.next_actions);
+    lines.push(String::new());
+    lines.join("\n")
+}
+
 pub(super) fn render_init_human(output: &bowline_core::commands::InitCommandOutput) -> String {
     let mut lines = vec![
         format!("Root: {}", output.root),

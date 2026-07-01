@@ -4,6 +4,7 @@ export const COMMAND_NAMES = [
   "contract",
   "unknown",
   "login",
+  "logout",
   "approve",
   "revoke",
   "recover",

@@ -8,6 +8,11 @@ pub(super) fn parse_positionals(args: &[String]) -> Command {
         [command] if command == "version" => Command::Version,
         [command] if command == "contract" => Command::Contract,
         [command, rest @ ..] if command == "login" => parse_login_command(rest),
+        [command] if command == "logout" => Command::Logout,
+        [command, rest @ ..] if command == "logout" => usage_error(
+            CommandName::Logout,
+            format!("unexpected bowline logout argument `{}`", rest[0]),
+        ),
         [command, rest @ ..] if command == "approve" => parse_approve_command(rest),
         [command, rest @ ..] if command == "revoke" => parse_revoke_command(rest),
         [command, rest @ ..] if command == "recover" => parse_recovery_command(rest),

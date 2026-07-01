@@ -489,6 +489,10 @@ mod tests {
             self.inner.load_account_tokens()
         }
 
+        fn clear_account_tokens(&self) -> Result<bool, DeviceKeyError> {
+            self.inner.clear_account_tokens()
+        }
+
         fn store_workspace_key(&self, _key: WorkspaceKeyMaterial) -> Result<(), DeviceKeyError> {
             Err(DeviceKeyError::Unavailable(
                 "test workspace key write failed".to_string(),

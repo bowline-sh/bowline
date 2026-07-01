@@ -24,6 +24,7 @@ export const COMMAND_NAMES = [
   "contract",
   "unknown",
   "login",
+  "logout",
   "approve",
   "revoke",
   "recover",
@@ -203,6 +204,11 @@ export type DiagnosticsCollectCommandOutput =
 export type LoginCommandOutput = CommandOutputBase<"login"> & {
   readonly account: AccountLoginState;
   readonly localDevice?: DeviceRecord;
+  readonly nextActions: readonly SafeAction[];
+};
+
+export type LogoutCommandOutput = CommandOutputBase<"logout"> & {
+  readonly signedOut: boolean;
   readonly nextActions: readonly SafeAction[];
 };
 

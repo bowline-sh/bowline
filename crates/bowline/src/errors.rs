@@ -202,6 +202,7 @@ pub(super) fn print_runtime_error(
     } else {
         let command = match command {
             CommandName::Init => "init",
+            CommandName::Logout => "logout",
             CommandName::Status => "status",
             CommandName::Explain => "explain",
             CommandName::Events => "events",

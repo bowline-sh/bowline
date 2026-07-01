@@ -27,6 +27,7 @@ pub(super) fn run(cli: Cli) -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Login(args) => print_login(args, cli.json),
+        Command::Logout => logout::print_logout(cli.json),
         Command::Approve(args) => print_approve(args, cli.json),
         Command::Revoke(args) => print_revoke(args, cli.json),
         Command::Init(args) => print_init(args, cli.json),

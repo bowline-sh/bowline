@@ -83,8 +83,9 @@ pnpm deploy:public --target <public-repo>
 
 `deploy:public` only commits generated public source. `pnpm ship` is the private
 top-level runtime deploy for public source, Convex, Cloudflare, and production
-URL smokes. Package releases for crates.io, Homebrew, app updates, or other
-registries remain separate.
+URL smokes. `pnpm release --version <semver>` is the package/binary release
+entrypoint for downloadable artifacts, public GitHub releases, and the Homebrew
+tap.
 
 For Rust-only work:
 

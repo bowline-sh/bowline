@@ -26,6 +26,8 @@ apps/macos-menu-bar/.build/
 .agents/skills/programmatic-seo/
 .agents/skills/seo-audit/
 .agents/skills/site-architecture/
+.agents/skills/impeccable/
+.impeccable/
 .tmp/
 *.tsbuildinfo
 .wrangler/

@@ -2,7 +2,7 @@ import type { AccountLoginState, AccountLoginStatus } from "./account";
 import { AGENT_LEASE_CLEANUP_STATES, AGENT_LEASE_EXECUTION_STATES, AGENT_LEASE_OUTPUT_STATES, AGENT_TOOL_NAMES, type AgentAuditPointer, type AgentBudgetCommandOutput, type AgentCapability, type AgentCliCapability, type AgentCliName, type AgentContextCommandOutput, type AgentContextV1, type AgentEnvProfile, type AgentEnvRestriction, type AgentLease, type AgentLeaseCreateCommandOutput, type AgentLeaseScope, type AgentLeaseScopes, type AgentOutputTarget, type AgentProjectReadiness, type AgentPrompt, type AgentPromptCommandOutput, type AgentReadinessSignal, type AgentReadinessState, type AgentStartWork, type AgentToolDenial, type AgentToolResult, type DegradedExplorationBounds } from "./agent";
 import { type BootstrapSshCommandOutput, type BootstrapStep, type BootstrapStepState } from "./bootstrap";
 import { CONTRACT_VERSION } from "./ids";
-import { COMMAND_NAMES, type ActionsCommandOutput, type BoundedOutputControls, type CliCommandDescriptor, type CliCommandExample, type CliCommandGroup, type CliCommandOption, type CommandError, type CommandErrorOutput, type CommandErrorStatus, type CommandRecoverability, type ContractCommandOutput, type ContractFixtureDescriptor, type DaemonCommandOutput, type DaemonProcessOutput, type DaemonServiceOutput, type DaemonServiceState, type DaemonStatusOutput, type DevicesCommandOutput, type DiagnosticsCollectCommandOutput, type DryRunCommandOutput, type ExplainCommandOutput, type HelpCommandOutput, type InitCommandOutput, type LoginCommandOutput, type PrewarmCommandOutcome, type PrewarmCommandOutput, type PrewarmCommandState, type RecoveryCommandOutput, type RootChoiceState, type StatusCommandOutput, type VersionCommandOutput, type WatchFrame } from "./commands";
+import { COMMAND_NAMES, type ActionsCommandOutput, type BoundedOutputControls, type CliCommandDescriptor, type CliCommandExample, type CliCommandGroup, type CliCommandOption, type CommandError, type CommandErrorOutput, type CommandErrorStatus, type CommandRecoverability, type ContractCommandOutput, type ContractFixtureDescriptor, type DaemonCommandOutput, type DaemonProcessOutput, type DaemonServiceOutput, type DaemonServiceState, type DaemonStatusOutput, type DevicesCommandOutput, type DiagnosticsCollectCommandOutput, type DryRunCommandOutput, type ExplainCommandOutput, type HelpCommandOutput, type InitCommandOutput, type LoginCommandOutput, type LogoutCommandOutput, type PrewarmCommandOutcome, type PrewarmCommandOutput, type PrewarmCommandState, type RecoveryCommandOutput, type RootChoiceState, type StatusCommandOutput, type VersionCommandOutput, type WatchFrame } from "./commands";
 import { DEVICE_APPROVAL_REQUEST_STATES, type DeviceApprovalRequest, type DevicePlatform, type DeviceRecord, type DeviceTrustState, type EncryptedDeviceGrant, type EncryptedDeviceGrantState, type RecoveryKeyLifecycle, type RecoveryKeyState, type RevokedDevice } from "./devices";
 import { EVENT_NAMES, type EventName } from "./event-names";
 import type { EventActor, EventActorKind, EventRedaction, EventSeverity, EventSubject, EventSubjectKind, EventsCommandOutput, WorkspaceEvent } from "./events";
@@ -331,6 +331,19 @@ export function isLoginCommandOutput(
     typeof value.generatedAt === "string" &&
     isAccountLoginState(value.account) &&
     (value.localDevice === undefined || isDeviceRecord(value.localDevice)) &&
+    isSafeActions(value.nextActions)
+  );
+}
+
+export function isLogoutCommandOutput(
+  value: unknown,
+): value is LogoutCommandOutput {
+  return (
+    isRecord(value) &&
+    value.contractVersion === CONTRACT_VERSION &&
+    value.command === "logout" &&
+    typeof value.generatedAt === "string" &&
+    typeof value.signedOut === "boolean" &&
     isSafeActions(value.nextActions)
   );
 }

@@ -565,6 +565,7 @@ fn command_name_for_command(command: &Command) -> CommandName {
         Command::Version => CommandName::Version,
         Command::Contract => CommandName::Contract,
         Command::Login(_) => CommandName::Login,
+        Command::Logout => CommandName::Logout,
         Command::Approve(_) => CommandName::Approve,
         Command::Revoke(_) => CommandName::Revoke,
         Command::Init(_) => CommandName::Init,

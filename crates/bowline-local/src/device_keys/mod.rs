@@ -19,6 +19,8 @@ pub trait DeviceKeyStore {
 
     fn load_account_tokens(&self) -> Result<Option<AccountTokens>, DeviceKeyError>;
 
+    fn clear_account_tokens(&self) -> Result<bool, DeviceKeyError>;
+
     fn store_workspace_key(&self, key: WorkspaceKeyMaterial) -> Result<(), DeviceKeyError>;
 
     fn load_workspace_key(
@@ -194,6 +196,16 @@ impl KeyringDeviceKeyStore {
             .set_secret(bytes)
             .map_err(|error| DeviceKeyError::Keyring(error.to_string()))
     }
+
+    fn delete_bytes(&self, name: &str) -> Result<bool, DeviceKeyError> {
+        let entry = keyring::Entry::new(SERVICE, &self.secret_name(name))
+            .map_err(|error| DeviceKeyError::Keyring(error.to_string()))?;
+        match entry.delete_credential() {
+            Ok(()) => Ok(true),
+            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(error) => Err(DeviceKeyError::Keyring(error.to_string())),
+        }
+    }
 }
 
 fn keyring_secret_result_to_bytes(
@@ -227,6 +239,10 @@ impl DeviceKeyStore for KeyringDeviceKeyStore {
         self.get_bytes(ACCOUNT_TOKENS_SECRET)?
             .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
             .transpose()
+    }
+
+    fn clear_account_tokens(&self) -> Result<bool, DeviceKeyError> {
+        self.delete_bytes(ACCOUNT_TOKENS_SECRET)
     }
 
     fn store_workspace_key(&self, key: WorkspaceKeyMaterial) -> Result<(), DeviceKeyError> {
@@ -296,6 +312,15 @@ impl DeviceKeyStore for ServerLocalSecretStore {
         Ok(self.read_document()?.account_tokens)
     }
 
+    fn clear_account_tokens(&self) -> Result<bool, DeviceKeyError> {
+        let mut document = self.read_document()?;
+        let had_tokens = document.account_tokens.take().is_some();
+        if had_tokens {
+            self.write_document(&document)?;
+        }
+        Ok(had_tokens)
+    }
+
     fn store_workspace_key(&self, key: WorkspaceKeyMaterial) -> Result<(), DeviceKeyError> {
         let mut document = self.read_document()?;
         document
@@ -354,6 +379,7 @@ impl ServerLocalSecretStore {
 #[serde(rename_all = "camelCase")]
 struct SecretDocument {
     device_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     account_tokens: Option<AccountTokens>,
     workspace_keys: Vec<WorkspaceKeyMaterial>,
     unavailable_reason: Option<SecretUnavailableReason>,
@@ -532,5 +558,58 @@ mod tests {
         assert_eq!(parent_mode, 0o700);
         assert_eq!(file_mode, 0o600);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn server_local_store_clears_only_account_tokens() {
+        let root = std::env::temp_dir().join(format!(
+            "bowline-server-local-clear-account-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("state").join("bowline").join("secrets.v1");
+        let store = ServerLocalSecretStore::new(&path);
+        let workspace_id = WorkspaceId::new("workspace-clear-account");
+
+        let identity = store
+            .load_or_create_device_identity()
+            .expect("device identity");
+        store
+            .store_account_tokens(AccountTokens {
+                account_id: bowline_core::ids::AccountId::new("acct_server_local"),
+                access_token: "access-secret".to_string(),
+                refresh_token: "refresh-secret".to_string(),
+                expires_at: "2026-06-24T12:00:00Z".to_string(),
+                account_session_id: Some("session-secret".to_string()),
+            })
+            .expect("account tokens");
+        store
+            .store_workspace_key(WorkspaceKeyMaterial {
+                workspace_id: workspace_id.clone(),
+                key_epoch: 7,
+                key_bytes: vec![9; 32],
+            })
+            .expect("workspace key");
+
+        assert!(store.clear_account_tokens().expect("clear tokens"));
+        assert!(!store.clear_account_tokens().expect("idempotent clear"));
+        assert!(store.load_account_tokens().expect("load tokens").is_none());
+        assert_eq!(
+            store
+                .load_or_create_device_identity()
+                .expect("device identity remains")
+                .fingerprint,
+            identity.fingerprint
+        );
+        assert_eq!(
+            store
+                .load_workspace_key(&workspace_id)
+                .expect("workspace key load")
+                .expect("workspace key remains")
+                .key_epoch,
+            7
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

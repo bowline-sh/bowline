@@ -15,6 +15,7 @@ pub(super) enum Command {
     Version,
     Contract,
     Login(login::LoginArgs),
+    Logout,
     Approve(ApproveArgs),
     Revoke(RevokeArgs),
     Init(InitArgs),

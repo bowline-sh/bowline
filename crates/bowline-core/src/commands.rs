@@ -38,6 +38,8 @@ pub enum CommandName {
     Unknown,
     #[serde(rename = "login")]
     Login,
+    #[serde(rename = "logout")]
+    Logout,
     #[serde(rename = "approve")]
     Approve,
     #[serde(rename = "revoke")]
@@ -195,6 +197,16 @@ pub struct VersionCommandOutput {
     pub protocol_version: u32,
     pub default_socket: String,
     pub package: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogoutCommandOutput {
+    pub contract_version: u16,
+    pub command: CommandName,
+    pub generated_at: String,
+    pub signed_out: bool,
+    pub next_actions: Vec<SafeAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

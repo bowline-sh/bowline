@@ -22,6 +22,7 @@ mod idempotency;
 mod io_helpers;
 mod login;
 mod login_init;
+mod logout;
 mod recovery;
 mod registry;
 mod render;

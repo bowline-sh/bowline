@@ -357,6 +357,7 @@ pub(crate) fn command_name_token(command: CommandName) -> &'static str {
         CommandName::Contract => "contract",
         CommandName::Unknown => "unknown",
         CommandName::Login => "login",
+        CommandName::Logout => "logout",
         CommandName::Approve => "approve",
         CommandName::Revoke => "revoke",
         CommandName::Recover => "recover",

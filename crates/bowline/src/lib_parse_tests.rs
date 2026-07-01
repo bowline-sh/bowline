@@ -42,6 +42,14 @@ fn json_login_does_not_poll_before_printing_verification_url() {
 }
 
 #[test]
+fn parses_logout() {
+    let cli = parse_args(["logout", "--json"]);
+
+    assert!(cli.json);
+    assert_eq!(cli.command, Command::Logout);
+}
+
+#[test]
 fn approve_no_pending_json_uses_usage_exit_code() {
     assert_eq!(approve_no_pending_exit_code(true), super::EXIT_USAGE);
     assert_eq!(approve_no_pending_exit_code(false), 0);

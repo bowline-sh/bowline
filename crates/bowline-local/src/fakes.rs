@@ -54,6 +54,10 @@ impl DeviceKeyStore for FakeKeychain {
             .transpose()
     }
 
+    fn clear_account_tokens(&self) -> Result<bool, DeviceKeyError> {
+        Ok(self.delete_secret("account-tokens-v1").is_some())
+    }
+
     fn store_workspace_key(&self, key: WorkspaceKeyMaterial) -> Result<(), DeviceKeyError> {
         self.put_secret(
             format!("workspace-key-v1:{}", key.workspace_id.as_str()),

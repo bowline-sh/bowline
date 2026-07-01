@@ -7,6 +7,7 @@ Discovery:
 
 Workspace:
   bowline login [--root <path>] [--headless] [--no-poll]
+  bowline logout [--json]
   bowline status [path] [--watch] [--workspace|--all] [--json]
   bowline init [path] [--json]
   bowline setup [path] [--yes] [--json]
