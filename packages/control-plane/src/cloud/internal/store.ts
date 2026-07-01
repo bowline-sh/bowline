@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 
-import type { EventId } from "@bowline/contracts";
+import type { EventId } from "@bowline/contracts/ids";
 
 import type {
   CloudMetadataStore,

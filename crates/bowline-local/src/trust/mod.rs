@@ -2,7 +2,7 @@ use std::{error::Error, fmt};
 
 use bowline_control_plane::{
     AuthorizedDeviceRecord, ControlPlaneClient, ControlPlaneError, DeviceApprovalInput,
-    DeviceRequestInput, FirstAuthorizedDeviceInput, GrantAcceptanceInput,
+    DeviceRequestInput, DeviceRequestInputDraft, FirstAuthorizedDeviceInput, GrantAcceptanceInput,
 };
 use bowline_core::{
     commands::{CONTRACT_VERSION, DeviceCommandAction, DevicesCommandOutput},
@@ -158,14 +158,14 @@ where
         options.device_id.as_str(),
         identity.public_key.as_str(),
     );
-    let mut input = DeviceRequestInput::new(
-        options.workspace_id.as_str(),
-        options.device_id.as_str(),
-        &options.device_name,
-        identity.public_key.as_str(),
-        identity.fingerprint.as_str(),
+    let mut input = DeviceRequestInput::new(DeviceRequestInputDraft {
+        workspace_id: options.workspace_id.as_str().to_string(),
+        device_id: options.device_id.as_str().to_string(),
+        device_name: options.device_name.clone(),
+        device_public_key: identity.public_key.as_str().to_string(),
+        device_fingerprint: identity.fingerprint.as_str().to_string(),
         matching_code,
-    );
+    });
     input.platform = platform_string(options.platform).to_string();
     input.host = options.host;
     input.root = options.root;

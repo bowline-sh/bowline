@@ -32,6 +32,7 @@ const publicRootScripts = [
   "check:architecture",
   "check:architecture-imports",
   "check:architecture-fixtures",
+  "check:file-lengths",
   "check:generated-artifacts",
   "check:install-script",
   "check:package-scripts",

@@ -224,12 +224,12 @@ describe("usage rollup contract parity", () => {
     const crons = readConvexSource("convex/crons.ts");
     expect(crons).toContain("cronJobs()");
     expect(crons).toContain("crons.daily(");
-    expect(crons).toContain("internal.usageRollups.runDailyUsageRollup");
+    expect(crons).toContain("internal.usage_rollups.runDailyUsageRollup");
     expect(crons).toContain("export default crons");
   });
 
   it("fans out the rollup and gates the export query", () => {
-    const rollups = readConvexSource("convex/usageRollups.ts");
+    const rollups = readConvexSource("convex/usage_rollups.ts");
     expect(rollups).toContain(".paginate(");
     expect(rollups).toContain("ctx.scheduler.runAfter");
     expect(rollups).toContain("by_workspace_retention");
@@ -240,7 +240,7 @@ describe("usage rollup contract parity", () => {
   });
 
   it("increments the download counter inside the download intent mutation", () => {
-    const mutations = readConvexSource("convex/objectMutations.ts");
+    const mutations = readConvexSource("convex/object_mutations.ts");
     expect(mutations).toContain('ctx.db.insert("downloadCounters"');
     expect(mutations).toContain("downloadCount: existingCounter.downloadCount");
     expect(mutations).toContain(

@@ -76,10 +76,10 @@ fn rust_work_view_json_matches_shared_contract_fixtures() {
 fn rust_agent_json_matches_shared_contract_fixtures() {
     let lease_expected = fixture_json("agent-lease-create");
     let lease: AgentLeaseCreateCommandOutput = serde_json::from_value(lease_expected.clone())
-        .expect("fixture parses as agent lease create output");
+        .expect("fixture parses as agent start output");
     assert_eq!(lease.command, CommandName::AgentStart);
     assert_eq!(
-        serde_json::to_value(&lease).expect("agent lease create serializes"),
+        serde_json::to_value(&lease).expect("agent start serializes"),
         lease_expected
     );
 

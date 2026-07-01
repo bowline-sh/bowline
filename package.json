@@ -7,9 +7,10 @@
   "packageManager": "pnpm@10.30.0",
   "scripts": {
     "build": "turbo build",
-    "check:architecture": "pnpm check:package-scripts && pnpm check:install-script && pnpm check:generated-artifacts && pnpm check:architecture-imports && pnpm check:rust-boundaries && pnpm check:public-export && pnpm check:architecture-fixtures",
+    "check:architecture": "pnpm check:package-scripts && pnpm check:install-script && pnpm check:generated-artifacts && pnpm check:architecture-imports && pnpm check:rust-boundaries && pnpm check:file-lengths && pnpm check:public-export && pnpm check:architecture-fixtures",
     "check:architecture-imports": "node scripts/check-architecture-imports.mjs",
     "check:architecture-fixtures": "node scripts/check-architecture-fixtures.mjs",
+    "check:file-lengths": "node scripts/check-file-lengths.mjs",
     "check:generated-artifacts": "node scripts/check-generated-artifacts.mjs",
     "check:install-script": "node scripts/check-install-script.mjs",
     "check:package-scripts": "node scripts/check-package-scripts.mjs",
@@ -35,8 +36,5 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.48.0",
     "vitest": "^4.1.6"
-  },
-  "dependencies": {
-    "jose": "^6.2.3"
   }
 }

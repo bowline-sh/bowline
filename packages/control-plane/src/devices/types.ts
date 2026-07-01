@@ -1,10 +1,9 @@
 import type {
   AuthorizedDevice,
   DeviceFingerprint,
-  DeviceId,
   DevicePlatform,
-  WorkspaceId,
-} from "@bowline/contracts";
+} from "@bowline/contracts/devices";
+import type { DeviceId, WorkspaceId } from "@bowline/contracts/ids";
 
 export type DeviceApprovalInput = {
   readonly authorizedAt: string;

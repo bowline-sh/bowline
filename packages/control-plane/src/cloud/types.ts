@@ -1,13 +1,13 @@
 import type {
   ContentId,
   DeviceId,
-  DevicePlatform,
   EventId,
   ManifestId,
   PackId,
   SnapshotId,
   WorkspaceId,
-} from "@bowline/contracts";
+} from "@bowline/contracts/ids";
+import type { DevicePlatform } from "@bowline/contracts/devices";
 
 type Brand<TName extends string> = string & { readonly __brand: TName };
 

@@ -7,10 +7,6 @@ settings:
 importers:
 
   .:
-    dependencies:
-      jose:
-        specifier: ^6.2.3
-        version: 6.2.3
     devDependencies:
       '@aws-sdk/client-s3':
         specifier: ^3.1070.0
@@ -233,6 +229,9 @@ importers:
       '@bowline/contracts':
         specifier: workspace:*
         version: link:../contracts
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
     devDependencies:
       convex:
         specifier: ^1.42.0

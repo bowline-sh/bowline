@@ -375,7 +375,7 @@ fn classify_action(command: Option<&str>) -> (SafeActionEffect, SafeActionTarget
     if command.starts_with("bowline agent") {
         return (SafeActionEffect::Inspect, SafeActionTarget::Agent);
     }
-    if command.starts_with("bowline connect") || command.contains(" bootstrap ssh") {
+    if command.starts_with("bowline connect") {
         return (SafeActionEffect::Trust, SafeActionTarget::Device);
     }
     (SafeActionEffect::Inspect, SafeActionTarget::Workspace)

@@ -12,6 +12,10 @@ export default tseslint.config(
       "**/routeTree.gen.ts",
       "**/.source/**",
       "tests/fixtures/**",
+      "**/fixtures/**",
+      "docs/**",
+      "reports/**",
+      "transcripts/**",
     ],
   },
   js.configs.recommended,
@@ -34,6 +38,10 @@ export default tseslint.config(
         "error",
         { allowBoolean: true, allowNumber: true },
       ],
+      "max-lines": [
+        "error",
+        { max: 2000, skipBlankLines: true, skipComments: true },
+      ],
       "no-restricted-imports": [
         "error",
         {
@@ -45,6 +53,86 @@ export default tseslint.config(
             },
           ],
         },
+      ],
+    },
+  },
+  {
+    files: [
+      "apps/*/src/**/*.{ts,tsx}",
+      "packages/*/src/**/*.{ts,tsx}",
+      "packages/*/convex/**/*.ts",
+    ],
+    ignores: [
+      "**/*.test.{ts,tsx}",
+      "**/__tests__/**",
+      "**/test/**",
+      "**/routeTree.gen.ts",
+    ],
+    rules: {
+      complexity: ["error", { max: 24 }],
+      "max-lines": [
+        "error",
+        { max: 800, skipBlankLines: true, skipComments: true },
+      ],
+      "max-lines-per-function": [
+        "error",
+        {
+          max: 180,
+          skipBlankLines: true,
+          skipComments: true,
+        },
+      ],
+    },
+  },
+  {
+    files: ["packages/contracts/src/guards.ts"],
+    rules: {
+      complexity: ["error", { max: 35 }],
+      "max-lines": [
+        "error",
+        { max: 1900, skipBlankLines: true, skipComments: true },
+      ],
+    },
+  },
+  {
+    files: ["packages/control-plane/convex/devices.ts"],
+    rules: {
+      "max-lines": [
+        "error",
+        { max: 1150, skipBlankLines: true, skipComments: true },
+      ],
+    },
+  },
+  {
+    files: ["packages/control-plane/convex/billing.ts"],
+    rules: {
+      "max-lines": [
+        "error",
+        { max: 1000, skipBlankLines: true, skipComments: true },
+      ],
+    },
+  },
+  {
+    files: ["packages/control-plane/convex/usage_rollups.ts"],
+    rules: {
+      complexity: ["error", { max: 35 }],
+    },
+  },
+  {
+    files: ["apps/web/src/components/marketing/hero/hero-stage-crt.tsx"],
+    rules: {
+      "max-lines-per-function": [
+        "error",
+        { max: 220, skipBlankLines: true, skipComments: true },
+      ],
+    },
+  },
+  {
+    files: ["packages/control-plane/src/cloud/internal/store.ts"],
+    rules: {
+      "max-lines-per-function": [
+        "error",
+        { max: 360, skipBlankLines: true, skipComments: true },
       ],
     },
   },

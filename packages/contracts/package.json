@@ -7,7 +7,83 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./account": {
+      "types": "./dist/account.d.ts",
+      "import": "./dist/account.js",
+      "default": "./dist/account.js"
+    },
+    "./agent": {
+      "types": "./dist/agent.d.ts",
+      "import": "./dist/agent.js",
+      "default": "./dist/agent.js"
+    },
+    "./bootstrap": {
+      "types": "./dist/bootstrap.d.ts",
+      "import": "./dist/bootstrap.js",
+      "default": "./dist/bootstrap.js"
+    },
+    "./billing": {
+      "types": "./dist/billing.d.ts",
+      "import": "./dist/billing.js",
+      "default": "./dist/billing.js"
+    },
+    "./commands": {
+      "types": "./dist/commands.d.ts",
+      "import": "./dist/commands.js",
+      "default": "./dist/commands.js"
+    },
+    "./devices": {
+      "types": "./dist/devices.d.ts",
+      "import": "./dist/devices.js",
+      "default": "./dist/devices.js"
+    },
+    "./events": {
+      "types": "./dist/events.d.ts",
+      "import": "./dist/events.js",
+      "default": "./dist/events.js"
+    },
+    "./guards": {
+      "types": "./dist/guards.d.ts",
+      "import": "./dist/guards.js",
+      "default": "./dist/guards.js"
+    },
+    "./ids": {
+      "types": "./dist/ids.d.ts",
+      "import": "./dist/ids.js",
+      "default": "./dist/ids.js"
+    },
+    "./policy": {
+      "types": "./dist/policy.d.ts",
+      "import": "./dist/policy.js",
+      "default": "./dist/policy.js"
+    },
+    "./resolve": {
+      "types": "./dist/resolve.d.ts",
+      "import": "./dist/resolve.js",
+      "default": "./dist/resolve.js"
+    },
+    "./search": {
+      "types": "./dist/search.d.ts",
+      "import": "./dist/search.js",
+      "default": "./dist/search.js"
+    },
+    "./snapshot": {
+      "types": "./dist/snapshot.d.ts",
+      "import": "./dist/snapshot.js",
+      "default": "./dist/snapshot.js"
+    },
+    "./status": {
+      "types": "./dist/status.d.ts",
+      "import": "./dist/status.js",
+      "default": "./dist/status.js"
+    },
+    "./work": {
+      "types": "./dist/work.d.ts",
+      "import": "./dist/work.js",
+      "default": "./dist/work.js"
     }
   },
   "scripts": {

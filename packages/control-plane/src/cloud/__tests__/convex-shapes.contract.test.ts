@@ -47,7 +47,7 @@ describe("internal Convex control-plane shapes", () => {
 
   it("keeps hosted object manifest idempotency scoped to manifest identity", () => {
     const mutationSource = readFileSync(
-      join(process.cwd(), "convex/objectMutations.ts"),
+      join(process.cwd(), "convex/object_mutations.ts"),
       "utf8",
     );
 
@@ -78,11 +78,11 @@ describe("internal Convex control-plane shapes", () => {
       "utf8",
     );
     const mutationSource = readFileSync(
-      join(process.cwd(), "convex/objectMutations.ts"),
+      join(process.cwd(), "convex/object_mutations.ts"),
       "utf8",
     );
     const querySource = readFileSync(
-      join(process.cwd(), "convex/objectQueries.ts"),
+      join(process.cwd(), "convex/object_queries.ts"),
       "utf8",
     );
     const r2Source = readFileSync(
@@ -114,7 +114,7 @@ describe("internal Convex control-plane shapes", () => {
       "utf8",
     );
     const mutationSource = readFileSync(
-      join(process.cwd(), "convex/objectMutations.ts"),
+      join(process.cwd(), "convex/object_mutations.ts"),
       "utf8",
     );
     const r2Source = readFileSync(
@@ -144,7 +144,10 @@ describe("internal Convex control-plane shapes", () => {
     expect(mutationSource).toContain(
       "delete intent object kind does not match metadata",
     );
-    expect(mutationSource).toContain("assertObjectNotLiveReferenced");
+    expect(mutationSource).toContain("assertNotCurrentWorkspaceRefObject");
+    expect(mutationSource).toContain("assertNotRetainedManifestObject");
+    expect(mutationSource).toContain("assertNotLiveWorkViewObject");
+    expect(mutationSource).toContain("assertNotLiveLeaseObject");
     expect(mutationSource).toContain(
       "object is referenced by the current workspace ref",
     );
@@ -298,8 +301,8 @@ describe("internal Convex control-plane shapes", () => {
       join(process.cwd(), "convex/objects.ts"),
       "utf8",
     );
-    const objectMutationsSource = readFileSync(
-      join(process.cwd(), "convex/objectMutations.ts"),
+    const object_mutationsSource = readFileSync(
+      join(process.cwd(), "convex/object_mutations.ts"),
       "utf8",
     );
     const objectKeysSource = readFileSync(
@@ -307,7 +310,7 @@ describe("internal Convex control-plane shapes", () => {
       "utf8",
     );
     const workViewSource = readFileSync(
-      join(process.cwd(), "convex/workViews.ts"),
+      join(process.cwd(), "convex/work_views.ts"),
       "utf8",
     );
 
@@ -317,8 +320,8 @@ describe("internal Convex control-plane shapes", () => {
     expect(schemaSource).toContain('v.literal("locator-index")');
     expect(objectsSource).toContain('v.literal("index-pack")');
     expect(objectsSource).toContain('v.literal("locator-index")');
-    expect(objectMutationsSource).toContain('v.literal("index-pack")');
-    expect(objectMutationsSource).toContain('v.literal("locator-index")');
+    expect(object_mutationsSource).toContain('v.literal("index-pack")');
+    expect(object_mutationsSource).toContain('v.literal("locator-index")');
     expect(objectKeysSource).toContain("indexes_ix_");
     expect(schemaSource).toContain(
       '.index("by_workspace_project", ["workspaceId", "projectId"])',

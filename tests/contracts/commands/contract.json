@@ -45,7 +45,6 @@
     {
       "group": "Discovery",
       "name": "contract",
-      "aliases": ["schema"],
       "summary": "Print the machine-readable CLI command and output contract.",
       "usage": "bowline contract --json",
       "jsonOutputType": "ContractCommandOutput",

@@ -19,9 +19,10 @@ use bowline_storage::{
 
 use bowline_control_plane::{
     CompareAndSwapError, ControlPlaneClient, ControlPlaneError, ControlPlaneTimestamp,
-    DeviceApprovalInput, DeviceRequestInput, DownloadIntentRequest, FakeControlPlaneClient,
-    FirstAuthorizedDeviceInput, GrantAcceptanceInput, HostedControlPlaneClient, ObjectKind,
-    ObjectManifestCommit, ObjectPointer, SignedUrlByteStore, UploadIntentRequest,
+    DeviceApprovalInput, DeviceRequestInput, DeviceRequestInputDraft, DownloadIntentRequest,
+    FakeControlPlaneClient, FirstAuthorizedDeviceInput, GrantAcceptanceInput,
+    HostedControlPlaneClient, ObjectKind, ObjectManifestCommit, ObjectPointer, SignedUrlByteStore,
+    UploadIntentRequest,
 };
 use bowline_local::{
     device_keys::{DeviceIdentity, WorkspaceKeyMaterial},
@@ -138,14 +139,14 @@ pub fn run_hosted_cloud_spike_from_env() -> Result<CloudSpikeReport, ControlPlan
         ),
     })?;
 
-    let mut request_input = DeviceRequestInput::new(
-        workspace_id.clone(),
-        reader_device.as_str(),
-        "hosted-reader-process",
-        reader_identity.public_key.as_str(),
-        reader_identity.fingerprint.as_str(),
-        "phase5-smoke",
-    );
+    let mut request_input = DeviceRequestInput::new(DeviceRequestInputDraft {
+        workspace_id: workspace_id.clone(),
+        device_id: reader_device.as_str().to_string(),
+        device_name: "hosted-reader-process".to_string(),
+        device_public_key: reader_identity.public_key.as_str().to_string(),
+        device_fingerprint: reader_identity.fingerprint.as_str().to_string(),
+        matching_code: "phase5-smoke".to_string(),
+    });
     request_input.device_authorization_proof_verifier =
         grants::device_authorization_proof_verifier(&reader_identity);
     let request = control_plane.create_device_request(request_input)?;
@@ -351,14 +352,14 @@ pub fn run_fake_cloud_spike() -> Result<CloudSpikeReport, ControlPlaneError> {
     let control_plane = FakeControlPlaneClient::default();
     let initial_ref = control_plane.create_workspace(workspace_id);
 
-    let mut request_input = DeviceRequestInput::new(
-        workspace_id,
-        reader_device_id,
-        "reader-process",
-        "age1reader",
-        "fp_reader",
-        "phase5-smoke",
-    );
+    let mut request_input = DeviceRequestInput::new(DeviceRequestInputDraft {
+        workspace_id: workspace_id.to_string(),
+        device_id: reader_device_id.to_string(),
+        device_name: "reader-process".to_string(),
+        device_public_key: "age1reader".to_string(),
+        device_fingerprint: "fp_reader".to_string(),
+        matching_code: "phase5-smoke".to_string(),
+    });
     request_input.device_authorization_proof_verifier = "dapv_phase5_reader".to_string();
     let request = control_plane.create_device_request(request_input)?;
     let approval = control_plane.approve_device_request_for_harness(DeviceApprovalInput {

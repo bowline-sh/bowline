@@ -8,8 +8,11 @@ use bowline_core::{
 use crate::metadata::{LocalWriteLogRecord, MetadataStore};
 
 use super::{
-    WorkViewError, file_content_hash, is_secret_bearing_work_path, is_source_control_metadata_path,
-    work_view_base_has_path,
+    WorkViewError,
+    paths::{
+        file_content_hash, files_under, is_secret_bearing_work_path,
+        is_source_control_metadata_path, work_view_base_has_path,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,7 +108,7 @@ pub fn filesystem_overlay_deltas(
     if !work_root.exists() {
         return Ok(changes);
     }
-    for file in super::files_under(work_root)? {
+    for file in files_under(work_root)? {
         let relative = file
             .strip_prefix(work_root)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?

@@ -9,7 +9,7 @@ import {
   FREE_STORAGE_BYTES,
   PRO_STORAGE_BYTES,
   billingPlanLimits,
-} from "@bowline/contracts";
+} from "@bowline/contracts/billing";
 
 describe("billing contract Convex mirror", () => {
   it("pins the tiny Convex mirror to the package constants", () => {

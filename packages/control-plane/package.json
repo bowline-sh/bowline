@@ -20,7 +20,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@bowline/contracts": "workspace:*"
+    "@bowline/contracts": "workspace:*",
+    "jose": "^6.2.3"
   },
   "devDependencies": {
     "convex": "^1.42.0",

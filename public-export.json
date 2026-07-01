@@ -31,6 +31,7 @@
     "public-export.json",
     "scripts/check-architecture-fixtures.mjs",
     "scripts/check-architecture-imports.mjs",
+    "scripts/check-file-lengths.mjs",
     "scripts/check-generated-artifacts.mjs",
     "scripts/check-install-script.mjs",
     "scripts/check-package-scripts.mjs",

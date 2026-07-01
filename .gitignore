@@ -9,6 +9,7 @@ coverage/
 apps/macos-menu-bar/.build/
 .claude/
 .codex/
+.desloppify/
 .agents/skills/ai-seo/
 .agents/skills/competitor-profiling/
 .agents/skills/competitors/

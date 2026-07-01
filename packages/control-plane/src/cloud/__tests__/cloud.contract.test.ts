@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { EventId } from "@bowline/contracts";
+import type { EventId } from "@bowline/contracts/ids";
 
 import {
   createDownloadIntentMetadata,
