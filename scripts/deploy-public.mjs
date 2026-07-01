@@ -9,7 +9,9 @@ function parseArgs(argv) {
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === "--push") {
+    if (arg === "--") {
+      continue;
+    } else if (arg === "--push") {
       args.push = true;
     } else if (arg === "--target") {
       args.target = argv[++index] ?? null;

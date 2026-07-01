@@ -76,14 +76,15 @@ pnpm verify:public
 Maintainers can update a public working tree from the private repo with:
 
 ```bash
-pnpm export:public -- --target <public-repo>
-pnpm check:public-export -- --root <public-repo>
-pnpm deploy:public -- --target <public-repo>
+pnpm export:public --target <public-repo>
+pnpm check:public-export --root <public-repo>
+pnpm deploy:public --target <public-repo>
 ```
 
-`deploy:public` only commits generated public source. Full product release
-deployment for Convex, Cloudflare, crates.io, Homebrew, app updates, or package
-registries is intentionally separate.
+`deploy:public` only commits generated public source. `pnpm ship` is the private
+top-level runtime deploy for public source, Convex, Cloudflare, and production
+URL smokes. Package releases for crates.io, Homebrew, app updates, or other
+registries remain separate.
 
 For Rust-only work:
 
