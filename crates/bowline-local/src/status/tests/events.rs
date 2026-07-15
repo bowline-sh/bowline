@@ -1,4 +1,6 @@
 use super::*;
+use crate::status::apply_status_signal_events;
+use std::collections::BTreeSet;
 
 #[test]
 fn unmapped_non_info_events_emit_canonical_fallback_facts() {
@@ -56,6 +58,151 @@ fn component_event_workspace_fact_names_the_event_workspace() {
         acc.facts[0].scope_id.as_deref(),
         Some(workspace_id.as_str())
     );
+}
+
+#[test]
+fn hydration_blocked_without_newer_success_remains_visible() {
+    let workspace_id = WorkspaceId::new("ws_hydration_signal");
+    let blocked = materialization_signal_event(
+        "evt_hydration_blocked",
+        EventName::HydrationBlocked,
+        EventSeverity::Limited,
+        &workspace_id,
+        EventSubjectKind::Root,
+        "root_code",
+    );
+    let mut acc = StatusAccumulator::new("2026-07-15T18:00:01Z");
+
+    apply_status_signal_events(&[blocked], &empty_watermarks(), &BTreeSet::new(), &mut acc);
+
+    assert!(
+        acc.facts
+            .iter()
+            .any(|fact| fact.kind.as_str() == "sync.component_degraded")
+    );
+}
+
+#[test]
+fn newer_sync_completion_clears_older_hydration_block_across_subjects() {
+    let workspace_id = WorkspaceId::new("ws_hydration_sync_clear");
+    let completed = materialization_signal_event(
+        "evt_sync_completed",
+        EventName::SyncCompleted,
+        EventSeverity::Info,
+        &workspace_id,
+        EventSubjectKind::Component,
+        "sync",
+    );
+    let blocked = materialization_signal_event(
+        "evt_hydration_blocked",
+        EventName::HydrationBlocked,
+        EventSeverity::Limited,
+        &workspace_id,
+        EventSubjectKind::Root,
+        "root_code",
+    );
+    let mut acc = StatusAccumulator::new("2026-07-15T18:00:02Z");
+
+    apply_status_signal_events(
+        &[completed, blocked],
+        &empty_watermarks(),
+        &BTreeSet::new(),
+        &mut acc,
+    );
+
+    assert!(acc.facts.is_empty());
+}
+
+#[test]
+fn older_sync_completion_does_not_clear_newer_hydration_block() {
+    let workspace_id = WorkspaceId::new("ws_hydration_newer_block");
+    let blocked = materialization_signal_event(
+        "evt_hydration_blocked",
+        EventName::HydrationBlocked,
+        EventSeverity::Limited,
+        &workspace_id,
+        EventSubjectKind::Root,
+        "root_code",
+    );
+    let completed = materialization_signal_event(
+        "evt_sync_completed",
+        EventName::SyncCompleted,
+        EventSeverity::Info,
+        &workspace_id,
+        EventSubjectKind::Component,
+        "sync",
+    );
+    let mut acc = StatusAccumulator::new("2026-07-15T18:00:02Z");
+
+    apply_status_signal_events(
+        &[blocked, completed],
+        &empty_watermarks(),
+        &BTreeSet::new(),
+        &mut acc,
+    );
+
+    assert_eq!(
+        acc.facts
+            .iter()
+            .filter(|fact| fact.kind.as_str() == "sync.component_degraded")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn newer_hydration_completion_still_clears_older_hydration_block() {
+    let workspace_id = WorkspaceId::new("ws_hydration_clear");
+    let completed = materialization_signal_event(
+        "evt_hydration_completed",
+        EventName::HydrationCompleted,
+        EventSeverity::Info,
+        &workspace_id,
+        EventSubjectKind::Snapshot,
+        "snap_current",
+    );
+    let blocked = materialization_signal_event(
+        "evt_hydration_blocked",
+        EventName::HydrationBlocked,
+        EventSeverity::Limited,
+        &workspace_id,
+        EventSubjectKind::Root,
+        "root_code",
+    );
+    let mut acc = StatusAccumulator::new("2026-07-15T18:00:02Z");
+
+    apply_status_signal_events(
+        &[completed, blocked],
+        &empty_watermarks(),
+        &BTreeSet::new(),
+        &mut acc,
+    );
+
+    assert!(acc.facts.is_empty());
+}
+
+fn materialization_signal_event(
+    id: &str,
+    name: EventName,
+    severity: EventSeverity,
+    workspace_id: &WorkspaceId,
+    subject_kind: EventSubjectKind,
+    subject_id: &str,
+) -> WorkspaceEvent {
+    let mut event = WorkspaceEvent::new(
+        EventId::new(id),
+        name,
+        "2026-07-15T18:00:00Z",
+        severity,
+        "Materialization signal.",
+        workspace_id.clone(),
+    );
+    event.subject = Some(EventSubject {
+        kind: subject_kind,
+        id: subject_id.to_string(),
+        path: None,
+    });
+    event
 }
 
 #[test]

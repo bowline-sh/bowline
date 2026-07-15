@@ -21,6 +21,7 @@ pub enum SyncRunnerError {
     MissingMaterializationContent(String),
     MaterializationTaskFenceLost(String),
     MaterializationRetryPending,
+    MaterializationIncomplete(String),
     ImportedContentIdMismatch {
         path: String,
         expected: ContentId,
@@ -74,6 +75,10 @@ impl fmt::Display for SyncRunnerError {
             Self::MaterializationRetryPending => {
                 formatter.write_str("materialization retry backoff has not elapsed")
             }
+            Self::MaterializationIncomplete(snapshot_id) => write!(
+                formatter,
+                "materialization snapshot `{snapshot_id}` has paths that are not staged"
+            ),
             Self::ImportedContentIdMismatch {
                 path,
                 expected,
@@ -135,6 +140,7 @@ impl Error for SyncRunnerError {
             Self::MissingMaterializationContent(_) => None,
             Self::MaterializationTaskFenceLost(_) => None,
             Self::MaterializationRetryPending => None,
+            Self::MaterializationIncomplete(_) => None,
             Self::ImportedContentIdMismatch { .. } => None,
             Self::SupersededMaterializationSnapshot(_) => None,
             Self::SyncClaimOwnershipLost => None,
@@ -170,6 +176,7 @@ impl SyncRunnerError {
             | Self::MissingMaterializationContent(_)
             | Self::MaterializationTaskFenceLost(_)
             | Self::MaterializationRetryPending
+            | Self::MaterializationIncomplete(_)
             | Self::ImportedContentIdMismatch { .. }
             | Self::SupersededMaterializationSnapshot(_)
             | Self::UnsafeMaterializationPath(_) => SyncExternalFailureCode::MaterializationBlocked,
@@ -216,6 +223,7 @@ impl SyncRunnerError {
             | Self::MissingMaterializationContent(_)
             | Self::MaterializationTaskFenceLost(_)
             | Self::MaterializationRetryPending
+            | Self::MaterializationIncomplete(_)
             | Self::ImportedContentIdMismatch { .. }
             | Self::SupersededMaterializationSnapshot(_)
             | Self::SyncClaimOwnershipLost

@@ -9,10 +9,9 @@ use bowline_core::{
     namespace_snapshot::{NamespaceOperationContext, NamespaceReadError},
 };
 
-use super::{
-    codec::NamespacePage,
-    layout::{ContentLayoutRecord, SegmentPage},
-};
+mod record_graph;
+
+use record_graph::{layout_children, namespace_children, segment_children};
 
 pub use super::metadata::{
     CONTENT_LAYOUT_FORMAT_VERSION, INLINE_SEGMENT_MAX_BYTES, MAX_NAMESPACE_DEPTH,
@@ -522,6 +521,21 @@ impl PageStore {
         Ok(Some(MetadataPlaintextRecord { summary, plaintext }))
     }
 
+    pub(crate) fn plaintext_record_with_context(
+        &self,
+        logical_id: &str,
+        context: &mut NamespaceOperationContext<'_>,
+    ) -> Result<Option<MetadataPlaintextRecord>, NamespaceReadError> {
+        let Some(loaded) = self.loaded_metadata_record(logical_id, context)? else {
+            return Ok(None);
+        };
+        charge_metadata_record(context, loaded.summary.kind, loaded.plaintext.len() as u64)?;
+        Ok(Some(MetadataPlaintextRecord {
+            summary: loaded.summary,
+            plaintext: loaded.plaintext.to_vec(),
+        }))
+    }
+
     pub fn record_is_new(&self, logical_id: &str) -> Result<bool, NamespaceReadError> {
         Ok(self
             .metadata_record(logical_id)?
@@ -750,6 +764,18 @@ impl PageStore {
     }
 }
 
+fn charge_metadata_record(
+    context: &mut NamespaceOperationContext<'_>,
+    kind: MetadataRecordKind,
+    encoded_bytes: u64,
+) -> Result<(), NamespaceReadError> {
+    match kind {
+        MetadataRecordKind::NamespacePage => context.charge_namespace_page(encoded_bytes),
+        MetadataRecordKind::ContentLayout => context.charge_layout_record(encoded_bytes),
+        MetadataRecordKind::SegmentPage => context.charge_segment_page(encoded_bytes),
+    }
+}
+
 impl PagedRecordSource for PageStore {
     fn metadata_identity_key(&self) -> MetadataIdentityKey {
         self.identity_key()
@@ -837,53 +863,3 @@ impl PartialEq for PageStore {
 }
 
 impl Eq for PageStore {}
-
-fn namespace_children(page: &NamespacePage) -> Vec<String> {
-    let ids = match page {
-        NamespacePage::Leaf { entries, .. } => entries
-            .iter()
-            .filter_map(|(_, value)| value.content_layout_id.as_ref())
-            .map(|id| id.as_str().to_string())
-            .collect(),
-        NamespacePage::Branch {
-            children, value, ..
-        } => {
-            let mut ids = children
-                .iter()
-                .map(|(_, id)| id.as_str().to_string())
-                .collect::<Vec<_>>();
-            if let Some(id) = value
-                .as_ref()
-                .and_then(|entry| entry.content_layout_id.as_ref())
-            {
-                ids.push(id.as_str().to_string());
-            }
-            ids
-        }
-    };
-    ids.into_iter()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-fn layout_children(layout: &ContentLayoutRecord) -> Vec<String> {
-    match &layout.segments {
-        super::layout::SegmentSequence::Inline(_) => Vec::new(),
-        super::layout::SegmentSequence::Paged { root, .. } => vec![root.as_str().to_string()],
-    }
-}
-
-fn segment_children(page: &SegmentPage) -> Vec<String> {
-    let ids = match page {
-        SegmentPage::Leaf { .. } => Vec::new(),
-        SegmentPage::Index { children, .. } => children
-            .iter()
-            .map(|child| child.page_id.as_str().to_string())
-            .collect(),
-    };
-    ids.into_iter()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}

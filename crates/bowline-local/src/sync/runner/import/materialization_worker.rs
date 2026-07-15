@@ -1,7 +1,9 @@
 use std::{
     collections::BTreeSet,
-    io,
-    path::PathBuf,
+    fs::File,
+    io::{self, Read},
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -11,6 +13,7 @@ use std::{
 };
 
 use bowline_control_plane::{ObjectPointer, WorkspaceRef};
+use bowline_core::ids::ContentId;
 use bowline_core::retry::{
     BOUNDED_SYNC_RETRY_POLICY, OFFLINE_SYNC_RETRY_POLICY, RetryBackoffPolicy,
 };
@@ -29,6 +32,105 @@ use crate::metadata::{
     MaterializationTaskState, MetadataError, MetadataStore,
 };
 use crate::sync::{SnapshotContent, unresolved_conflict_paths};
+
+fn workspace_path_matches_snapshot(
+    root: &Path,
+    snapshot: Option<&SnapshotContent>,
+    path: &str,
+    workspace_content_key: [u8; 32],
+) -> Result<bool, SyncRunnerError> {
+    let entry = snapshot
+        .map(|snapshot| snapshot.entry_for_path(path))
+        .transpose()?
+        .flatten();
+    let absolute = root.join(path);
+    match entry {
+        None => Ok(matches!(
+            std::fs::symlink_metadata(&absolute),
+            Err(error) if error.kind() == io::ErrorKind::NotFound
+        )),
+        Some(entry) => workspace_path_matches_expected(
+            &absolute,
+            entry.kind,
+            entry.content_id.as_ref(),
+            entry.symlink_target.as_deref(),
+            entry.byte_len.unwrap_or(0),
+            entry.executability == bowline_core::workspace_graph::FileExecutability::Executable,
+            workspace_content_key,
+        ),
+    }
+}
+
+fn workspace_path_matches_expected(
+    path: &Path,
+    expected_kind: NamespaceEntryKind,
+    expected_content_id: Option<&ContentId>,
+    expected_symlink_target: Option<&str>,
+    expected_byte_len: u64,
+    expected_executable: bool,
+    workspace_content_key: [u8; 32],
+) -> Result<bool, SyncRunnerError> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(expected_kind == NamespaceEntryKind::Tombstone);
+        }
+        Err(error) => return Err(SyncRunnerError::StateIo(error)),
+    };
+    match expected_kind {
+        NamespaceEntryKind::Directory => Ok(metadata.is_dir()),
+        NamespaceEntryKind::Tombstone => Ok(false),
+        NamespaceEntryKind::Symlink => Ok(metadata.file_type().is_symlink()
+            && std::fs::read_link(path)
+                .map_err(SyncRunnerError::StateIo)?
+                .as_os_str()
+                == expected_symlink_target.unwrap_or_default()),
+        NamespaceEntryKind::Placeholder => Ok(false),
+        NamespaceEntryKind::File => {
+            let Some(expected_content_id) = expected_content_id else {
+                return Ok(false);
+            };
+            if !metadata.is_file()
+                || metadata.len() != expected_byte_len
+                || (metadata.permissions().mode() & 0o111 != 0) != expected_executable
+            {
+                return Ok(false);
+            }
+            let descriptor = rustix::fs::open(
+                path,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::CLOEXEC
+                    | rustix::fs::OFlags::NOFOLLOW,
+                rustix::fs::Mode::empty(),
+            )
+            .map_err(|error| SyncRunnerError::StateIo(io::Error::from(error)))?;
+            let mut source = File::from(descriptor);
+            let mut hasher = blake3::Hasher::new_keyed(&workspace_content_key);
+            let mut logical_len = 0_u64;
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                let read = source.read(&mut buffer).map_err(SyncRunnerError::StateIo)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+                logical_len = logical_len.saturating_add(read as u64);
+            }
+            let actual = ContentId::new(format!("cid_{}", hasher.finalize().to_hex()));
+            Ok(logical_len == expected_byte_len && actual == *expected_content_id)
+        }
+    }
+}
+
+fn may_waive_settled_write(
+    disk_matches_base: bool,
+    expected_kind: NamespaceEntryKind,
+    base_kind: Option<NamespaceEntryKind>,
+) -> bool {
+    disk_matches_base
+        && !(expected_kind == NamespaceEntryKind::Tombstone
+            && base_kind == Some(NamespaceEntryKind::Directory))
+}
 
 struct MaterializationLeaseSupervisor {
     stop: Arc<(Mutex<bool>, Condvar)>,
@@ -191,6 +293,39 @@ impl SyncRunner<'_> {
         if retry_pending {
             return Err(SyncRunnerError::MaterializationRetryPending);
         }
+        let tasks = self.with_store(|store| {
+            store.materialization_tasks_for_snapshot(
+                &self.options.workspace_id,
+                &target.manifest().snapshot_id,
+            )
+        })?;
+        let prepared = tasks.iter().all(|task| {
+            matches!(
+                task.state,
+                MaterializationTaskState::Staged | MaterializationTaskState::Ready
+            )
+        });
+        if !prepared {
+            return Err(SyncRunnerError::MaterializationIncomplete(
+                target.manifest().snapshot_id.as_str().to_string(),
+            ));
+        }
+        let disk_matches_target = tasks.iter().try_fold(true, |matches, task| {
+            Ok::<_, SyncRunnerError>(
+                matches
+                    && workspace_path_matches_snapshot(
+                        &self.options.root,
+                        Some(&target),
+                        &task.path,
+                        self.options.workspace_content_key,
+                    )?,
+            )
+        })?;
+        if !disk_matches_target {
+            return Err(SyncRunnerError::MaterializationIncomplete(
+                target.manifest().snapshot_id.as_str().to_string(),
+            ));
+        }
         Ok(target)
     }
 
@@ -226,7 +361,27 @@ impl SyncRunner<'_> {
             active_token.to_string(),
             task.claim_generation,
         );
-        if !self.materialization_task_fence_is_current(task, active_token)? {
+        if workspace_path_matches_snapshot(
+            &self.options.root,
+            Some(target),
+            &task.path,
+            self.options.workspace_content_key,
+        )? {
+            if self.finish_materialization_task(
+                task,
+                active_token,
+                MaterializationTaskState::Staged,
+                None,
+                None,
+                None,
+            )? {
+                return Ok(());
+            }
+            return Err(SyncRunnerError::MaterializationTaskFenceLost(
+                task.path.clone(),
+            ));
+        }
+        if !self.materialization_task_fence_is_current(task, active_token, base)? {
             if !self.finish_materialization_task(
                 task,
                 active_token,
@@ -302,7 +457,7 @@ impl SyncRunner<'_> {
                 if boundary != MaterializationBoundary::AfterMutation {
                     lease.ensure_current(&task.path)?;
                     self.renew_materialization_task_claim(task, active_token)?;
-                    if !self.materialization_task_fence_is_current(task, active_token)? {
+                    if !self.materialization_task_fence_is_current(task, active_token, base)? {
                         return Err(SyncRunnerError::MaterializationTaskFenceLost(
                             task.path.clone(),
                         ));
@@ -395,9 +550,28 @@ impl SyncRunner<'_> {
         &self,
         task: &MaterializationTaskRecord,
         claim_token: &str,
+        base: Option<&SnapshotContent>,
     ) -> Result<bool, SyncRunnerError> {
         let now = materialization_clock_now()?;
         let conflict_paths = unresolved_conflict_paths(&self.options.state_root)?;
+        let disk_matches_base = workspace_path_matches_snapshot(
+            &self.options.root,
+            base,
+            &task.path,
+            self.options.workspace_content_key,
+        )?;
+        if !disk_matches_base {
+            return Ok(false);
+        }
+        let base_kind = base
+            .map(|snapshot| snapshot.entry_for_path(&task.path))
+            .transpose()?
+            .flatten()
+            .map(|entry| entry.kind);
+        // A directory's shallow identity cannot prove its subtree is unchanged.
+        // Never waive a post-plan watcher row before recursively deleting it.
+        let settled_write_matches_base =
+            may_waive_settled_write(disk_matches_base, task.expected_kind, base_kind);
         self.with_store(|store| {
             store.materialization_task_fence_is_current(&MaterializationTaskFence {
                 id: &task.id,
@@ -407,6 +581,7 @@ impl SyncRunner<'_> {
                 path: &task.path,
                 expected_kind: task.expected_kind,
                 expected_content_id: task.expected_content_id.as_ref(),
+                settled_write_matches_base,
                 unresolved_conflict_paths: &conflict_paths,
                 now: &now,
             })

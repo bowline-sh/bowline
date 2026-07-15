@@ -285,7 +285,15 @@ fn merge_paged_snapshots(
         .chain(remote_changes.keys())
         .cloned()
         .collect::<std::collections::BTreeSet<_>>();
-    let entry_limit = changed_paths.len().saturating_mul(16).saturating_add(16) as u64;
+    // Incremental application touches only changed paths, but finalization both
+    // walks and re-encodes the complete compressed radix graph. Budget two full
+    // graph traversals plus bounded per-change lookup/mutation work.
+    let entry_limit = remote
+        .manifest()
+        .entry_count
+        .saturating_mul(4)
+        .saturating_add(changed_paths.len().saturating_mul(32) as u64)
+        .saturating_add(32);
     let mut context = merge_operation_context(
         operation_budget(entry_limit, entry_limit, changed_paths.len() as u64),
         cancellation,

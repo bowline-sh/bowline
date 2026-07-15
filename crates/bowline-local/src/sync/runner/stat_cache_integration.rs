@@ -299,17 +299,8 @@ fn has_unbound_preserved_file(
     snapshot: &SnapshotContent,
     scan_scope: &ScanScope,
 ) -> Result<bool, SyncRunnerError> {
-    // Lazy cached snapshots do not materialize their page IDs in PageStore. A
-    // compressed radix tree has at most one leaf and one branch per entry, plus
-    // the canonical empty root, so derive a hard traversal bound from semantic
-    // entry count instead of the resident cache size.
-    let namespace_page_limit = snapshot
-        .manifest()
-        .entry_count
-        .saturating_mul(2)
-        .saturating_add(1);
-    let metadata_byte_limit = namespace_page_limit
-        .saturating_mul(crate::sync::namespace::NAMESPACE_PAGE_MAX_BYTES as u64);
+    let (namespace_page_limit, metadata_byte_limit) =
+        crate::sync::namespace::lazy_namespace_read_limits(snapshot.manifest().entry_count);
     let mut operation =
         NamespaceOperationContext::uncancelled(
             NamespaceOperationBudget::new(snapshot.manifest().entry_count, 0, 0)

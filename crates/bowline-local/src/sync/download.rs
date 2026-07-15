@@ -1,12 +1,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    error::Error,
-    fmt,
     sync::{Arc, Mutex},
 };
 
 use bowline_control_plane::{
-    ControlPlaneClient, ControlPlaneError, DownloadIntentRequest, MetadataBindingRecord,
+    ControlPlaneClient, DownloadIntentRequest, MetadataBindingRecord,
     MetadataRecordKind as ControlMetadataRecordKind, ObjectKind as ControlObjectKind,
     ObjectPointer, SnapshotRootRecord,
 };
@@ -23,7 +21,7 @@ use bowline_core::{
     },
 };
 use bowline_storage::{
-    ByteStore, ByteStoreError, ManifestPointer, ManifestPointerKind, MetadataPageError, ObjectKey,
+    ByteStore, ManifestPointer, ManifestPointerKind, ObjectKey,
     SNAPSHOT_METADATA_PAGE_MAX_CANONICAL_BYTES, SNAPSHOT_METADATA_PAGE_MAX_SEALED_BYTES,
     SealedSnapshotManifest, SealedSnapshotMetadataPage, SnapshotMetadataPagePointer,
     SnapshotMetadataRecordId, StorageKey, open_snapshot_manifest, open_snapshot_metadata_page,
@@ -37,6 +35,10 @@ use crate::sync::namespace::{
     PageNamespaceReader, PageStore, PagedRecordSource,
 };
 
+mod error;
+
+pub use error::DownloadError;
+
 const MAX_IMPORTED_METADATA_RECORDS: usize = 1_000_000;
 const MAX_IMPORTED_METADATA_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const REMOTE_METADATA_CACHE_MAX_RECORDS: usize = MAX_IMPORTED_METADATA_RECORDS;
@@ -44,6 +46,18 @@ const REMOTE_METADATA_CACHE_MAX_BYTES: u64 = MAX_IMPORTED_METADATA_BYTES;
 const MAX_METADATA_BINDINGS_PER_BATCH: usize = 16;
 type MetadataCacheKey = (MetadataRecordKind, String);
 type CachedMetadataBindings = BTreeMap<(MetadataRecordKind, String), MetadataBindingRecord>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImportCheckpointPoint {
+    Boundary,
+    MetadataRecordLoaded,
+    PackHeadCompleted,
+}
+
+type ImportCheckpoint<'a> = dyn Fn(ImportCheckpointPoint) -> Result<(), DownloadError> + 'a;
+
+fn import_checkpoint_never(_point: ImportCheckpointPoint) -> Result<(), DownloadError> {
+    Ok(())
+}
 
 struct VerifiedMetadataCache {
     records: BTreeMap<MetadataCacheKey, Arc<[u8]>>,
@@ -146,9 +160,30 @@ struct RemotePageSource<'a> {
     storage_key: StorageKey,
     verified: Mutex<VerifiedMetadataCache>,
     bindings: Mutex<CachedMetadataBindings>,
+    checkpoint: &'a ImportCheckpoint<'a>,
+    checkpoint_error: Mutex<Option<DownloadError>>,
 }
 
 impl RemotePageSource<'_> {
+    fn ensure_active(
+        &self,
+        context: &mut NamespaceOperationContext<'_>,
+    ) -> Result<(), NamespaceReadError> {
+        context.ensure_active()?;
+        if let Err(error) = (self.checkpoint)(ImportCheckpointPoint::Boundary) {
+            *self.checkpoint_error.lock().map_err(|_| remote_corrupt())? = Some(error);
+            return Err(NamespaceReadError::Cancelled);
+        }
+        Ok(())
+    }
+
+    fn take_checkpoint_error(&self) -> Result<Option<DownloadError>, DownloadError> {
+        self.checkpoint_error
+            .lock()
+            .map_err(|_| DownloadError::UnsafeManifest("import checkpoint state is poisoned"))
+            .map(|mut error| error.take())
+    }
+
     fn materialized_store(&self) -> Result<PageStore, DownloadError> {
         let records = self.verified.lock().map_err(|_| remote_corrupt())?;
         let mut store = PageStore::with_identity_key(self.identity_key);
@@ -174,7 +209,7 @@ pub fn import_snapshot_by_id(
         byte_store,
         storage_key,
         identity_key,
-        &mut || Ok(()),
+        &|_| Ok(()),
     )
 }
 
@@ -185,9 +220,9 @@ pub(crate) fn import_snapshot_by_id_with_checkpoints(
     byte_store: &dyn ByteStore,
     storage_key: StorageKey,
     identity_key: MetadataIdentityKey,
-    checkpoint: &mut dyn FnMut() -> Result<(), DownloadError>,
+    checkpoint: &ImportCheckpoint<'_>,
 ) -> Result<ImportedSnapshot, DownloadError> {
-    checkpoint()?;
+    checkpoint(ImportCheckpointPoint::Boundary)?;
     let root = control_plane
         .get_snapshot_root(workspace_id, snapshot_id)?
         .ok_or_else(|| DownloadError::SnapshotManifestMissing(snapshot_id.as_str().to_string()))?;
@@ -223,6 +258,7 @@ pub fn open_remote_snapshot_by_id<'a>(
         byte_store,
         storage_key,
         identity_key,
+        &import_checkpoint_never,
     )
 }
 
@@ -241,20 +277,20 @@ pub fn import_snapshot_manifest(
         byte_store,
         storage_key,
         identity_key,
-        &mut || Ok(()),
+        &|_| Ok(()),
     )
 }
 
-fn import_snapshot_manifest_with_checkpoints(
-    workspace_id: &WorkspaceId,
+fn import_snapshot_manifest_with_checkpoints<'a>(
+    workspace_id: &'a WorkspaceId,
     root: &SnapshotRootRecord,
-    control_plane: &dyn ControlPlaneClient,
-    byte_store: &dyn ByteStore,
+    control_plane: &'a dyn ControlPlaneClient,
+    byte_store: &'a dyn ByteStore,
     storage_key: StorageKey,
     identity_key: MetadataIdentityKey,
-    checkpoint: &mut dyn FnMut() -> Result<(), DownloadError>,
+    checkpoint: &'a ImportCheckpoint<'a>,
 ) -> Result<ImportedSnapshot, DownloadError> {
-    checkpoint()?;
+    checkpoint(ImportCheckpointPoint::Boundary)?;
     if &root.workspace_id != workspace_id || !root.complete {
         return Err(DownloadError::UnsafeManifest(
             "snapshot root workspace or completeness mismatch",
@@ -267,8 +303,9 @@ fn import_snapshot_manifest_with_checkpoints(
         byte_store,
         storage_key,
         identity_key,
+        checkpoint,
     )?;
-    checkpoint()?;
+    checkpoint(ImportCheckpointPoint::Boundary)?;
     let mut verify_context = NamespaceOperationContext::uncancelled(
         NamespaceOperationBudget::new(
             manifest
@@ -285,22 +322,30 @@ fn import_snapshot_manifest_with_checkpoints(
         ),
     );
     let reader = remote.reader();
-    reader.verify(&mut verify_context)?;
-    checkpoint()?;
-    validate_imported_entries(&reader, &mut verify_context)?;
-    checkpoint()?;
+    let verified = reader.verify(&mut verify_context);
+    if let Some(error) = remote.source.take_checkpoint_error()? {
+        return Err(error);
+    }
+    verified?;
+    checkpoint(ImportCheckpointPoint::Boundary)?;
+    let validated = validate_imported_entries(&reader, &mut verify_context);
+    if let Some(error) = remote.source.take_checkpoint_error()? {
+        return Err(error);
+    }
+    validated?;
+    checkpoint(ImportCheckpointPoint::Boundary)?;
     let store = remote.source.materialized_store()?;
     let namespace = BuiltPagedNamespaceSnapshot::from_manifest(manifest, store);
     let snapshot = SnapshotContent::from_built(namespace, BTreeMap::new());
     let layouts = content_layout_map_from_snapshot(&snapshot)?;
-    checkpoint()?;
+    checkpoint(ImportCheckpointPoint::Boundary)?;
     let locators = layouts
         .values()
         .flat_map(ContentLayout::segments)
         .map(content_locator_for_segment)
         .collect::<Vec<_>>();
-    let pack_pointers = pack_pointers(workspace_id, &layouts, control_plane)?;
-    checkpoint()?;
+    let pack_pointers = pack_pointers(workspace_id, &layouts, control_plane, checkpoint)?;
+    checkpoint(ImportCheckpointPoint::Boundary)?;
     Ok(ImportedSnapshot {
         snapshot,
         locators,
@@ -343,8 +388,11 @@ fn open_remote_namespace<'a>(
     byte_store: &'a dyn ByteStore,
     storage_key: StorageKey,
     identity_key: MetadataIdentityKey,
+    checkpoint: &'a ImportCheckpoint<'a>,
 ) -> Result<(SnapshotManifest, RemoteNamespaceSnapshot<'a>), DownloadError> {
+    checkpoint(ImportCheckpointPoint::Boundary)?;
     let manifest = download_root(workspace_id, root, control_plane, byte_store, storage_key)?;
+    checkpoint(ImportCheckpointPoint::Boundary)?;
     validate_imported_root(workspace_id, &root.snapshot_id, root, &manifest)?;
     let remote = RemoteNamespaceSnapshot {
         metadata: snapshot_metadata(&manifest),
@@ -357,6 +405,8 @@ fn open_remote_namespace<'a>(
             storage_key,
             verified: Mutex::new(VerifiedMetadataCache::production()),
             bindings: Mutex::new(BTreeMap::new()),
+            checkpoint,
+            checkpoint_error: Mutex::new(None),
         },
     };
     Ok((manifest, remote))
@@ -373,7 +423,7 @@ impl PagedRecordSource for RemotePageSource<'_> {
         logical_id: &str,
         context: &mut NamespaceOperationContext<'_>,
     ) -> Result<Option<Arc<[u8]>>, NamespaceReadError> {
-        context.ensure_active()?;
+        self.ensure_active(context)?;
         let cache_key = (kind, logical_id.to_string());
         if let Some(bytes) = self
             .verified
@@ -412,7 +462,7 @@ impl PagedRecordSource for RemotePageSource<'_> {
                 context.ensure_segment_page_capacity(maximum_canonical_bytes)?;
             }
         }
-        context.ensure_active()?;
+        self.ensure_active(context)?;
         let canonical = download_metadata_record(
             self.workspace_id,
             &binding,
@@ -421,6 +471,11 @@ impl PagedRecordSource for RemotePageSource<'_> {
             self.storage_key,
             context,
         )?;
+        self.ensure_active(context)?;
+        if let Err(error) = (self.checkpoint)(ImportCheckpointPoint::MetadataRecordLoaded) {
+            *self.checkpoint_error.lock().map_err(|_| remote_corrupt())? = Some(error);
+            return Err(NamespaceReadError::Cancelled);
+        }
         let mut verified = PageStore::with_identity_key(self.identity_key);
         verified.insert_verified(kind, logical_id, canonical)?;
         let summary =
@@ -431,11 +486,12 @@ impl PagedRecordSource for RemotePageSource<'_> {
                 })?;
         validate_sidecar(&summary, &binding).map_err(|_| remote_corrupt())?;
         for object_key in metadata_direct_object_keys(&summary).map_err(|_| remote_corrupt())? {
-            context.ensure_active()?;
+            self.ensure_active(context)?;
             let metadata = self
                 .control_plane
                 .head_object_metadata(self.workspace_id, &object_key)
                 .map_err(|_| remote_corrupt())?;
+            self.ensure_active(context)?;
             if metadata.kind != bowline_storage::ObjectKind::SourcePack {
                 return Err(remote_corrupt());
             }
@@ -461,7 +517,7 @@ impl PagedRecordSource for RemotePageSource<'_> {
         logical_ids: &[String],
         context: &mut NamespaceOperationContext<'_>,
     ) -> Result<(), NamespaceReadError> {
-        context.ensure_active()?;
+        self.ensure_active(context)?;
         let verified = self.verified.lock().map_err(|_| remote_corrupt())?;
         let bindings = self.bindings.lock().map_err(|_| remote_corrupt())?;
         let pending = logical_ids
@@ -477,12 +533,12 @@ impl PagedRecordSource for RemotePageSource<'_> {
         drop(bindings);
         drop(verified);
         for batch in pending.chunks(MAX_METADATA_BINDINGS_PER_BATCH) {
-            context.ensure_active()?;
+            self.ensure_active(context)?;
             let resolved = self
                 .control_plane
                 .resolve_metadata_bindings(self.workspace_id, batch)
                 .map_err(|_| remote_corrupt())?;
-            context.ensure_active()?;
+            self.ensure_active(context)?;
             if &resolved.workspace_id != self.workspace_id {
                 return Err(remote_corrupt());
             }
@@ -691,6 +747,7 @@ fn pack_pointers(
     workspace_id: &WorkspaceId,
     layouts: &BTreeMap<bowline_core::ids::ContentId, ContentLayout>,
     control_plane: &dyn ControlPlaneClient,
+    checkpoint: &ImportCheckpoint<'_>,
 ) -> Result<Vec<ObjectPointer>, DownloadError> {
     let mut pointers = Vec::new();
     for pack_id in layouts
@@ -699,8 +756,10 @@ fn pack_pointers(
         .map(|segment| segment.pack_id.clone())
         .collect::<BTreeSet<_>>()
     {
+        checkpoint(ImportCheckpointPoint::Boundary)?;
         let key = ObjectKey::from_pack_id(&pack_id)?;
         let metadata = control_plane.head_object_metadata(workspace_id, key.as_str())?;
+        checkpoint(ImportCheckpointPoint::PackHeadCompleted)?;
         pointers.push(ObjectPointer {
             object_key: metadata.key.as_str().to_string(),
             content_id: bowline_core::ids::ContentId::new(pack_id.as_str()),
@@ -766,92 +825,6 @@ fn is_private_state_path(path: &str) -> bool {
     path.split('/')
         .next()
         .is_some_and(|component| case_fold_path_component(component) == ".bowline")
-}
-
-#[derive(Debug)]
-pub enum DownloadError {
-    ControlPlane(ControlPlaneError),
-    ByteStore(ByteStoreError),
-    Manifest(bowline_storage::ManifestError),
-    MetadataPage(MetadataPageError),
-    Namespace(NamespaceReadError),
-    UnsafePath(String),
-    UnsafeManifest(&'static str),
-    MissingBinding(String),
-    SnapshotManifestMissing(String),
-    CancellationRequested,
-}
-
-impl fmt::Display for DownloadError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ControlPlane(error) => error.fmt(formatter),
-            Self::ByteStore(error) => error.fmt(formatter),
-            Self::Manifest(error) => error.fmt(formatter),
-            Self::MetadataPage(error) => error.fmt(formatter),
-            Self::Namespace(error) => error.fmt(formatter),
-            Self::UnsafePath(path) => write!(formatter, "remote namespace path `{path}` is unsafe"),
-            Self::UnsafeManifest(reason) => {
-                write!(formatter, "remote snapshot root is unsafe: {reason}")
-            }
-            Self::MissingBinding(logical_id) => {
-                write!(formatter, "metadata binding `{logical_id}` was not found")
-            }
-            Self::SnapshotManifestMissing(snapshot_id) => {
-                write!(formatter, "snapshot root `{snapshot_id}` was not found")
-            }
-            Self::CancellationRequested => {
-                formatter.write_str("snapshot import cancellation was requested")
-            }
-        }
-    }
-}
-
-impl Error for DownloadError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::ControlPlane(error) => Some(error),
-            Self::ByteStore(error) => Some(error),
-            Self::Manifest(error) => Some(error),
-            Self::MetadataPage(error) => Some(error),
-            Self::Namespace(error) => Some(error),
-            Self::UnsafePath(_)
-            | Self::UnsafeManifest(_)
-            | Self::MissingBinding(_)
-            | Self::SnapshotManifestMissing(_)
-            | Self::CancellationRequested => None,
-        }
-    }
-}
-
-impl From<ControlPlaneError> for DownloadError {
-    fn from(error: ControlPlaneError) -> Self {
-        Self::ControlPlane(error)
-    }
-}
-
-impl From<ByteStoreError> for DownloadError {
-    fn from(error: ByteStoreError) -> Self {
-        Self::ByteStore(error)
-    }
-}
-
-impl From<bowline_storage::ManifestError> for DownloadError {
-    fn from(error: bowline_storage::ManifestError) -> Self {
-        Self::Manifest(error)
-    }
-}
-
-impl From<MetadataPageError> for DownloadError {
-    fn from(error: MetadataPageError) -> Self {
-        Self::MetadataPage(error)
-    }
-}
-
-impl From<NamespaceReadError> for DownloadError {
-    fn from(error: NamespaceReadError) -> Self {
-        Self::Namespace(error)
-    }
 }
 
 #[cfg(test)]

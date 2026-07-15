@@ -18,7 +18,7 @@ use crate::{
         MaterializationFailureKind, MaterializationPriorityClass, MaterializationTaskId,
         MaterializationTaskRecord, MaterializationTaskState, MetadataStore, ObservedLocalPath,
         PostCommitSyncComponent, SetupReceiptRecord, SyncOperationKind, SyncOperationRecord,
-        SyncOperationState,
+        SyncOperationState, WorkspaceSyncHeadRecord,
     },
     status::StatusOptions,
     sync::conflicts::{ConflictFile, ConflictRecord, create_conflict_bundle},

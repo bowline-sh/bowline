@@ -58,6 +58,34 @@ impl MetadataStore {
                 )?;
                 report.inserted += inserted as u64;
 
+                let reactivated = self.connection.execute(
+                    "UPDATE materialization_tasks
+                     SET state = 'queued',
+                         not_before = NULL,
+                         claim_token = NULL,
+                         claimed_by = NULL,
+                         claimed_at = NULL,
+                         lease_expires_at = NULL,
+                         last_error_kind = NULL,
+                         last_error = NULL,
+                         updated_at = ?2
+                     WHERE id = ?1
+                       AND workspace_id = ?3
+                       AND snapshot_id = ?4
+                       AND path = ?5
+                       AND COALESCE(expected_content_id, '') = COALESCE(?6, '')
+                       AND state = 'blocked-conflict'",
+                    params![
+                        task.id.as_str(),
+                        now,
+                        workspace_id.as_str(),
+                        snapshot_id.as_str(),
+                        task.path.as_str(),
+                        task.expected_content_id.as_ref().map(ContentId::as_str),
+                    ],
+                )?;
+                report.reactivated += reactivated as u64;
+
                 let reprioritized = self.connection.execute(
                     "UPDATE materialization_tasks
                      SET project_id = ?2,
@@ -97,6 +125,8 @@ impl MetadataStore {
                      claimed_at = NULL,
                      lease_expires_at = NULL,
                      not_before = NULL,
+                     last_error_kind = NULL,
+                     last_error = NULL,
                      updated_at = ?3
                  WHERE workspace_id = ?1
                    AND state != 'cancelled'
@@ -113,13 +143,52 @@ impl MetadataStore {
         })
     }
 
+    pub(crate) fn reconcile_materialization_authoritative_head(
+        &self,
+        workspace_id: &WorkspaceId,
+        now: &str,
+    ) -> Result<u64, MetadataError> {
+        let cancelled = self.connection.execute(
+            "UPDATE materialization_tasks
+             SET state = 'cancelled',
+                 claim_token = NULL,
+                 claimed_by = NULL,
+                 claimed_at = NULL,
+                 lease_expires_at = NULL,
+                 not_before = NULL,
+                 last_error_kind = NULL,
+                 last_error = NULL,
+                 updated_at = ?2
+             WHERE workspace_id = ?1
+               AND state != 'cancelled'
+               AND EXISTS (
+                 SELECT 1 FROM workspace_sync_heads AS head
+                 WHERE head.workspace_id = materialization_tasks.workspace_id
+                   AND head.snapshot_id != materialization_tasks.snapshot_id
+               )",
+            params![workspace_id.as_str(), now],
+        )? as u64;
+        self.connection.execute(
+            "DELETE FROM materialization_path_states
+             WHERE workspace_id = ?1
+               AND snapshot_id IS NOT NULL
+               AND EXISTS (
+                 SELECT 1 FROM workspace_sync_heads AS head
+                 WHERE head.workspace_id = materialization_path_states.workspace_id
+                   AND head.snapshot_id != materialization_path_states.snapshot_id
+               )",
+            [workspace_id.as_str()],
+        )?;
+        Ok(cancelled)
+    }
+
     pub fn materialization_tasks_for_snapshot(
         &self,
         workspace_id: &WorkspaceId,
         snapshot_id: &SnapshotId,
     ) -> Result<Vec<MaterializationTaskRecord>, MetadataError> {
         let mut statement = self.connection.prepare(&format!(
-            "{} WHERE workspace_id = ?1 AND snapshot_id = ?2 ORDER BY path, id",
+            "{} WHERE workspace_id = ?1 AND snapshot_id = ?2 AND state != 'cancelled' ORDER BY path, id",
             MATERIALIZATION_TASK_SELECT
         ))?;
         let rows = statement.query_map(
@@ -337,7 +406,10 @@ impl MetadataStore {
                          )
                          AND (
                            local_write_log.settled_at = ''
-                           OR local_write_log.created_at >= task.created_at
+                           OR (
+                             local_write_log.created_at >= task.created_at
+                             AND ?9 = 0
+                           )
                          )
                      )
                  )",
@@ -350,6 +422,7 @@ impl MetadataStore {
                     expected_kind,
                     fence.expected_content_id.map(ContentId::as_str),
                     fence.now,
+                    fence.settled_write_matches_base,
                 ],
                 |row| row.get(0),
             )

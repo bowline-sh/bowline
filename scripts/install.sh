@@ -20,7 +20,7 @@ Installs Bowline for the current user.
 
 Options:
   --cli-only          Install only bowline and bowline-daemon.
-  --version VERSION   Install a specific release version, for example 0.1.2.
+  --version VERSION   Install a specific release version, for example 0.1.3.
   -h, --help          Show this help.
 EOF
 }

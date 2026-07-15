@@ -1,4 +1,6 @@
 use super::*;
+use crate::workspace::TempWorkspace;
+use bowline_core::workspace_graph::workspace_content_id;
 use bowline_storage::{ObjectKey, TransferOperation};
 
 const NOW: &str = "2026-07-13T12:00:00Z";
@@ -16,6 +18,28 @@ fn disposition(error: ByteStoreError) -> HydrationTaskFailure {
         NOW,
     )
     .expect("classify hydration failure")
+}
+
+#[test]
+fn staged_metadata_cannot_certify_mismatched_disk_bytes() {
+    let workspace = TempWorkspace::new("materialization-disk-identity").expect("workspace");
+    let path = workspace.root().join("state.txt");
+    let key = [7_u8; 32];
+    std::fs::write(&path, b"wrong-bytes").expect("disk fixture");
+    let expected = workspace_content_id(key, b"right-bytes");
+
+    assert!(
+        !workspace_path_matches_expected(
+            &path,
+            NamespaceEntryKind::File,
+            Some(&expected),
+            None,
+            b"right-bytes".len() as u64,
+            false,
+            key,
+        )
+        .expect("disk identity check")
+    );
 }
 
 #[test]
@@ -198,4 +222,23 @@ fn bounded_retry_budget_exhaustion_requires_attention() {
     .expect("classify indefinite offline hydration failure");
     assert_eq!(offline.state, MaterializationTaskState::BlockedOffline);
     assert!(offline.not_before.is_some());
+}
+
+#[test]
+fn directory_tombstone_never_waives_settled_descendant_writes() {
+    assert!(!may_waive_settled_write(
+        true,
+        NamespaceEntryKind::Tombstone,
+        Some(NamespaceEntryKind::Directory),
+    ));
+    assert!(may_waive_settled_write(
+        true,
+        NamespaceEntryKind::File,
+        Some(NamespaceEntryKind::File),
+    ));
+    assert!(!may_waive_settled_write(
+        false,
+        NamespaceEntryKind::File,
+        Some(NamespaceEntryKind::File),
+    ));
 }

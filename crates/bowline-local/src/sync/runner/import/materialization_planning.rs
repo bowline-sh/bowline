@@ -83,12 +83,14 @@ pub(super) fn materialization_task_matches_target(
     task: &MaterializationTaskRecord,
     target: &SnapshotContent,
 ) -> Result<bool, SyncRunnerError> {
+    let (namespace_pages, metadata_bytes) =
+        crate::sync::namespace::lazy_namespace_read_limits(target.manifest().entry_count);
     let mut operation = NamespaceOperationContext::uncancelled(
         NamespaceOperationBudget::new(1, 0, 0).with_metadata_limits(
-            target.namespace_store().namespace_page_count(),
+            namespace_pages,
             0,
             0,
-            target.namespace_store().total_encoded_bytes(),
+            metadata_bytes,
         ),
     );
     let entry = target

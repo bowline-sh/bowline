@@ -38,3 +38,40 @@ pub(crate) const fn operation_budget(
         MAX_OPERATION_METADATA_BYTES,
     )
 }
+
+pub(crate) fn lazy_namespace_read_limits(entry_count: u64) -> (u64, u64) {
+    // A compressed radix tree has at most one leaf and one branch per entry,
+    // plus the canonical empty root. Resident cache counts are not graph bounds.
+    let pages = entry_count
+        .saturating_mul(2)
+        .saturating_add(1)
+        .min(MAX_OPERATION_NAMESPACE_PAGES);
+    let bytes = pages
+        .saturating_mul(NAMESPACE_PAGE_MAX_BYTES as u64)
+        .min(MAX_OPERATION_METADATA_BYTES);
+    (pages, bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MAX_OPERATION_METADATA_BYTES, MAX_OPERATION_NAMESPACE_PAGES, NAMESPACE_PAGE_MAX_BYTES,
+        lazy_namespace_read_limits,
+    };
+
+    #[test]
+    fn lazy_read_limits_derive_from_graph_cardinality_not_residency() {
+        assert_eq!(
+            lazy_namespace_read_limits(0),
+            (1, NAMESPACE_PAGE_MAX_BYTES as u64)
+        );
+        assert_eq!(
+            lazy_namespace_read_limits(111),
+            (223, 223 * NAMESPACE_PAGE_MAX_BYTES as u64)
+        );
+        assert_eq!(
+            lazy_namespace_read_limits(u64::MAX),
+            (MAX_OPERATION_NAMESPACE_PAGES, MAX_OPERATION_METADATA_BYTES)
+        );
+    }
+}

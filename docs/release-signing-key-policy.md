@@ -28,7 +28,7 @@ store or CI secret manager as a non-interactive OpenSSH private key file.
 Publish mode accepts only a key file:
 
 ```bash
-BOWLINE_RELEASE_SIGNING_KEY_FILE=/path/to/release-key pnpm release:assets -- --version 0.1.2 --publish
+BOWLINE_RELEASE_SIGNING_KEY_FILE=/path/to/release-key pnpm release:assets -- --version 0.1.3 --publish
 ```
 
 Raw private key material in an environment variable is not accepted for publish.

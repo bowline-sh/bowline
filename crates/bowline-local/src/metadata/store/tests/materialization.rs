@@ -1,5 +1,6 @@
 use super::*;
 use crate::metadata::{
+    MaterializationFailureKind, MaterializationPathState, MaterializationPathStateRecord,
     MaterializationPriorityClass, MaterializationTaskFence, MaterializationTaskFinish,
     MaterializationTaskId, MaterializationTaskRecord, MaterializationTaskState,
     WorkspaceSyncHeadRecord,
@@ -83,6 +84,177 @@ fn reconcile_is_idempotent_and_cancels_superseded_tasks() {
             .map(|task| task.id.as_str())
             .collect::<Vec<_>>(),
         vec!["task-b"]
+    );
+}
+
+#[test]
+fn authoritative_head_cancels_stale_tasks_and_path_blockers() {
+    let temp = TempWorkspace::new("materialization-authoritative-head").expect("temp workspace");
+    let store = MetadataStore::open(temp.root().join("state.sqlite3")).expect("metadata opens");
+    let workspace_id = WorkspaceId::new("ws_authoritative_head");
+    let stale_snapshot_id = SnapshotId::new("snap_stale");
+    let current_snapshot_id = SnapshotId::new("snap_current");
+    store
+        .insert_workspace(&workspace_id, "Code", "2026-07-15T18:00:00Z")
+        .expect("workspace insert");
+    let blocked = task(
+        "task-stale-blocked",
+        &workspace_id,
+        &stale_snapshot_id,
+        "app/a-blocked.txt",
+        MaterializationPriorityClass::CorrectnessCritical,
+    );
+    let ready = task(
+        "task-stale-ready",
+        &workspace_id,
+        &stale_snapshot_id,
+        "app/b-ready.txt",
+        MaterializationPriorityClass::SmallFile,
+    );
+    store
+        .reconcile_materialization_tasks(
+            &workspace_id,
+            &stale_snapshot_id,
+            &[blocked.clone(), ready.clone()],
+            "2026-07-15T18:00:00Z",
+        )
+        .expect("stale tasks");
+    accept_snapshot(&store, &workspace_id, &stale_snapshot_id, 1);
+
+    let claimed_blocked = store
+        .claim_next_materialization_task(
+            &workspace_id,
+            "materializer-test",
+            "claim-blocked",
+            "2026-07-15T18:00:01Z",
+        )
+        .expect("claim blocked")
+        .expect("blocked task");
+    assert_eq!(claimed_blocked.id, blocked.id);
+    assert!(
+        store
+            .finish_materialization_task(&MaterializationTaskFinish {
+                id: &blocked.id,
+                claim_token: "claim-blocked",
+                claim_generation: claimed_blocked.claim_generation,
+                state: MaterializationTaskState::BlockedConflict,
+                error_kind: Some(crate::metadata::MaterializationFailureKind::PathFenceNotCurrent),
+                error: Some("stale local conflict"),
+                not_before: None,
+                now: "2026-07-15T18:00:02Z",
+            })
+            .expect("finish blocked")
+    );
+    let claimed_ready = store
+        .claim_next_materialization_task(
+            &workspace_id,
+            "materializer-test",
+            "claim-ready",
+            "2026-07-15T18:00:03Z",
+        )
+        .expect("claim ready")
+        .expect("ready task");
+    assert_eq!(claimed_ready.id, ready.id);
+    assert!(
+        store
+            .finish_materialization_task(&MaterializationTaskFinish {
+                id: &ready.id,
+                claim_token: "claim-ready",
+                claim_generation: claimed_ready.claim_generation,
+                state: MaterializationTaskState::Ready,
+                error_kind: None,
+                error: None,
+                not_before: None,
+                now: "2026-07-15T18:00:04Z",
+            })
+            .expect("finish ready")
+    );
+    store
+        .upsert_materialization_path_state(&MaterializationPathStateRecord {
+            workspace_id: workspace_id.clone(),
+            project_id: None,
+            path: blocked.path.clone(),
+            snapshot_id: Some(stale_snapshot_id.clone()),
+            expected_content_id: blocked.expected_content_id.clone(),
+            state: MaterializationPathState::BlockedConflict,
+            observed_content_id: None,
+            observed_byte_len: None,
+            source_hydration_state: None,
+            verified_at: None,
+            updated_at: "2026-07-15T18:00:04Z".to_string(),
+        })
+        .expect("stale path blocker");
+
+    accept_snapshot(&store, &workspace_id, &current_snapshot_id, 2);
+
+    for task_id in [&blocked.id, &ready.id] {
+        let stale = store
+            .materialization_task(task_id)
+            .expect("stale task query")
+            .expect("stale task retained as terminal history");
+        assert_eq!(stale.state, MaterializationTaskState::Cancelled);
+        assert!(stale.last_error_kind.is_none());
+        assert!(stale.last_error.is_none());
+    }
+    assert!(
+        store
+            .materialization_tasks(&workspace_id)
+            .expect("active tasks")
+            .is_empty()
+    );
+    assert!(
+        store
+            .materialization_path_state(&workspace_id, &blocked.path)
+            .expect("path state query")
+            .is_none()
+    );
+}
+
+#[test]
+fn ignored_stale_head_write_preserves_authoritative_materialization_tasks() {
+    let temp = TempWorkspace::new("materialization-ignored-stale-head").expect("temp workspace");
+    let store = MetadataStore::open(temp.root().join("state.sqlite3")).expect("metadata opens");
+    let workspace_id = WorkspaceId::new("ws_ignored_stale_head");
+    let current_snapshot_id = SnapshotId::new("snap_current");
+    let stale_snapshot_id = SnapshotId::new("snap_stale");
+    store
+        .insert_workspace(&workspace_id, "Code", "2026-07-15T18:30:00Z")
+        .expect("workspace insert");
+    accept_snapshot(&store, &workspace_id, &current_snapshot_id, 2);
+    let current = task(
+        "task-current",
+        &workspace_id,
+        &current_snapshot_id,
+        "app/current.txt",
+        MaterializationPriorityClass::SmallFile,
+    );
+    store
+        .reconcile_materialization_tasks(
+            &workspace_id,
+            &current_snapshot_id,
+            std::slice::from_ref(&current),
+            "2026-07-15T18:30:01Z",
+        )
+        .expect("current task");
+
+    accept_snapshot(&store, &workspace_id, &stale_snapshot_id, 1);
+
+    assert_eq!(
+        store
+            .materialization_task(&current.id)
+            .expect("current task query")
+            .expect("current task retained")
+            .state,
+        MaterializationTaskState::Queued
+    );
+    assert_eq!(
+        store
+            .workspace_sync_head(&workspace_id)
+            .expect("head query")
+            .expect("authoritative head")
+            .workspace_ref
+            .snapshot_id,
+        current_snapshot_id
     );
 }
 
@@ -258,6 +430,7 @@ fn expired_materialization_claim_is_reclaimed_and_stale_worker_is_fenced() {
                 path: &claim_a.path,
                 expected_kind: claim_a.expected_kind,
                 expected_content_id: claim_a.expected_content_id.as_ref(),
+                settled_write_matches_base: false,
                 unresolved_conflict_paths: &BTreeSet::new(),
                 now: "2026-07-13T00:02:31Z",
             })
@@ -291,6 +464,73 @@ fn expired_materialization_claim_is_reclaimed_and_stale_worker_is_fenced() {
             })
             .expect("current worker stages")
     );
+}
+
+#[test]
+fn reconcile_reactivates_same_snapshot_conflict_for_fresh_fence_evaluation() {
+    let temp = TempWorkspace::new("materialization-reactivate-conflict").expect("temp workspace");
+    let store = MetadataStore::open(temp.root().join("state.sqlite3")).expect("metadata opens");
+    let workspace_id = WorkspaceId::new("ws_reactivate_conflict");
+    let snapshot_id = SnapshotId::new("snap_reactivate_conflict");
+    store
+        .insert_workspace(&workspace_id, "Code", "2026-07-13T00:00:00Z")
+        .expect("workspace insert");
+    let planned = task(
+        "task-reactivate-conflict",
+        &workspace_id,
+        &snapshot_id,
+        "app/value.txt",
+        MaterializationPriorityClass::ActiveProject,
+    );
+    store
+        .reconcile_materialization_tasks(
+            &workspace_id,
+            &snapshot_id,
+            std::slice::from_ref(&planned),
+            "2026-07-13T00:00:00Z",
+        )
+        .expect("initial reconcile");
+    let claimed = store
+        .claim_next_materialization_task(
+            &workspace_id,
+            "materializer-reactivate",
+            "claim-reactivate",
+            "2026-07-13T00:01:00Z",
+        )
+        .expect("claim")
+        .expect("task");
+    assert!(
+        store
+            .finish_materialization_task(&MaterializationTaskFinish {
+                id: &claimed.id,
+                claim_token: "claim-reactivate",
+                claim_generation: claimed.claim_generation,
+                state: MaterializationTaskState::BlockedConflict,
+                error_kind: Some(MaterializationFailureKind::PathFenceNotCurrent),
+                error: Some("old fence result"),
+                not_before: None,
+                now: "2026-07-13T00:01:01Z",
+            })
+            .expect("block task")
+    );
+
+    let report = store
+        .reconcile_materialization_tasks(
+            &workspace_id,
+            &snapshot_id,
+            std::slice::from_ref(&planned),
+            "2026-07-13T00:02:00Z",
+        )
+        .expect("repeat reconcile");
+    assert_eq!(report.inserted, 0);
+    assert_eq!(report.reactivated, 1);
+    let reactivated = store
+        .materialization_task(&planned.id)
+        .expect("task query")
+        .expect("task retained");
+    assert_eq!(reactivated.state, MaterializationTaskState::Queued);
+    assert!(reactivated.last_error_kind.is_none());
+    assert!(reactivated.last_error.is_none());
 }
 
 #[test]
@@ -336,6 +576,7 @@ fn claimed_task_fence_rejects_newer_local_work_before_snapshot_acceptance() {
                 path: &claimed.path,
                 expected_kind: claimed.expected_kind,
                 expected_content_id: claimed.expected_content_id.as_ref(),
+                settled_write_matches_base: false,
                 unresolved_conflict_paths: &BTreeSet::new(),
                 now: "2026-07-13T00:01:30Z",
             })
@@ -363,11 +604,94 @@ fn claimed_task_fence_rejects_newer_local_work_before_snapshot_acceptance() {
                 path: &claimed.path,
                 expected_kind: claimed.expected_kind,
                 expected_content_id: claimed.expected_content_id.as_ref(),
+                settled_write_matches_base: false,
                 unresolved_conflict_paths: &BTreeSet::new(),
                 now: "2026-07-13T00:01:30Z",
             })
             .expect("blocked fence"),
         "newer local work must revoke the per-path mutation fence"
+    );
+    assert!(
+        store
+            .materialization_task_fence_is_current(&MaterializationTaskFence {
+                id: &claimed.id,
+                claim_token: "claim-path-fence",
+                claim_generation: claimed.claim_generation,
+                snapshot_id: &snapshot_id,
+                path: &claimed.path,
+                expected_kind: claimed.expected_kind,
+                expected_content_id: claimed.expected_content_id.as_ref(),
+                settled_write_matches_base: true,
+                unresolved_conflict_paths: &BTreeSet::new(),
+                now: "2026-07-13T00:01:30Z",
+            })
+            .expect("base-matching fence"),
+        "settled watcher noise may not fence unchanged base bytes"
+    );
+}
+
+#[test]
+fn directory_tombstone_fence_rejects_settled_descendant_write() {
+    let temp =
+        TempWorkspace::new("materialization-directory-delete-fence").expect("temp workspace");
+    let store = MetadataStore::open(temp.root().join("state.sqlite3")).expect("metadata opens");
+    let workspace_id = WorkspaceId::new("ws_directory_delete_fence");
+    let snapshot_id = SnapshotId::new("snap_directory_delete_fence");
+    store
+        .insert_workspace(&workspace_id, "Code", "2026-07-13T00:00:00Z")
+        .expect("workspace insert");
+    let mut planned = task(
+        "task-directory-delete-fence",
+        &workspace_id,
+        &snapshot_id,
+        "app/removed",
+        MaterializationPriorityClass::CorrectnessCritical,
+    );
+    planned.expected_kind = NamespaceEntryKind::Tombstone;
+    planned.expected_content_id = None;
+    planned.expected_byte_len = 0;
+    store
+        .reconcile_materialization_tasks(
+            &workspace_id,
+            &snapshot_id,
+            std::slice::from_ref(&planned),
+            "2026-07-13T00:00:00Z",
+        )
+        .expect("reconcile");
+    let claimed = store
+        .claim_next_materialization_task(
+            &workspace_id,
+            "materializer-directory-delete",
+            "claim-directory-delete",
+            "2026-07-13T00:01:00Z",
+        )
+        .expect("claim")
+        .expect("task");
+    record_local_write(
+        &store,
+        "write-new-descendant",
+        &workspace_id,
+        "app/removed/new.txt",
+        "2026-07-13T00:01:02Z",
+        "2026-07-13T00:01:01Z",
+    );
+
+    assert!(
+        !store
+            .materialization_task_fence_is_current(&MaterializationTaskFence {
+                id: &claimed.id,
+                claim_token: "claim-directory-delete",
+                claim_generation: claimed.claim_generation,
+                snapshot_id: &snapshot_id,
+                path: &claimed.path,
+                expected_kind: claimed.expected_kind,
+                expected_content_id: claimed.expected_content_id.as_ref(),
+                settled_write_matches_base: false,
+                unresolved_conflict_paths: &BTreeSet::new(),
+                now: "2026-07-13T00:01:30Z",
+            })
+            .expect("directory deletion fence"),
+        "a settled descendant write must preserve new local work"
     );
 }
 
@@ -767,6 +1091,7 @@ fn task_fence_is_current(
             path: &task.path,
             expected_kind: task.expected_kind,
             expected_content_id: task.expected_content_id.as_ref(),
+            settled_write_matches_base: false,
             unresolved_conflict_paths: conflict_paths,
             now: "2026-07-13T00:01:30Z",
         })

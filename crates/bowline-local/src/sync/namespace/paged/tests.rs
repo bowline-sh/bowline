@@ -8,7 +8,8 @@ use bowline_core::{
     namespace_snapshot::{
         NamespaceBuildError, NamespaceCancellation, NamespaceDiff, NamespaceDiffVisitor,
         NamespaceMutation, NamespaceOperationBudget, NamespaceOperationContext, NamespaceReadError,
-        NamespaceScope, NamespaceSnapshotBuilder, NamespaceVisitControl, SnapshotMetadata,
+        NamespaceResource, NamespaceScope, NamespaceSnapshotBuilder, NamespaceVisitControl,
+        SnapshotMetadata,
     },
     policy::{AccessFlag, MaterializationMode, PathClassification},
     workspace_graph::{
@@ -593,6 +594,129 @@ fn on_demand_source_exact_lookup_loads_only_the_radix_path_and_honors_cancellati
             .any(|batch| batch.len() > 1),
         "prefix traversal must expose anticipated siblings for binding batching"
     );
+}
+
+#[test]
+fn contextual_plaintext_lookup_loads_a_source_only_metadata_record() {
+    let built = build(vec![file_entry("src/main.rs", 1)]);
+    let root_id = built.namespace_root_id.as_str().to_string();
+    let source = Arc::new(CountingSource::from_store(&built.store));
+    let store = PageStore::from_source(source.clone());
+
+    assert!(
+        store
+            .plaintext_record(&root_id)
+            .expect("resident lookup")
+            .is_none()
+    );
+    let mut operation = context();
+    let record = store
+        .plaintext_record_with_context(&root_id, &mut operation)
+        .expect("contextual lookup")
+        .expect("source record");
+
+    assert_eq!(record.summary.logical_id, root_id);
+    assert_eq!(source.loads(), 1);
+    assert_eq!(operation.counters().namespace_pages_loaded, 1);
+    assert_eq!(
+        operation.counters().metadata_bytes,
+        record.plaintext.len() as u64
+    );
+}
+
+#[test]
+fn contextual_plaintext_lookup_charges_each_resident_record_kind() {
+    let built = build(vec![layout_entry("large.bin", 2_048)]);
+    let namespace_id = built.namespace_root_id.as_str().to_string();
+    let layout_id = built
+        .store
+        .content_layout_ids()
+        .into_iter()
+        .next()
+        .expect("content layout")
+        .as_str()
+        .to_string();
+    let segment_id = built
+        .store
+        .segment_page_ids()
+        .into_iter()
+        .next()
+        .expect("segment page")
+        .as_str()
+        .to_string();
+    let mut operation = context();
+
+    let namespace = built
+        .store
+        .plaintext_record_with_context(&namespace_id, &mut operation)
+        .expect("namespace lookup")
+        .expect("namespace record");
+    let layout = built
+        .store
+        .plaintext_record_with_context(&layout_id, &mut operation)
+        .expect("layout lookup")
+        .expect("layout record");
+    let segment = built
+        .store
+        .plaintext_record_with_context(&segment_id, &mut operation)
+        .expect("segment lookup")
+        .expect("segment record");
+
+    let counters = operation.counters();
+    assert_eq!(counters.namespace_pages_loaded, 1);
+    assert_eq!(counters.layout_records_loaded, 1);
+    assert_eq!(counters.segment_pages_loaded, 1);
+    assert_eq!(
+        counters.metadata_bytes,
+        (namespace.plaintext.len() + layout.plaintext.len() + segment.plaintext.len()) as u64
+    );
+}
+
+#[test]
+fn contextual_plaintext_lookup_enforces_count_and_byte_limits() {
+    let built = build(vec![file_entry("src/main.rs", 1)]);
+    let root_id = built.namespace_root_id.as_str();
+    let root_bytes = built
+        .store
+        .namespace_page_bytes(&built.namespace_root_id)
+        .expect("root bytes")
+        .len() as u64;
+    let budget = NamespaceOperationBudget::new(0, 0, 0).with_metadata_limits(1, 0, 0, root_bytes);
+    let mut count_limited = NamespaceOperationContext::uncancelled(budget);
+
+    built
+        .store
+        .plaintext_record_with_context(root_id, &mut count_limited)
+        .expect("first bounded lookup")
+        .expect("root record");
+    assert!(matches!(
+        built
+            .store
+            .plaintext_record_with_context(root_id, &mut count_limited),
+        Err(NamespaceReadError::BudgetExceeded {
+            resource: NamespaceResource::NamespacePagesLoaded,
+            observed: 2,
+            limit: 1,
+        })
+    ));
+
+    let byte_budget = NamespaceOperationBudget::new(0, 0, 0).with_metadata_limits(
+        1,
+        0,
+        0,
+        root_bytes.saturating_sub(1),
+    );
+    let mut byte_limited = NamespaceOperationContext::uncancelled(byte_budget);
+    assert!(matches!(
+        built
+            .store
+            .plaintext_record_with_context(root_id, &mut byte_limited),
+        Err(NamespaceReadError::BudgetExceeded {
+            resource: NamespaceResource::MetadataBytes,
+            observed,
+            limit,
+        }) if observed == root_bytes && limit == root_bytes - 1
+    ));
 }
 
 #[test]

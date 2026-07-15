@@ -1067,6 +1067,77 @@ fn local_edits_against_stale_base_merge_cleanly() {
     assert!(has_step(&checkpoints, "workspace-ref-advanced"));
 }
 
+#[test]
+fn stale_merge_adopts_identical_hosted_result_without_redundant_cas() {
+    let workspace_id = WorkspaceId::new("ws_code");
+    let control_plane = new_control_plane(&workspace_id);
+    let objects = TempWorkspace::new("plan-char-merge-existing-objects").expect("objects");
+    let author = Device::new(
+        "plan-char-merge-existing",
+        "device_author",
+        objects.root(),
+        11,
+        workspace_id.clone(),
+    );
+    let receiver = Device::new(
+        "plan-char-merge-existing",
+        "device_receiver",
+        objects.root(),
+        12,
+        workspace_id.clone(),
+    );
+
+    author
+        .workspace
+        .write_file("base.txt", b"base\n")
+        .expect("base");
+    assert!(matches!(
+        author.tick(&control_plane),
+        SyncTickOutcome::Uploaded(_)
+    ));
+    assert!(matches!(
+        receiver.tick(&control_plane),
+        SyncTickOutcome::Imported(_)
+    ));
+
+    receiver
+        .workspace
+        .write_file("local.txt", b"same local bytes\n")
+        .expect("receiver local");
+    author
+        .workspace
+        .write_file("remote.txt", b"remote bytes\n")
+        .expect("author remote");
+    author
+        .workspace
+        .write_file("local.txt", b"same local bytes\n")
+        .expect("author matching local");
+    assert!(matches!(
+        author.tick(&control_plane),
+        SyncTickOutcome::Uploaded(_)
+    ));
+    let hosted_before = control_plane
+        .get_workspace_ref(&workspace_id)
+        .expect("hosted ref")
+        .expect("hosted head");
+
+    let outcome = receiver.tick(&control_plane);
+
+    assert!(matches!(outcome, SyncTickOutcome::Imported(_)));
+    assert_eq!(
+        control_plane
+            .get_workspace_ref(&workspace_id)
+            .expect("hosted ref after recovery")
+            .expect("hosted head after recovery"),
+        hosted_before,
+        "an already-hosted merge result must not create another ref version"
+    );
+    assert_eq!(
+        receiver.file("remote.txt").as_deref(),
+        Some(b"remote bytes\n".as_ref())
+    );
+}
+
 // --- B4: StaleMerge (conflicting) -------------------------------------------
 
 #[test]

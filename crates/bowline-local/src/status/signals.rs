@@ -196,7 +196,7 @@ pub(super) fn status_clear_keys(event: &bowline_core::events::WorkspaceEvent) ->
         | EventName::LeaseCompleted
         | EventName::LeaseReviewReady => &["lease"],
         EventName::DaemonRecovered => &["daemon"],
-        EventName::SyncCompleted | EventName::SyncRecovered => &["sync"],
+        EventName::SyncCompleted | EventName::SyncRecovered => &["sync", "materialization"],
         EventName::WatcherRecovered => &["watcher"],
         EventName::NetworkRecovered => &["network"],
         EventName::WorkAccepted
@@ -238,7 +238,9 @@ pub(super) fn status_signal_key(event: &bowline_core::events::WorkspaceEvent) ->
 }
 
 pub(super) fn status_key(category: &str, event: &bowline_core::events::WorkspaceEvent) -> String {
-    let identity = if category == "setup" {
+    let identity = if category == "materialization" {
+        format!("workspace:{}", event.workspace_id.as_str())
+    } else if category == "setup" {
         status_path_or_project_identity(event)
     } else {
         status_identity(event)

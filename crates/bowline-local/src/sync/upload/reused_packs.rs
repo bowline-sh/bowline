@@ -441,6 +441,7 @@ fn prepare_metadata_bindings(
     let mut bound_ids = BTreeSet::new();
     let mut metadata_records_resolved = 0_usize;
     let mut metadata_records_fetched = 0_usize;
+    let mut context = namespace_context(bound.manifest().entry_count, 0);
 
     while !queue.is_empty() {
         let ids = (0..METADATA_BINDING_BATCH)
@@ -454,12 +455,11 @@ fn prepare_metadata_bindings(
             .map(|binding| (binding.logical_id.clone(), binding))
             .collect::<BTreeMap<_, _>>();
         for logical_id in ids {
-            let record =
-                store
-                    .plaintext_record(&logical_id)?
-                    .ok_or(NamespaceReadError::MissingRecord {
-                        record: "metadata binding record",
-                    })?;
+            let record = store
+                .plaintext_record_with_context(&logical_id, &mut context)?
+                .ok_or(NamespaceReadError::MissingRecord {
+                    record: "metadata binding record",
+                })?;
             if let Some(binding) = resolved.get(&logical_id) {
                 verify_binding_sidecar(&record.summary, binding)?;
                 if store.record_is_new(&logical_id)? {

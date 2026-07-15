@@ -175,6 +175,7 @@ fn production_target_stream_has_exact_selected_path_metadata_bounds() {
     let mut paths = Vec::new();
 
     let counters = visit_materialization_targets(
+        None,
         &target,
         &BTreeSet::new(),
         &BTreeSet::new(),

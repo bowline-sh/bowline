@@ -31,6 +31,7 @@ pub(super) struct MaterializationDeletions {
 }
 
 pub(super) fn visit_materialization_targets(
+    base: Option<&SnapshotContent>,
     target: &SnapshotContent,
     preserved_paths: &BTreeSet<String>,
     intentionally_absent_paths: &BTreeSet<String>,
@@ -41,7 +42,25 @@ pub(super) fn visit_materialization_targets(
     let mut context = NamespaceOperationContext::uncancelled(target_stream_budget(target));
     let mut callback_error = None;
     let mut visit_entry = |entry: NamespaceEntry| {
-        if target_entry_matches_phase(&entry, preserved_paths, intentionally_absent_paths, phase)
+        let unchanged_from_base = match base
+            .map(|base| base.entry_for_path(&entry.path))
+            .transpose()
+        {
+            Ok(base_entry) => base_entry
+                .flatten()
+                .is_some_and(|base_entry| materialization_identity_matches(&base_entry, &entry)),
+            Err(error) => {
+                callback_error = Some(error.into());
+                return NamespaceVisitControl::Stop;
+            }
+        };
+        if !unchanged_from_base
+            && target_entry_matches_phase(
+                &entry,
+                preserved_paths,
+                intentionally_absent_paths,
+                phase,
+            )
             && let Err(error) = visit(entry)
         {
             callback_error = Some(error);
@@ -67,6 +86,16 @@ pub(super) fn visit_materialization_targets(
         return Err(error);
     }
     Ok(context.counters())
+}
+
+fn materialization_identity_matches(base: &NamespaceEntry, target: &NamespaceEntry) -> bool {
+    base.kind == target.kind
+        && base.classification == target.classification
+        && base.mode == target.mode
+        && base.content_id == target.content_id
+        && base.symlink_target == target.symlink_target
+        && base.byte_len == target.byte_len
+        && base.executability == target.executability
 }
 
 pub(super) fn materialization_deletions(
@@ -398,10 +427,12 @@ fn target_entry_matches_phase(
 }
 
 fn target_stream_budget(target: &SnapshotContent) -> NamespaceOperationBudget {
+    let (namespace_pages, metadata_bytes) =
+        crate::sync::namespace::lazy_namespace_read_limits(target.manifest().entry_count);
     NamespaceOperationBudget::new(target.manifest().entry_count, 0, 0).with_metadata_limits(
-        target.namespace_store().namespace_page_count(),
+        namespace_pages,
         0,
         0,
-        target.namespace_store().total_encoded_bytes(),
+        metadata_bytes,
     )
 }

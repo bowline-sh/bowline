@@ -2,7 +2,8 @@ use super::permissions::MaterializedFilePermissions;
 use super::*;
 use crate::{
     metadata::{
-        MetadataStore, ProjectUpsert, SyncOperationRecord, SyncResourceKey, WorkspaceSyncHeadRecord,
+        LocalWriteLogRecord, MetadataStore, ProjectUpsert, SyncOperationRecord, SyncResourceKey,
+        WorkspaceSyncHeadRecord,
     },
     sync::merge_plugins::{
         MergePluginApprovalRequest, MergePluginAuditRecord, MergePluginIdentity,
@@ -23,6 +24,7 @@ use bowline_core::{
 use std::{os::unix::fs::PermissionsExt, process::Command};
 mod cached_pack_io;
 mod env_records;
+mod head_persistence;
 mod observation_persistence;
 mod plan_characterization;
 mod symlink_security;
@@ -55,6 +57,135 @@ fn materialize_snapshot_replaces_symlink_parents_without_following_them() {
             .file_type()
             .is_symlink(),
         "symlink parent should be replaced with a real directory"
+    );
+}
+
+#[test]
+fn clean_device_materializes_newer_remote_before_adopting_its_head() {
+    let linux_workspace = TempWorkspace::new("sync-race-linux-workspace").expect("linux root");
+    let mac_workspace = TempWorkspace::new("sync-race-mac-workspace").expect("mac root");
+    let linux_state = TempWorkspace::new("sync-race-linux-state").expect("linux state");
+    let mac_state = TempWorkspace::new("sync-race-mac-state").expect("mac state");
+    let shared_objects = TempWorkspace::new("sync-race-shared-objects").expect("objects");
+    let workspace_id = WorkspaceId::new("ws_two_device_race");
+    let control_plane = bowline_control_plane::FakeControlPlaneClient::default();
+    control_plane.create_workspace(workspace_id.as_str());
+    let byte_store = bowline_storage::LocalByteStore::open(shared_objects.root().join("objects"))
+        .expect("byte store");
+    let relative_path = "project/state.txt";
+    let linux_path = linux_workspace.root().join(relative_path);
+    let mac_path = mac_workspace.root().join(relative_path);
+    fs::create_dir_all(linux_path.parent().expect("linux parent")).expect("linux parent");
+    fs::create_dir_all(mac_path.parent().expect("mac parent")).expect("mac parent");
+    fs::write(&linux_path, b"old-linux-bytes\n").expect("linux old bytes");
+    fs::write(&mac_path, b"old-linux-bytes\n").expect("mac old bytes");
+
+    let linux_initial = device_runner(
+        &control_plane,
+        &byte_store,
+        &linux_workspace,
+        &linux_state,
+        workspace_id.clone(),
+        "device_linux",
+        "2026-07-15T10:00:00Z",
+    )
+    .tick()
+    .expect("linux initial upload");
+    assert!(matches!(linux_initial, SyncTickOutcome::Uploaded(_)));
+    let mac_initial = device_runner(
+        &control_plane,
+        &byte_store,
+        &mac_workspace,
+        &mac_state,
+        workspace_id.clone(),
+        "device_mac",
+        "2026-07-15T10:01:00Z",
+    )
+    .tick()
+    .expect("mac initial import");
+    assert!(matches!(mac_initial, SyncTickOutcome::Imported(_)));
+
+    fs::write(&mac_path, b"newer-mac-bytes-with-a-distinct-length\n").expect("mac new bytes");
+    let mac_advanced = device_runner(
+        &control_plane,
+        &byte_store,
+        &mac_workspace,
+        &mac_state,
+        workspace_id.clone(),
+        "device_mac",
+        "2026-07-15T10:02:00Z",
+    )
+    .tick()
+    .expect("mac upload");
+    assert!(matches!(mac_advanced, SyncTickOutcome::Uploaded(_)));
+    let remote_after_mac = control_plane
+        .get_workspace_ref(&workspace_id)
+        .expect("remote lookup")
+        .expect("remote ref");
+
+    MetadataStore::open(linux_state.root().join(DEFAULT_DATABASE_FILE))
+        .expect("linux store")
+        .append_local_write_log(&LocalWriteLogRecord {
+            id: "write_settled_watcher_noise".to_string(),
+            workspace_id: workspace_id.clone(),
+            device_id: DeviceId::new("device_linux"),
+            project_id: None,
+            path: relative_path.to_string(),
+            source_path: None,
+            operation: "modify".to_string(),
+            staged_content_id: None,
+            policy_classification: PathClassification::WorkspaceSync,
+            causation_id: "watcher-import-noise".to_string(),
+            settled_at: "2026-07-15T10:03:31Z".to_string(),
+            created_at: "2026-07-15T10:03:30Z".to_string(),
+        })
+        .expect("settled watcher row");
+
+    let linux_import = device_runner(
+        &control_plane,
+        &byte_store,
+        &linux_workspace,
+        &linux_state,
+        workspace_id.clone(),
+        "device_linux",
+        "2026-07-15T10:03:00Z",
+    )
+    .tick()
+    .expect("linux remote materialization");
+    assert_eq!(
+        linux_import,
+        SyncTickOutcome::Imported(remote_after_mac.clone())
+    );
+    assert_eq!(
+        fs::read(&linux_path).expect("linux materialized bytes"),
+        b"newer-mac-bytes-with-a-distinct-length\n"
+    );
+    let linux_head = MetadataStore::open(linux_state.root().join(DEFAULT_DATABASE_FILE))
+        .expect("linux store")
+        .workspace_sync_head(&workspace_id)
+        .expect("linux head lookup")
+        .expect("linux head");
+    assert_eq!(linux_head.workspace_ref, remote_after_mac);
+
+    let linux_stable = device_runner(
+        &control_plane,
+        &byte_store,
+        &linux_workspace,
+        &linux_state,
+        workspace_id.clone(),
+        "device_linux",
+        "2026-07-15T10:04:00Z",
+    )
+    .tick()
+    .expect("linux stable tick");
+    assert_eq!(linux_stable, SyncTickOutcome::NoChanges);
+    assert_eq!(
+        control_plane
+            .get_workspace_ref(&workspace_id)
+            .expect("remote lookup")
+            .expect("remote ref"),
+        remote_after_mac,
+        "the stale Linux snapshot must not advance over the remote Mac snapshot"
     );
 }
 #[test]
@@ -1100,320 +1231,78 @@ fn materialization_skips_target_derivable_git_directories() {
 }
 
 #[test]
-fn sync_runner_persists_fresh_scan_metadata_for_status_and_work_views() {
-    let workspace = TempWorkspace::new("sync-persists-scan-metadata").expect("workspace");
-    let state = TempWorkspace::new("sync-persists-scan-state").expect("state");
-    let project = workspace.root().join("app");
-    fs::create_dir_all(project.join(".git")).expect("git marker");
-    fs::write(project.join("README.md"), b"hello\n").expect("readme");
-    fs::write(project.join(".env.local"), b"SECRET=value\n").expect("env");
+fn cancelled_claim_before_local_head_preparation_performs_no_hosted_reads() {
+    assert_rejected_claim_before_preparation_performs_no_hosted_reads(true);
+}
 
-    let workspace_id = WorkspaceId::new("ws_code");
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    store
-        .insert_workspace(&workspace_id, "User Code", "2026-06-29T04:00:00Z")
-        .expect("workspace");
-    store
-        .insert_root(
-            "root_code",
-            &workspace_id,
-            &workspace.root().display().to_string(),
-            "2026-06-29T04:00:00Z",
-        )
-        .expect("root");
-    store
-        .upsert_workspace_sync_head(&WorkspaceSyncHeadRecord {
-            workspace_ref: empty_workspace_ref(workspace_id.clone()),
-            observed_at: "2026-06-29T04:00:00Z".to_string(),
-        })
-        .expect("head");
-    drop(store);
+#[test]
+fn lost_claim_before_local_head_preparation_performs_no_hosted_reads() {
+    assert_rejected_claim_before_preparation_performs_no_hosted_reads(false);
+}
 
-    let candidate = super::super::coalescer::coalesce_workspace_scan(
-        workspace.root(),
-        workspace_id.clone(),
-        &empty_workspace_ref(workspace_id.clone()),
-        DeviceId::new("device_local"),
-        [7_u8; 32],
-        "2026-06-29T04:01:00Z",
-    )
-    .expect("candidate");
+#[test]
+fn cancellation_after_first_metadata_load_stops_import_before_local_head_commit() {
+    assert_mid_import_authority_loss(true);
+}
+
+#[test]
+fn ownership_loss_after_first_pack_head_stops_import_before_local_head_commit() {
+    assert_mid_import_authority_loss(false);
+}
+
+fn assert_mid_import_authority_loss(cancel_after_metadata: bool) {
+    use crate::sync::download::{
+        DownloadError, ImportCheckpointPoint, import_snapshot_by_id_with_checkpoints,
+    };
+
+    let workspace = TempWorkspace::new("sync-mid-import-authority-workspace").expect("workspace");
+    let state = TempWorkspace::new("sync-mid-import-authority-state").expect("state");
+    fs::write(workspace.root().join("README.md"), b"hosted import\n").expect("workspace file");
+    let workspace_id = WorkspaceId::new("ws_mid_import_authority");
+    let device_id = DeviceId::new("device_local");
+    let generated_at = "2026-07-15T17:00:00Z";
+    let storage_key = StorageKey::from_bytes([8_u8; 32]);
     let control_plane = bowline_control_plane::FakeControlPlaneClient::default();
-    control_plane.create_workspace(workspace_id.as_str());
+    let base_ref = control_plane.create_workspace(workspace_id.as_str());
     let byte_store =
         bowline_storage::LocalByteStore::open(state.root().join("objects")).expect("byte store");
-    let runner = SyncRunner::new(
-        &control_plane,
-        &byte_store,
-        SyncRunnerOptions {
-            root: workspace.root().to_path_buf(),
-            state_root: state.root().to_path_buf(),
-            workspace_id: workspace_id.clone(),
-            device_id: DeviceId::new("device_local"),
-            workspace_content_key: [7_u8; 32],
-            storage_key: StorageKey::from_bytes([8_u8; 32]),
-            key_epoch: 1,
-            generated_at: "2026-06-29T04:01:00Z".to_string(),
-            sync_claim: None,
-            scan_scope: Default::default(),
-        },
-    );
-
-    runner
-        .persist_scan_metadata(&candidate, Some(&candidate.snapshot))
-        .expect("scan metadata persisted");
-
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    let summary = store
-        .observed_summary(&workspace_id)
-        .expect("summary")
-        .expect("summary present");
-    assert_eq!(summary.repo_count, 1);
-    assert_eq!(summary.env_file_count, 1);
-    assert_eq!(
-        store
-            .current_project_by_path(&project.display().to_string())
-            .expect("project lookup")
-            .expect("project")
-            .path,
-        "app"
-    );
-    let project = store
-        .current_project_by_path(&project.display().to_string())
-        .expect("project lookup")
-        .expect("project");
-    assert!(project.id.as_str().contains(workspace_id.as_str()));
-    assert_eq!(
-        store
-            .project_latest_snapshot_id(&workspace_id, &project.id)
-            .expect("latest snapshot"),
-        Some(candidate.snapshot.manifest.snapshot_id.clone())
-    );
-    let retained_snapshot = store
-        .snapshot(&workspace_id, &candidate.snapshot.manifest.snapshot_id)
-        .expect("snapshot lookup")
-        .expect("retained snapshot");
-    assert_eq!(
-        retained_snapshot.project_id,
-        candidate.snapshot.manifest.project_id
-    );
-    assert_eq!(
-        retained_snapshot.root_id,
-        candidate.snapshot.manifest.namespace_root_id
-    );
-    assert_eq!(
-        retained_snapshot.entry_count,
-        candidate.snapshot.manifest.entry_count
-    );
-    assert_eq!(
-        store
-            .env_records(&workspace_id)
-            .expect("env records")
-            .into_iter()
-            .map(|record| record.key_name)
-            .collect::<Vec<_>>(),
-        vec!["SECRET".to_string()]
-    );
-}
-
-#[test]
-fn partial_root_shallow_persist_refreshes_root_env_and_preserves_deep_status() {
-    let workspace = TempWorkspace::new("sync-partial-persist-ws").expect("workspace");
-    let state = TempWorkspace::new("sync-partial-persist-state").expect("state");
-    let project = workspace.root().join("app");
-    fs::create_dir_all(project.join(".git")).expect("git marker");
-    fs::write(project.join("README.md"), b"hello\n").expect("readme");
-    fs::write(project.join(".env.local"), b"DEEP=value\n").expect("deep env");
-    fs::write(workspace.root().join(".env"), b"ROOT=value\n").expect("root env");
-
-    let workspace_id = WorkspaceId::new("ws_code");
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    store
-        .insert_workspace(&workspace_id, "User Code", "2026-07-06T04:00:00Z")
-        .expect("workspace");
-    store
-        .insert_root(
-            "root_code",
-            &workspace_id,
-            &workspace.root().display().to_string(),
-            "2026-07-06T04:00:00Z",
-        )
-        .expect("root");
-    store
-        .upsert_workspace_sync_head(&WorkspaceSyncHeadRecord {
-            workspace_ref: empty_workspace_ref(workspace_id.clone()),
-            observed_at: "2026-07-06T04:00:00Z".to_string(),
-        })
-        .expect("head");
-    drop(store);
-
-    let runner = test_runner(&workspace, &state, workspace_id.clone());
-    let full = super::super::coalescer::coalesce_workspace_scan(
-        workspace.root(),
-        workspace_id.clone(),
-        &empty_workspace_ref(workspace_id.clone()),
-        DeviceId::new("device_local"),
-        [7_u8; 32],
-        "2026-07-06T04:01:00Z",
-    )
-    .expect("full candidate");
-    runner
-        .persist_scan_metadata(&full, Some(&full.snapshot))
-        .expect("full persist");
-
-    // Baseline: a full scan recorded both env sources and the deep repo summary.
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    let baseline_summary = store
-        .observed_summary(&workspace_id)
-        .expect("summary")
-        .expect("summary present");
-    assert_eq!(baseline_summary.repo_count, 1);
-    assert_eq!(baseline_summary.env_file_count, 2);
-    drop(store);
-
-    // A root-shallow tick observes only root children; it must refresh the root
-    // `.env` without erasing the deep `app/.env.local` env records or the deep
-    // repo/status summary it never looked at.
-    fs::write(workspace.root().join(".env"), b"ROOT=updated\n").expect("root env update");
-    let mut session = StatCacheSession::empty_for_scan(1, &[7_u8; 32]);
-    let shallow = super::super::coalescer::coalesce_workspace_scan_cached(
-        super::super::coalescer::CoalesceScanRequest {
-            root: workspace.root(),
-            workspace_id: workspace_id.clone(),
-            base_ref: &empty_workspace_ref(workspace_id.clone()),
-            device_id: DeviceId::new("device_local"),
-            workspace_content_key: [7_u8; 32],
-            created_at: "2026-07-06T04:02:00Z".to_string(),
-            context: super::super::coalescer::CoalesceContext::empty(),
-            stat_cache: Some(&mut session),
-            scan_scope: ScanScope::RootShallow,
-        },
-    )
-    .expect("shallow candidate");
-    runner
-        .persist_scan_metadata(&shallow, Some(&shallow.snapshot))
-        .expect("shallow persist");
-
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    // Deep status facts survive the partial pass untouched.
-    let summary = store
-        .observed_summary(&workspace_id)
-        .expect("summary")
-        .expect("summary present");
-    assert_eq!(summary.repo_count, 1, "deep repo status preserved");
-    assert_eq!(summary.env_file_count, 2, "deep env status preserved");
-    // Both env sources remain; the deep one is not blanked out by the root pass.
-    let sources = store
-        .env_records(&workspace_id)
-        .expect("env records")
-        .into_iter()
-        .map(|record| record.source_path)
-        .collect::<BTreeSet<_>>();
-    assert!(
-        sources.contains(".env"),
-        "root env refreshed, got {sources:?}"
-    );
-    assert!(
-        sources.contains("app/.env.local"),
-        "deep env preserved, got {sources:?}"
-    );
-}
-
-#[test]
-fn persisted_head_manifest_after_upload_contains_locators() {
-    let workspace = TempWorkspace::new("sync-bound-manifest-persist").expect("workspace");
-    let state = TempWorkspace::new("sync-bound-manifest-state").expect("state");
-    fs::write(workspace.root().join("README.md"), b"hello\n").expect("readme");
-    let workspace_id = WorkspaceId::new("ws_code");
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    store
-        .insert_workspace(&workspace_id, "User Code", "2026-07-03T10:00:00Z")
-        .expect("workspace");
-    drop(store);
     let candidate = super::super::coalescer::coalesce_workspace_scan(
         workspace.root(),
         workspace_id.clone(),
-        &empty_workspace_ref(workspace_id.clone()),
-        DeviceId::new("device_local"),
+        &base_ref,
+        device_id.clone(),
         [7_u8; 32],
-        "2026-07-03T10:01:00Z",
+        generated_at,
     )
     .expect("candidate");
-    let mut bound_snapshot = candidate.snapshot.clone();
-    add_bound_locator(&mut bound_snapshot, "README.md", "pk_0011223344556677");
-    let runner = test_runner(&workspace, &state, workspace_id.clone());
-    let accepted = accepted_ref(
-        &workspace_id,
-        candidate.snapshot.manifest.snapshot_id.as_str(),
-    );
-
-    runner
-        .persist_scan_metadata_if_committed(&candidate, &accepted, Some(&bound_snapshot))
-        .expect("persist bound snapshot");
+    let uploaded = crate::sync::upload_snapshot_candidate(
+        &candidate,
+        &control_plane,
+        &byte_store,
+        storage_key,
+        1,
+    )
+    .expect("upload hosted snapshot fixture");
+    let workspace_ref = match uploaded {
+        UploadOutcome::Advanced { workspace_ref, .. } => workspace_ref,
+        UploadOutcome::Stale { .. } => panic!("fixture upload should advance the workspace ref"),
+    };
 
     let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    let retained_snapshot = store
-        .snapshot(&workspace_id, &candidate.snapshot.manifest.snapshot_id)
-        .expect("snapshot lookup")
-        .expect("retained snapshot");
-    assert_eq!(
-        retained_snapshot.root_id,
-        bound_snapshot.manifest().namespace_root_id
-    );
-    let retained_entry = store
-        .current_namespace_entry(&workspace_id, &WorkspaceRelativePath::new("README.md"))
-        .expect("projection lookup")
-        .expect("stored entry");
-    assert!(retained_entry.content_layout_id.is_some());
-    assert_eq!(retained_entry.hydration_state, HydrationState::Local);
-}
-
-#[test]
-fn local_head_commit_enqueues_one_durable_overlay_operation() {
-    let workspace = TempWorkspace::new("sync-post-commit-followup-workspace").expect("workspace");
-    let state = TempWorkspace::new("sync-post-commit-followup-state").expect("state");
-    let workspace_id = WorkspaceId::new("ws_code");
-    let generated_at = "2026-07-05T12:31:00Z";
-    let operation_id = "sync_post_commit_followup";
-    let mut store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    store
-        .insert_workspace(&workspace_id, "User Code", "2026-07-05T12:30:00Z")
-        .expect("workspace");
-    let root_path = workspace.root().display().to_string();
-    store
-        .insert_root(
-            "root_code",
-            &workspace_id,
-            &root_path,
-            "2026-07-05T12:30:00Z",
-        )
-        .expect("root");
-    store
-        .replace_projects(
-            &workspace_id,
-            "root_code",
-            &[ProjectUpsert {
-                id: ProjectId::new("project_web"),
-                path: "apps/web".to_string(),
-                git_observer_state: bowline_core::status::GitObserverState::Ok,
-            }],
-            "2026-07-05T12:30:00Z",
-        )
-        .expect("project");
     store
         .enqueue_sync_operation(&SyncOperationRecord {
-            id: operation_id.to_string(),
+            id: "sync_mid_import_authority".to_string(),
             workspace_id: workspace_id.clone(),
             kind: SyncOperationKind::Reconcile,
-            resource_key: crate::metadata::SyncResourceKey::workspace_sync(workspace_id.clone()),
+            resource_key: SyncResourceKey::workspace_sync(workspace_id.clone()),
             state: SyncOperationState::Queued,
-            idempotency_key: operation_id.to_string(),
+            idempotency_key: "sync-mid-import-authority".to_string(),
             base_version: None,
             base_snapshot_id: None,
-            target_snapshot_id: None,
-            device_id: Some(DeviceId::new("device_local")),
+            target_snapshot_id: Some(workspace_ref.snapshot_id.as_str().to_string()),
+            device_id: Some(device_id.clone()),
             payload_json: "{}".to_string(),
-            attempt_count: 1,
+            attempt_count: 0,
             claimed_by: None,
             claim_generation: 0,
             heartbeat_at: None,
@@ -1427,20 +1316,17 @@ fn local_head_commit_enqueues_one_durable_overlay_operation() {
             updated_at: generated_at.to_string(),
         })
         .expect("operation");
-    let sync_claim = store
+    let claim = store
         .claim_next_sync_operation(
             &workspace_id,
             "test-runner",
-            "2026-07-05T12:30:01Z",
+            "2026-07-15T17:00:01Z",
             "2999-01-01T00:00:00Z",
         )
-        .expect("claim operation")
+        .expect("claim")
         .expect("queued operation")
         .claim;
     drop(store);
-    let control_plane = bowline_control_plane::FakeControlPlaneClient::default();
-    let byte_store =
-        bowline_storage::LocalByteStore::open(state.root().join("objects")).expect("byte store");
     let runner = SyncRunner::new(
         &control_plane,
         &byte_store,
@@ -1448,85 +1334,107 @@ fn local_head_commit_enqueues_one_durable_overlay_operation() {
             root: workspace.root().to_path_buf(),
             state_root: state.root().to_path_buf(),
             workspace_id: workspace_id.clone(),
-            device_id: DeviceId::new("device_local"),
+            device_id,
             workspace_content_key: [7_u8; 32],
-            storage_key: StorageKey::from_bytes([8_u8; 32]),
+            storage_key,
             key_epoch: 1,
             generated_at: generated_at.to_string(),
-            sync_claim: Some(sync_claim),
+            sync_claim: Some(claim.clone()),
             scan_scope: Default::default(),
         },
     );
-    let workspace_ref = accepted_ref(&workspace_id, "snap_followup");
+    let metadata_loads = Cell::new(0_u64);
+    let pack_heads = Cell::new(0_u64);
+    let invalidated = Cell::new(false);
+    let exact_error = RefCell::new(None);
+    let checkpoint = |point| {
+        if let Err(error) = runner.check_claim_before_domain_boundary() {
+            *exact_error.borrow_mut() = Some(error);
+            return Err(DownloadError::CancellationRequested);
+        }
+        match point {
+            ImportCheckpointPoint::MetadataRecordLoaded => {
+                metadata_loads.set(metadata_loads.get().saturating_add(1));
+                if cancel_after_metadata && !invalidated.replace(true) {
+                    MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE))
+                        .expect("open cancellation store")
+                        .request_sync_operation_cancellation(
+                            claim.operation_id(),
+                            "2026-07-15T17:00:02Z",
+                        )
+                        .expect("request mid-import cancellation");
+                }
+            }
+            ImportCheckpointPoint::PackHeadCompleted => {
+                pack_heads.set(pack_heads.get().saturating_add(1));
+                if !cancel_after_metadata && !invalidated.replace(true) {
+                    MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE))
+                        .expect("open ownership store")
+                        .requeue_claimed_sync_operation_after_dispatch_failure(
+                            &claim,
+                            "test_claim_lost",
+                            "replacement worker owns the operation",
+                            "2026-07-15T17:00:02Z",
+                        )
+                        .expect("invalidate mid-import claim");
+                }
+            }
+            ImportCheckpointPoint::Boundary => {}
+        }
+        Ok(())
+    };
 
-    runner
-        .complete_local_head(
-            &workspace_ref,
-            LocalHeadMetadataUpdate::FreshScan {
-                bound_snapshot: None,
-            },
-        )
-        .expect("committed local head enqueues overlay operation");
-
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
+    let error = import_snapshot_by_id_with_checkpoints(
+        &workspace_id,
+        &SnapshotId::new(workspace_ref.snapshot_id.clone()),
+        &control_plane,
+        &byte_store,
+        storage_key,
+        crate::sync::namespace::MetadataIdentityKey::derive(&workspace_id, [7_u8; 32]),
+        &checkpoint,
+    )
+    .expect_err("mid-import authority loss must stop import");
+    assert!(matches!(error, DownloadError::CancellationRequested));
+    let exact_error = exact_error
+        .into_inner()
+        .expect("runner claim error should be retained");
+    if cancel_after_metadata {
+        assert!(matches!(
+            exact_error,
+            SyncRunnerError::SyncOperationCancellationRequested
+        ));
+        assert_eq!(metadata_loads.get(), 1);
+    } else {
+        assert!(matches!(
+            exact_error,
+            SyncRunnerError::SyncClaimOwnershipLost
+        ));
+        assert_eq!(pack_heads.get(), 1);
+    }
     assert!(
-        store
+        MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE))
+            .expect("store")
             .workspace_sync_head(&workspace_id)
             .expect("local head")
-            .is_some()
-    );
-    let operations = store.sync_operations(&workspace_id).expect("operations");
-    let overlay = operations
-        .iter()
-        .find(|operation| operation.kind == SyncOperationKind::WorkViewOverlaySync)
-        .expect("overlay operation");
-    assert_eq!(overlay.state, SyncOperationState::Queued);
-    assert_eq!(
-        overlay.resource_key,
-        SyncResourceKey::post_commit(workspace_id.clone())
-    );
-    let input = super::super::decode_work_view_overlay_sync_operation(overlay)
-        .expect("typed overlay payload");
-    assert_eq!(input.workspace_version, workspace_ref.version);
-    assert_eq!(input.snapshot_id, workspace_ref.snapshot_id);
-    drop(store);
-
-    runner
-        .complete_local_head(
-            &workspace_ref,
-            LocalHeadMetadataUpdate::FreshScan {
-                bound_snapshot: None,
-            },
-        )
-        .expect("repeated committed local head deduplicates overlay operation");
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    assert_eq!(
-        store
-            .sync_operations(&workspace_id)
-            .expect("operations")
-            .iter()
-            .filter(|operation| operation.kind == SyncOperationKind::WorkViewOverlaySync)
-            .count(),
-        1
+            .is_none()
     );
 }
 
-#[test]
-fn cancellation_after_materialization_persists_local_head_as_committed_late() {
-    let workspace =
-        TempWorkspace::new("sync-post-materialization-cancel-workspace").expect("workspace");
-    let state = TempWorkspace::new("sync-post-materialization-cancel-state").expect("state");
-    let workspace_id = WorkspaceId::new("ws_materialized_cancel");
-    let generated_at = "2026-07-13T11:00:00Z";
+fn assert_rejected_claim_before_preparation_performs_no_hosted_reads(cancel: bool) {
+    let workspace = TempWorkspace::new("sync-local-head-authority-workspace").expect("workspace");
+    let state = TempWorkspace::new("sync-local-head-authority-state").expect("state");
+    fs::write(workspace.root().join("README.md"), b"claim fenced\n").expect("workspace file");
+    let workspace_id = WorkspaceId::new("ws_local_head_authority");
+    let generated_at = "2026-07-15T16:00:00Z";
     let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
     store
         .enqueue_sync_operation(&SyncOperationRecord {
-            id: "sync_materialized_cancel".to_string(),
+            id: "sync_local_head_authority".to_string(),
             workspace_id: workspace_id.clone(),
             kind: SyncOperationKind::Reconcile,
             resource_key: SyncResourceKey::workspace_sync(workspace_id.clone()),
             state: SyncOperationState::Queued,
-            idempotency_key: "sync-materialized-cancel".to_string(),
+            idempotency_key: "sync-local-head-authority".to_string(),
             base_version: None,
             base_snapshot_id: None,
             target_snapshot_id: None,
@@ -1550,26 +1458,53 @@ fn cancellation_after_materialization_persists_local_head_as_committed_late() {
         .claim_next_sync_operation(
             &workspace_id,
             "test-runner",
-            "2026-07-13T11:00:01Z",
+            "2026-07-15T16:00:01Z",
             "2999-01-01T00:00:00Z",
         )
         .expect("claim")
-        .expect("operation")
+        .expect("queued operation")
         .claim;
-    store
-        .request_sync_operation_cancellation(claim.operation_id(), "2026-07-13T11:00:02Z")
-        .expect("cancellation request");
+    if cancel {
+        store
+            .request_sync_operation_cancellation(claim.operation_id(), "2026-07-15T16:00:02Z")
+            .expect("request cancellation");
+    } else {
+        store
+            .requeue_claimed_sync_operation_after_dispatch_failure(
+                &claim,
+                "test_claim_lost",
+                "replacement worker owns the operation",
+                "2026-07-15T16:00:02Z",
+            )
+            .expect("release original claim");
+    }
     drop(store);
+
     let control_plane = bowline_control_plane::FakeControlPlaneClient::default();
+    control_plane.set_offline(true);
     let byte_store =
         bowline_storage::LocalByteStore::open(state.root().join("objects")).expect("byte store");
+    let base_ref = empty_workspace_ref(workspace_id.clone());
+    let candidate = super::super::coalescer::coalesce_workspace_scan(
+        workspace.root(),
+        workspace_id.clone(),
+        &base_ref,
+        DeviceId::new("device_local"),
+        [7_u8; 32],
+        generated_at,
+    )
+    .expect("candidate");
+    let accepted = accepted_ref(
+        &workspace_id,
+        candidate.snapshot.manifest.snapshot_id.as_str(),
+    );
     let runner = SyncRunner::new(
         &control_plane,
         &byte_store,
         SyncRunnerOptions {
             root: workspace.root().to_path_buf(),
             state_root: state.root().to_path_buf(),
-            workspace_id: workspace_id.clone(),
+            workspace_id,
             device_id: DeviceId::new("device_local"),
             workspace_content_key: [7_u8; 32],
             storage_key: StorageKey::from_bytes([8_u8; 32]),
@@ -1579,295 +1514,27 @@ fn cancellation_after_materialization_persists_local_head_as_committed_late() {
             scan_scope: Default::default(),
         },
     );
-    let workspace_ref = accepted_ref(&workspace_id, "snap_materialized_cancel");
-    runner
-        .authorize_materialization(&workspace_ref, MaterializationBoundary::AfterMutation)
-        .expect("record irreversible materialization effect");
-    runner
-        .authorize_materialization(&workspace_ref, MaterializationBoundary::BeforeMutation)
-        .expect("post-effect cancellation stays on reconciliation path");
 
-    runner
+    let error = runner
         .complete_local_head(
-            &workspace_ref,
+            &accepted,
             LocalHeadMetadataUpdate::FreshScan {
                 bound_snapshot: None,
             },
         )
-        .expect("irreversible materialization reconciles local head");
-
-    assert!(runner.cancellation_requested_after_commit());
-    assert_eq!(
-        MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE))
-            .expect("store")
-            .workspace_sync_head(&workspace_id)
-            .expect("local head")
-            .expect("persisted local head")
-            .workspace_ref,
-        workspace_ref
-    );
-}
-
-#[test]
-fn projected_nodes_remain_local_after_reuse_tick() {
-    let workspace = TempWorkspace::new("sync-projected-local-after-reuse").expect("workspace");
-    let state = TempWorkspace::new("sync-projected-local-state").expect("state");
-    fs::write(workspace.root().join("README.md"), b"hello\n").expect("readme");
-    let workspace_id = WorkspaceId::new("ws_code");
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    store
-        .insert_workspace(&workspace_id, "User Code", "2026-07-03T10:00:00Z")
-        .expect("workspace");
-    drop(store);
-    let candidate = super::super::coalescer::coalesce_workspace_scan(
-        workspace.root(),
-        workspace_id.clone(),
-        &empty_workspace_ref(workspace_id.clone()),
-        DeviceId::new("device_local"),
-        [7_u8; 32],
-        "2026-07-03T10:01:00Z",
-    )
-    .expect("candidate");
-    let mut bound_snapshot = candidate.snapshot.clone();
-    add_bound_locator(&mut bound_snapshot, "README.md", "pk_8899aabbccddeeff");
-    let runner = test_runner(&workspace, &state, workspace_id.clone());
-    let accepted = accepted_ref(
-        &workspace_id,
-        candidate.snapshot.manifest.snapshot_id.as_str(),
-    );
-
-    runner
-        .persist_scan_metadata_if_committed(&candidate, &accepted, Some(&bound_snapshot))
-        .expect("persist metadata");
-
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    let readme = store
-        .current_namespace_entry(&workspace_id, &WorkspaceRelativePath::new("README.md"))
-        .expect("projected readme")
-        .expect("projected readme");
-    assert_eq!(readme.hydration_state, HydrationState::Local);
-}
-
-#[test]
-fn fresh_head_metadata_scan_can_store_bound_manifest() {
-    let workspace = TempWorkspace::new("sync-fresh-bound-manifest").expect("workspace");
-    let state = TempWorkspace::new("sync-fresh-bound-state").expect("state");
-    fs::write(workspace.root().join("README.md"), b"hello\n").expect("readme");
-    let workspace_id = WorkspaceId::new("ws_code");
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    store
-        .insert_workspace(&workspace_id, "User Code", "2026-07-03T10:00:00Z")
-        .expect("workspace");
-    drop(store);
-    let candidate = super::super::coalescer::coalesce_workspace_scan(
-        workspace.root(),
-        workspace_id.clone(),
-        &empty_workspace_ref(workspace_id.clone()),
-        DeviceId::new("device_local"),
-        [7_u8; 32],
-        "2026-07-03T10:01:00Z",
-    )
-    .expect("candidate");
-    let mut bound_snapshot = candidate.snapshot.clone();
-    add_bound_locator(&mut bound_snapshot, "README.md", "pk_1020304050607080");
-    let runner = test_runner(&workspace, &state, workspace_id.clone());
-    let accepted = accepted_ref(
-        &workspace_id,
-        candidate.snapshot.manifest.snapshot_id.as_str(),
-    );
-
-    runner
-        .persist_fresh_scan_metadata_for_head(&accepted, Some(&bound_snapshot))
-        .expect("fresh metadata persisted with bound snapshot");
-
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    let retained_snapshot = store
-        .snapshot(&workspace_id, &candidate.snapshot.manifest.snapshot_id)
-        .expect("snapshot lookup")
-        .expect("retained snapshot");
-    assert_eq!(
-        retained_snapshot.root_id,
-        bound_snapshot.manifest().namespace_root_id
-    );
-    let readme = store
-        .current_namespace_entry(&workspace_id, &WorkspaceRelativePath::new("README.md"))
-        .expect("projected readme")
-        .expect("projected readme");
-    assert_eq!(readme.hydration_state, HydrationState::Local);
-}
-
-#[test]
-fn sync_runner_skips_scan_metadata_for_uncommitted_candidate() {
-    let workspace = TempWorkspace::new("sync-skips-uncommitted-scan-metadata").expect("workspace");
-    let state = TempWorkspace::new("sync-skips-uncommitted-scan-state").expect("state");
-    let project = workspace.root().join("app");
-    fs::create_dir_all(project.join(".git")).expect("git marker");
-    fs::write(project.join("README.md"), b"local-only\n").expect("readme");
-
-    let workspace_id = WorkspaceId::new("ws_code");
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    store
-        .insert_workspace(&workspace_id, "User Code", "2026-06-29T04:00:00Z")
-        .expect("workspace");
-    store
-        .insert_root(
-            "root_code",
-            &workspace_id,
-            &workspace.root().display().to_string(),
-            "2026-06-29T04:00:00Z",
-        )
-        .expect("root");
-    drop(store);
-
-    let candidate = super::super::coalescer::coalesce_workspace_scan(
-        workspace.root(),
-        workspace_id.clone(),
-        &empty_workspace_ref(workspace_id.clone()),
-        DeviceId::new("device_local"),
-        [7_u8; 32],
-        "2026-06-29T04:01:00Z",
-    )
-    .expect("candidate");
-    let control_plane = bowline_control_plane::FakeControlPlaneClient::default();
-    let byte_store =
-        bowline_storage::LocalByteStore::open(state.root().join("objects")).expect("byte store");
-    let runner = SyncRunner::new(
-        &control_plane,
-        &byte_store,
-        SyncRunnerOptions {
-            root: workspace.root().to_path_buf(),
-            state_root: state.root().to_path_buf(),
-            workspace_id: workspace_id.clone(),
-            device_id: DeviceId::new("device_local"),
-            workspace_content_key: [7_u8; 32],
-            storage_key: StorageKey::from_bytes([8_u8; 32]),
-            key_epoch: 1,
-            generated_at: "2026-06-29T04:01:00Z".to_string(),
-            sync_claim: None,
-            scan_scope: Default::default(),
-        },
-    );
-    let accepted_remote = WorkspaceRef {
-        workspace_id: WorkspaceId::new(workspace_id.as_str()),
-        version: 7,
-        snapshot_id: SnapshotId::new("snap_remote_committed"),
-        updated_at: bowline_control_plane::ControlPlaneTimestamp { tick: 7 },
-        updated_by_device_id: Some(DeviceId::new("device_remote")),
-    };
-
-    runner
-        .persist_scan_metadata_if_committed(&candidate, &accepted_remote, None)
-        .expect("mismatched scan metadata is skipped");
-
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    assert!(
-        store
-            .observed_summary(&workspace_id)
-            .expect("summary lookup")
-            .is_none()
-    );
-    assert!(
-        store
-            .current_project_by_path(&project.display().to_string())
-            .expect("project lookup")
-            .is_none()
-    );
-}
-
-#[test]
-fn sync_runner_rejects_stale_env_file_before_committing_scan_metadata() {
-    let workspace = TempWorkspace::new("sync-stale-env-metadata").expect("workspace");
-    let state = TempWorkspace::new("sync-stale-env-state").expect("state");
-    let project = workspace.root().join("app");
-    fs::create_dir_all(project.join(".git")).expect("git marker");
-    fs::write(project.join(".env"), b"SHARED=value\n").expect("env");
-    fs::write(project.join(".env.local"), b"SECRET=value\n").expect("env");
-
-    let workspace_id = WorkspaceId::new("ws_code");
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    store
-        .insert_workspace(&workspace_id, "User Code", "2026-06-29T04:00:00Z")
-        .expect("workspace");
-    store
-        .insert_root(
-            "root_code",
-            &workspace_id,
-            &workspace.root().display().to_string(),
-            "2026-06-29T04:00:00Z",
-        )
-        .expect("root");
-    drop(store);
-
-    let candidate = super::super::coalescer::coalesce_workspace_scan(
-        workspace.root(),
-        workspace_id.clone(),
-        &empty_workspace_ref(workspace_id.clone()),
-        DeviceId::new("device_local"),
-        [7_u8; 32],
-        "2026-06-29T04:01:00Z",
-    )
-    .expect("candidate");
-    fs::remove_file(project.join(".env.local")).expect("remove stale env");
-    let control_plane = bowline_control_plane::FakeControlPlaneClient::default();
-    let byte_store =
-        bowline_storage::LocalByteStore::open(state.root().join("objects")).expect("byte store");
-    let runner = SyncRunner::new(
-        &control_plane,
-        &byte_store,
-        SyncRunnerOptions {
-            root: workspace.root().to_path_buf(),
-            state_root: state.root().to_path_buf(),
-            workspace_id: workspace_id.clone(),
-            device_id: DeviceId::new("device_local"),
-            workspace_content_key: [7_u8; 32],
-            storage_key: StorageKey::from_bytes([8_u8; 32]),
-            key_epoch: 1,
-            generated_at: "2026-06-29T04:01:00Z".to_string(),
-            sync_claim: None,
-            scan_scope: Default::default(),
-        },
-    );
-    let accepted = WorkspaceRef {
-        workspace_id: WorkspaceId::new(workspace_id.as_str()),
-        version: 1,
-        snapshot_id: SnapshotId::new(candidate.snapshot.manifest.snapshot_id.as_str()),
-        updated_at: bowline_control_plane::ControlPlaneTimestamp { tick: 1 },
-        updated_by_device_id: Some(DeviceId::new("device_local")),
-    };
-
-    let prepared = runner
-        .prepare_local_head_metadata_update(
-            &accepted,
-            LocalHeadMetadataUpdate::CommittedScan {
-                candidate: &candidate,
-                bound_snapshot: None,
-            },
-        )
-        .expect("prepare committed scan metadata");
-    let error = runner
-        .commit_local_head_metadata(&accepted, prepared)
-        .expect_err("stale env metadata import rejects committed local-head persistence");
-    assert!(error.to_string().contains(".env.local"));
-
-    let store = MetadataStore::open(state.root().join(DEFAULT_DATABASE_FILE)).expect("store");
-    assert!(
-        store
-            .workspace_sync_head(&workspace_id)
-            .expect("local head")
-            .is_none()
-    );
-    assert!(
-        store
-            .observed_summary(&workspace_id)
-            .expect("summary lookup")
-            .is_none()
-    );
-    assert!(
-        store
-            .env_records(&workspace_id)
-            .expect("env records")
-            .is_empty()
-    );
+        .expect_err("stale claim must fence local-head preparation");
+    if cancel {
+        assert!(matches!(
+            error,
+            SyncRunnerError::SyncOperationCancellationRequested
+        ));
+    } else {
+        assert!(matches!(error, SyncRunnerError::SyncClaimOwnershipLost));
+    }
+    let metrics = byte_store.metrics();
+    assert_eq!(metrics.full_read_count, 0);
+    assert_eq!(metrics.range_read_count, 0);
+    assert_eq!(metrics.head_count, 0);
 }
 
 #[test]
@@ -2094,6 +1761,33 @@ fn test_runner(
             storage_key: StorageKey::from_bytes([8_u8; 32]),
             key_epoch: 1,
             generated_at: "2026-07-03T10:01:00Z".to_string(),
+            sync_claim: None,
+            scan_scope: Default::default(),
+        },
+    )
+}
+
+fn device_runner<'a>(
+    control_plane: &'a bowline_control_plane::FakeControlPlaneClient,
+    byte_store: &'a bowline_storage::LocalByteStore,
+    workspace: &TempWorkspace,
+    state: &TempWorkspace,
+    workspace_id: WorkspaceId,
+    device_id: &str,
+    generated_at: &str,
+) -> SyncRunner<'a> {
+    SyncRunner::new(
+        control_plane,
+        byte_store,
+        SyncRunnerOptions {
+            root: workspace.root().to_path_buf(),
+            state_root: state.root().to_path_buf(),
+            workspace_id,
+            device_id: DeviceId::new(device_id),
+            workspace_content_key: [7_u8; 32],
+            storage_key: StorageKey::from_bytes([8_u8; 32]),
+            key_epoch: 1,
+            generated_at: generated_at.to_string(),
             sync_claim: None,
             scan_scope: Default::default(),
         },

@@ -206,16 +206,30 @@ struct PreparedScanMetadata {
     full_observation: bool,
 }
 
+enum PreparedSnapshotContent<'a> {
+    Borrowed(&'a SnapshotContent),
+    Imported(Box<SnapshotContent>),
+}
+
+impl PreparedSnapshotContent<'_> {
+    fn as_ref(&self) -> &SnapshotContent {
+        match self {
+            Self::Borrowed(snapshot) => snapshot,
+            Self::Imported(snapshot) => snapshot.as_ref(),
+        }
+    }
+}
+
 enum PreparedLocalHeadMetadataUpdate<'a> {
     CommittedScan {
         candidate: &'a super::SnapshotCandidate,
         scan: Option<PreparedScanMetadata>,
-        bound_snapshot: Option<&'a SnapshotContent>,
+        snapshot_content: Option<PreparedSnapshotContent<'a>>,
     },
     FreshScan {
         candidate: Box<super::SnapshotCandidate>,
         scan: Option<PreparedScanMetadata>,
-        bound_snapshot: Option<&'a SnapshotContent>,
+        snapshot_content: Option<PreparedSnapshotContent<'a>>,
     },
 }
 
@@ -247,8 +261,18 @@ fn decision_facts_for(
             plan::SnapshotId::new(candidate_base_ref.snapshot_id.clone()),
             plan::SnapshotId::new(candidate.snapshot.manifest.snapshot_id.as_str()),
         ),
-        local_head.is_some(),
-        candidate.snapshot.manifest.entry_count == 0,
+        match local_head {
+            None => plan::LocalHeadState::Absent,
+            Some(head) if head.snapshot_id == base_ref.snapshot_id => {
+                plan::LocalHeadState::MatchesBase
+            }
+            Some(_) => plan::LocalHeadState::Diverged,
+        },
+        if candidate.snapshot.manifest.entry_count == 0 {
+            plan::CandidateEntryState::Empty
+        } else {
+            plan::CandidateEntryState::Present
+        },
     )
 }
 
@@ -619,6 +643,9 @@ impl<'a> SyncRunner<'a> {
         workspace_ref: &WorkspaceRef,
         metadata_update: LocalHeadMetadataUpdate<'_>,
     ) -> Result<(), SyncRunnerError> {
+        // Preparation may import hosted snapshot metadata. Authorize before it
+        // begins so a stale or cancelled worker performs no hosted reads.
+        self.check_claim_before_domain_boundary()?;
         let prepared = self.prepare_local_head_metadata_update(workspace_ref, metadata_update)?;
         self.commit_local_head_metadata(workspace_ref, prepared)?;
         self.enqueue_pending_conflict_occurrences()?;

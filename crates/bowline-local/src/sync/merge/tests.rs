@@ -284,6 +284,34 @@ fn paged_merge_propagates_operation_cancellation() {
 }
 
 #[test]
+fn paged_merge_budget_includes_unchanged_result_entries() {
+    let base_files = (0..113)
+        .map(|index| (format!("src/file-{index:03}.txt"), b"base\n".to_vec()))
+        .collect::<Vec<_>>();
+    let mut local_files = base_files.clone();
+    local_files[0].1 = b"local\n".to_vec();
+    let mut remote_files = base_files.clone();
+    remote_files[1].1 = b"remote\n".to_vec();
+    let base = snapshot_with_files(base_files);
+    let local = snapshot_with_files(local_files);
+    let remote = snapshot_with_files(remote_files);
+
+    let merged = merge_paged_snapshots(
+        &base,
+        &local,
+        &remote,
+        KEY,
+        &MergePluginRegistry::built_in(),
+        None,
+    )
+    .expect("large mostly-unchanged namespace merges within its semantic budget");
+    let PagedMergeOutcome::Clean { namespace, .. } = merged else {
+        panic!("different-path edits should merge cleanly");
+    };
+    assert_eq!(namespace.metadata.entry_count, 113);
+}
+
+#[test]
 fn exec_flip_alone_merges_to_changed_side() {
     let base = snapshot("base", "app/bin/tool", b"tool\n");
     let mut local = candidate(&base, "local", "app/bin/tool", b"tool\n");
@@ -1060,6 +1088,40 @@ fn snapshot(_snapshot_id: &str, path: &str, bytes: &[u8]) -> SnapshotContent {
         KEY,
     )
     .expect("page-backed merge snapshot")
+}
+
+fn snapshot_with_files(files: Vec<(String, Vec<u8>)>) -> SnapshotContent {
+    let workspace_id = WorkspaceId::new("ws_code");
+    let mut prepared = BTreeMap::new();
+    let entries = files
+        .into_iter()
+        .map(|(path, bytes)| {
+            let content_id = workspace_content_id(KEY, &bytes);
+            prepared.insert(content_id.clone(), bytes.clone());
+            entry(&path, content_id, bytes.len())
+        })
+        .collect::<Vec<_>>();
+    let snapshot_id =
+        crate::sync::rebuild_manifest_identity(&workspace_id, &entries, "test").snapshot_id;
+    SnapshotContent::new(
+        SnapshotDraft {
+            schema_version: 1,
+            snapshot_id: snapshot_id.clone(),
+            workspace_id,
+            project_id: None,
+            kind: SnapshotKind::WorkspaceHead,
+            base_snapshot_id: None,
+            entries,
+            refs: vec![WorkspaceRef {
+                name: "workspace".to_string(),
+                target_snapshot_id: snapshot_id,
+                kind: RefKind::Workspace,
+            }],
+        },
+        prepared,
+        KEY,
+    )
+    .expect("page-backed multi-file merge snapshot")
 }
 
 fn empty_snapshot(_snapshot_id: &str) -> SnapshotContent {

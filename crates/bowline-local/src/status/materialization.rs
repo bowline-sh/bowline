@@ -5,7 +5,11 @@ pub(super) fn apply_materialization_status(
     workspace_id: &WorkspaceId,
     acc: &mut StatusAccumulator,
 ) -> Result<(), LocalStatusError> {
-    let tasks = store.materialization_tasks(workspace_id)?;
+    let Some(head) = store.workspace_sync_head(workspace_id)? else {
+        return Ok(());
+    };
+    let tasks =
+        store.materialization_tasks_for_snapshot(workspace_id, &head.workspace_ref.snapshot_id)?;
     if tasks.is_empty() {
         return Ok(());
     }

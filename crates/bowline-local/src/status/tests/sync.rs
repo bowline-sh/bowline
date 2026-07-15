@@ -32,6 +32,7 @@ fn materialization_queue_reports_bounded_workspace_progress() {
             "2026-06-23T12:00:00Z",
         )
         .expect("tasks reconcile");
+    accept_materialization_head(&store, &workspace_id, &snapshot_id);
 
     let output = compose_status(StatusOptions {
         db_path: Some(db_path),
@@ -92,6 +93,7 @@ fn blocked_materialization_requires_canonical_attention() {
                 "2026-06-23T12:00:00Z",
             )
             .expect("task reconciles");
+        accept_materialization_head(&store, &workspace_id, &snapshot_id);
         let claimed = store
             .claim_next_materialization_task(
                 &workspace_id,
@@ -138,6 +140,89 @@ fn blocked_materialization_requires_canonical_attention() {
             Some("materialize-project")
         );
     }
+}
+
+#[test]
+fn stale_snapshot_materialization_blocker_is_not_status_authority() {
+    let temp = TempWorkspace::new("status-stale-materialization-blocker").expect("temp workspace");
+    let db_path = temp.root().join("state").join("local.sqlite3");
+    let workspace_id = WorkspaceId::new("ws_stale_materialization");
+    let current_snapshot_id = SnapshotId::new("snap_current");
+    let stale_snapshot_id = SnapshotId::new("snap_stale");
+    let task_id = MaterializationTaskId::new("mat_stale_blocked");
+    let store = MetadataStore::open(&db_path).expect("metadata opens");
+    seed_workspace_root(&store, &workspace_id);
+    accept_materialization_head(&store, &workspace_id, &current_snapshot_id);
+    store
+        .reconcile_materialization_tasks(
+            &workspace_id,
+            &stale_snapshot_id,
+            &[materialization_task(
+                task_id.as_str(),
+                &workspace_id,
+                &stale_snapshot_id,
+                "app/stale.txt",
+                100,
+            )],
+            "2026-06-23T12:00:01Z",
+        )
+        .expect("stale task fixture");
+    let claimed = store
+        .claim_next_materialization_task(
+            &workspace_id,
+            "status-test",
+            "stale-claim",
+            "2026-06-23T12:00:02Z",
+        )
+        .expect("claim stale task")
+        .expect("stale task claimable");
+    assert!(
+        store
+            .finish_materialization_task(&crate::metadata::MaterializationTaskFinish {
+                id: &task_id,
+                claim_token: "stale-claim",
+                claim_generation: claimed.claim_generation,
+                state: MaterializationTaskState::BlockedConflict,
+                error_kind: Some(MaterializationFailureKind::PathFenceNotCurrent),
+                error: Some("stale conflict"),
+                not_before: None,
+                now: "2026-06-23T12:00:03Z",
+            })
+            .expect("finish stale task")
+    );
+
+    let output = compose_status(StatusOptions {
+        db_path: Some(db_path),
+        requested_path: None,
+        workspace_scope: true,
+        generated_at: "2026-06-23T12:00:04Z".to_string(),
+    })
+    .expect("status composes");
+
+    assert_eq!(output.status_summary.attention, StatusAttention::None);
+    assert!(!output.status_summary.facts.iter().any(|fact| {
+        fact.kind.as_str() == "project.materialization_blocked"
+            || fact.kind.as_str() == "project.not_materialized"
+    }));
+}
+
+fn accept_materialization_head(
+    store: &MetadataStore,
+    workspace_id: &WorkspaceId,
+    snapshot_id: &SnapshotId,
+) {
+    store
+        .upsert_workspace_sync_head(&WorkspaceSyncHeadRecord {
+            workspace_ref: bowline_control_plane::WorkspaceRef {
+                workspace_id: workspace_id.clone(),
+                version: 1,
+                snapshot_id: snapshot_id.clone(),
+                updated_at: bowline_control_plane::ControlPlaneTimestamp { tick: 1 },
+                updated_by_device_id: Some(DeviceId::new("status-test")),
+            },
+            observed_at: "2026-06-23T12:00:00Z".to_string(),
+        })
+        .expect("accept materialization head");
 }
 
 fn materialization_task(

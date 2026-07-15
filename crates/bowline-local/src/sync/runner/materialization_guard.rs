@@ -163,6 +163,7 @@ pub(super) fn materialize_snapshot_guarded(
         MaterializationTargetPhase::PointerState,
     ] {
         visit_materialization_targets(
+            request.base,
             request.target,
             request.preserved_paths,
             request.intentionally_absent_paths,
@@ -197,6 +198,7 @@ fn preflight_materialization_payloads(
         MaterializationTargetPhase::PointerState,
     ] {
         visit_materialization_targets(
+            request.base,
             request.target,
             request.preserved_paths,
             request.intentionally_absent_paths,
@@ -527,5 +529,54 @@ mod tests {
             Err(SyncRunnerError::MissingMaterializationContent(path))
                 if path == "src/missing.txt"
         ));
+    }
+
+    #[test]
+    fn stale_merge_materialization_skips_unchanged_source_backed_entries() {
+        let workspace =
+            TempWorkspace::new("materialization-stale-merge-incremental").expect("workspace");
+        let root = workspace.root();
+        let state_root = root.join(".state");
+        let workspace_id = WorkspaceId::new("ws_code");
+        let base = super::super::tests::snapshot_with_files(
+            workspace_id.clone(),
+            &[
+                (".git/objects/aa/object", b"opaque-object".as_slice()),
+                ("config.txt", b"old".as_slice()),
+            ],
+        );
+        materialize_snapshot_guarded(
+            MaterializationRequest::all(&state_root, root, None, &base),
+            |_| Ok(()),
+        )
+        .expect("base materializes");
+        let mut target = super::super::tests::snapshot_with_files(
+            workspace_id,
+            &[
+                (".git/objects/aa/object", b"opaque-object".as_slice()),
+                ("config.txt", b"new".as_slice()),
+            ],
+        );
+        let unchanged_content_id = target
+            .entry_for_path(".git/objects/aa/object")
+            .expect("page read")
+            .and_then(|entry| entry.content_id)
+            .expect("object content id");
+        target.prepared_content_mut().remove(&unchanged_content_id);
+
+        materialize_snapshot_guarded(
+            MaterializationRequest::all(&state_root, root, Some(&base), &target),
+            |_| Ok(()),
+        )
+        .expect("only changed target entries require resident bytes");
+
+        assert_eq!(
+            fs::read(root.join(".git/objects/aa/object")).expect("opaque object remains"),
+            b"opaque-object"
+        );
+        assert_eq!(
+            fs::read(root.join("config.txt")).expect("changed file materializes"),
+            b"new"
+        );
     }
 }

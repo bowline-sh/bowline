@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{cell::RefCell, collections::BTreeMap};
 
 mod materialization_planning;
 mod materialization_worker;
@@ -42,11 +42,11 @@ impl<'a> SyncRunner<'a> {
         &self,
         snapshot_id: &SnapshotId,
     ) -> Result<crate::sync::ImportedSnapshot, SyncRunnerError> {
-        let mut boundary_error = None;
-        let mut checkpoint = || match self.check_claim_before_domain_boundary() {
+        let boundary_error = RefCell::new(None);
+        let checkpoint = |_point| match self.check_claim_before_domain_boundary() {
             Ok(()) => Ok(()),
             Err(error) => {
-                boundary_error = Some(error);
+                *boundary_error.borrow_mut() = Some(error);
                 Err(DownloadError::CancellationRequested)
             }
         };
@@ -60,9 +60,9 @@ impl<'a> SyncRunner<'a> {
                 &self.options.workspace_id,
                 self.options.workspace_content_key,
             ),
-            &mut checkpoint,
+            &checkpoint,
         );
-        if let Some(error) = boundary_error {
+        if let Some(error) = boundary_error.into_inner() {
             return Err(error);
         }
         result.map_err(|error| match error {
@@ -199,18 +199,8 @@ impl<'a> SyncRunner<'a> {
             error: None,
         };
         let entry_count = snapshot.manifest().entry_count;
-        let segment_page_visits =
-            entry_count.saturating_mul(snapshot.namespace_store().segment_page_count().max(1));
         let mut operation = NamespaceOperationContext::uncancelled(
-            NamespaceOperationBudget::new(entry_count, 0, 0).with_metadata_limits(
-                snapshot.namespace_store().namespace_page_count(),
-                entry_count,
-                segment_page_visits,
-                snapshot
-                    .namespace_store()
-                    .total_encoded_bytes()
-                    .saturating_mul(entry_count.max(1)),
-            ),
+            crate::sync::namespace::operation_budget(entry_count, 0, 0),
         );
         snapshot.visit_entries(&mut operation, &mut visitor)?;
         let complete_batch = !visitor.bounded_batch_flushed;
@@ -449,14 +439,11 @@ impl<'a> SyncRunner<'a> {
         snapshot: &SnapshotContent,
     ) -> Result<(), SyncRunnerError> {
         let reader = snapshot.namespace_reader();
+        let (namespace_pages, metadata_bytes) =
+            crate::sync::namespace::lazy_namespace_read_limits(snapshot.manifest().entry_count);
         let mut operation = NamespaceOperationContext::uncancelled(
             NamespaceOperationBudget::new(snapshot.manifest().entry_count, 0, 0)
-                .with_metadata_limits(
-                    snapshot.namespace_store().namespace_page_count(),
-                    0,
-                    0,
-                    snapshot.namespace_store().total_encoded_bytes(),
-                ),
+                .with_metadata_limits(namespace_pages, 0, 0, metadata_bytes),
         );
         let mut storage_error = None;
         reader.visit_prefix_descriptors(

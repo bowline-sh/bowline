@@ -5,13 +5,14 @@ impl MetadataStore {
         &self,
         record: &WorkspaceSyncHeadRecord,
     ) -> Result<(), MetadataError> {
-        self.insert_workspace(
-            &record.workspace_ref.workspace_id,
-            "Code",
-            &record.observed_at,
-        )?;
-        self.connection.execute(
-            "INSERT INTO workspace_sync_heads
+        self.in_immediate_transaction(|| {
+            self.insert_workspace(
+                &record.workspace_ref.workspace_id,
+                "Code",
+                &record.observed_at,
+            )?;
+            self.connection.execute(
+                "INSERT INTO workspace_sync_heads
              (workspace_id, version, snapshot_id, updated_at_tick, updated_by_device_id, observed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(workspace_id) DO UPDATE SET
@@ -25,16 +26,21 @@ impl MetadataStore {
                   excluded.version = workspace_sync_heads.version
                   AND excluded.snapshot_id = workspace_sync_heads.snapshot_id
                 )",
-            params![
-                record.workspace_ref.workspace_id.as_str(),
-                record.workspace_ref.version,
-                record.workspace_ref.snapshot_id.as_str(),
-                record.workspace_ref.updated_at.tick,
-                record.workspace_ref.updated_by_device_id.as_deref(),
-                record.observed_at.as_str(),
-            ],
-        )?;
-        Ok(())
+                params![
+                    record.workspace_ref.workspace_id.as_str(),
+                    record.workspace_ref.version,
+                    record.workspace_ref.snapshot_id.as_str(),
+                    record.workspace_ref.updated_at.tick,
+                    record.workspace_ref.updated_by_device_id.as_deref(),
+                    record.observed_at.as_str(),
+                ],
+            )?;
+            self.reconcile_materialization_authoritative_head(
+                &record.workspace_ref.workspace_id,
+                &record.observed_at,
+            )?;
+            Ok(())
+        })
     }
 
     pub fn workspace_sync_head(

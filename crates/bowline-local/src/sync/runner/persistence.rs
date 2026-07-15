@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::download::import_snapshot_by_id_with_checkpoints;
 use bowline_control_plane::Capability;
 use bowline_core::ids::PackId;
 
@@ -86,20 +87,29 @@ impl<'a> SyncRunner<'a> {
                 } else {
                     None
                 };
+                let snapshot_content =
+                    self.prepare_snapshot_content(workspace_ref, scan.as_ref(), bound_snapshot)?;
                 Ok(PreparedLocalHeadMetadataUpdate::CommittedScan {
                     candidate,
                     scan,
-                    bound_snapshot,
+                    snapshot_content,
                 })
             }
             LocalHeadMetadataUpdate::FreshScan { bound_snapshot } => {
-                let candidate = crate::sync::coalescer::coalesce_workspace_scan(
-                    &self.options.root,
-                    self.options.workspace_id.clone(),
-                    workspace_ref,
-                    self.options.device_id.clone(),
-                    self.options.workspace_content_key,
-                    self.options.generated_at.clone(),
+                let scan_scope = ScanScope::default();
+                let mut stat_cache = self.load_stat_cache_session(&scan_scope)?;
+                let candidate = crate::sync::coalescer::coalesce_workspace_scan_cached(
+                    crate::sync::coalescer::CoalesceScanRequest {
+                        root: &self.options.root,
+                        workspace_id: self.options.workspace_id.clone(),
+                        base_ref: workspace_ref,
+                        device_id: self.options.device_id.clone(),
+                        workspace_content_key: self.options.workspace_content_key,
+                        created_at: self.options.generated_at.clone(),
+                        context: CoalesceContext::empty(),
+                        stat_cache: Some(&mut stat_cache),
+                        scan_scope,
+                    },
                 )?;
                 let scan = if candidate.snapshot.manifest.snapshot_id.as_str()
                     == workspace_ref.snapshot_id
@@ -108,13 +118,64 @@ impl<'a> SyncRunner<'a> {
                 } else {
                     None
                 };
+                let snapshot_content =
+                    self.prepare_snapshot_content(workspace_ref, scan.as_ref(), bound_snapshot)?;
                 Ok(PreparedLocalHeadMetadataUpdate::FreshScan {
                     candidate: Box::new(candidate),
                     scan,
-                    bound_snapshot,
+                    snapshot_content,
                 })
             }
         }
+    }
+
+    fn prepare_snapshot_content<'metadata>(
+        &self,
+        workspace_ref: &WorkspaceRef,
+        scan: Option<&PreparedScanMetadata>,
+        bound_snapshot: Option<&'metadata SnapshotContent>,
+    ) -> Result<Option<PreparedSnapshotContent<'metadata>>, SyncRunnerError> {
+        // Hosted reads must finish before the immediate local-head transaction;
+        // the scheduler needs the same SQLite writer to renew this worker's claim.
+        if scan.is_none() {
+            return Ok(None);
+        }
+        if let Some(snapshot) = bound_snapshot {
+            return Ok(Some(PreparedSnapshotContent::Borrowed(snapshot)));
+        }
+        self.check_claim_before_domain_boundary()?;
+        let claim_error = RefCell::new(None);
+        let checkpoint = |_point| match self.check_claim_before_domain_boundary() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                *claim_error.borrow_mut() = Some(error);
+                Err(DownloadError::CancellationRequested)
+            }
+        };
+        let imported = import_snapshot_by_id_with_checkpoints(
+            &self.options.workspace_id,
+            &SnapshotId::new(workspace_ref.snapshot_id.clone()),
+            self.control_plane,
+            self.byte_store,
+            self.options.storage_key,
+            crate::sync::namespace::MetadataIdentityKey::derive(
+                &self.options.workspace_id,
+                self.options.workspace_content_key,
+            ),
+            &checkpoint,
+        );
+        if let Some(error) = claim_error.into_inner() {
+            return Err(error);
+        }
+        let imported = imported.map_err(|error| match error {
+            DownloadError::CancellationRequested => {
+                SyncRunnerError::SyncOperationCancellationRequested
+            }
+            error => error.into(),
+        })?;
+        Ok(Some(PreparedSnapshotContent::Imported(Box::new(
+            imported.snapshot,
+        ))))
     }
 
     pub(super) fn commit_local_head_metadata(
@@ -145,23 +206,27 @@ impl<'a> SyncRunner<'a> {
                     PreparedLocalHeadMetadataUpdate::CommittedScan {
                         candidate,
                         scan,
-                        bound_snapshot,
+                        snapshot_content,
                     } => self.write_prepared_scan_metadata(
                         store,
                         candidate,
                         scan.as_ref(),
-                        bound_snapshot,
+                        snapshot_content
+                            .as_ref()
+                            .map(PreparedSnapshotContent::as_ref),
                         env_import.as_ref(),
                     ),
                     PreparedLocalHeadMetadataUpdate::FreshScan {
                         ref candidate,
                         ref scan,
-                        bound_snapshot,
+                        ref snapshot_content,
                     } => self.write_prepared_scan_metadata(
                         store,
                         candidate.as_ref(),
                         scan.as_ref(),
-                        bound_snapshot,
+                        snapshot_content
+                            .as_ref()
+                            .map(PreparedSnapshotContent::as_ref),
                         env_import.as_ref(),
                     ),
                 }
@@ -273,7 +338,18 @@ impl<'a> SyncRunner<'a> {
         env_import: Option<&PreparedEnvImport>,
     ) -> Result<(), SyncRunnerError> {
         if let Some(scan) = scan {
-            self.write_committed_scan_metadata(store, candidate, scan, bound_snapshot, env_import)?;
+            let snapshot_content = bound_snapshot.ok_or_else(|| {
+                SyncRunnerError::StateIo(io::Error::other(
+                    "prepared scan metadata is missing snapshot content",
+                ))
+            })?;
+            self.write_committed_scan_metadata(
+                store,
+                candidate,
+                scan,
+                snapshot_content,
+                env_import,
+            )?;
         }
         self.apply_stat_cache_write_back_to_store(store, candidate)?;
         Ok(())
@@ -309,7 +385,7 @@ impl<'a> SyncRunner<'a> {
         store: &mut MetadataStore,
         candidate: &crate::sync::SnapshotCandidate,
         scan: &PreparedScanMetadata,
-        bound_snapshot: Option<&SnapshotContent>,
+        snapshot_content: &SnapshotContent,
         env_import: Option<&PreparedEnvImport>,
     ) -> Result<(), SyncRunnerError> {
         store.insert_workspace(
@@ -317,23 +393,6 @@ impl<'a> SyncRunner<'a> {
             "Code",
             &self.options.generated_at,
         )?;
-        let imported_snapshot;
-        let snapshot_content = if let Some(bound) = bound_snapshot {
-            bound
-        } else {
-            imported_snapshot = import_snapshot_by_id(
-                &self.options.workspace_id,
-                &candidate.snapshot.manifest().snapshot_id,
-                self.control_plane,
-                self.byte_store,
-                self.options.storage_key,
-                crate::sync::namespace::MetadataIdentityKey::derive(
-                    &self.options.workspace_id,
-                    self.options.workspace_content_key,
-                ),
-            )?;
-            &imported_snapshot.snapshot
-        };
         self.persist_snapshot_page_authority(store, snapshot_content)?;
         let root_path = self.options.root.display().to_string();
         let root_id = store

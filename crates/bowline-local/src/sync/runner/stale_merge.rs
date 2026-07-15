@@ -111,6 +111,28 @@ impl<'a> SyncRunner<'a> {
             .finish_claim_backed_namespace_operation(merge_cancellation.as_ref(), merged_result)?;
         let result = (|| match merged {
             MergeOutcome::Clean(merged) => {
+                if merged.snapshot.manifest().snapshot_id == current_ref.snapshot_id {
+                    materialize_snapshot_guarded(
+                        MaterializationRequest::all(
+                            &self.options.state_root,
+                            &self.options.root,
+                            Some(&base),
+                            &merged.snapshot,
+                        ),
+                        |boundary| self.authorize_materialization(&current_ref, boundary),
+                    )?;
+                    self.complete_local_head(
+                        &current_ref,
+                        LocalHeadMetadataUpdate::FreshScan {
+                            // The hosted ref may bind the same semantic snapshot
+                            // to a different but equivalent packed layout. Import
+                            // that canonical binding instead of publishing the
+                            // retry's locally rebuilt layout.
+                            bound_snapshot: None,
+                        },
+                    )?;
+                    return Ok(SyncTickOutcome::Imported(current_ref));
+                }
                 let outcome = match self.upload_candidate_with_checkpoints(&merged) {
                     Ok(outcome) => outcome,
                     Err(SyncRunnerError::Upload(UploadError::ReusedPackMissing { pack_id }))

@@ -624,6 +624,7 @@ pub struct MaterializationTaskFence<'a> {
     pub path: &'a str,
     pub expected_kind: NamespaceEntryKind,
     pub expected_content_id: Option<&'a ContentId>,
+    pub settled_write_matches_base: bool,
     pub unresolved_conflict_paths: &'a BTreeSet<String>,
     pub now: &'a str,
 }
@@ -691,6 +692,7 @@ pub struct MaterializationPathStateRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MaterializationReconcileReport {
     pub inserted: u64,
+    pub reactivated: u64,
     pub reprioritized: u64,
     pub cancelled: u64,
 }
