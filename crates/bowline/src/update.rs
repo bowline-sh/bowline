@@ -4,11 +4,12 @@ use serde::Deserialize;
 use std::fs;
 
 const DEFAULT_INSTALL_HOST: &str = "https://install.bowline.sh";
-const ENV_INSTALLER_URL: &str = "BOWLINE_UPDATE_INSTALLER_URL";
 const ENV_MANIFEST_URL: &str = "BOWLINE_UPDATE_MANIFEST_URL";
 const ENV_CACHE_PATH: &str = "BOWLINE_UPDATE_CACHE";
 const ENV_DISABLE_UPDATE_CHECK: &str = "BOWLINE_UPDATE_DISABLE";
 const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const UPDATE_EXECUTION_DISABLED: &str =
+    "Bowline update execution is disabled until release manifests are verified by the CLI";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +35,26 @@ pub(super) struct UpdateCheck {
     pub(super) urgency: UpdateUrgency,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct UpdateStatusRevision {
+    exists: bool,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+pub(super) fn update_status_revision() -> UpdateStatusRevision {
+    update_status_revision_at(&cache_path(None))
+}
+
+pub(super) fn update_status_revision_at(path: &Path) -> UpdateStatusRevision {
+    let metadata = fs::metadata(path).ok();
+    UpdateStatusRevision {
+        exists: metadata.is_some(),
+        len: metadata.as_ref().map_or(0, fs::Metadata::len),
+        modified: metadata.as_ref().and_then(|value| value.modified().ok()),
+    }
+}
+
 pub(super) fn print_update(args: UpdateArgs, json: bool) -> ExitCode {
     let generated_at = generated_at();
     let check = match check_for_update_fresh(args.version.as_deref()) {
@@ -44,6 +65,10 @@ pub(super) fn print_update(args: UpdateArgs, json: bool) -> ExitCode {
         }
     };
     let output = update_output(&check, &generated_at, args.version.as_deref());
+    if let Err(error) = validate_requested_update_target(&check, args.version.as_deref()) {
+        print_runtime_error(CommandName::Update, generated_at, &error, json);
+        return ExitCode::from(EXIT_RUNTIME);
+    }
 
     if args.check {
         if json {
@@ -63,61 +88,9 @@ pub(super) fn print_update(args: UpdateArgs, json: bool) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let installer = match download_installer(&installer_url()) {
-        Ok(installer) => installer,
-        Err(error) => {
-            print_runtime_error(CommandName::Update, generated_at, &error, json);
-            return ExitCode::from(EXIT_RUNTIME);
-        }
-    };
-    let mut command = ProcessCommand::new("sh");
-    command.arg(&installer);
-    if let Some(version) = args.version.as_deref() {
-        command.args(["--version", version]);
-    }
-    if json {
-        match command.output() {
-            Ok(result) if result.status.success() => {
-                let _ = fs::remove_file(&installer);
-                print_json(&output);
-                ExitCode::SUCCESS
-            }
-            Ok(result) => {
-                let _ = fs::remove_file(&installer);
-                let message = String::from_utf8_lossy(&result.stderr);
-                print_runtime_error(CommandName::Update, generated_at, message.trim(), true);
-                ExitCode::from(EXIT_RUNTIME)
-            }
-            Err(error) => {
-                let _ = fs::remove_file(&installer);
-                print_runtime_error(CommandName::Update, generated_at, &error.to_string(), true);
-                ExitCode::from(EXIT_RUNTIME)
-            }
-        }
-    } else {
-        println!("Updating Bowline from {}", installer_url());
-        match command.status() {
-            Ok(status) if status.success() => {
-                let _ = fs::remove_file(&installer);
-                ExitCode::SUCCESS
-            }
-            Ok(status) => {
-                let _ = fs::remove_file(&installer);
-                print_runtime_error(
-                    CommandName::Update,
-                    generated_at,
-                    &format!("installer exited with status {status}"),
-                    false,
-                );
-                ExitCode::from(EXIT_RUNTIME)
-            }
-            Err(error) => {
-                let _ = fs::remove_file(&installer);
-                print_runtime_error(CommandName::Update, generated_at, &error.to_string(), false);
-                ExitCode::from(EXIT_RUNTIME)
-            }
-        }
-    }
+    let message = update_execution_disabled_message(&check);
+    print_runtime_error(CommandName::Update, generated_at, &message, json);
+    ExitCode::from(EXIT_RUNTIME)
 }
 
 pub(super) fn check_for_update(
@@ -159,28 +132,25 @@ pub(super) fn attach_update_status_if_available(
         return;
     }
 
-    let required = check.urgency == UpdateUrgency::Required;
-    if required {
-        output.status.level = StatusLevel::Limited;
-        output.status.attention_items.push(format!(
-            "Bowline {} is required before this version continues.",
-            check.latest_version
-        ));
-    }
+    attach_update_check_status(output, &check);
+}
 
+fn attach_update_check_status(output: &mut StatusCommandOutput, check: &UpdateCheck) {
+    crate::status_commands::append_status_fact(
+        output,
+        "client.update_available",
+        format!("client-update:{}", check.latest_version),
+        "client-update",
+        StatusFactScope::Device,
+        None,
+        None,
+    );
     output.items.push(StatusItem {
         kind: StatusItemKind::Update,
-        summary: if required {
-            format!(
-                "Required Bowline update available: {} -> {}.",
-                check.current_version, check.latest_version
-            )
-        } else {
-            format!(
-                "Bowline update available: {} -> {}.",
-                check.current_version, check.latest_version
-            )
-        },
+        summary: format!(
+            "Bowline update available: {} -> {}.",
+            check.current_version, check.latest_version
+        ),
         subject: Some(StatusSubject {
             kind: StatusSubjectKind::Component,
             id: format!("bowline-update-{}", check.latest_version),
@@ -198,10 +168,6 @@ pub(super) fn attach_update_status_if_available(
         snapshot_id: None,
         policy_version: None,
         env_record_id: None,
-    });
-    output.next_actions.push(SafeAction {
-        label: "Update Bowline".to_string(),
-        command: Some("bowline update".to_string()),
     });
 }
 
@@ -264,35 +230,6 @@ fn curl_text(url: &str, timeout_secs: u64) -> Result<String, String> {
     String::from_utf8(output.stdout).map_err(|error| error.to_string())
 }
 
-fn download_installer(url: &str) -> Result<PathBuf, String> {
-    let path = env::temp_dir().join(format!(
-        "bowline-install-{}-{}.sh",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default()
-    ));
-    let path_arg = path.to_string_lossy().into_owned();
-    let output = ProcessCommand::new("curl")
-        .args([
-            "-fsSL",
-            "--retry",
-            "1",
-            "--max-time",
-            "30",
-            "-o",
-            &path_arg,
-            url,
-        ])
-        .output()
-        .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    Ok(path)
-}
-
 fn version_is_newer(latest: &str, current: &str) -> bool {
     let Ok(latest) = Version::parse(latest.trim_start_matches('v')) else {
         return false;
@@ -320,10 +257,30 @@ fn update_output(
     }
 }
 
+fn validate_requested_update_target(
+    check: &UpdateCheck,
+    requested_version: Option<&str>,
+) -> Result<(), String> {
+    if requested_version.is_some() && !check.update_available {
+        return Err(format!(
+            "requested version {} is not newer than current {}",
+            check.latest_version, check.current_version
+        ));
+    }
+    Ok(())
+}
+
+fn update_execution_disabled_message(check: &UpdateCheck) -> String {
+    format!(
+        "{UPDATE_EXECUTION_DISABLED}. Latest advisory version: {}.",
+        check.latest_version
+    )
+}
+
 fn render_update_human(check: &UpdateCheck) -> String {
     if check.update_available {
         format!(
-            "Bowline update available: {} -> {}\nRun: bowline update\n",
+            "Bowline update available: {} -> {}\n{UPDATE_EXECUTION_DISABLED}.\n",
             check.current_version, check.latest_version
         )
     } else {
@@ -333,13 +290,9 @@ fn render_update_human(check: &UpdateCheck) -> String {
 
 fn update_command(version: Option<&str>) -> String {
     match version {
-        Some(version) => format!("bowline update --version {version}"),
-        None => "bowline update".to_string(),
+        Some(version) => format!("bowline update --check --version {version}"),
+        None => "bowline update --check".to_string(),
     }
-}
-
-fn installer_url() -> String {
-    env::var(ENV_INSTALLER_URL).unwrap_or_else(|_| format!("{DEFAULT_INSTALL_HOST}/install.sh"))
 }
 
 fn manifest_url(version: Option<&str>) -> String {
@@ -374,6 +327,7 @@ fn cache_path(version: Option<&str>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bowline_core::status::StatusLevel;
 
     #[test]
     fn semver_check_detects_newer_versions() {
@@ -391,5 +345,127 @@ mod tests {
 
         assert_eq!(manifest.version, "9.0.0");
         assert_eq!(manifest.urgency, UpdateUrgency::Required);
+    }
+
+    #[test]
+    fn unsigned_required_manifest_recommends_update_without_adding_action() {
+        let check = update_check("9.0.0", UpdateUrgency::Required);
+        let mut output = status_output();
+
+        attach_update_check_status(&mut output, &check);
+
+        assert_eq!(output.status.level, StatusLevel::Attention);
+        assert!(output.status.attention_items.is_empty());
+        assert_eq!(output.items.len(), 1);
+        assert_eq!(
+            output.items[0].summary,
+            format!("Bowline update available: {} -> 9.0.0.", CLI_VERSION)
+        );
+        assert!(output.next_actions.is_empty());
+    }
+
+    #[test]
+    fn optional_manifest_recommends_update_without_action() {
+        let check = update_check("9.0.0", UpdateUrgency::Normal);
+        let mut output = status_output();
+
+        attach_update_check_status(&mut output, &check);
+
+        assert_eq!(output.status.level, StatusLevel::Attention);
+        assert!(output.status.attention_items.is_empty());
+        assert_eq!(output.items.len(), 1);
+        assert_eq!(
+            output.items[0].summary,
+            format!("Bowline update available: {} -> 9.0.0.", CLI_VERSION)
+        );
+        assert!(output.next_actions.is_empty());
+    }
+
+    #[test]
+    fn pinned_update_rejects_non_newer_version() {
+        let check = UpdateCheck {
+            current_version: CLI_VERSION.to_string(),
+            latest_version: CLI_VERSION.to_string(),
+            update_available: false,
+            urgency: UpdateUrgency::Normal,
+        };
+
+        let error = validate_requested_update_target(&check, Some(CLI_VERSION)).unwrap_err();
+
+        assert_eq!(
+            error,
+            format!("requested version {CLI_VERSION} is not newer than current {CLI_VERSION}")
+        );
+    }
+
+    #[test]
+    fn pinned_update_allows_newer_version() {
+        let check = update_check("9.0.0", UpdateUrgency::Normal);
+
+        assert!(validate_requested_update_target(&check, Some("9.0.0")).is_ok());
+    }
+
+    #[test]
+    fn update_execution_disabled_message_names_latest_advisory_version() {
+        let check = update_check("9.0.0", UpdateUrgency::Normal);
+
+        assert_eq!(
+            update_execution_disabled_message(&check),
+            "Bowline update execution is disabled until release manifests are verified by the CLI. Latest advisory version: 9.0.0."
+        );
+    }
+
+    #[test]
+    fn update_command_output_points_to_check_only_path() {
+        assert_eq!(update_command(None), "bowline update --check");
+        assert_eq!(
+            update_command(Some("9.0.0")),
+            "bowline update --check --version 9.0.0"
+        );
+    }
+
+    fn update_check(latest_version: &str, urgency: UpdateUrgency) -> UpdateCheck {
+        UpdateCheck {
+            current_version: CLI_VERSION.to_string(),
+            latest_version: latest_version.to_string(),
+            update_available: true,
+            urgency,
+        }
+    }
+
+    fn status_output() -> StatusCommandOutput {
+        StatusCommandOutput {
+            contract_version: CONTRACT_VERSION,
+            command: CommandName::Status,
+            generated_at: "2026-07-05T12:00:00Z".to_string(),
+            workspace_id: WorkspaceId::new("workspace_update_test"),
+            project_id: None,
+            scope: None,
+            requested_path: None,
+            resolved_workspace_root: Some("/tmp/workspace".to_string()),
+            workspace_summary: None,
+            setup_readiness: None,
+            sync_queue: None,
+            freshness: bowline_core::status::FreshnessVerdict::Unknown,
+            stale_bases: Vec::new(),
+            status: bowline_core::status::WorkspaceStatus::healthy(),
+            status_summary: bowline_core::status::reduce_status_facts(
+                Vec::new(),
+                1,
+                "2026-07-05T12:00:00Z",
+            ),
+            items: Vec::new(),
+            limits: Vec::new(),
+            event_watermarks: bowline_core::status::EventWatermarks {
+                last_scan_at: None,
+                last_event_id: None,
+                event_lag_ms: None,
+                sync_state: None,
+                watcher_state: None,
+                network_state: None,
+            },
+            next_actions: Vec::new(),
+            device_approvals: Vec::new(),
+        }
     }
 }

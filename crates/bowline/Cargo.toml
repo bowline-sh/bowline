@@ -13,6 +13,7 @@ blake3 = "1.8"
 crossterm = "0.29"
 bowline-control-plane = { path = "../bowline-control-plane", features = ["hosted-convex"] }
 bowline-core = { path = "../bowline-core" }
+bowline-daemon-rpc = { path = "../bowline-daemon-rpc" }
 bowline-local = { path = "../bowline-local" }
 bowline-storage = { path = "../bowline-storage" }
 ratatui = "0.29"
@@ -21,6 +22,9 @@ serde_json = "1.0"
 semver = "1.0"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 
+[dev-dependencies]
+bowline-testkit = { path = "../bowline-testkit" }
+
 [[bin]]
 name = "bowline"
 path = "src/bin/bowline.rs"
@@ -28,3 +32,6 @@ path = "src/bin/bowline.rs"
 [[bin]]
 name = "bl"
 path = "src/bin/bl.rs"
+
+[lints]
+workspace = true

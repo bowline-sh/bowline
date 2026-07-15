@@ -1,5 +1,8 @@
 use super::*;
-use crate::RecoveryControlPlaneClient;
+use crate::{
+    RecoveryControlPlaneClient, RecoveryEnvelopeInput, recovery_envelope_payload_proof_subject,
+    recovery_envelope_proof_subject,
+};
 
 impl RecoveryControlPlaneClient for FakeControlPlaneClient {
     fn create_recovery_envelope(
@@ -14,7 +17,7 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             &input.created_by_device_id,
             &input.created_by_device_proof,
             "create-recovery-envelope",
-            &input.envelope_id,
+            &recovery_envelope_payload_proof_subject(&input),
         )?;
         let key = (input.workspace_id.clone(), input.envelope_id.clone());
         if let Some(existing) = state.recovery_envelopes.get(&key) {
@@ -62,9 +65,9 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
 
     fn verify_recovery_envelope(
         &self,
-        workspace_id: &str,
-        envelope_id: &str,
-        verified_by_device_id: &str,
+        workspace_id: &WorkspaceId,
+        envelope_id: &RecoveryEnvelopeId,
+        verified_by_device_id: &DeviceId,
         verified_by_device_proof: &str,
         recovery_proof: &str,
     ) -> ControlPlaneResult<RecoveryEnvelopeRecord> {
@@ -75,12 +78,12 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             verified_by_device_id,
             verified_by_device_proof,
             "verify-recovery-envelope",
-            envelope_id,
+            &recovery_envelope_proof_subject(envelope_id),
         )?;
-        let key = (workspace_id.to_string(), envelope_id.to_string());
+        let key = (workspace_id.clone(), envelope_id.clone());
         let expected_verifier = state.recovery_proof_verifiers.get(&key).ok_or_else(|| {
             ControlPlaneError::ObjectMissing {
-                object_key: envelope_id.to_string(),
+                object_key: envelope_id.as_str().to_string(),
             }
         })?;
         if expected_verifier
@@ -93,15 +96,15 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
         }
         let record = state.recovery_envelopes.get_mut(&key).ok_or_else(|| {
             ControlPlaneError::ObjectMissing {
-                object_key: envelope_id.to_string(),
+                object_key: envelope_id.as_str().to_string(),
             }
         })?;
         match record.state {
             RecoveryEnvelopeState::GeneratedUnverified => {}
             RecoveryEnvelopeState::Active => return Ok(record.clone()),
             RecoveryEnvelopeState::Rotated | RecoveryEnvelopeState::Revoked => {
-                return Err(ControlPlaneError::Limited {
-                    capability: "recovery-key",
+                return Err(ControlPlaneError::Conflict {
+                    resource: "recovery-envelope",
                     reason: "rotated or revoked Recovery Keys cannot be verified",
                 });
             }
@@ -111,7 +114,7 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
         let record = record.clone();
         state
             .events
-            .entry(workspace_id.to_string())
+            .entry(workspace_id.clone())
             .or_default()
             .push(self.build_event(
                 workspace_id,
@@ -133,7 +136,7 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             &input.created_by_device_id,
             &input.created_by_device_proof,
             "rotate-recovery-envelope",
-            &input.envelope_id,
+            &recovery_envelope_payload_proof_subject(&input),
         )?;
         let record_key = (input.workspace_id.clone(), input.envelope_id.clone());
         if let Some(existing) = state.recovery_envelopes.get(&record_key) {
@@ -193,9 +196,9 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
 
     fn revoke_recovery_envelope(
         &self,
-        workspace_id: &str,
-        envelope_id: &str,
-        revoked_by_device_id: &str,
+        workspace_id: &WorkspaceId,
+        envelope_id: &RecoveryEnvelopeId,
+        revoked_by_device_id: &DeviceId,
         revoked_by_device_proof: &str,
     ) -> ControlPlaneResult<RecoveryEnvelopeRecord> {
         let mut state = self.state.lock().expect("fake control plane poisoned");
@@ -205,20 +208,23 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             revoked_by_device_id,
             revoked_by_device_proof,
             "revoke-recovery-envelope",
-            envelope_id,
+            &recovery_envelope_proof_subject(envelope_id),
         )?;
-        let key = (workspace_id.to_string(), envelope_id.to_string());
+        let key = (workspace_id.clone(), envelope_id.clone());
         let record = state.recovery_envelopes.get_mut(&key).ok_or_else(|| {
             ControlPlaneError::ObjectMissing {
-                object_key: envelope_id.to_string(),
+                object_key: envelope_id.as_str().to_string(),
             }
         })?;
+        if record.state == RecoveryEnvelopeState::Revoked {
+            return Ok(record.clone());
+        }
         record.state = RecoveryEnvelopeState::Revoked;
         record.revoked_at = Some(self.clock.now());
         let record = record.clone();
         state
             .events
-            .entry(workspace_id.to_string())
+            .entry(workspace_id.clone())
             .or_default()
             .push(self.build_event(
                 workspace_id,
@@ -230,13 +236,13 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
 
     fn list_recovery_envelopes(
         &self,
-        workspace_id: &str,
+        workspace_id: &WorkspaceId,
     ) -> ControlPlaneResult<Vec<RecoveryEnvelopeRecord>> {
         let state = self.state.lock().expect("fake control plane poisoned");
         let mut envelopes = state
             .recovery_envelopes
             .values()
-            .filter(|envelope| envelope.workspace_id == workspace_id)
+            .filter(|envelope| &envelope.workspace_id == workspace_id)
             .cloned()
             .collect::<Vec<_>>();
         envelopes.sort_by(|left, right| left.envelope_id.cmp(&right.envelope_id));
@@ -253,11 +259,11 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             .recovery_envelopes
             .get(&(input.workspace_id.clone(), input.envelope_id.clone()))
             .ok_or_else(|| ControlPlaneError::ObjectMissing {
-                object_key: input.envelope_id.clone(),
+                object_key: input.envelope_id.as_str().to_string(),
             })?;
         if envelope.state != RecoveryEnvelopeState::Active {
-            return Err(ControlPlaneError::Limited {
-                capability: "recovery-key",
+            return Err(ControlPlaneError::Conflict {
+                resource: "recovery-envelope",
                 reason: "only active Recovery Keys can authorize a device",
             });
         }
@@ -265,7 +271,7 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             .recovery_proof_verifiers
             .get(&(input.workspace_id.clone(), input.envelope_id.clone()))
             .ok_or_else(|| ControlPlaneError::ObjectMissing {
-                object_key: input.envelope_id.clone(),
+                object_key: input.envelope_id.as_str().to_string(),
             })?;
         if expected_verifier
             != &recovery_proof_verifier_from_proof(
@@ -292,6 +298,26 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
                 reason: "request does not belong to this workspace",
             });
         }
+        if let Some(existing_grant) = state.grants.get(&input.request_id) {
+            if state.revoked_grants.contains(&input.request_id) {
+                return Err(ControlPlaneError::Conflict {
+                    resource: "device-grant",
+                    reason: "grant has been revoked",
+                });
+            }
+            let current_key_epoch = state
+                .workspace_key_epochs
+                .get(&input.workspace_id)
+                .copied()
+                .unwrap_or(1);
+            if existing_grant.key_epoch != current_key_epoch {
+                return Err(ControlPlaneError::Conflict {
+                    resource: "device-grant",
+                    reason: "device grant key epoch must match current workspace epoch",
+                });
+            }
+            return Ok(existing_grant.clone());
+        }
         if request.state != DeviceRequestState::Pending {
             return Err(ControlPlaneError::Conflict {
                 resource: "device-request",
@@ -299,36 +325,43 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             });
         }
         if request.expires_at <= self.clock.peek() {
-            state.device_requests.insert(
-                input.request_id.clone(),
-                DeviceRequest {
-                    state: DeviceRequestState::Expired,
-                    ..request.clone()
-                },
-            );
             return Err(ControlPlaneError::Conflict {
                 resource: "device-request",
                 reason: "device request has expired",
             });
         }
-        if let Some(existing_grant) = state.grants.get(&input.request_id) {
-            return Ok(existing_grant.clone());
+        let current_key_epoch = state
+            .workspace_key_epochs
+            .get(&input.workspace_id)
+            .copied()
+            .unwrap_or(1);
+        if input.key_epoch != current_key_epoch {
+            return Err(ControlPlaneError::Conflict {
+                resource: "device-grant",
+                reason: "device grant key epoch must match current workspace epoch",
+            });
         }
         let granted_at = self.clock.now();
         let grant = DeviceApproval {
-            grant_id: self.ids.next_id("recovery-grant"),
+            grant_id: bowline_core::ids::EncryptedDeviceGrantId::new(format!(
+                "recovery-grant:{}",
+                input.request_id.as_str()
+            )),
             request_id: request.request_id.clone(),
             workspace_id: request.workspace_id.clone(),
             device_id: request.device_id.clone(),
             device_name: request.device_name.clone(),
             platform: request.platform.clone(),
             device_fingerprint: request.device_fingerprint.clone(),
-            approved_by_device_id: format!("recovery:{}", input.envelope_id),
+            approved_by_device_id: DeviceId::new(format!(
+                "recovery:{}",
+                input.envelope_id.as_str()
+            )),
             encrypted_grant_ciphertext: input.encrypted_grant_ciphertext,
             key_epoch: input.key_epoch,
             granted_at,
             expires_at: ControlPlaneTimestamp {
-                tick: granted_at.tick + input.expires_in_ticks,
+                tick: granted_at.tick + input.expires_in_ticks.max(1),
             },
             accepted_at: None,
             harness_only: false,

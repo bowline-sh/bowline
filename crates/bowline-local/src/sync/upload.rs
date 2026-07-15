@@ -1,28 +1,84 @@
-use std::{collections::BTreeSet, error::Error, fmt};
+use std::collections::{BTreeMap, BTreeSet};
 
 use bowline_control_plane::{
-    CompareAndSwapError, ControlPlaneClient, ControlPlaneError, ControlPlaneTimestamp, ObjectKind,
-    ObjectManifestCommit, ObjectManifestRecord, ObjectPointer, UploadIntentRequest, WorkspaceRef,
+    CompareAndSwapError, ControlPlaneClient, ControlPlaneError, ControlPlaneTimestamp,
+    MetadataBindingCommit, MetadataBindingInput, MetadataBindingOutcome, MetadataBindingRecord,
+    MetadataSidecar, ObjectKind, ObjectMetadataCommit, ObjectPointer, SnapshotRootCommit,
+    SnapshotRootRecord, UploadIntentRequest, WorkspaceRef,
+};
+use bowline_core::{
+    ids::{ContentId, DeviceId, PackId, WorkspaceId},
+    workspace_graph::{
+        ContentLayout, ContentLocator, ContentStorage, HydrationState, SegmentId, SegmentLocator,
+    },
 };
 use bowline_storage::{
-    ByteStore, ByteStoreError, ObjectKey, ObjectKind as StorageObjectKind, ObjectMetadata,
-    PackRecordInput, PackfileError, StorageKey, seal_snapshot_manifest, write_source_packs,
+    ByteStore, ByteStoreError, EnvelopeContext, ManifestPointer, ObjectKey,
+    ObjectKind as StorageObjectKind, ObjectMetadata, PackRecordReader,
+    SourcePackUploadJournalEntry, SourcePackUploadJournalKey, StorageKey, seal,
+    seal_snapshot_manifest, workspace_id_hash,
 };
 
-use super::SnapshotCandidate;
+use super::UploadError;
+use super::conflicts::{ConflictBundlePayload, conflict_bundle_object_id};
+use super::import_snapshot_manifest;
+use super::upload_payloads::{
+    ObjectContentPayload, SnapshotManifestPayload, SnapshotRootCommittedPayload,
+    SourcePacksWrittenPayload, WorkspaceRefAdvancedPayload, WorkspaceRefStalePayload,
+};
+use super::{ConflictFile, ConflictRecord, SnapshotCandidate, SnapshotContent};
+use crate::sync::content_layout_map_from_snapshot;
+#[cfg(feature = "fault-injection")]
+use crate::sync::fault::FaultPoint;
 
 const SOURCE_PACK_TARGET_BYTES: usize = 16 * 1024 * 1024;
+const CONFLICT_BUNDLE_FORMAT_VERSION: u16 = 1;
+
+mod journal;
+mod objects;
+mod packs;
+mod reused_packs;
+
+use journal::{
+    append_journal_source_pack_pointers, locators_by_journal_content, source_pack_journal_entry,
+    source_pack_provisional_journal_entry, source_pack_upload_journal_key,
+    verified_source_pack_upload_journal,
+};
+use objects::{
+    ReusableSnapshotManifest, UploadObjectRequest, ensure_uploaded_object,
+    ensure_uploaded_source_pack,
+};
+#[cfg(test)]
+use objects::{put_or_read_existing, validate_uploaded_metadata};
+use packs::{PreparedSourcePack, prepare_segmented_source_packs};
+use reused_packs::{
+    JournalPackPointerRequest, PackUploadRequest, ReusedPackPointerRequest,
+    append_reused_source_pack_pointers, build_bound_snapshot, commit_bound_snapshot,
+    reused_pack_count, reused_record_count, upload_source_packs,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UploadOutcome {
     Advanced {
         workspace_ref: WorkspaceRef,
-        object_manifest: ObjectManifestRecord,
+        snapshot_root: SnapshotRootRecord,
+        bound_snapshot: Option<Box<SnapshotContent>>,
     },
     Stale {
         stale: bowline_control_plane::StaleWorkspaceRef,
-        object_manifest: ObjectManifestRecord,
+        snapshot_root: SnapshotRootRecord,
+        bound_snapshot: Option<Box<SnapshotContent>>,
     },
+}
+
+impl UploadOutcome {
+    pub(crate) fn bound_snapshot(&self) -> Option<&SnapshotContent> {
+        match self {
+            Self::Advanced { bound_snapshot, .. } | Self::Stale { bound_snapshot, .. } => {
+                bound_snapshot.as_deref()
+            }
+        }
+    }
 }
 
 pub fn upload_snapshot_candidate(
@@ -42,6 +98,109 @@ pub fn upload_snapshot_candidate(
     )
 }
 
+pub(crate) fn upload_conflict_bundle_object(
+    request: UploadConflictBundleRequest<'_>,
+) -> Result<ObjectPointer, UploadError> {
+    let payload = ConflictBundlePayload {
+        record: request.record.clone(),
+        files: request.files.to_vec(),
+    };
+    let plaintext = serde_json::to_vec(&payload)?;
+    let bundle_object_id = conflict_bundle_object_id(request.record);
+    let object_key = ObjectKey::from_conflict_bundle_id(bundle_object_id.as_str())?;
+    match request
+        .control_plane
+        .head_object_metadata(request.workspace_id, object_key.as_str())
+    {
+        Ok(metadata) => {
+            if metadata.key != object_key
+                || metadata.kind != StorageObjectKind::ConflictBundle
+                || metadata.key_epoch != request.key_epoch
+            {
+                return Err(UploadError::ControlPlane(ControlPlaneError::Conflict {
+                    resource: "conflict bundle object metadata",
+                    reason: "existing conflict bundle object metadata does not match conflict upload",
+                }));
+            }
+            return Ok(object_pointer_from_metadata(
+                metadata,
+                bundle_object_id.as_str(),
+                ObjectKind::ConflictBundle,
+            ));
+        }
+        Err(ControlPlaneError::ObjectMissing { .. }) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let sealed = seal(
+        &plaintext,
+        request.storage_key,
+        &conflict_bundle_envelope_context(
+            request.workspace_id,
+            bundle_object_id.as_str(),
+            request.key_epoch,
+        ),
+    )?
+    .into_bytes();
+    let upload = ensure_uploaded_object(
+        request.control_plane,
+        request.byte_store,
+        UploadObjectRequest {
+            workspace_id: request.workspace_id,
+            storage_kind: StorageObjectKind::ConflictBundle,
+            key: object_key,
+            content_id: bundle_object_id.as_str(),
+            bytes: &sealed,
+            key_epoch: request.key_epoch,
+            device_id: Some(request.device_id),
+            reusable_snapshot_manifest: None,
+        },
+    )?;
+    let pointer = object_pointer_from_metadata(
+        upload.metadata,
+        bundle_object_id.as_str(),
+        ObjectKind::ConflictBundle,
+    );
+    let committed =
+        request
+            .control_plane
+            .commit_uploaded_object_metadata(ObjectMetadataCommit {
+                workspace_id: request.workspace_id.clone(),
+                object: pointer,
+                committed_by_device_id: request.device_id.clone(),
+            })?;
+    Ok(object_pointer_from_metadata(
+        committed,
+        bundle_object_id.as_str(),
+        ObjectKind::ConflictBundle,
+    ))
+}
+
+pub(crate) struct UploadConflictBundleRequest<'a> {
+    pub(crate) record: &'a ConflictRecord,
+    pub(crate) files: &'a [ConflictFile],
+    pub(crate) workspace_id: &'a WorkspaceId,
+    pub(crate) device_id: &'a DeviceId,
+    pub(crate) control_plane: &'a dyn ControlPlaneClient,
+    pub(crate) byte_store: &'a dyn ByteStore,
+    pub(crate) storage_key: StorageKey,
+    pub(crate) key_epoch: u32,
+}
+
+pub(crate) fn conflict_bundle_envelope_context(
+    workspace_id: &WorkspaceId,
+    conflict_id: &str,
+    key_epoch: u32,
+) -> EnvelopeContext {
+    EnvelopeContext {
+        workspace_id_hash: workspace_id_hash(workspace_id.as_str()),
+        object_kind: StorageObjectKind::ConflictBundle,
+        object_id: conflict_id.to_string(),
+        record_id: conflict_id.to_string(),
+        key_epoch,
+        format_version: CONFLICT_BUNDLE_FORMAT_VERSION,
+    }
+}
+
 pub fn upload_snapshot_candidate_with_checkpoints(
     candidate: &SnapshotCandidate,
     control_plane: &dyn ControlPlaneClient,
@@ -50,670 +209,289 @@ pub fn upload_snapshot_candidate_with_checkpoints(
     key_epoch: u32,
     mut checkpoint: impl FnMut(&str, String) -> Result<(), UploadError>,
 ) -> Result<UploadOutcome, UploadError> {
-    if let Some(object_manifest) = control_plane.get_snapshot_manifest_pointer(
-        candidate.base.workspace_id.as_str(),
-        candidate.snapshot.manifest.snapshot_id.as_str(),
+    if let Some(snapshot_root) = control_plane.get_snapshot_root(
+        &candidate.base.workspace_id,
+        &candidate.snapshot.manifest.snapshot_id,
     )? {
-        if object_manifest.manifest_id != candidate.manifest_id.as_str() {
+        if snapshot_root.manifest_id != candidate.manifest_id || !snapshot_root.complete {
             return Err(UploadError::ControlPlane(ControlPlaneError::Conflict {
-                resource: "object manifest",
+                resource: "snapshot root",
                 reason: "snapshot is already committed with a different manifest ID",
             }));
         }
         checkpoint(
-            "object-manifest-reused",
-            format!(
-                "{{\"snapshotId\":{},\"manifestId\":{}}}",
-                json_string(candidate.snapshot.manifest.snapshot_id.as_str()),
-                json_string(&object_manifest.manifest_id),
-            ),
+            "snapshot-root-reused",
+            checkpoint_payload(&SnapshotManifestPayload {
+                snapshot_id: candidate.snapshot.manifest.snapshot_id.as_str(),
+                manifest_id: &snapshot_root.manifest_id,
+            })?,
         )?;
-        return finish_upload(candidate, control_plane, object_manifest, &mut checkpoint);
+        let imported = import_snapshot_manifest(
+            &candidate.base.workspace_id,
+            &snapshot_root,
+            control_plane,
+            byte_store,
+            storage_key,
+            candidate.snapshot.namespace_snapshot().store.identity_key(),
+        )?;
+        return finish_upload(
+            candidate,
+            control_plane,
+            snapshot_root,
+            Some(Box::new(imported.snapshot)),
+            &mut checkpoint,
+        );
     }
 
-    let pack_inputs = candidate
+    let reusable_layouts = content_layout_map_from_snapshot(&candidate.snapshot)?;
+    let upload_journal_key = source_pack_upload_journal_key(candidate, key_epoch);
+    let journal_entries = verified_source_pack_upload_journal(
+        candidate,
+        byte_store,
+        storage_key,
+        key_epoch,
+        &upload_journal_key,
+    )?;
+    let journal_locators = locators_by_journal_content(&journal_entries);
+    let reused_record_count = reused_record_count(&candidate.snapshot, &reusable_layouts)?;
+    let reused_pack_count = reused_pack_count(&reusable_layouts);
+    let resident_content_bytes = candidate
         .snapshot
-        .files
+        .prepared_content()
+        .values()
+        .filter_map(|content| content.resident_bytes().map(|bytes| bytes.len() as u64))
+        .sum::<u64>();
+    let prepared_content_bytes = candidate
+        .snapshot
+        .prepared_content()
+        .values()
+        .map(|content| content.logical_len)
+        .sum::<u64>();
+    let staged_content_bytes = candidate
+        .snapshot
+        .prepared_content()
+        .values()
+        .filter(|content| {
+            matches!(
+                &content.source,
+                super::PreparedContentSource::StagedFile { .. }
+            )
+        })
+        .map(|content| content.logical_len)
+        .sum::<u64>();
+    let largest_content_bytes = candidate
+        .snapshot
+        .prepared_content()
+        .values()
+        .map(|content| content.logical_len)
+        .max()
+        .unwrap_or_default();
+    let pending_files = candidate
+        .snapshot
+        .prepared_content()
         .iter()
-        .map(|(content_id, bytes)| PackRecordInput {
-            content_id: content_id.clone(),
-            bytes: bytes.clone(),
+        .filter(|(content_id, _)| !reusable_layouts.contains_key(*content_id))
+        .collect::<Vec<_>>();
+    let pack_readers = pending_files
+        .iter()
+        .map(|(content_id, content)| PackRecordReader {
+            content_id,
+            source: *content,
         })
         .collect::<Vec<_>>();
-    let packs = write_source_packs(
+    let prepared = prepare_segmented_source_packs(
         candidate.snapshot.manifest.workspace_id.clone(),
-        &pack_inputs,
+        &pack_readers,
+        &journal_locators,
         SOURCE_PACK_TARGET_BYTES,
         storage_key,
         key_epoch,
     )?;
+    let newly_packed_segments = prepared
+        .packs
+        .iter()
+        .flat_map(|pack| pack.locators())
+        .map(|locator| locator.content_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let record_count = prepared
+        .layouts
+        .values()
+        .filter(|layout| {
+            layout
+                .segments()
+                .iter()
+                .any(|segment| newly_packed_segments.contains(segment.segment_id.as_str()))
+        })
+        .count();
+    let packed_input_bytes = prepared
+        .packs
+        .iter()
+        .flat_map(|pack| pack.locators())
+        .map(|locator| locator.raw_size)
+        .sum::<u64>();
     checkpoint(
         "source-packs-written",
-        format!(
-            "{{\"snapshotId\":{},\"packCount\":{},\"recordCount\":{}}}",
-            json_string(candidate.snapshot.manifest.snapshot_id.as_str()),
-            packs.len(),
-            pack_inputs.len(),
-        ),
+        checkpoint_payload(&SourcePacksWrittenPayload {
+            snapshot_id: candidate.snapshot.manifest.snapshot_id.as_str(),
+            preparation_lease_id: candidate
+                .snapshot
+                .preparation_lease()
+                .map(|lease| lease.id.as_str()),
+            pack_count: prepared.packs.len(),
+            record_count,
+            reused_record_count,
+            reused_pack_count,
+            resident_content_bytes,
+            prepared_content_bytes,
+            staged_content_bytes,
+            largest_content_bytes,
+            packed_input_bytes,
+        })?,
     )?;
-
-    let mut manifest = candidate.snapshot.manifest.clone();
-    for pack in &packs {
-        for locator in &pack.locators {
-            for entry in &mut manifest.entries {
-                if entry.content_id.as_ref() == Some(&locator.content_id) {
-                    entry.locator = Some(locator.clone());
-                    entry.hydration_state = bowline_core::workspace_graph::HydrationState::Cold;
-                }
-            }
-        }
-    }
 
     let mut pack_pointers = Vec::new();
     let mut included_pack_keys = BTreeSet::<String>::new();
-    for pack in &packs {
-        let metadata = ensure_uploaded_object(
-            control_plane,
-            byte_store,
-            UploadObjectRequest {
-                workspace_id: candidate.base.workspace_id.as_str(),
-                control_plane_kind: ObjectKind::SourcePack,
-                storage_kind: StorageObjectKind::SourcePack,
-                key: pack.object_key.clone(),
-                content_id: pack.pack_id.as_str(),
-                bytes: &pack.bytes,
-                key_epoch,
-                device_id: Some(&candidate.device_id),
-            },
-        )?;
-        checkpoint(
-            "source-pack-uploaded",
-            format!(
-                "{{\"objectKey\":{},\"contentId\":{},\"byteLen\":{},\"hash\":{}}}",
-                json_string(metadata.key.as_str()),
-                json_string(pack.pack_id.as_str()),
-                metadata.byte_len,
-                json_string(&metadata.hash),
-            ),
-        )?;
-        included_pack_keys.insert(metadata.key.as_str().to_string());
-        pack_pointers.push(ObjectPointer {
-            object_key: metadata.key.as_str().to_string(),
-            content_id: pack.pack_id.as_str().to_string(),
-            byte_len: metadata.byte_len,
-            hash: metadata.hash,
-            key_epoch,
-            kind: ObjectKind::SourcePack,
-            created_at: ControlPlaneTimestamp {
-                tick: metadata.created_at_unix_ms,
-            },
-        });
-    }
-    for entry in &manifest.entries {
-        let Some(locator) = &entry.locator else {
-            continue;
-        };
-        let Some(pack_id) = locator.pack_id.as_ref() else {
-            continue;
-        };
-        let object_key = ObjectKey::from_pack_id(pack_id)?;
-        if !included_pack_keys.insert(object_key.as_str().to_string()) {
-            continue;
-        }
-        let metadata = control_plane
-            .head_object_metadata(candidate.base.workspace_id.as_str(), object_key.as_str())?;
-        if metadata.kind != StorageObjectKind::SourcePack {
-            return Err(UploadError::ControlPlane(ControlPlaneError::Conflict {
-                resource: "object metadata",
-                reason: "manifest locator points at a non-source-pack object",
-            }));
-        }
-        checkpoint(
-            "source-pack-reused",
-            format!(
-                "{{\"objectKey\":{},\"contentId\":{},\"byteLen\":{},\"hash\":{}}}",
-                json_string(metadata.key.as_str()),
-                json_string(pack_id.as_str()),
-                metadata.byte_len,
-                json_string(&metadata.hash),
-            ),
-        )?;
-        pack_pointers.push(ObjectPointer {
-            object_key: metadata.key.as_str().to_string(),
-            content_id: pack_id.as_str().to_string(),
-            byte_len: metadata.byte_len,
-            hash: metadata.hash,
-            key_epoch: metadata.key_epoch,
-            kind: ObjectKind::SourcePack,
-            created_at: ControlPlaneTimestamp {
-                tick: metadata.created_at_unix_ms,
-            },
-        });
-    }
-
-    let sealed = seal_snapshot_manifest(
-        candidate.manifest_id.clone(),
-        &manifest,
-        storage_key,
-        key_epoch,
-    )?;
-    let manifest_metadata = ensure_uploaded_object(
+    upload_source_packs(PackUploadRequest {
+        candidate,
         control_plane,
         byte_store,
-        UploadObjectRequest {
-            workspace_id: candidate.base.workspace_id.as_str(),
-            control_plane_kind: ObjectKind::SnapshotManifest,
-            storage_kind: StorageObjectKind::SnapshotManifest,
-            key: sealed.pointer.object_key.clone(),
-            content_id: sealed.pointer.snapshot_id.as_str(),
-            bytes: &sealed.bytes,
-            key_epoch,
-            device_id: Some(&candidate.device_id),
-        },
-    )?;
-    checkpoint(
-        "snapshot-manifest-uploaded",
-        format!(
-            "{{\"objectKey\":{},\"snapshotId\":{},\"byteLen\":{},\"hash\":{}}}",
-            json_string(manifest_metadata.key.as_str()),
-            json_string(sealed.pointer.snapshot_id.as_str()),
-            manifest_metadata.byte_len,
-            json_string(&manifest_metadata.hash),
-        ),
-    )?;
-    let manifest_pointer = ObjectPointer {
-        object_key: manifest_metadata.key.as_str().to_string(),
-        content_id: sealed.pointer.snapshot_id.as_str().to_string(),
-        byte_len: manifest_metadata.byte_len,
-        hash: manifest_metadata.hash,
         key_epoch,
-        kind: ObjectKind::SnapshotManifest,
-        created_at: ControlPlaneTimestamp {
-            tick: manifest_metadata.created_at_unix_ms,
-        },
-    };
-    let object_manifest = control_plane.commit_object_manifest(ObjectManifestCommit {
-        workspace_id: candidate.base.workspace_id.as_str().to_string(),
-        snapshot_id: candidate.snapshot.manifest.snapshot_id.as_str().to_string(),
-        manifest_id: candidate.manifest_id.as_str().to_string(),
-        manifest_object: manifest_pointer,
-        pack_objects: pack_pointers,
-        committed_by_device_id: candidate.device_id.as_str().to_string(),
+        packs: &prepared.packs,
+        journal_key: Some(&upload_journal_key),
+        checkpoint_step: "source-pack-uploaded",
+        checkpoint: &mut checkpoint,
+        included_pack_keys: &mut included_pack_keys,
+        pack_pointers: &mut pack_pointers,
     })?;
-    checkpoint(
-        "object-manifest-committed",
-        format!(
-            "{{\"snapshotId\":{},\"manifestId\":{},\"packCount\":{}}}",
-            json_string(candidate.snapshot.manifest.snapshot_id.as_str()),
-            json_string(&object_manifest.manifest_id),
-            object_manifest.pack_objects.len(),
-        ),
+    append_journal_source_pack_pointers(JournalPackPointerRequest {
+        candidate,
+        control_plane,
+        byte_store,
+        entries: &journal_entries,
+        checkpoint: &mut checkpoint,
+        included_pack_keys: &mut included_pack_keys,
+        pack_pointers: &mut pack_pointers,
+    })?;
+    let mut layouts_by_content = reusable_layouts.clone();
+    layouts_by_content.extend(prepared.layouts);
+    append_reused_source_pack_pointers(ReusedPackPointerRequest {
+        candidate,
+        control_plane,
+        byte_store,
+        storage_key,
+        upload_journal_key: &upload_journal_key,
+        key_epoch,
+        reusable_layouts: &reusable_layouts,
+        layouts_by_content: &mut layouts_by_content,
+        checkpoint: &mut checkpoint,
+        included_pack_keys: &mut included_pack_keys,
+        pack_pointers: &mut pack_pointers,
+    })?;
+    let bound_snapshot = build_bound_snapshot(candidate, &layouts_by_content, &pack_pointers)?;
+
+    let snapshot_root = commit_bound_snapshot(
+        candidate,
+        &bound_snapshot,
+        control_plane,
+        byte_store,
+        storage_key,
+        key_epoch,
+        &mut checkpoint,
     )?;
 
-    finish_upload(candidate, control_plane, object_manifest, &mut checkpoint)
+    finish_upload(
+        candidate,
+        control_plane,
+        snapshot_root,
+        Some(Box::new(bound_snapshot)),
+        &mut checkpoint,
+    )
+}
+
+fn checkpoint_payload<T: serde::Serialize>(payload: &T) -> Result<String, UploadError> {
+    serde_json::to_string(payload).map_err(|error| UploadError::Checkpoint(error.to_string()))
+}
+
+fn object_pointer_from_metadata(
+    metadata: ObjectMetadata,
+    content_id: &str,
+    kind: ObjectKind,
+) -> ObjectPointer {
+    ObjectPointer {
+        object_key: metadata.key.as_str().to_string(),
+        content_id: ContentId::new(content_id),
+        byte_len: metadata.byte_len,
+        hash: metadata.hash,
+        key_epoch: metadata.key_epoch,
+        kind,
+        created_at: ControlPlaneTimestamp {
+            tick: metadata.created_at_unix_ms,
+        },
+    }
 }
 
 fn finish_upload(
     candidate: &SnapshotCandidate,
     control_plane: &dyn ControlPlaneClient,
-    object_manifest: ObjectManifestRecord,
+    snapshot_root: SnapshotRootRecord,
+    bound_snapshot: Option<Box<SnapshotContent>>,
     checkpoint: &mut impl FnMut(&str, String) -> Result<(), UploadError>,
 ) -> Result<UploadOutcome, UploadError> {
-    match control_plane.compare_and_swap_workspace_ref(
-        candidate.base.workspace_id.as_str(),
+    checkpoint(
+        "workspace-ref-cas-authorized",
+        checkpoint_payload(&serde_json::json!({
+            "snapshotId": candidate.snapshot.manifest.snapshot_id.as_str(),
+            "version": candidate.base.version,
+        }))?,
+    )?;
+    match control_plane.compare_and_swap_workspace_ref_for_project(
+        &candidate.base.workspace_id,
         candidate.base.version,
-        candidate.snapshot.manifest.snapshot_id.as_str(),
-        candidate.device_id.as_str(),
+        &candidate.snapshot.manifest.snapshot_id,
+        &candidate.device_id,
+        candidate.snapshot.manifest.project_id.as_ref(),
     ) {
         Ok(workspace_ref) => {
             checkpoint(
                 "workspace-ref-advanced",
-                format!(
-                    "{{\"snapshotId\":{},\"version\":{}}}",
-                    json_string(&workspace_ref.snapshot_id),
-                    workspace_ref.version,
-                ),
+                checkpoint_payload(&WorkspaceRefAdvancedPayload {
+                    snapshot_id: &workspace_ref.snapshot_id,
+                    version: workspace_ref.version,
+                })?,
             )?;
+            // The CAS is already externally visible. Publish its durable checkpoint
+            // before the crash seam so every later failure is reconciled rather than
+            // being mistaken for a pre-commit cancellation.
+            #[cfg(feature = "fault-injection")]
+            crate::sync::fault::trip(FaultPoint::AfterRefCas)?;
             Ok(UploadOutcome::Advanced {
                 workspace_ref,
-                object_manifest,
+                snapshot_root,
+                bound_snapshot,
             })
         }
         Err(CompareAndSwapError::StaleRef(stale)) => {
             checkpoint(
                 "workspace-ref-stale",
-                format!(
-                    "{{\"attemptedSnapshotId\":{},\"currentSnapshotId\":{},\"currentVersion\":{}}}",
-                    json_string(candidate.snapshot.manifest.snapshot_id.as_str()),
-                    json_string(&stale.current.snapshot_id),
-                    stale.current.version,
-                ),
+                checkpoint_payload(&WorkspaceRefStalePayload {
+                    attempted_snapshot_id: candidate.snapshot.manifest.snapshot_id.as_str(),
+                    current_snapshot_id: &stale.current.snapshot_id,
+                    current_version: stale.current.version,
+                })?,
             )?;
             Ok(UploadOutcome::Stale {
                 stale,
-                object_manifest,
+                snapshot_root,
+                bound_snapshot,
             })
         }
         Err(error) => Err(UploadError::CompareAndSwap(error)),
     }
 }
 
-fn ensure_uploaded_object(
-    control_plane: &dyn ControlPlaneClient,
-    byte_store: &dyn ByteStore,
-    request: UploadObjectRequest<'_>,
-) -> Result<ObjectMetadata, UploadError> {
-    match control_plane.head_object_metadata(request.workspace_id, request.key.as_str()) {
-        Ok(metadata) => {
-            validate_uploaded_metadata(
-                &metadata,
-                &request.key,
-                request.storage_kind,
-                request.bytes,
-                request.key_epoch,
-            )?;
-            return Ok(metadata);
-        }
-        Err(ControlPlaneError::ObjectMissing { .. }) => {}
-        Err(error) => return Err(UploadError::ControlPlane(error)),
-    }
-
-    control_plane.create_upload_intent(
-        UploadIntentRequest::new(
-            request.workspace_id,
-            request.control_plane_kind,
-            request.bytes.len() as u64,
-        )
-        .with_object_key(request.key.as_str())
-        .with_content_id(request.content_id),
-    )?;
-    let metadata = put_or_read_existing(
-        byte_store,
-        request.key.clone(),
-        request.storage_kind,
-        request.content_id,
-        request.bytes,
-        request.key_epoch,
-        request.device_id,
-    )?;
-    validate_uploaded_metadata(
-        &metadata,
-        &request.key,
-        request.storage_kind,
-        request.bytes,
-        request.key_epoch,
-    )?;
-    Ok(metadata)
-}
-
-struct UploadObjectRequest<'a> {
-    workspace_id: &'a str,
-    control_plane_kind: ObjectKind,
-    storage_kind: StorageObjectKind,
-    key: bowline_storage::ObjectKey,
-    content_id: &'a str,
-    bytes: &'a [u8],
-    key_epoch: u32,
-    device_id: Option<&'a bowline_core::ids::DeviceId>,
-}
-
-fn put_or_read_existing(
-    byte_store: &dyn ByteStore,
-    key: bowline_storage::ObjectKey,
-    kind: StorageObjectKind,
-    content_id: &str,
-    bytes: &[u8],
-    key_epoch: u32,
-    device_id: Option<&bowline_core::ids::DeviceId>,
-) -> Result<ObjectMetadata, ByteStoreError> {
-    match byte_store.put_object_with_content_id_at_epoch(
-        key.clone(),
-        kind,
-        content_id,
-        bytes,
-        key_epoch,
-        device_id,
-    ) {
-        Ok(metadata) => Ok(metadata),
-        Err(ByteStoreError::ObjectAlreadyExists(existing_key)) if existing_key == key => {
-            byte_store.head_object(&key)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn validate_uploaded_metadata(
-    metadata: &ObjectMetadata,
-    key: &bowline_storage::ObjectKey,
-    kind: StorageObjectKind,
-    bytes: &[u8],
-    key_epoch: u32,
-) -> Result<(), UploadError> {
-    let expected_hash = format!("b3_{}", blake3::hash(bytes).to_hex());
-    if metadata.key != *key
-        || metadata.kind != kind
-        || metadata.byte_len != bytes.len() as u64
-        || metadata.hash != expected_hash
-        || metadata.key_epoch != key_epoch
-    {
-        return Err(UploadError::ControlPlane(ControlPlaneError::Conflict {
-            resource: "object metadata",
-            reason: "committed object metadata does not match deterministic upload",
-        }));
-    }
-    Ok(())
-}
-
-fn json_string(value: &str) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "\"<invalid>\"".to_string())
-}
-
-#[derive(Debug)]
-pub enum UploadError {
-    ControlPlane(ControlPlaneError),
-    ByteStore(ByteStoreError),
-    Packfile(PackfileError),
-    Manifest(bowline_storage::ManifestError),
-    CompareAndSwap(CompareAndSwapError),
-    Checkpoint(String),
-}
-
-impl fmt::Display for UploadError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ControlPlane(error) => error.fmt(formatter),
-            Self::ByteStore(error) => error.fmt(formatter),
-            Self::Packfile(error) => error.fmt(formatter),
-            Self::Manifest(error) => error.fmt(formatter),
-            Self::CompareAndSwap(error) => error.fmt(formatter),
-            Self::Checkpoint(error) => write!(formatter, "sync checkpoint failed: {error}"),
-        }
-    }
-}
-
-impl Error for UploadError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::ControlPlane(error) => Some(error),
-            Self::ByteStore(error) => Some(error),
-            Self::Packfile(error) => Some(error),
-            Self::Manifest(error) => Some(error),
-            Self::CompareAndSwap(error) => Some(error),
-            Self::Checkpoint(_) => None,
-        }
-    }
-}
-
-impl From<ControlPlaneError> for UploadError {
-    fn from(error: ControlPlaneError) -> Self {
-        Self::ControlPlane(error)
-    }
-}
-
-impl From<ByteStoreError> for UploadError {
-    fn from(error: ByteStoreError) -> Self {
-        Self::ByteStore(error)
-    }
-}
-
-impl From<PackfileError> for UploadError {
-    fn from(error: PackfileError) -> Self {
-        Self::Packfile(error)
-    }
-}
-
-impl From<bowline_storage::ManifestError> for UploadError {
-    fn from(error: bowline_storage::ManifestError) -> Self {
-        Self::Manifest(error)
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use std::{
-        fs,
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    use bowline_control_plane::{
-        ControlPlaneClient as _, FakeControlPlaneClient, ObjectMetadataCommit, ObjectPointer,
-    };
-    use bowline_core::ids::DeviceId;
-    use bowline_storage::{LocalByteStore, RetentionState};
-
-    use super::*;
-
-    fn temp_root(name: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "bowline-upload-test-{name}-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("create test root");
-        root
-    }
-
-    fn object_key(suffix: u32) -> ObjectKey {
-        ObjectKey::new(format!("packs_pk_{suffix:016x}")).expect("valid object key")
-    }
-
-    fn stable_hash(bytes: &[u8]) -> String {
-        format!("b3_{}", blake3::hash(bytes).to_hex())
-    }
-
-    fn metadata(
-        key: ObjectKey,
-        kind: StorageObjectKind,
-        bytes: &[u8],
-        key_epoch: u32,
-    ) -> ObjectMetadata {
-        ObjectMetadata {
-            key,
-            kind,
-            byte_len: bytes.len() as u64,
-            hash: stable_hash(bytes),
-            key_epoch,
-            created_by_device_id: None,
-            created_at_unix_ms: 42,
-            retention_state: RetentionState::Pending,
-            retain_until_unix_ms: None,
-        }
-    }
-
-    fn commit_pointer(
-        control_plane: &FakeControlPlaneClient,
-        workspace_id: &str,
-        key: &ObjectKey,
-        content_id: &str,
-        bytes: &[u8],
-        hash: String,
-    ) {
-        control_plane
-            .create_upload_intent(
-                UploadIntentRequest::new(workspace_id, ObjectKind::SourcePack, bytes.len() as u64)
-                    .with_object_key(key.as_str())
-                    .with_content_id(content_id),
-            )
-            .expect("create upload intent");
-        control_plane
-            .commit_uploaded_object_metadata(ObjectMetadataCommit {
-                workspace_id: workspace_id.to_string(),
-                object: ObjectPointer {
-                    object_key: key.as_str().to_string(),
-                    content_id: content_id.to_string(),
-                    byte_len: bytes.len() as u64,
-                    hash,
-                    key_epoch: 1,
-                    kind: ObjectKind::SourcePack,
-                    created_at: ControlPlaneTimestamp { tick: 99 },
-                },
-                committed_by_device_id: "device-a".to_string(),
-            })
-            .expect("commit uploaded metadata");
-    }
-
-    #[test]
-    fn put_or_read_existing_writes_and_reuses_matching_object() {
-        let root = temp_root("reuse");
-        let store = LocalByteStore::open_deterministic(&root, 7).expect("open byte store");
-        let key = object_key(1);
-        let device_id = DeviceId::new("device-a");
-        let bytes = b"hello source pack";
-
-        let first = put_or_read_existing(
-            &store,
-            key.clone(),
-            StorageObjectKind::SourcePack,
-            "pk_1",
-            bytes,
-            1,
-            Some(&device_id),
-        )
-        .expect("write object");
-        let second = put_or_read_existing(
-            &store,
-            key.clone(),
-            StorageObjectKind::SourcePack,
-            "pk_1",
-            bytes,
-            1,
-            Some(&device_id),
-        )
-        .expect("read existing object");
-
-        assert_eq!(first, second);
-        assert_eq!(second.key, key);
-        assert_eq!(second.kind, StorageObjectKind::SourcePack);
-        assert_eq!(second.created_by_device_id, Some(device_id));
-
-        fs::remove_dir_all(root).expect("remove test root");
-    }
-
-    #[test]
-    fn validate_uploaded_metadata_accepts_exact_deterministic_metadata() {
-        let key = object_key(2);
-        let bytes = b"manifest bytes";
-        let metadata = metadata(key.clone(), StorageObjectKind::SnapshotManifest, bytes, 3);
-
-        validate_uploaded_metadata(
-            &metadata,
-            &key,
-            StorageObjectKind::SnapshotManifest,
-            bytes,
-            3,
-        )
-        .expect("metadata matches deterministic upload contract");
-    }
-
-    #[test]
-    fn validate_uploaded_metadata_rejects_mismatched_metadata() {
-        let key = object_key(3);
-        let bytes = b"source pack bytes";
-        let mut metadata = metadata(key.clone(), StorageObjectKind::SourcePack, bytes, 1);
-        metadata.hash = stable_hash(b"different bytes");
-
-        let error =
-            validate_uploaded_metadata(&metadata, &key, StorageObjectKind::SourcePack, bytes, 1)
-                .expect_err("metadata hash mismatch must be rejected");
-
-        assert!(matches!(
-            error,
-            UploadError::ControlPlane(ControlPlaneError::Conflict {
-                resource: "object metadata",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn ensure_uploaded_object_reuses_committed_control_plane_metadata() {
-        let workspace_id = "ws_upload";
-        let control_plane = FakeControlPlaneClient::default();
-        control_plane.create_workspace(workspace_id);
-        let root = temp_root("committed");
-        let store = LocalByteStore::open_deterministic(&root, 11).expect("open byte store");
-        let key = object_key(4);
-        let bytes = b"already uploaded bytes";
-        commit_pointer(
-            &control_plane,
-            workspace_id,
-            &key,
-            "pk_committed",
-            bytes,
-            stable_hash(bytes),
-        );
-
-        let metadata = ensure_uploaded_object(
-            &control_plane,
-            &store,
-            UploadObjectRequest {
-                workspace_id,
-                control_plane_kind: ObjectKind::SourcePack,
-                storage_kind: StorageObjectKind::SourcePack,
-                key: key.clone(),
-                content_id: "pk_committed",
-                bytes,
-                key_epoch: 1,
-                device_id: None,
-            },
-        )
-        .expect("committed metadata is reusable");
-
-        assert_eq!(metadata.key, key);
-        assert!(matches!(
-            store.head_object(&metadata.key),
-            Err(ByteStoreError::MissingObject { .. })
-        ));
-
-        fs::remove_dir_all(root).expect("remove test root");
-    }
-
-    #[test]
-    fn ensure_uploaded_object_rejects_committed_metadata_mismatch() {
-        let workspace_id = "ws_mismatch";
-        let control_plane = FakeControlPlaneClient::default();
-        control_plane.create_workspace(workspace_id);
-        let root = temp_root("mismatch");
-        let store = LocalByteStore::open_deterministic(&root, 13).expect("open byte store");
-        let key = object_key(5);
-        let bytes = b"expected bytes";
-        commit_pointer(
-            &control_plane,
-            workspace_id,
-            &key,
-            "pk_mismatch",
-            bytes,
-            stable_hash(b"not the expected bytes"),
-        );
-
-        let error = ensure_uploaded_object(
-            &control_plane,
-            &store,
-            UploadObjectRequest {
-                workspace_id,
-                control_plane_kind: ObjectKind::SourcePack,
-                storage_kind: StorageObjectKind::SourcePack,
-                key,
-                content_id: "pk_mismatch",
-                bytes,
-                key_epoch: 1,
-                device_id: None,
-            },
-        )
-        .expect_err("control-plane metadata mismatch must fail before local upload");
-
-        assert!(matches!(
-            error,
-            UploadError::ControlPlane(ControlPlaneError::Conflict {
-                resource: "object metadata",
-                ..
-            })
-        ));
-
-        fs::remove_dir_all(root).expect("remove test root");
-    }
-}
+#[path = "upload_reuse_tests.rs"]
+mod reuse_tests;
+#[cfg(test)]
+#[path = "upload_tests.rs"]
+mod tests;

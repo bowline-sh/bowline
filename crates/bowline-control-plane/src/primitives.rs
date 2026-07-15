@@ -3,9 +3,32 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ControlPlaneTimestamp {
     pub tick: u64,
+}
+
+impl Serialize for ControlPlaneTimestamp {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for ControlPlaneTimestamp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let tick = value
+            .strip_prefix('t')
+            .ok_or_else(|| de::Error::custom("timestamp must use compact tick format"))?
+            .parse::<u64>()
+            .map_err(|_| de::Error::custom("timestamp tick is invalid"))?;
+        Ok(Self { tick })
+    }
 }
 
 impl fmt::Display for ControlPlaneTimestamp {

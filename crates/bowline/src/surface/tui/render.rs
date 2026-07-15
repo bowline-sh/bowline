@@ -6,27 +6,32 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
-use super::model::{TuiAction, TuiModel, TuiTone};
+use super::model::{OnboardingModel, OnboardingStep, TuiAction, TuiModel, TuiTone};
+
+const CONFIRMING_FOOTER_HEIGHT: u16 = 3;
+const STANDARD_FOOTER_HEIGHT: u16 = 1;
+const COMPACT_HEIGHT: u16 = 10;
+const TIGHT_HEIGHT: u16 = 12;
+const ROOMY_HEIGHT: u16 = 14;
+const COMPACT_HEADER_HEIGHT: u16 = 3;
+const STANDARD_HEADER_HEIGHT: u16 = 4;
+const NO_DETAIL_HEIGHT: u16 = 0;
+const CONFIRMING_TIGHT_DETAIL_HEIGHT: u16 = 2;
+const STANDARD_TIGHT_DETAIL_HEIGHT: u16 = 3;
+const STANDARD_DETAIL_HEIGHT: u16 = 4;
+const ROOMY_DETAIL_HEIGHT: u16 = 5;
+const MIN_ACTION_HEIGHT: u16 = 3;
+const NARROW_WIDTH: u16 = 60;
 
 pub fn render(frame: &mut Frame<'_>, model: &TuiModel) {
     let area = frame.area();
-    let footer_height = if model.confirming.is_some() { 3 } else { 1 };
-    let header_height = if area.height <= 10 { 3 } else { 4 };
-    let detail_height = if model.actions.is_empty() {
-        0
-    } else if model.confirming.is_some() && area.height <= 12 {
-        2
-    } else if area.height >= 14 {
-        5
-    } else if area.height <= 12 && footer_height == 1 {
-        3
-    } else {
-        4
-    };
+    let footer_height = footer_height(model);
+    let header_height = header_height(area.height);
+    let detail_height = detail_height(model, area.height);
     let action_height = area
         .height
         .saturating_sub(header_height + detail_height + footer_height)
-        .max(3);
+        .max(MIN_ACTION_HEIGHT);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -80,6 +85,166 @@ pub fn render(frame: &mut Frame<'_>, model: &TuiModel) {
         Paragraph::new(footer).style(Style::default().fg(Color::Gray)),
         chunks[3],
     );
+}
+
+fn footer_height(model: &TuiModel) -> u16 {
+    if model.confirming.is_some() {
+        CONFIRMING_FOOTER_HEIGHT
+    } else {
+        STANDARD_FOOTER_HEIGHT
+    }
+}
+
+fn header_height(height: u16) -> u16 {
+    if height <= COMPACT_HEIGHT {
+        COMPACT_HEADER_HEIGHT
+    } else {
+        STANDARD_HEADER_HEIGHT
+    }
+}
+
+fn detail_height(model: &TuiModel, height: u16) -> u16 {
+    if model.actions.is_empty() {
+        return NO_DETAIL_HEIGHT;
+    }
+    // 10-line terminals lose the header hint, 12-line terminals compact
+    // selected-action detail, and 14-line terminals can show the full detail box.
+    match (model.confirming.is_some(), height) {
+        (true, ..=TIGHT_HEIGHT) => CONFIRMING_TIGHT_DETAIL_HEIGHT,
+        (_, ROOMY_HEIGHT..) => ROOMY_DETAIL_HEIGHT,
+        (false, ..=TIGHT_HEIGHT) => STANDARD_TIGHT_DETAIL_HEIGHT,
+        _ => STANDARD_DETAIL_HEIGHT,
+    }
+}
+
+pub fn render_onboarding(frame: &mut Frame<'_>, model: &OnboardingModel) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Min(7),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    frame.render_widget(
+        Paragraph::new(onboarding_header(model))
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .title(model.title())
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            ),
+        chunks[0],
+    );
+
+    frame.render_widget(
+        List::new(onboarding_items(model)).block(
+            Block::default()
+                .title("Steps")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        ),
+        chunks[1],
+    );
+
+    frame.render_widget(
+        Paragraph::new(onboarding_footer(model)).style(Style::default().fg(Color::Gray)),
+        chunks[2],
+    );
+}
+
+fn onboarding_header(model: &OnboardingModel) -> Text<'_> {
+    Text::from(vec![
+        Line::from(vec![
+            Span::raw("Step "),
+            Span::styled(
+                model.active_label(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(onboarding_hint(model.step)),
+    ])
+}
+
+fn onboarding_hint(step: OnboardingStep) -> &'static str {
+    match step {
+        OnboardingStep::AccountLogin => {
+            "Bowline will start account login, then prepare the workspace root."
+        }
+        OnboardingStep::RootChoice => "Choose the local root for synced code.",
+        OnboardingStep::LocalReadiness => {
+            "Bowline will inspect local readiness and safe next actions."
+        }
+        OnboardingStep::ConnectHost => {
+            "Optionally enter another machine host to connect after setup."
+        }
+        OnboardingStep::Done => "Press Enter to run setup.",
+    }
+}
+
+fn onboarding_items(model: &OnboardingModel) -> Vec<ListItem<'_>> {
+    [
+        (
+            OnboardingStep::AccountLogin,
+            "Account login",
+            "existing browser/device flow",
+        ),
+        (
+            OnboardingStep::RootChoice,
+            "Root",
+            model.root_input.as_str(),
+        ),
+        (
+            OnboardingStep::LocalReadiness,
+            "Local readiness",
+            "status and next actions",
+        ),
+        (
+            OnboardingStep::ConnectHost,
+            "Connect host",
+            if model.host_input.is_empty() {
+                "skip"
+            } else {
+                model.host_input.as_str()
+            },
+        ),
+        (OnboardingStep::Done, "Done", "run setup"),
+    ]
+    .into_iter()
+    .map(|(step, label, value)| {
+        let marker = if step == model.step { "> " } else { "  " };
+        let mut item = ListItem::new(Line::from(vec![
+            Span::raw(marker),
+            Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
+            Span::raw(value),
+        ]));
+        if step == model.step {
+            item = item.style(selected_row_style());
+        }
+        item
+    })
+    .collect()
+}
+
+fn onboarding_footer(model: &OnboardingModel) -> Text<'_> {
+    if let Some(value) = model.active_value() {
+        return Text::from(vec![
+            Line::from(vec![
+                Span::styled("Editing: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(model.active_label()),
+                Span::raw(" = "),
+                Span::raw(value),
+            ]),
+            Line::from("Enter next  Backspace delete  Esc quit"),
+        ]);
+    }
+    Text::from(Line::from("Enter next  Esc quit"))
 }
 
 fn header_text(model: &TuiModel, include_hint: bool, tone_style: Style) -> Text<'_> {
@@ -196,11 +361,11 @@ fn footer_text(model: &TuiModel, width: u16) -> Text<'_> {
         let selected_is_note = model
             .selected_action()
             .is_some_and(|action| !action.is_runnable());
-        let help = if selected_is_note && width < 60 {
+        let help = if selected_is_note && width < NARROW_WIDTH {
             "q quit  j/k move  Home/End jump"
         } else if selected_is_note {
             "q quit  Esc quit  up/down or j/k move  Home/End jump  Enter unavailable"
-        } else if width < 60 {
+        } else if width < NARROW_WIDTH {
             "q quit  j/k move  Home/End jump  Enter"
         } else {
             "q quit  Esc quit  up/down or j/k move  Home/End jump  Enter select"

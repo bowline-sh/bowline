@@ -1,24 +1,173 @@
-use std::{collections::BTreeMap, error::Error, fmt};
+use std::{collections::BTreeMap, error::Error, fmt, io};
 
 use bowline_core::{
+    git_paths::{GitPathClass, classify_git_path},
     ids::ContentId,
-    workspace_graph::{NamespaceEntry, NamespaceEntryKind, workspace_content_id},
+    namespace_snapshot::{
+        EntryVisitor, NamespaceCancellation, NamespaceDiff, NamespaceDiffVisitor,
+        NamespaceMutation, NamespaceOperationBudget, NamespaceOperationContext, NamespaceReadError,
+        NamespaceScope, NamespaceSnapshotBuilder, NamespaceSnapshotReader, NamespaceVisitControl,
+    },
+    workspace_graph::{
+        FileExecutability, NamespaceEntry, NamespaceEntryKind, WorkspaceRelativePath,
+        workspace_content_id,
+    },
 };
-
-use crate::env::{EnvLineKind, parse_env_text};
 
 use super::{
-    CandidateBase, SnapshotContent,
+    CandidateBase, PreparedContent, SnapshotContent,
     coalescer::SnapshotCandidate,
-    conflicts::{ConflictRecord, ConflictSpan},
-    line_merge::{merge_utf8_lines, split_keep_terminator},
-    manifest_id_for_snapshot, snapshot_id_from_hash,
+    conflicts::ConflictRecord,
+    line_merge::{TextMergeOutcome, merge_text_lines},
+    manifest_id_for_snapshot,
+    merge_plugins::{
+        ExternalMergeDecision, MergePluginRegistry, built_in_merge_plugin_conflicts_by_default,
+        structured_merge_output_is_valid,
+    },
+    namespace::{PageNamespaceBuilder, operation_budget},
 };
+
+mod conflict_span;
+mod entry_match;
+mod env_merge;
+use conflict_span::conflict_span;
+use entry_match::{entries_match_except_executability, optional_entries_match_for_merge};
+pub(crate) use env_merge::is_env_path;
+use env_merge::{EnvMergeOutcome, merge_env_bytes};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeOutcome {
     Clean(Box<SnapshotCandidate>),
     Conflicted(Vec<ConflictRecord>),
+}
+
+pub trait MergeContentReader {
+    fn visit_entries(
+        &self,
+        visitor: &mut dyn FnMut(&NamespaceEntry),
+    ) -> Result<(), NamespaceReadError>;
+    fn read_file_for_path(&self, path: &str) -> io::Result<Option<Vec<u8>>>;
+}
+
+impl MergeContentReader for SnapshotContent {
+    fn visit_entries(
+        &self,
+        visitor: &mut dyn FnMut(&NamespaceEntry),
+    ) -> Result<(), NamespaceReadError> {
+        struct MergeVisitor<'a>(&'a mut dyn FnMut(&NamespaceEntry));
+        impl EntryVisitor for MergeVisitor<'_> {
+            fn visit(
+                &mut self,
+                entry: &NamespaceEntry,
+                _context: &mut NamespaceOperationContext<'_>,
+            ) -> Result<NamespaceVisitControl, NamespaceReadError> {
+                (self.0)(entry);
+                Ok(NamespaceVisitControl::Continue)
+            }
+        }
+
+        let mut context = NamespaceOperationContext::uncancelled(operation_budget(
+            self.manifest().entry_count,
+            self.manifest().entry_count,
+            0,
+        ));
+        self.namespace_reader().visit_prefix(
+            &WorkspaceRelativePath::new(""),
+            &mut MergeVisitor(visitor),
+            &mut context,
+        )?;
+        Ok(())
+    }
+
+    fn read_file_for_path(&self, path: &str) -> io::Result<Option<Vec<u8>>> {
+        SnapshotContent::read_file_for_path(self, path)
+    }
+}
+
+pub struct MergeTreeInput<'a> {
+    pub base: &'a dyn MergeContentReader,
+    pub left: &'a dyn MergeContentReader,
+    pub right: &'a dyn MergeContentReader,
+    pub workspace_content_key: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeTreeOutcome {
+    Clean(MergedNamespace),
+    Conflicted(Vec<ConflictRecord>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergedNamespace {
+    pub entries: Vec<NamespaceEntry>,
+    pub prepared_content: BTreeMap<ContentId, PreparedContent>,
+}
+
+pub fn merge_tree(input: MergeTreeInput<'_>) -> Result<MergeTreeOutcome, MergeError> {
+    let plugins = MergePluginRegistry::built_in();
+    merge_tree_with_plugins(input, &plugins)
+}
+
+pub(crate) fn merge_required_content_paths(
+    input: &MergeTreeInput<'_>,
+) -> Result<std::collections::BTreeSet<String>, MergeError> {
+    Ok(indexed_merge_paths(input)?
+        .into_iter()
+        .filter_map(|(path, sides)| path_requires_content_merge(&path, &sides).then_some(path))
+        .collect())
+}
+
+pub(crate) fn stale_merge_required_content_paths(
+    input: &MergeTreeInput<'_>,
+) -> Result<std::collections::BTreeSet<String>, MergeError> {
+    Ok(indexed_merge_paths(input)?
+        .into_iter()
+        .filter_map(|(path, sides)| {
+            let remote_changed_file = sides.remote.as_ref().is_some_and(|remote| {
+                remote.kind == NamespaceEntryKind::File
+                    && !optional_entries_match_for_merge(sides.base.as_ref(), Some(remote))
+            });
+            (remote_changed_file || path_requires_content_merge(&path, &sides)).then_some(path)
+        })
+        .collect())
+}
+
+fn indexed_merge_paths(
+    input: &MergeTreeInput<'_>,
+) -> Result<BTreeMap<String, MergePath>, MergeError> {
+    let mut paths = BTreeMap::<String, MergePath>::new();
+    index_paths(&mut paths, Side::Base, input.base)?;
+    index_paths(&mut paths, Side::Local, input.left)?;
+    index_paths(&mut paths, Side::Remote, input.right)?;
+    Ok(paths)
+}
+
+fn path_requires_content_merge(path: &str, sides: &MergePath) -> bool {
+    if classify_git_path(path).is_some() {
+        return false;
+    }
+    let base = sides.base.as_ref();
+    let local = sides.local.as_ref();
+    let remote = sides.remote.as_ref();
+    if optional_entries_match_for_merge(local, remote)
+        || optional_entries_match_for_merge(base, local)
+        || optional_entries_match_for_merge(base, remote)
+    {
+        return false;
+    }
+    let (Some(local), Some(remote)) = (local, remote) else {
+        return false;
+    };
+    if local.kind != NamespaceEntryKind::File || remote.kind != NamespaceEntryKind::File {
+        return false;
+    }
+    if entries_match_except_executability(local, remote)
+        || base.is_some_and(|entry| entries_match_except_executability(entry, local))
+        || base.is_some_and(|entry| entries_match_except_executability(entry, remote))
+    {
+        return false;
+    }
+    true
 }
 
 pub fn merge_snapshots(
@@ -29,23 +178,251 @@ pub fn merge_snapshots(
     workspace_content_key: [u8; 32],
     created_at: impl Into<String>,
 ) -> Result<MergeOutcome, MergeError> {
+    let plugins = MergePluginRegistry::built_in();
+    merge_snapshots_with_plugins(
+        base,
+        local,
+        remote,
+        MergeSnapshotsOptions {
+            remote_base,
+            workspace_content_key,
+            created_at: created_at.into(),
+            plugins: &plugins,
+            cancellation: None,
+        },
+    )
+}
+
+pub(crate) struct MergeSnapshotsOptions<'a> {
+    pub(crate) remote_base: CandidateBase,
+    pub(crate) workspace_content_key: [u8; 32],
+    pub(crate) created_at: String,
+    pub(crate) plugins: &'a MergePluginRegistry,
+    pub(crate) cancellation: Option<&'a dyn NamespaceCancellation>,
+}
+
+pub(crate) fn merge_snapshots_with_plugins(
+    base: &SnapshotContent,
+    local: &SnapshotCandidate,
+    remote: &SnapshotContent,
+    options: MergeSnapshotsOptions<'_>,
+) -> Result<MergeOutcome, MergeError> {
+    let merged = merge_paged_snapshots(
+        base,
+        &local.snapshot,
+        remote,
+        options.workspace_content_key,
+        options.plugins,
+        options.cancellation,
+    )?;
+    let (mut namespace, prepared_content) = match merged {
+        PagedMergeOutcome::Clean {
+            namespace,
+            prepared_content,
+        } => (*namespace, prepared_content),
+        PagedMergeOutcome::Conflicted(conflicts) => {
+            return Ok(MergeOutcome::Conflicted(conflicts));
+        }
+    };
+    let snapshot_id = namespace.snapshot_id.clone();
+    let mut refs = namespace.metadata.refs.clone();
+    for reference in &mut refs {
+        if reference.name == "workspace" {
+            reference.target_snapshot_id = snapshot_id.clone();
+        }
+    }
+    namespace.metadata.refs = refs;
+    namespace.metadata.base_snapshot_id = None;
+    let manifest_identity = super::ManifestIdentityReport {
+        snapshot_id: namespace.snapshot_id.clone(),
+        semantic_manifest_digest: namespace.semantic_manifest_digest.clone(),
+        entries_hashed: namespace.changed.semantic_entries_hashed,
+    };
+    let snapshot = SnapshotContent::from_built(namespace, prepared_content);
+
+    Ok(MergeOutcome::Clean(Box::new(SnapshotCandidate {
+        base: options.remote_base,
+        device_id: local.device_id.clone(),
+        manifest_id: manifest_id_for_snapshot(&snapshot_id),
+        snapshot,
+        scan_report: local.scan_report.clone(),
+        scan_scope: local.scan_scope.clone(),
+        stat_cache_hit_paths: local.stat_cache_hit_paths.clone(),
+        stat_cache_divergences: local.stat_cache_divergences.clone(),
+        scan_stats: Default::default(),
+        manifest_identity,
+        stat_cache_write_back: None,
+        causation_ids: {
+            let mut ids = local.causation_ids.clone();
+            ids.push(format!("merge:{}", remote.manifest.snapshot_id.as_str()));
+            ids
+        },
+        skipped_unsafe_symlinks: local.skipped_unsafe_symlinks.clone(),
+        created_at: options.created_at,
+    })))
+}
+
+enum PagedMergeOutcome {
+    Clean {
+        namespace: Box<super::namespace::BuiltPagedNamespaceSnapshot>,
+        prepared_content: BTreeMap<ContentId, PreparedContent>,
+    },
+    Conflicted(Vec<ConflictRecord>),
+}
+
+fn merge_paged_snapshots(
+    base: &SnapshotContent,
+    local: &SnapshotContent,
+    remote: &SnapshotContent,
+    workspace_content_key: [u8; 32],
+    plugins: &MergePluginRegistry,
+    cancellation: Option<&dyn NamespaceCancellation>,
+) -> Result<PagedMergeOutcome, MergeError> {
+    let local_changes = paged_changes(base, local, cancellation)?;
+    let remote_changes = paged_changes(base, remote, cancellation)?;
+    let changed_paths = local_changes
+        .keys()
+        .chain(remote_changes.keys())
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let entry_limit = changed_paths.len().saturating_mul(16).saturating_add(16) as u64;
+    let mut context = merge_operation_context(
+        operation_budget(entry_limit, entry_limit, changed_paths.len() as u64),
+        cancellation,
+    );
+    let mut builder = PageNamespaceBuilder::incremental(remote.namespace_snapshot(), &mut context)?;
+    let mut prepared_content = BTreeMap::new();
+    let mut conflicts = Vec::new();
+
+    for path in changed_paths {
+        let workspace_path = WorkspaceRelativePath::new(&path);
+        let base_entry = base.namespace_reader().get(&workspace_path, &mut context)?;
+        let local_entry = local_changes
+            .get(&path)
+            .cloned()
+            .unwrap_or_else(|| base_entry.clone());
+        let remote_entry = remote_changes
+            .get(&path)
+            .cloned()
+            .unwrap_or_else(|| base_entry.clone());
+        let sides = MergePath {
+            base: base_entry,
+            local: local_entry,
+            remote: remote_entry.clone(),
+        };
+        match merge_path(
+            &path,
+            &sides,
+            base,
+            local,
+            remote,
+            workspace_content_key,
+            plugins,
+        )? {
+            PathMerge::Entry { entry, bytes } => {
+                if remote_entry.as_ref() != Some(&entry) {
+                    builder.apply(NamespaceMutation::Upsert(entry.clone()), &mut context)?;
+                }
+                if let Some(bytes) = bytes {
+                    let content_id = entry
+                        .content_id
+                        .clone()
+                        .ok_or(MergeError::MissingContentId)?;
+                    prepared_content.insert(
+                        content_id.clone(),
+                        PreparedContent::memory(content_id, bytes),
+                    );
+                }
+            }
+            PathMerge::Deleted => {
+                if remote_entry.is_some() {
+                    builder.apply(NamespaceMutation::Remove(workspace_path), &mut context)?;
+                }
+            }
+            PathMerge::Conflict(conflict) => conflicts.push(conflict),
+        }
+    }
+    if !conflicts.is_empty() {
+        return Ok(PagedMergeOutcome::Conflicted(conflicts));
+    }
+    let namespace = builder.finish(&mut context)?;
+    Ok(PagedMergeOutcome::Clean {
+        namespace: Box::new(namespace),
+        prepared_content,
+    })
+}
+
+fn paged_changes(
+    base: &SnapshotContent,
+    side: &SnapshotContent,
+    cancellation: Option<&dyn NamespaceCancellation>,
+) -> Result<BTreeMap<String, Option<NamespaceEntry>>, MergeError> {
+    struct Collector(BTreeMap<String, Option<NamespaceEntry>>);
+    impl NamespaceDiffVisitor for Collector {
+        fn visit(&mut self, difference: NamespaceDiff) -> Result<(), NamespaceReadError> {
+            match difference {
+                NamespaceDiff::Added(entry) => {
+                    self.0.insert(entry.path.clone(), Some(entry));
+                }
+                NamespaceDiff::Removed(entry) => {
+                    self.0.insert(entry.path, None);
+                }
+                NamespaceDiff::Modified { after, .. } => {
+                    self.0.insert(after.path.clone(), Some(after));
+                }
+            }
+            Ok(())
+        }
+    }
+    let limit = base
+        .manifest()
+        .entry_count
+        .saturating_add(side.manifest().entry_count)
+        .saturating_mul(4)
+        .saturating_add(16);
+    let mut context = merge_operation_context(operation_budget(limit, limit, 0), cancellation);
+    let mut collector = Collector(BTreeMap::new());
+    base.namespace_reader().diff_paged(
+        &side.namespace_reader(),
+        &NamespaceScope::All,
+        &mut collector,
+        &mut context,
+    )?;
+    Ok(collector.0)
+}
+
+fn merge_operation_context<'a>(
+    budget: NamespaceOperationBudget,
+    cancellation: Option<&'a dyn NamespaceCancellation>,
+) -> NamespaceOperationContext<'a> {
+    match cancellation {
+        Some(cancellation) => NamespaceOperationContext::new(budget, cancellation),
+        None => NamespaceOperationContext::uncancelled(budget),
+    }
+}
+
+fn merge_tree_with_plugins(
+    input: MergeTreeInput<'_>,
+    plugins: &MergePluginRegistry,
+) -> Result<MergeTreeOutcome, MergeError> {
     let mut paths = BTreeMap::<String, MergePath>::new();
-    index_paths(&mut paths, Side::Base, base);
-    index_paths(&mut paths, Side::Local, &local.snapshot);
-    index_paths(&mut paths, Side::Remote, remote);
+    index_paths(&mut paths, Side::Base, input.base)?;
+    index_paths(&mut paths, Side::Local, input.left)?;
+    index_paths(&mut paths, Side::Remote, input.right)?;
 
     let mut merged_entries = Vec::new();
-    let mut merged_files = BTreeMap::<ContentId, Vec<u8>>::new();
+    let mut prepared_content = BTreeMap::<ContentId, PreparedContent>::new();
     let mut conflicts = Vec::new();
 
     for (path, sides) in paths {
         match merge_path(
             &path,
             &sides,
-            base,
-            &local.snapshot,
-            remote,
-            workspace_content_key,
+            input.base,
+            input.left,
+            input.right,
+            input.workspace_content_key,
+            plugins,
         )? {
             PathMerge::Entry { entry, bytes } => {
                 if let Some(bytes) = bytes {
@@ -53,7 +430,10 @@ pub fn merge_snapshots(
                         .content_id
                         .clone()
                         .ok_or(MergeError::MissingContentId)?;
-                    merged_files.insert(content_id, bytes);
+                    prepared_content.insert(
+                        content_id.clone(),
+                        PreparedContent::memory(content_id, bytes),
+                    );
                 }
                 merged_entries.push(entry);
             }
@@ -63,35 +443,14 @@ pub fn merge_snapshots(
     }
 
     if !conflicts.is_empty() {
-        return Ok(MergeOutcome::Conflicted(conflicts));
+        return Ok(MergeTreeOutcome::Conflicted(conflicts));
     }
 
     merged_entries.sort_by(|left, right| left.path.cmp(&right.path));
-    let hash_parts = merged_entries.iter().flat_map(entry_hash_parts);
-    let snapshot_id = snapshot_id_from_hash("snap_merge", hash_parts);
-    let mut manifest = remote.manifest.clone();
-    manifest.snapshot_id = snapshot_id.clone();
-    manifest.base_snapshot_id = Some(remote.manifest.snapshot_id.clone());
-    manifest.entries = merged_entries;
-    for reference in &mut manifest.refs {
-        if reference.name == "workspace" {
-            reference.target_snapshot_id = snapshot_id.clone();
-        }
-    }
-
-    Ok(MergeOutcome::Clean(Box::new(SnapshotCandidate {
-        base: remote_base,
-        device_id: local.device_id.clone(),
-        manifest_id: manifest_id_for_snapshot(&snapshot_id),
-        snapshot: SnapshotContent::new(manifest, merged_files),
-        scan_report: local.scan_report.clone(),
-        causation_ids: {
-            let mut ids = local.causation_ids.clone();
-            ids.push(format!("merge:{}", remote.manifest.snapshot_id.as_str()));
-            ids
-        },
-        created_at: created_at.into(),
-    })))
+    Ok(MergeTreeOutcome::Clean(MergedNamespace {
+        entries: merged_entries,
+        prepared_content,
+    }))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,381 +476,333 @@ enum PathMerge {
     Conflict(ConflictRecord),
 }
 
-fn entry_hash_parts(entry: &NamespaceEntry) -> Vec<Vec<u8>> {
-    vec![
-        entry.path.as_bytes().to_vec(),
-        format!("{:?}", entry.kind).into_bytes(),
-        format!("{:?}", entry.classification).into_bytes(),
-        format!("{:?}", entry.mode).into_bytes(),
-        format!("{:?}", entry.access).into_bytes(),
-        entry
-            .content_id
-            .as_ref()
-            .map(|content_id| content_id.as_str())
-            .unwrap_or_default()
-            .as_bytes()
-            .to_vec(),
-        entry
-            .symlink_target
-            .as_deref()
-            .unwrap_or_default()
-            .as_bytes()
-            .to_vec(),
-        format!("{:?}", entry.byte_len).into_bytes(),
-        format!("{:?}", entry.hydration_state).into_bytes(),
-    ]
-}
-
-fn index_paths(paths: &mut BTreeMap<String, MergePath>, side: Side, snapshot: &SnapshotContent) {
-    for entry in &snapshot.manifest.entries {
+fn index_paths(
+    paths: &mut BTreeMap<String, MergePath>,
+    side: Side,
+    snapshot: &dyn MergeContentReader,
+) -> Result<(), MergeError> {
+    snapshot.visit_entries(&mut |entry| {
         let slot = paths.entry(entry.path.clone()).or_default();
         match side {
             Side::Base => slot.base = Some(entry.clone()),
             Side::Local => slot.local = Some(entry.clone()),
             Side::Remote => slot.remote = Some(entry.clone()),
         }
-    }
+    })?;
+    Ok(())
 }
 
 fn merge_path(
     path: &str,
     sides: &MergePath,
-    base: &SnapshotContent,
-    local: &SnapshotContent,
-    remote: &SnapshotContent,
+    base: &dyn MergeContentReader,
+    local: &dyn MergeContentReader,
+    remote: &dyn MergeContentReader,
     workspace_content_key: [u8; 32],
+    plugins: &MergePluginRegistry,
 ) -> Result<PathMerge, MergeError> {
-    if optional_entries_match_for_merge(sides.local.as_ref(), sides.remote.as_ref()) {
-        return Ok(sides.local.clone().map_or(PathMerge::Deleted, |entry| {
-            let bytes = local.file_bytes_for_path(path).map(Vec::from);
-            PathMerge::Entry { entry, bytes }
-        }));
+    let git_path_class = classify_git_path(path);
+    if git_path_class == Some(GitPathClass::DerivableVolatile) {
+        return Ok(PathMerge::Deleted);
     }
-    if optional_entries_match_for_merge(sides.base.as_ref(), sides.local.as_ref()) {
-        return Ok(sides.remote.clone().map_or(PathMerge::Deleted, |entry| {
-            let bytes = remote.file_bytes_for_path(path).map(Vec::from);
-            PathMerge::Entry { entry, bytes }
-        }));
+    let base_entry = sides.base.as_ref();
+    let local_entry = sides.local.as_ref();
+    let remote_entry = sides.remote.as_ref();
+    if optional_entries_match_for_merge(local_entry, remote_entry) {
+        return matching_entry_from_sides(local_entry, local, remote_entry, remote, path);
     }
-    if optional_entries_match_for_merge(sides.base.as_ref(), sides.remote.as_ref()) {
-        return Ok(sides.local.clone().map_or(PathMerge::Deleted, |entry| {
-            let bytes = local.file_bytes_for_path(path).map(Vec::from);
-            PathMerge::Entry { entry, bytes }
-        }));
+    if optional_entries_match_for_merge(base_entry, local_entry) {
+        return selected_entry_from_snapshot(remote_entry, remote, path);
+    }
+    if optional_entries_match_for_merge(base_entry, remote_entry) {
+        return selected_entry_from_snapshot(local_entry, local, path);
     }
 
-    let Some(local_entry) = &sides.local else {
+    let Some(local_entry) = local_entry else {
         return Ok(PathMerge::Conflict(ConflictRecord::delete_edit(path)));
     };
-    let Some(remote_entry) = &sides.remote else {
+    let Some(remote_entry) = remote_entry else {
         return Ok(PathMerge::Conflict(ConflictRecord::delete_edit(path)));
     };
     if local_entry.kind != remote_entry.kind || local_entry.kind != NamespaceEntryKind::File {
         return Ok(PathMerge::Conflict(ConflictRecord::path_conflict(path)));
     }
-    if is_opaque_git_path(path) {
+    if git_path_class.is_some() {
         return Ok(PathMerge::Conflict(ConflictRecord::opaque_git(path)));
     }
-
-    let base_bytes = base.file_bytes_for_path(path).unwrap_or_default();
-    let local_bytes = local.file_bytes_for_path(path).unwrap_or_default();
-    let remote_bytes = remote.file_bytes_for_path(path).unwrap_or_default();
-    if is_conflict_by_default_structured_path(path) {
+    if entries_match_except_executability(local_entry, remote_entry) {
+        return entry_from_snapshot_with_executability(
+            remote_entry,
+            remote,
+            path,
+            resolve_merged_executability(base_entry, local_entry, remote_entry),
+        );
+    }
+    if sides
+        .base
+        .as_ref()
+        .is_some_and(|base_entry| entries_match_except_executability(base_entry, local_entry))
+    {
+        return entry_from_snapshot_with_executability(
+            remote_entry,
+            remote,
+            path,
+            resolve_merged_executability(base_entry, local_entry, remote_entry),
+        );
+    }
+    if sides
+        .base
+        .as_ref()
+        .is_some_and(|base_entry| entries_match_except_executability(base_entry, remote_entry))
+    {
+        return entry_from_snapshot_with_executability(
+            local_entry,
+            local,
+            path,
+            resolve_merged_executability(base_entry, local_entry, remote_entry),
+        );
+    }
+    let base_bytes = base
+        .read_file_for_path(path)
+        .map_err(|source| MergeError::ReadPreparedContent {
+            path: path.to_string(),
+            source,
+        })?
+        .unwrap_or_default();
+    let local_bytes = local
+        .read_file_for_path(path)
+        .map_err(|source| MergeError::ReadPreparedContent {
+            path: path.to_string(),
+            source,
+        })?
+        .ok_or(MergeError::MissingSideBytes {
+            path: path.to_string(),
+        })?;
+    let remote_bytes = remote
+        .read_file_for_path(path)
+        .map_err(|source| MergeError::ReadPreparedContent {
+            path: path.to_string(),
+            source,
+        })?
+        .ok_or(MergeError::MissingSideBytes {
+            path: path.to_string(),
+        })?;
+    if built_in_merge_plugin_conflicts_by_default(path) {
         return Ok(PathMerge::Conflict(ConflictRecord::structured(path)));
     }
     if is_env_path(path) {
-        let Some(merged) = merge_env_bytes(path, base_bytes, local_bytes, remote_bytes) else {
-            return Ok(PathMerge::Conflict(ConflictRecord::env_key(path)));
+        let merged = match merge_env_bytes(path, &base_bytes, &local_bytes, &remote_bytes) {
+            EnvMergeOutcome::KeyConflict => {
+                return Ok(PathMerge::Conflict(ConflictRecord::env_key(path)));
+            }
+            EnvMergeOutcome::Text(TextMergeOutcome::Clean { bytes, .. }) => bytes,
+            EnvMergeOutcome::Text(outcome) => {
+                return Ok(PathMerge::Conflict(ConflictRecord::env_text_merge(
+                    path,
+                    &text_merge_failure_code(&outcome),
+                )));
+            }
         };
-        let content_id = workspace_content_id(workspace_content_key, &merged);
-        let mut entry = remote_entry.clone();
-        entry.content_id = Some(content_id);
-        entry.locator = None;
-        entry.byte_len = Some(merged.len() as u64);
+        let entry = merged_file_entry(
+            remote_entry,
+            base_entry,
+            local_entry,
+            workspace_content_key,
+            &merged,
+        );
         return Ok(PathMerge::Entry {
             entry,
             bytes: Some(merged),
         });
     }
-
-    let Some(merged) = merge_utf8_lines(base_bytes, local_bytes, remote_bytes) else {
-        if std::str::from_utf8(local_bytes).is_ok() && std::str::from_utf8(remote_bytes).is_ok() {
-            return Ok(PathMerge::Conflict(ConflictRecord::same_path_span(
-                path,
-                conflict_span(path, base_bytes, local_bytes, remote_bytes),
+    match plugins.merge_external(path, &base_bytes, &local_bytes, &remote_bytes) {
+        ExternalMergeDecision::NoMatch => {}
+        ExternalMergeDecision::Merged(merged) => {
+            // merge_external accepts Merged only after validating plugin output.
+            let entry = merged_file_entry(
+                remote_entry,
+                base_entry,
+                local_entry,
+                workspace_content_key,
+                &merged,
+            );
+            return Ok(PathMerge::Entry {
+                entry,
+                bytes: Some(merged),
+            });
+        }
+        ExternalMergeDecision::Conflict(reason) => {
+            return Ok(PathMerge::Conflict(ConflictRecord::merge_plugin(
+                path, &reason,
             )));
         }
-        return Ok(PathMerge::Conflict(ConflictRecord::binary(path)));
+    }
+    let merged = match merge_text_lines(&base_bytes, &local_bytes, &remote_bytes) {
+        TextMergeOutcome::Clean { bytes, .. } => bytes,
+        outcome @ TextMergeOutcome::NotText { .. } => {
+            return Ok(PathMerge::Conflict(ConflictRecord::binary_text_merge(
+                path,
+                &text_merge_failure_code(&outcome),
+            )));
+        }
+        outcome => {
+            return Ok(PathMerge::Conflict(ConflictRecord::text_merge_span(
+                path,
+                &text_merge_failure_code(&outcome),
+                conflict_span(path, &base_bytes, &local_bytes, &remote_bytes),
+            )));
+        }
     };
     if !structured_merge_output_is_valid(path, &merged) {
         return Ok(PathMerge::Conflict(ConflictRecord::structured(path)));
     };
 
-    let content_id = workspace_content_id(workspace_content_key, &merged);
-    let mut entry = remote_entry.clone();
-    entry.content_id = Some(content_id);
-    entry.locator = None;
-    entry.byte_len = Some(merged.len() as u64);
+    let entry = merged_file_entry(
+        remote_entry,
+        base_entry,
+        local_entry,
+        workspace_content_key,
+        &merged,
+    );
     Ok(PathMerge::Entry {
         entry,
         bytes: Some(merged),
     })
 }
 
-fn is_opaque_git_path(path: &str) -> bool {
-    path.split('/').any(|component| component == ".git")
-}
-
-const YAML_VALIDATION_MAX_BYTES: usize = 16 * 1024 * 1024;
-
-fn structured_merge_output_is_valid(path: &str, bytes: &[u8]) -> bool {
-    match structured_format(path) {
-        Some(StructuredFormat::Json) => serde_json::from_slice::<serde_json::Value>(bytes).is_ok(),
-        Some(StructuredFormat::Toml) => std::str::from_utf8(bytes)
-            .ok()
-            .and_then(|text| text.parse::<toml::Table>().ok())
-            .is_some(),
-        Some(StructuredFormat::Yaml) => yaml_merge_output_is_valid(bytes),
-        Some(StructuredFormat::Xml) => std::str::from_utf8(bytes)
-            .ok()
-            .and_then(|text| roxmltree::Document::parse(text).ok())
-            .is_some(),
-        None => true,
+fn text_merge_failure_code(outcome: &TextMergeOutcome) -> String {
+    match outcome {
+        TextMergeOutcome::Clean { .. } => "clean".to_string(),
+        TextMergeOutcome::Conflict { reason, .. } => reason.as_str().to_string(),
+        TextMergeOutcome::NotText { reason } => reason.as_str().to_string(),
+        TextMergeOutcome::ResourceLimit { phase, budget } => {
+            format!("{}-{}", phase.as_str(), budget.as_str())
+        }
+        TextMergeOutcome::InternalError { reason } => reason.as_str().to_string(),
     }
 }
 
-fn yaml_merge_output_is_valid(bytes: &[u8]) -> bool {
-    if bytes.len() > YAML_VALIDATION_MAX_BYTES {
-        return false;
+fn merged_file_entry(
+    remote_entry: &NamespaceEntry,
+    base: Option<&NamespaceEntry>,
+    local_entry: &NamespaceEntry,
+    workspace_content_key: [u8; 32],
+    merged: &[u8],
+) -> NamespaceEntry {
+    let mut entry = remote_entry.clone();
+    entry.content_id = Some(workspace_content_id(workspace_content_key, merged));
+    entry.content_layout = None;
+    entry.byte_len = Some(merged.len() as u64);
+    entry.executability = resolve_merged_executability(base, local_entry, remote_entry);
+    entry
+}
+
+fn resolve_merged_executability(
+    base: Option<&NamespaceEntry>,
+    local: &NamespaceEntry,
+    remote: &NamespaceEntry,
+) -> FileExecutability {
+    if local.executability == remote.executability {
+        return local.executability;
     }
-    let Ok(text) = std::str::from_utf8(bytes) else {
-        return false;
+    let base = base.map(|entry| entry.executability).unwrap_or_default();
+    if local.executability == base {
+        remote.executability
+    } else {
+        local.executability
+    }
+}
+
+fn matching_entry_from_sides(
+    local_entry: Option<&NamespaceEntry>,
+    local: &dyn MergeContentReader,
+    remote_entry: Option<&NamespaceEntry>,
+    remote: &dyn MergeContentReader,
+    path: &str,
+) -> Result<PathMerge, MergeError> {
+    let Some(local_entry) = local_entry else {
+        return Ok(PathMerge::Deleted);
     };
-    let options = serde_saphyr::options! {
-        budget: serde_saphyr::budget! {
-            max_events: 250_000,
-            max_aliases: 1_000,
-            max_anchors: 1_000,
-            max_depth: 256,
-            max_documents: 32,
-            max_nodes: 100_000,
-            max_total_scalar_bytes: YAML_VALIDATION_MAX_BYTES,
-            max_merge_keys: 1_000,
-        },
-        alias_limits: serde_saphyr::alias_limits! {
-            max_replay_stack_depth: 32,
-            max_alias_expansions_per_anchor: 16,
-        },
+    let Some(remote_entry) = remote_entry else {
+        return Ok(PathMerge::Deleted);
     };
-    serde_saphyr::from_str_with_options::<serde::de::IgnoredAny>(text, options).is_ok()
+    entry_from_snapshot(local_entry, local, path)
+        .or_else(|_| entry_from_snapshot(remote_entry, remote, path))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StructuredFormat {
-    Json,
-    Toml,
-    Yaml,
-    Xml,
+fn selected_entry_from_snapshot(
+    entry: Option<&NamespaceEntry>,
+    snapshot: &dyn MergeContentReader,
+    path: &str,
+) -> Result<PathMerge, MergeError> {
+    let Some(entry) = entry else {
+        return Ok(PathMerge::Deleted);
+    };
+    entry_from_snapshot(entry, snapshot, path)
 }
 
-fn structured_format(path: &str) -> Option<StructuredFormat> {
-    let file_name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
-    if is_conflict_by_default_structured_file_name(&file_name) {
-        return None;
-    }
-    if file_name.ends_with(".json") {
-        return Some(StructuredFormat::Json);
-    }
-    if file_name.ends_with(".toml") {
-        return Some(StructuredFormat::Toml);
-    }
-    if file_name.ends_with(".yaml") || file_name.ends_with(".yml") {
-        return Some(StructuredFormat::Yaml);
-    }
-    if file_name.ends_with(".xml") {
-        return Some(StructuredFormat::Xml);
-    }
-    None
-}
-
-fn is_conflict_by_default_structured_path(path: &str) -> bool {
-    let file_name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
-    is_conflict_by_default_structured_file_name(&file_name)
-}
-
-fn is_conflict_by_default_structured_file_name(file_name: &str) -> bool {
-    matches!(
-        file_name,
-        "cargo.lock" | "uv.lock" | "pnpm-lock.yaml" | "package-lock.json" | "yarn.lock"
-    )
-}
-
-fn is_env_path(path: &str) -> bool {
-    path.rsplit('/').next().is_some_and(|file_name| {
-        file_name == ".env" || file_name.starts_with(".env.") || file_name.ends_with(".env")
+fn entry_from_snapshot(
+    entry: &NamespaceEntry,
+    snapshot: &dyn MergeContentReader,
+    path: &str,
+) -> Result<PathMerge, MergeError> {
+    let bytes = selected_entry_bytes(entry, snapshot, path)?;
+    Ok(PathMerge::Entry {
+        entry: entry.clone(),
+        bytes,
     })
 }
 
-fn merge_env_bytes(path: &str, base: &[u8], local: &[u8], remote: &[u8]) -> Option<Vec<u8>> {
-    env_keys_can_merge(path, base, local, remote).then(|| merge_utf8_lines(base, local, remote))?
+fn entry_from_snapshot_with_executability(
+    entry: &NamespaceEntry,
+    snapshot: &dyn MergeContentReader,
+    path: &str,
+    executability: FileExecutability,
+) -> Result<PathMerge, MergeError> {
+    let mut entry = entry.clone();
+    entry.executability = executability;
+    let bytes = selected_entry_bytes(&entry, snapshot, path)?;
+    Ok(PathMerge::Entry { entry, bytes })
 }
 
-fn env_keys_can_merge(path: &str, base: &[u8], local: &[u8], remote: &[u8]) -> bool {
-    let base = parse_env_text(path, "project", base);
-    let local = parse_env_text(path, "project", local);
-    let remote = parse_env_text(path, "project", remote);
-    let base_values = env_values(&base);
-    let local_values = env_values(&local);
-    let remote_values = env_values(&remote);
-    let all_keys = base_values
-        .keys()
-        .chain(local_values.keys())
-        .chain(remote_values.keys())
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    for key in &all_keys {
-        let base_value = base_values.get(key);
-        let local_value = local_values.get(key);
-        let remote_value = remote_values.get(key);
-        if local_value == remote_value {
-            continue;
-        }
-        if local_value == base_value {
-            if remote_value.is_none() && key_has_multiple_occurrences(&all_keys, key) {
-                return false;
-            }
-            continue;
-        }
-        if remote_value == base_value {
-            if local_value.is_none() && key_has_multiple_occurrences(&all_keys, key) {
-                return false;
-            }
-            continue;
-        }
-        return false;
+fn selected_entry_bytes(
+    entry: &NamespaceEntry,
+    snapshot: &dyn MergeContentReader,
+    path: &str,
+) -> Result<Option<Vec<u8>>, MergeError> {
+    if entry.kind != NamespaceEntryKind::File {
+        return Ok(None);
     }
-
-    true
-}
-
-fn key_has_multiple_occurrences(
-    all_keys: &std::collections::BTreeSet<(String, usize)>,
-    key: &(String, usize),
-) -> bool {
-    all_keys
-        .iter()
-        .filter(|candidate| candidate.0 == key.0)
-        .count()
-        > 1
-}
-
-fn env_values(parsed: &crate::env::ParsedEnvFile) -> BTreeMap<(String, usize), Vec<u8>> {
-    parsed
-        .lines
-        .iter()
-        .filter_map(|line| match &line.kind {
-            EnvLineKind::KeyValue(value) => Some((
-                (value.key.clone(), value.occurrence_index),
-                value.value.as_bytes().to_vec(),
-            )),
-            EnvLineKind::Blank | EnvLineKind::Comment | EnvLineKind::Opaque(_) => None,
-        })
-        .collect()
-}
-
-fn conflict_span(path: &str, base: &[u8], local: &[u8], remote: &[u8]) -> ConflictSpan {
-    let base_lines = line_vec(base);
-    let local_lines = line_vec(local);
-    let remote_lines = line_vec(remote);
-    let prefix = common_prefix_len(&base_lines, &local_lines, &remote_lines);
-    let suffix = common_suffix_len(&base_lines, &local_lines, &remote_lines, prefix);
-    let (base_start_line, base_end_line) = span_line_range(&base_lines, prefix, suffix);
-    let (local_start_line, local_end_line) = span_line_range(&local_lines, prefix, suffix);
-    let (remote_start_line, remote_end_line) = span_line_range(&remote_lines, prefix, suffix);
-    ConflictSpan {
+    if let Some(bytes) =
+        snapshot
+            .read_file_for_path(path)
+            .map_err(|source| MergeError::ReadPreparedContent {
+                path: path.to_string(),
+                source,
+            })?
+    {
+        return Ok(Some(bytes));
+    }
+    if entry.content_layout.is_some() {
+        return Ok(None);
+    }
+    Err(MergeError::MissingSideBytes {
         path: path.to_string(),
-        base_start_line,
-        base_end_line,
-        local_start_line,
-        local_end_line,
-        remote_start_line,
-        remote_end_line,
-        base_context_hash: Some(span_context_hash(base, prefix, base_lines.len() - suffix)),
-        local_context_hash: Some(span_context_hash(local, prefix, local_lines.len() - suffix)),
-        remote_context_hash: Some(span_context_hash(
-            remote,
-            prefix,
-            remote_lines.len() - suffix,
-        )),
-    }
-}
-
-fn line_vec(bytes: &[u8]) -> Vec<&str> {
-    std::str::from_utf8(bytes)
-        .map(split_keep_terminator)
-        .unwrap_or_default()
-}
-
-fn common_prefix_len(base: &[&str], local: &[&str], remote: &[&str]) -> usize {
-    let min_len = base.len().min(local.len()).min(remote.len());
-    (0..min_len)
-        .take_while(|index| base[*index] == local[*index] && base[*index] == remote[*index])
-        .count()
-}
-
-fn common_suffix_len(base: &[&str], local: &[&str], remote: &[&str], prefix: usize) -> usize {
-    let max_suffix = base
-        .len()
-        .saturating_sub(prefix)
-        .min(local.len().saturating_sub(prefix))
-        .min(remote.len().saturating_sub(prefix));
-    (0..max_suffix)
-        .take_while(|offset| {
-            base[base.len() - 1 - offset] == local[local.len() - 1 - offset]
-                && base[base.len() - 1 - offset] == remote[remote.len() - 1 - offset]
-        })
-        .count()
-}
-
-fn span_line_range(lines: &[&str], prefix: usize, suffix: usize) -> (u32, u32) {
-    let start = (prefix + 1).min(lines.len().max(1)) as u32;
-    let end = lines.len().saturating_sub(suffix).max(start as usize) as u32;
-    (start, end)
-}
-
-fn span_context_hash(bytes: &[u8], start_index: usize, end_exclusive: usize) -> String {
-    let lines = line_vec(bytes);
-    let start = start_index.saturating_sub(3).min(lines.len());
-    let end = (end_exclusive + 3).min(lines.len());
-    super::short_hash(lines[start..end].iter().map(|line| line.as_bytes()))
-}
-
-fn optional_entries_match_for_merge(
-    left: Option<&NamespaceEntry>,
-    right: Option<&NamespaceEntry>,
-) -> bool {
-    match (left, right) {
-        (None, None) => true,
-        (Some(left), Some(right)) => entries_match_for_merge(left, right),
-        _ => false,
-    }
-}
-
-fn entries_match_for_merge(left: &NamespaceEntry, right: &NamespaceEntry) -> bool {
-    left.path == right.path
-        && left.kind == right.kind
-        && left.classification == right.classification
-        && left.mode == right.mode
-        && left.access == right.access
-        && left.content_id == right.content_id
-        && left.symlink_target == right.symlink_target
-        && left.byte_len == right.byte_len
+    })
 }
 
 #[derive(Debug)]
 pub enum MergeError {
     MissingContentId,
+    MissingSideBytes {
+        path: String,
+    },
+    ReadPreparedContent {
+        path: String,
+        source: std::io::Error,
+    },
+    NamespaceRead(NamespaceReadError),
+    NamespaceBuild(bowline_core::namespace_snapshot::NamespaceBuildError),
 }
 
 impl fmt::Display for MergeError {
@@ -500,397 +811,45 @@ impl fmt::Display for MergeError {
             Self::MissingContentId => {
                 formatter.write_str("merged file entry is missing content ID")
             }
+            Self::MissingSideBytes { path } => {
+                write!(formatter, "merge side bytes are missing for `{path}`")
+            }
+            Self::ReadPreparedContent { path, source } => {
+                write!(
+                    formatter,
+                    "failed to read prepared merge side `{path}`: {source}"
+                )
+            }
+            Self::NamespaceRead(source) => write!(formatter, "failed to read namespace: {source}"),
+            Self::NamespaceBuild(source) => {
+                write!(formatter, "failed to build merged namespace: {source}")
+            }
         }
     }
 }
 
-impl Error for MergeError {}
+impl Error for MergeError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ReadPreparedContent { source, .. } => Some(source),
+            Self::NamespaceRead(source) => Some(source),
+            Self::NamespaceBuild(source) => Some(source),
+            Self::MissingContentId | Self::MissingSideBytes { .. } => None,
+        }
+    }
+}
+
+impl From<NamespaceReadError> for MergeError {
+    fn from(source: NamespaceReadError) -> Self {
+        Self::NamespaceRead(source)
+    }
+}
+
+impl From<bowline_core::namespace_snapshot::NamespaceBuildError> for MergeError {
+    fn from(source: bowline_core::namespace_snapshot::NamespaceBuildError) -> Self {
+        Self::NamespaceBuild(source)
+    }
+}
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use bowline_core::{
-        ids::{ContentId, DeviceId, ManifestId, SnapshotId, WorkspaceId},
-        policy::{AccessFlag, MaterializationMode, PathClassification},
-        workspace_graph::{
-            HydrationState, NamespaceEntry, NamespaceEntryKind, RefKind, SnapshotKind,
-            SnapshotManifest, WorkspaceRef, workspace_content_id,
-        },
-    };
-
-    use super::*;
-    use crate::sync::ConflictKind;
-
-    const KEY: [u8; 32] = [7; 32];
-
-    #[test]
-    fn git_index_divergence_creates_opaque_conflict() {
-        let base = snapshot("base", ".git/index", b"base-index");
-        let local = candidate(&base, "local", ".git/index", b"local-index");
-        let remote = snapshot("remote", ".git/index", b"remote-index");
-
-        let merged = merge_snapshots(
-            &base,
-            &local,
-            &remote,
-            CandidateBase {
-                workspace_id: WorkspaceId::new("ws_code"),
-                version: 3,
-                snapshot_id: SnapshotId::new("remote"),
-            },
-            KEY,
-            "2026-06-27T12:00:00Z",
-        )
-        .expect("merge succeeds");
-
-        let MergeOutcome::Conflicted(conflicts) = merged else {
-            panic!("git index divergence should create an opaque sync conflict");
-        };
-        assert_eq!(conflicts[0].conflict_kind, ConflictKind::OpaqueGit);
-        assert_eq!(conflicts[0].paths, vec![".git/index".to_string()]);
-    }
-
-    #[test]
-    fn other_git_state_still_conflicts_when_both_sides_change() {
-        let base = snapshot("base", ".git/HEAD", b"ref: refs/heads/main\n");
-        let local = candidate(&base, "local", ".git/HEAD", b"ref: refs/heads/local\n");
-        let remote = snapshot("remote", ".git/HEAD", b"ref: refs/heads/remote\n");
-
-        let merged = merge_snapshots(
-            &base,
-            &local,
-            &remote,
-            CandidateBase {
-                workspace_id: WorkspaceId::new("ws_code"),
-                version: 3,
-                snapshot_id: SnapshotId::new("remote"),
-            },
-            KEY,
-            "2026-06-27T12:00:00Z",
-        )
-        .expect("merge succeeds");
-
-        let MergeOutcome::Conflicted(conflicts) = merged else {
-            panic!("non-index git state should stay opaque");
-        };
-        assert_eq!(conflicts[0].paths, vec![".git/HEAD".to_string()]);
-    }
-
-    #[test]
-    fn yaml_merge_output_validation_rejects_invalid_yaml_bytes() {
-        assert!(structured_merge_output_is_valid(
-            "settings.yaml",
-            b"agent:\n  enabled: true\n",
-        ));
-        assert!(!structured_merge_output_is_valid(
-            "settings.yaml",
-            b"agent: [unterminated\n",
-        ));
-        assert!(!structured_merge_output_is_valid(
-            "settings.yaml",
-            b"\xff\xfe",
-        ));
-    }
-
-    #[test]
-    fn env_different_key_edits_merge_without_secret_conflict() {
-        let base = snapshot("base", ".env.local", b"API_KEY=old\nDATABASE_URL=old\n");
-        let local = candidate(
-            &base,
-            "local",
-            ".env.local",
-            b"API_KEY=local\nDATABASE_URL=old\n",
-        );
-        let remote = snapshot(
-            "remote",
-            ".env.local",
-            b"API_KEY=old\nDATABASE_URL=remote\n",
-        );
-
-        let merged = merge_snapshots(
-            &base,
-            &local,
-            &remote,
-            CandidateBase {
-                workspace_id: WorkspaceId::new("ws_code"),
-                version: 3,
-                snapshot_id: SnapshotId::new("remote"),
-            },
-            KEY,
-            "2026-06-27T12:00:00Z",
-        )
-        .expect("merge succeeds");
-
-        let MergeOutcome::Clean(merged) = merged else {
-            panic!("different env keys should merge");
-        };
-        assert_eq!(
-            merged.snapshot.file_bytes_for_path(".env.local"),
-            Some(&b"API_KEY=local\nDATABASE_URL=remote\n"[..])
-        );
-    }
-
-    #[test]
-    fn env_merge_preserves_remote_non_key_edits() {
-        let base = snapshot("base", ".env.local", b"API_KEY=old\n# old comment\n");
-        let local = candidate(
-            &base,
-            "local",
-            ".env.local",
-            b"API_KEY=local\n# old comment\n",
-        );
-        let remote = snapshot("remote", ".env.local", b"API_KEY=old\n# new comment\n");
-
-        let merged = merge_snapshots(
-            &base,
-            &local,
-            &remote,
-            CandidateBase {
-                workspace_id: WorkspaceId::new("ws_code"),
-                version: 3,
-                snapshot_id: SnapshotId::new("remote"),
-            },
-            KEY,
-            "2026-06-27T12:00:00Z",
-        )
-        .expect("merge succeeds");
-
-        let MergeOutcome::Clean(merged) = merged else {
-            panic!("key edit plus remote comment edit should merge");
-        };
-        assert_eq!(
-            merged.snapshot.file_bytes_for_path(".env.local"),
-            Some(&b"API_KEY=local\n# new comment\n"[..])
-        );
-    }
-
-    #[test]
-    fn env_delete_single_key_and_edit_different_key_merges() {
-        let base = snapshot("base", ".env.local", b"API_KEY=old\nDATABASE_URL=old\n");
-        let local = candidate(&base, "local", ".env.local", b"DATABASE_URL=old\n");
-        let remote = snapshot(
-            "remote",
-            ".env.local",
-            b"API_KEY=old\nDATABASE_URL=remote\n",
-        );
-
-        let merged = merge_snapshots(
-            &base,
-            &local,
-            &remote,
-            CandidateBase {
-                workspace_id: WorkspaceId::new("ws_code"),
-                version: 3,
-                snapshot_id: SnapshotId::new("remote"),
-            },
-            KEY,
-            "2026-06-27T12:00:00Z",
-        )
-        .expect("merge succeeds");
-
-        let MergeOutcome::Clean(merged) = merged else {
-            panic!("single env key deletion plus different key edit should merge");
-        };
-        assert_eq!(
-            merged.snapshot.file_bytes_for_path(".env.local"),
-            Some(&b"DATABASE_URL=remote\n"[..])
-        );
-    }
-
-    #[test]
-    fn env_duplicate_key_deletion_stays_secret_bearing_conflict() {
-        let base = snapshot(
-            "base",
-            ".env.local",
-            b"API_KEY=old\nAPI_KEY=older\nDATABASE_URL=old\n",
-        );
-        let local = candidate(
-            &base,
-            "local",
-            ".env.local",
-            b"API_KEY=old\nAPI_KEY=older\nDATABASE_URL=local\n",
-        );
-        let remote = snapshot("remote", ".env.local", b"API_KEY=older\nDATABASE_URL=old\n");
-
-        let merged = merge_snapshots(
-            &base,
-            &local,
-            &remote,
-            CandidateBase {
-                workspace_id: WorkspaceId::new("ws_code"),
-                version: 3,
-                snapshot_id: SnapshotId::new("remote"),
-            },
-            KEY,
-            "2026-06-27T12:00:00Z",
-        )
-        .expect("merge succeeds");
-
-        let MergeOutcome::Conflicted(conflicts) = merged else {
-            panic!("duplicate env key deletion should stay ambiguous");
-        };
-        assert_eq!(conflicts[0].conflict_kind, ConflictKind::EnvKey);
-        assert!(conflicts[0].contains_secrets);
-    }
-
-    #[test]
-    fn env_same_key_edits_create_secret_bearing_key_conflict() {
-        let base = snapshot("base", ".env.local", b"API_KEY=old\n");
-        let local = candidate(&base, "local", ".env.local", b"API_KEY=local\n");
-        let remote = snapshot("remote", ".env.local", b"API_KEY=remote\n");
-
-        let merged = merge_snapshots(
-            &base,
-            &local,
-            &remote,
-            CandidateBase {
-                workspace_id: WorkspaceId::new("ws_code"),
-                version: 3,
-                snapshot_id: SnapshotId::new("remote"),
-            },
-            KEY,
-            "2026-06-27T12:00:00Z",
-        )
-        .expect("merge succeeds");
-
-        let MergeOutcome::Conflicted(conflicts) = merged else {
-            panic!("same env key should conflict");
-        };
-        assert_eq!(conflicts[0].conflict_kind, ConflictKind::EnvKey);
-        assert!(conflicts[0].contains_secrets);
-    }
-
-    #[test]
-    fn lockfile_edits_conflict_even_when_line_mergeable() {
-        let base = snapshot("base", "pnpm-lock.yaml", b"a: 1\nb: 1\n");
-        let local = candidate(&base, "local", "pnpm-lock.yaml", b"a: 2\nb: 1\n");
-        let remote = snapshot("remote", "pnpm-lock.yaml", b"a: 1\nb: 2\n");
-
-        let merged = merge_snapshots(
-            &base,
-            &local,
-            &remote,
-            CandidateBase {
-                workspace_id: WorkspaceId::new("ws_code"),
-                version: 3,
-                snapshot_id: SnapshotId::new("remote"),
-            },
-            KEY,
-            "2026-06-27T12:00:00Z",
-        )
-        .expect("merge succeeds");
-
-        let MergeOutcome::Conflicted(conflicts) = merged else {
-            panic!("lockfiles need semantic validation before automatic merge");
-        };
-        assert_eq!(conflicts[0].conflict_kind, ConflictKind::StructuredText);
-    }
-
-    #[test]
-    fn non_utf8_same_path_edits_create_binary_conflict() {
-        let base = snapshot("base", "image.bin", &[0, 1, 2, 3]);
-        let local = candidate(&base, "local", "image.bin", &[0, 1, 255, 3]);
-        let remote = snapshot("remote", "image.bin", &[0, 1, 254, 3]);
-
-        let merged = merge_snapshots(
-            &base,
-            &local,
-            &remote,
-            CandidateBase {
-                workspace_id: WorkspaceId::new("ws_code"),
-                version: 3,
-                snapshot_id: SnapshotId::new("remote"),
-            },
-            KEY,
-            "2026-06-27T12:00:00Z",
-        )
-        .expect("merge succeeds");
-
-        let MergeOutcome::Conflicted(conflicts) = merged else {
-            panic!("binary divergence should conflict");
-        };
-        assert_eq!(conflicts[0].conflict_kind, ConflictKind::Binary);
-    }
-
-    #[test]
-    fn conflict_span_excludes_shifted_identical_trailing_lines() {
-        let span = conflict_span(
-            "test.txt",
-            b"line one\nline two\nline three\n",
-            b"line one\nlocal insert a\nlocal insert b\nline two\nline three\n",
-            b"line one\nremote change\nline three\n",
-        );
-
-        assert_eq!(span.base_start_line, 2);
-        assert_eq!(span.base_end_line, 2);
-        assert_eq!(span.local_start_line, 2);
-        assert_eq!(span.local_end_line, 4);
-        assert_eq!(span.remote_start_line, 2);
-        assert_eq!(span.remote_end_line, 2);
-    }
-
-    fn candidate(
-        base: &SnapshotContent,
-        snapshot_id: &str,
-        path: &str,
-        bytes: &[u8],
-    ) -> SnapshotCandidate {
-        SnapshotCandidate {
-            base: CandidateBase {
-                workspace_id: WorkspaceId::new("ws_code"),
-                version: 1,
-                snapshot_id: base.manifest.snapshot_id.clone(),
-            },
-            device_id: DeviceId::new("device_local"),
-            manifest_id: ManifestId::new(format!("manifest_{snapshot_id}")),
-            snapshot: snapshot(snapshot_id, path, bytes),
-            scan_report: crate::scanner::ScanReport {
-                root: std::path::PathBuf::new(),
-                projects: Vec::new(),
-                paths: Vec::new(),
-                summary: bowline_core::status::ObservedWorkspaceSummary::default(),
-            },
-            causation_ids: Vec::new(),
-            created_at: "2026-06-27T12:00:00Z".to_string(),
-        }
-    }
-
-    fn snapshot(snapshot_id: &str, path: &str, bytes: &[u8]) -> SnapshotContent {
-        let content_id = workspace_content_id(KEY, bytes);
-        let mut files = BTreeMap::new();
-        files.insert(content_id.clone(), bytes.to_vec());
-        SnapshotContent::new(
-            SnapshotManifest {
-                schema_version: 1,
-                snapshot_id: SnapshotId::new(snapshot_id),
-                workspace_id: WorkspaceId::new("ws_code"),
-                project_id: None,
-                kind: SnapshotKind::WorkspaceHead,
-                base_snapshot_id: None,
-                entries: vec![entry(path, content_id, bytes.len())],
-                refs: vec![WorkspaceRef {
-                    name: "workspace".to_string(),
-                    target_snapshot_id: SnapshotId::new(snapshot_id),
-                    kind: RefKind::Workspace,
-                }],
-            },
-            files,
-        )
-    }
-
-    fn entry(path: &str, content_id: ContentId, len: usize) -> NamespaceEntry {
-        NamespaceEntry {
-            path: path.to_string(),
-            kind: NamespaceEntryKind::File,
-            classification: PathClassification::WorkspaceSync,
-            mode: MaterializationMode::EncryptedSync,
-            access: vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
-            content_id: Some(content_id),
-            locator: None,
-            symlink_target: None,
-            byte_len: Some(len as u64),
-            hydration_state: HydrationState::Local,
-        }
-    }
-}
+mod tests;

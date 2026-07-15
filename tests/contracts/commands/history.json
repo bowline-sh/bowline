@@ -1,0 +1,62 @@
+{
+  "contractVersion": 8,
+  "command": "history",
+  "generatedAt": "2026-06-25T00:02:00Z",
+  "workspaceId": "ws_json",
+  "projectId": "proj_json",
+  "scope": {
+    "kind": "project",
+    "root": "~/Code",
+    "projectPath": "apps/web",
+    "projectId": "proj_json"
+  },
+  "restorePoints": [
+    {
+      "id": "rp_snap_after",
+      "snapshotId": "snap_after",
+      "baseSnapshotId": "snap_base",
+      "occurredAt": "2026-06-25T00:01:00Z",
+      "label": "Workspace sync",
+      "cause": "sync",
+      "actor": {
+        "kind": "daemon",
+        "deviceId": "device_1"
+      },
+      "summary": {
+        "filesChanged": 1,
+        "filesAdded": 1,
+        "filesModified": 0,
+        "filesDeleted": 0,
+        "filesRenamed": 0,
+        "binaryOrLargeFilesChanged": 0,
+        "envKeysChanged": 0,
+        "pathsSample": [
+          "apps/web/src/index.ts"
+        ]
+      },
+      "eventIds": [
+        "evt_sync"
+      ]
+    }
+  ],
+  "pathEntries": [
+    {
+      "restorePointId": "rp_snap_after",
+      "snapshotId": "snap_after",
+      "occurredAt": "2026-06-25T00:01:00Z",
+      "operation": "create",
+      "causationId": "sync_1",
+      "eventIds": [
+        "evt_sync"
+      ]
+    }
+  ],
+  "truncated": false,
+  "nextActions": [
+    {
+      "label": "Create a work view from a restore point",
+      "command": "bowline work create apps/web restore-check --from rp_snap_after",
+      "mutates": false
+    }
+  ]
+}

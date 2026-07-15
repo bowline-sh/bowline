@@ -1,16 +1,17 @@
 use std::{collections::BTreeMap, fs};
 
 use bowline_core::{
-    ids::{ContentId, ManifestId, PackId, ProjectId, SnapshotId, WorkspaceId},
+    ids::{ContentId, ManifestId, PackId, ProjectId, WorkspaceId},
     policy::MaterializationMode,
     workspace_graph::{
-        ContentLocator, HydrationState, NamespaceEntry, NamespaceEntryKind, RefKind, SnapshotKind,
-        SnapshotManifest, WorkspaceRef, workspace_content_id,
+        ContentLayout, ContentLocator, HydrationState, NamespaceEntry, NamespaceEntryKind, RefKind,
+        SnapshotDraft, SnapshotKind, WorkspaceRef, workspace_content_id,
     },
 };
 use bowline_local::{
     metadata::MetadataStore,
     scanner::{PathObservation, scan_workspace},
+    sync::{SnapshotContent, rebuild_manifest_identity},
     workspace::TempWorkspace,
 };
 use bowline_storage::{
@@ -109,10 +110,16 @@ fn scanned_workspace_can_pack_manifest_persist_locators_and_range_hydrate() {
         }
     }
 
-    let manifest = manifest_for_scan(&workspace_id, &syncable_files, &records, &locators);
-    let sealed_manifest =
-        seal_snapshot_manifest(ManifestId::new("mf_0011223344556677"), &manifest, key, 1)
-            .expect("manifest seals");
+    let draft = manifest_for_scan(&workspace_id, &syncable_files, &records, &locators);
+    let snapshot =
+        SnapshotContent::new(draft, BTreeMap::new(), [21; 32]).expect("page-backed snapshot");
+    let sealed_manifest = seal_snapshot_manifest(
+        ManifestId::new("mf_0011223344556677"),
+        snapshot.manifest(),
+        key,
+        1,
+    )
+    .expect("manifest seals");
     object_store
         .put_object(
             sealed_manifest.pointer.object_key.clone(),
@@ -160,6 +167,7 @@ fn scanned_workspace_can_pack_manifest_persist_locators_and_range_hydrate() {
                 workspace_id: &workspace_id,
                 locator: &locator,
                 content_key: [21_u8; 32],
+                content_verification: bowline_storage::ContentVerification::WorkspaceKeyed,
                 key,
                 key_epoch: 1,
             },
@@ -189,7 +197,7 @@ fn manifest_for_scan(
     paths: &[&PathObservation],
     records: &[PackRecordInput],
     locators: &BTreeMap<ContentId, (PackId, bowline_storage::ObjectKey, ContentLocator)>,
-) -> SnapshotManifest {
+) -> SnapshotDraft {
     let entries = paths
         .iter()
         .zip(records)
@@ -200,16 +208,24 @@ fn manifest_for_scan(
             mode: path.policy.mode,
             access: path.policy.access.clone(),
             content_id: Some(record.content_id.clone()),
-            locator: Some(locators.get(&record.content_id).expect("locator").2.clone()),
+            content_layout: Some(
+                ContentLayout::single_segment(
+                    locators.get(&record.content_id).expect("locator").2.clone(),
+                )
+                .expect("test layout"),
+            ),
             symlink_target: None,
             byte_len: path.byte_len,
+            executability: bowline_core::workspace_graph::FileExecutability::Regular,
             hydration_state: HydrationState::Cold,
         })
         .collect::<Vec<_>>();
 
-    SnapshotManifest {
-        schema_version: 1,
-        snapshot_id: SnapshotId::new("snap_scanned_storage"),
+    let identity = rebuild_manifest_identity(workspace_id, &entries, "test");
+    let snapshot_id = identity.snapshot_id().clone();
+    SnapshotDraft {
+        schema_version: bowline_core::workspace_graph::SNAPSHOT_SCHEMA_VERSION,
+        snapshot_id: snapshot_id.clone(),
         workspace_id: workspace_id.clone(),
         project_id: Some(ProjectId::new("proj_acme_web")),
         kind: SnapshotKind::WorkspaceHead,
@@ -217,7 +233,7 @@ fn manifest_for_scan(
         entries,
         refs: vec![WorkspaceRef {
             name: "workspace".to_string(),
-            target_snapshot_id: SnapshotId::new("snap_scanned_storage"),
+            target_snapshot_id: snapshot_id,
             kind: RefKind::Workspace,
         }],
     }

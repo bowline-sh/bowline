@@ -10,14 +10,14 @@ public source as a second source of truth.
 
 ## Getting started
 
-Use Rust stable, Node 24, and pnpm 10.30.0. Clone the source, then run:
+Use Rust 1.97.0, Node 24, and pnpm 10.30.0. Clone the source, then run:
 
 ```bash
 pnpm install
-pnpm verify:public
+pnpm verify
 ```
 
-`pnpm verify:public` is the public-repo gate. It checks the exported local
+`pnpm verify` is the public-repo gate. It checks the exported local
 client, daemon, contracts, docs, formatting, and public-source boundaries.
 
 ## Pull Requests

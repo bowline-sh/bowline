@@ -7,17 +7,18 @@ use std::{
 };
 
 use crate::device_keys::{
-    AccountTokens, DeviceIdentity, DeviceKeyError, DeviceKeyStore, SecretUnavailableReason,
-    WorkspaceKeyMaterial,
+    AccountTokens, DeviceIdentity, DeviceKeyError, DeviceKeyStore, DeviceProofVerifier,
+    SecretUnavailableReason, WorkspaceKeyMaterial,
 };
 pub use bowline_control_plane::{
     ByteRange, CompactEvent, CompareAndSwapError, ControlPlaneClient, ControlPlaneError,
     ControlPlaneResult, ControlPlaneTimestamp as FakeTimestamp, DeterministicClock,
     DeterministicIdGenerator, DeviceApproval as FakeDeviceGrant, DeviceApprovalInput,
     DeviceRequest as FakeDeviceRequest, DeviceRequestInput, DownloadIntent, DownloadIntentRequest,
-    FakeControlPlaneClient, Lease as FakeLease, ObjectManifestCommit, ObjectManifestRecord,
-    SignedUrlIntent, StaleWorkspaceRef, UploadIntent, UploadIntentRequest, WorkspaceRef,
-    is_opaque_object_key,
+    FakeControlPlaneClient, Lease as FakeLease, MetadataBindingCommit, MetadataBindingInput,
+    MetadataBindingRecord, MetadataRecordKind, MetadataSidecar, SignedUrlIntent,
+    SnapshotRootCommit, SnapshotRootRecord, StaleWorkspaceRef, UploadIntent, UploadIntentRequest,
+    WorkspaceControlPlaneClient, WorkspaceRef, is_opaque_object_key,
 };
 use bowline_core::ids::WorkspaceId;
 
@@ -38,8 +39,11 @@ impl DeviceKeyStore for FakeKeychain {
             return DeviceIdentity::parse(secret);
         }
 
-        let identity = DeviceIdentity::generate();
-        self.put_secret("device-identity-v1", identity.secret().as_bytes().to_vec());
+        let identity = DeviceIdentity::try_generate()?;
+        self.put_secret(
+            "device-identity-v1",
+            identity.persisted_secret()?.as_bytes().to_vec(),
+        );
         Ok(identity)
     }
 
@@ -75,12 +79,77 @@ impl DeviceKeyStore for FakeKeychain {
             .transpose()
     }
 
+    fn store_device_proof_verifier(
+        &self,
+        verifier: DeviceProofVerifier,
+    ) -> Result<(), DeviceKeyError> {
+        let mut secrets = self.secrets.lock().expect("fake keychain poisoned");
+        #[cfg(test)]
+        crate::device_keys::transaction_entered(&self.verifier_transaction_key());
+        let mut verifiers: Vec<DeviceProofVerifier> = secrets
+            .get("device-proof-verifiers-v1")
+            .map(|bytes| serde_json::from_slice(bytes))
+            .transpose()?
+            .unwrap_or_default();
+        verifiers.retain(|existing| {
+            existing.workspace_id != verifier.workspace_id
+                || existing.device_id != verifier.device_id
+        });
+        verifiers.push(verifier);
+        secrets.insert(
+            "device-proof-verifiers-v1".to_string(),
+            serde_json::to_vec(&verifiers)?,
+        );
+        Ok(())
+    }
+
+    fn load_device_proof_verifiers(&self) -> Result<Vec<DeviceProofVerifier>, DeviceKeyError> {
+        self.get_secret("device-proof-verifiers-v1")
+            .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
+
+    fn replace_device_proof_verifiers_for_workspace(
+        &self,
+        workspace_id: &WorkspaceId,
+        verifiers: Vec<DeviceProofVerifier>,
+    ) -> Result<(), DeviceKeyError> {
+        let mut secrets = self.secrets.lock().expect("fake keychain poisoned");
+        #[cfg(test)]
+        crate::device_keys::transaction_entered(&self.verifier_transaction_key());
+        let mut persisted: Vec<DeviceProofVerifier> = secrets
+            .get("device-proof-verifiers-v1")
+            .map(|bytes| serde_json::from_slice(bytes))
+            .transpose()?
+            .unwrap_or_default();
+        persisted.retain(|verifier| &verifier.workspace_id != workspace_id);
+        persisted.extend(verifiers);
+        persisted.sort_by(|left, right| {
+            left.workspace_id
+                .cmp(&right.workspace_id)
+                .then_with(|| left.device_id.cmp(&right.device_id))
+        });
+        secrets.insert(
+            "device-proof-verifiers-v1".to_string(),
+            serde_json::to_vec(&persisted)?,
+        );
+        Ok(())
+    }
+
     fn mark_secret_unavailable(
         &self,
         reason: SecretUnavailableReason,
     ) -> Result<(), DeviceKeyError> {
         self.put_secret("secret-unavailable-reason", serde_json::to_vec(&reason)?);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl FakeKeychain {
+    pub(crate) fn verifier_transaction_key(&self) -> String {
+        format!("fake:{:p}", Arc::as_ptr(&self.secrets))
     }
 }
 

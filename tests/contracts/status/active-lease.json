@@ -1,7 +1,8 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 8,
   "command": "status",
   "generatedAt": "2026-06-23T12:00:00Z",
+  "statusSummary": { "availability": "ready", "attention": "none", "facts": [], "snapshotVersion": 1, "observedAt": "2026-06-23T12:00:00Z", "freshness": "fresh" },
   "workspaceId": "ws_code",
   "projectId": "proj_acme_web",
   "status": {
@@ -29,8 +30,8 @@
     {
       "label": "Open agent context",
       "command": "bowline agent context --lease lease_auth_callback --json",
-      "effectCategory": "inspect",
-      "targetKind": "agent"
+      "mutates": false
     }
-  ]
+  ],
+  "freshness": "unknown"
 }

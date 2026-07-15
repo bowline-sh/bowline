@@ -1,8 +1,8 @@
 use std::{error::Error, fmt};
 
 use bowline_core::{
-    ids::{ContentId, ManifestId, SnapshotId, WorkspaceId},
-    workspace_graph::{ContentLocator, SnapshotManifest},
+    ids::{ManifestId, SnapshotId, WorkspaceId},
+    workspace_graph::{SNAPSHOT_SCHEMA_VERSION, SnapshotManifest},
 };
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +12,12 @@ use crate::{
     store::stable_object_hash,
 };
 
-const MANIFEST_FORMAT_VERSION: u16 = 1;
+const SNAPSHOT_ROOT_MAGIC: &[u8; 4] = b"BWSR";
+const SNAPSHOT_ROOT_HEADER_BYTES: usize = SNAPSHOT_ROOT_MAGIC.len() + 2 + 4;
+const LEGACY_FLAT_MANIFEST_FORMAT_VERSION: u16 = 1;
+pub const SNAPSHOT_ROOT_FORMAT_VERSION: u16 = 2;
+pub const SNAPSHOT_ROOT_MAX_PLAINTEXT_BYTES: usize = 64 * 1024;
+pub const SNAPSHOT_ROOT_MAX_SEALED_BYTES: usize = 128 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,23 +42,6 @@ pub enum ManifestPointerKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedSnapshotManifest {
     pub pointer: ManifestPointer,
-    pub bytes: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IndexPackPointer {
-    pub index_pack_id: String,
-    pub snapshot_id: SnapshotId,
-    pub object_key: ObjectKey,
-    pub byte_len: u64,
-    pub hash: String,
-    pub key_epoch: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SealedIndexPack {
-    pub pointer: IndexPackPointer,
     pub bytes: Vec<u8>,
 }
 
@@ -101,10 +89,22 @@ pub fn seal_snapshot_manifest(
     key: StorageKey,
     key_epoch: u32,
 ) -> Result<SealedSnapshotManifest, ManifestError> {
-    let plaintext = serde_json::to_vec(manifest).expect("snapshot manifest serializes");
+    if manifest.schema_version != SNAPSHOT_SCHEMA_VERSION {
+        return Err(ManifestError::UnsupportedSchemaVersion(
+            manifest.schema_version,
+        ));
+    }
+    let payload = serde_json::to_vec(manifest).map_err(|_| ManifestError::InvalidRootEncoding)?;
+    let plaintext = encode_snapshot_root(&payload)?;
     let object_key = ObjectKey::from_manifest_id(&manifest_id)?;
-    let context = manifest_context(&manifest_id, manifest, key_epoch);
+    let context = manifest_context(
+        &manifest_id,
+        manifest,
+        key_epoch,
+        SNAPSHOT_ROOT_FORMAT_VERSION,
+    );
     let bytes = seal(&plaintext, key, &context)?.into_bytes();
+    validate_root_sealed_size(bytes.len())?;
     let pointer = ManifestPointer {
         manifest_id,
         snapshot_id: manifest.snapshot_id.clone(),
@@ -122,47 +122,140 @@ pub fn open_snapshot_manifest(
     key: StorageKey,
     workspace_id: &WorkspaceId,
 ) -> Result<SnapshotManifest, ManifestError> {
+    validate_snapshot_root_pointer(sealed)?;
+    let context =
+        manifest_pointer_context(&sealed.pointer, workspace_id, SNAPSHOT_ROOT_FORMAT_VERSION);
+    let plaintext = match open(&sealed.bytes, key, &context) {
+        Ok(plaintext) => plaintext,
+        Err(current_error) => {
+            let legacy_context = manifest_pointer_context(
+                &sealed.pointer,
+                workspace_id,
+                LEGACY_FLAT_MANIFEST_FORMAT_VERSION,
+            );
+            if open(&sealed.bytes, key, &legacy_context).is_ok() {
+                return Err(ManifestError::UnsupportedFormat {
+                    record: "snapshot root",
+                    version: LEGACY_FLAT_MANIFEST_FORMAT_VERSION,
+                });
+            }
+            return Err(current_error.into());
+        }
+    };
+    let payload = decode_snapshot_root(&plaintext)?;
+    let manifest: SnapshotManifest =
+        serde_json::from_slice(payload).map_err(|_| ManifestError::InvalidRootEncoding)?;
+    // The schema version lives inside AEAD-authenticated plaintext. Accepting
+    // any other version would silently reintroduce a migration reader.
+    if manifest.schema_version != SNAPSHOT_SCHEMA_VERSION {
+        return Err(ManifestError::UnsupportedSchemaVersion(
+            manifest.schema_version,
+        ));
+    }
+    if manifest.workspace_id != *workspace_id {
+        return Err(ManifestError::RootIdentity("workspace_id"));
+    }
+    if manifest.snapshot_id != sealed.pointer.snapshot_id {
+        return Err(ManifestError::RootIdentity("snapshot_id"));
+    }
+    Ok(manifest)
+}
+
+fn validate_snapshot_root_pointer(sealed: &SealedSnapshotManifest) -> Result<(), ManifestError> {
+    validate_root_sealed_size(sealed.bytes.len())?;
+    if sealed.pointer.kind != ManifestPointerKind::Snapshot {
+        return Err(ManifestError::PointerIntegrity("kind"));
+    }
     if sealed.pointer.byte_len != sealed.bytes.len() as u64 {
         return Err(ManifestError::PointerIntegrity("byte_len"));
     }
     if sealed.pointer.hash != stable_object_hash(&sealed.bytes) {
         return Err(ManifestError::PointerIntegrity("hash"));
     }
-
-    let context = EnvelopeContext {
-        workspace_id_hash: workspace_id_hash(workspace_id.as_str()),
-        object_kind: ObjectKind::SnapshotManifest,
-        object_id: sealed.pointer.manifest_id.as_str().to_string(),
-        record_id: sealed.pointer.snapshot_id.as_str().to_string(),
-        key_epoch: sealed.pointer.key_epoch,
-        format_version: MANIFEST_FORMAT_VERSION,
-    };
-    let plaintext = open(&sealed.bytes, key, &context)?;
-    serde_json::from_slice(&plaintext).map_err(|_| ManifestError::InvalidManifestJson)
+    let expected_key = ObjectKey::from_manifest_id(&sealed.pointer.manifest_id)?;
+    if sealed.pointer.object_key != expected_key {
+        return Err(ManifestError::PointerIntegrity("object_key"));
+    }
+    Ok(())
 }
 
-pub fn remap_locator(
-    manifest: &SnapshotManifest,
-    content_id: &ContentId,
-    new_locator: ContentLocator,
-) -> Result<SnapshotManifest, ManifestError> {
-    if new_locator.content_id != *content_id {
-        return Err(ManifestError::LocatorContentMismatch);
-    }
+fn encode_snapshot_root(payload: &[u8]) -> Result<Vec<u8>, ManifestError> {
+    validate_root_plaintext_size(payload.len())?;
+    let payload_len = u32::try_from(payload.len()).map_err(|_| ManifestError::OversizedRecord {
+        record: "snapshot root",
+        encoded_bytes: payload.len() as u64,
+        maximum_bytes: SNAPSHOT_ROOT_MAX_PLAINTEXT_BYTES as u64,
+    })?;
+    let mut plaintext = Vec::with_capacity(SNAPSHOT_ROOT_HEADER_BYTES + payload.len());
+    plaintext.extend_from_slice(SNAPSHOT_ROOT_MAGIC);
+    plaintext.extend_from_slice(&SNAPSHOT_ROOT_FORMAT_VERSION.to_le_bytes());
+    plaintext.extend_from_slice(&payload_len.to_le_bytes());
+    plaintext.extend_from_slice(payload);
+    Ok(plaintext)
+}
 
-    let mut remapped = manifest.clone();
-    for entry in &mut remapped.entries {
-        if entry.content_id.as_ref() == Some(content_id) {
-            entry.locator = Some(new_locator.clone());
-        }
+fn decode_snapshot_root(plaintext: &[u8]) -> Result<&[u8], ManifestError> {
+    if plaintext.len() < SNAPSHOT_ROOT_HEADER_BYTES {
+        return Err(ManifestError::InvalidRootEncoding);
     }
-    Ok(remapped)
+    if &plaintext[..SNAPSHOT_ROOT_MAGIC.len()] != SNAPSHOT_ROOT_MAGIC {
+        return Err(ManifestError::UnsupportedFormat {
+            record: "snapshot root",
+            version: 0,
+        });
+    }
+    let version_offset = SNAPSHOT_ROOT_MAGIC.len();
+    let version = u16::from_le_bytes([plaintext[version_offset], plaintext[version_offset + 1]]);
+    if version != SNAPSHOT_ROOT_FORMAT_VERSION {
+        return Err(ManifestError::UnsupportedFormat {
+            record: "snapshot root",
+            version,
+        });
+    }
+    let length_offset = version_offset + 2;
+    let payload_len = u32::from_le_bytes([
+        plaintext[length_offset],
+        plaintext[length_offset + 1],
+        plaintext[length_offset + 2],
+        plaintext[length_offset + 3],
+    ]) as usize;
+    validate_root_plaintext_size(payload_len)?;
+    let expected_len = SNAPSHOT_ROOT_HEADER_BYTES
+        .checked_add(payload_len)
+        .ok_or(ManifestError::InvalidRootEncoding)?;
+    if plaintext.len() != expected_len {
+        return Err(ManifestError::InvalidRootEncoding);
+    }
+    Ok(&plaintext[SNAPSHOT_ROOT_HEADER_BYTES..])
+}
+
+fn validate_root_plaintext_size(encoded_bytes: usize) -> Result<(), ManifestError> {
+    if encoded_bytes > SNAPSHOT_ROOT_MAX_PLAINTEXT_BYTES {
+        return Err(ManifestError::OversizedRecord {
+            record: "snapshot root",
+            encoded_bytes: encoded_bytes as u64,
+            maximum_bytes: SNAPSHOT_ROOT_MAX_PLAINTEXT_BYTES as u64,
+        });
+    }
+    Ok(())
+}
+
+fn validate_root_sealed_size(encoded_bytes: usize) -> Result<(), ManifestError> {
+    if encoded_bytes > SNAPSHOT_ROOT_MAX_SEALED_BYTES {
+        return Err(ManifestError::OversizedRecord {
+            record: "sealed snapshot root",
+            encoded_bytes: encoded_bytes as u64,
+            maximum_bytes: SNAPSHOT_ROOT_MAX_SEALED_BYTES as u64,
+        });
+    }
+    Ok(())
 }
 
 fn manifest_context(
     manifest_id: &ManifestId,
     manifest: &SnapshotManifest,
     key_epoch: u32,
+    format_version: u16,
 ) -> EnvelopeContext {
     EnvelopeContext {
         workspace_id_hash: workspace_id_hash(manifest.workspace_id.as_str()),
@@ -170,16 +263,41 @@ fn manifest_context(
         object_id: manifest_id.as_str().to_string(),
         record_id: manifest.snapshot_id.as_str().to_string(),
         key_epoch,
-        format_version: MANIFEST_FORMAT_VERSION,
+        format_version,
+    }
+}
+
+fn manifest_pointer_context(
+    pointer: &ManifestPointer,
+    workspace_id: &WorkspaceId,
+    format_version: u16,
+) -> EnvelopeContext {
+    EnvelopeContext {
+        workspace_id_hash: workspace_id_hash(workspace_id.as_str()),
+        object_kind: ObjectKind::SnapshotManifest,
+        object_id: pointer.manifest_id.as_str().to_string(),
+        record_id: pointer.snapshot_id.as_str().to_string(),
+        key_epoch: pointer.key_epoch,
+        format_version,
     }
 }
 
 #[derive(Debug)]
 pub enum ManifestError {
     Envelope(EnvelopeError),
-    InvalidManifestJson,
+    InvalidRootEncoding,
+    OversizedRecord {
+        record: &'static str,
+        encoded_bytes: u64,
+        maximum_bytes: u64,
+    },
     PointerIntegrity(&'static str),
-    LocatorContentMismatch,
+    RootIdentity(&'static str),
+    UnsupportedSchemaVersion(u16),
+    UnsupportedFormat {
+        record: &'static str,
+        version: u16,
+    },
     ObjectKey(crate::ByteStoreError),
 }
 
@@ -187,15 +305,37 @@ impl fmt::Display for ManifestError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Envelope(error) => write!(formatter, "manifest envelope failed: {error}"),
-            Self::InvalidManifestJson => formatter.write_str("manifest JSON did not parse"),
+            Self::InvalidRootEncoding => {
+                formatter.write_str("snapshot root encoding did not parse")
+            }
+            Self::OversizedRecord {
+                record,
+                encoded_bytes,
+                maximum_bytes,
+            } => write!(
+                formatter,
+                "{record} exceeds its encoded-byte limit: {encoded_bytes} > {maximum_bytes}"
+            ),
             Self::PointerIntegrity(field) => {
                 write!(
                     formatter,
                     "manifest pointer {field} did not match sealed bytes"
                 )
             }
-            Self::LocatorContentMismatch => {
-                formatter.write_str("manifest locator content ID did not match entry content ID")
+            Self::RootIdentity(field) => {
+                write!(
+                    formatter,
+                    "snapshot root {field} did not match its pointer context"
+                )
+            }
+            Self::UnsupportedSchemaVersion(version) => {
+                write!(
+                    formatter,
+                    "snapshot root schema version {version} is unsupported; current version is {SNAPSHOT_SCHEMA_VERSION}"
+                )
+            }
+            Self::UnsupportedFormat { record, version } => {
+                write!(formatter, "unsupported {record} format version {version}")
             }
             Self::ObjectKey(error) => write!(formatter, "manifest object key failed: {error}"),
         }
@@ -227,12 +367,8 @@ impl From<crate::ByteStoreError> for ManifestError {
 #[cfg(test)]
 mod tests {
     use bowline_core::{
-        ids::{ContentId, ManifestId, PackId, ProjectId, SnapshotId, WorkspaceId},
-        policy::{AccessFlag, MaterializationMode, PathClassification},
-        workspace_graph::{
-            ContentLocator, ContentStorage, HydrationState, NamespaceEntry, NamespaceEntryKind,
-            RefKind, SnapshotKind, WorkspaceRef,
-        },
+        ids::{ManifestDigest, ManifestId, NamespacePageId, ProjectId, SnapshotId, WorkspaceId},
+        workspace_graph::{RefKind, SnapshotKind, WorkspaceRef},
     };
 
     use super::*;
@@ -360,121 +496,158 @@ mod tests {
     }
 
     #[test]
-    fn locator_remap_preserves_entry_identity() {
-        let manifest = test_manifest();
-        let content_id = ContentId::new("cid_src");
-        let new_locator = ContentLocator {
-            content_id: content_id.clone(),
-            storage: ContentStorage::Packed,
-            raw_size: 12,
-            pack_id: Some(PackId::new("pk_new_00000001")),
-            offset: Some(99),
-            length: Some(40),
-            chunk_ids: Vec::new(),
-        };
-        let remapped =
-            remap_locator(&manifest, &content_id, new_locator.clone()).expect("locator remaps");
-        let original_entry = manifest
-            .entries
-            .iter()
-            .find(|entry| entry.content_id.as_ref() == Some(&content_id))
-            .expect("original entry");
-        let remapped_entry = remapped
-            .entries
-            .iter()
-            .find(|entry| entry.content_id.as_ref() == Some(&content_id))
-            .expect("remapped entry");
-
-        assert_eq!(remapped_entry.path, original_entry.path);
-        assert_eq!(remapped_entry.content_id, original_entry.content_id);
-        assert_eq!(remapped_entry.locator, Some(new_locator));
+    fn manifest_writer_rejects_unsupported_schema_version() {
+        let mut manifest = test_manifest();
+        manifest.schema_version = SNAPSHOT_SCHEMA_VERSION + 1;
+        let sealed = seal_snapshot_manifest(
+            ManifestId::new("mf_0011223344556677"),
+            &manifest,
+            StorageKey::deterministic(11),
+            1,
+        );
+        assert!(matches!(
+            sealed,
+            Err(ManifestError::UnsupportedSchemaVersion(version))
+                if version == SNAPSHOT_SCHEMA_VERSION + 1
+        ));
     }
 
     #[test]
-    fn locator_remap_rejects_mismatched_content_id() {
+    fn manifest_schema_version_guard_is_after_aead_auth() {
+        let mut manifest = test_manifest();
+        manifest.schema_version = SNAPSHOT_SCHEMA_VERSION + 1;
+        let sealed = seal_test_snapshot_root(
+            &manifest,
+            StorageKey::deterministic(11),
+            SNAPSHOT_ROOT_FORMAT_VERSION,
+            true,
+        );
+
+        let opened = open_snapshot_manifest(
+            &sealed,
+            StorageKey::deterministic(22),
+            &manifest.workspace_id,
+        );
+        assert!(matches!(opened, Err(ManifestError::Envelope(_))));
+        assert!(!matches!(
+            opened,
+            Err(ManifestError::UnsupportedSchemaVersion(_))
+        ));
+    }
+
+    #[test]
+    fn legacy_flat_manifest_fails_explicitly_without_returning_plaintext() {
         let manifest = test_manifest();
-        let new_locator = ContentLocator {
-            content_id: ContentId::new("cid_other"),
-            storage: ContentStorage::Packed,
-            raw_size: 12,
-            pack_id: Some(PackId::new("pk_new_00000001")),
-            offset: Some(99),
-            length: Some(40),
-            chunk_ids: Vec::new(),
-        };
+        let sealed = seal_test_snapshot_root(
+            &manifest,
+            StorageKey::deterministic(11),
+            LEGACY_FLAT_MANIFEST_FORMAT_VERSION,
+            false,
+        );
 
         assert!(matches!(
-            remap_locator(&manifest, &ContentId::new("cid_src"), new_locator),
-            Err(ManifestError::LocatorContentMismatch)
+            open_snapshot_manifest(
+                &sealed,
+                StorageKey::deterministic(11),
+                &manifest.workspace_id,
+            ),
+            Err(ManifestError::UnsupportedFormat {
+                record: "snapshot root",
+                version: LEGACY_FLAT_MANIFEST_FORMAT_VERSION,
+            })
         ));
+    }
+
+    #[test]
+    fn snapshot_root_pointer_identity_is_verified() {
+        let manifest = test_manifest();
+        let sealed = seal_snapshot_manifest(
+            ManifestId::new("mf_0011223344556677"),
+            &manifest,
+            StorageKey::deterministic(11),
+            1,
+        )
+        .expect("manifest seals");
+
+        let mut wrong_snapshot = sealed.clone();
+        wrong_snapshot.pointer.snapshot_id = SnapshotId::new("snap_wrong");
+        assert!(matches!(
+            open_snapshot_manifest(
+                &wrong_snapshot,
+                StorageKey::deterministic(11),
+                &manifest.workspace_id,
+            ),
+            Err(ManifestError::Envelope(_))
+        ));
+
+        let mut wrong_key = sealed;
+        wrong_key.pointer.object_key =
+            ObjectKey::from_manifest_id(&ManifestId::new("mf_ffeeddccbbaa0099"))
+                .expect("other manifest key");
+        assert!(matches!(
+            open_snapshot_manifest(
+                &wrong_key,
+                StorageKey::deterministic(11),
+                &manifest.workspace_id,
+            ),
+            Err(ManifestError::PointerIntegrity("object_key"))
+        ));
+    }
+
+    #[test]
+    fn snapshot_root_plaintext_limit_is_typed() {
+        let oversized = vec![0_u8; SNAPSHOT_ROOT_MAX_PLAINTEXT_BYTES + 1];
+        assert!(matches!(
+            encode_snapshot_root(&oversized),
+            Err(ManifestError::OversizedRecord {
+                record: "snapshot root",
+                ..
+            })
+        ));
+    }
+
+    fn seal_test_snapshot_root(
+        manifest: &SnapshotManifest,
+        key: StorageKey,
+        format_version: u16,
+        current_wrapper: bool,
+    ) -> SealedSnapshotManifest {
+        let manifest_id = ManifestId::new("mf_0011223344556677");
+        let payload = serde_json::to_vec(manifest).expect("test manifest serializes");
+        let plaintext = if current_wrapper {
+            encode_snapshot_root(&payload).expect("root encodes")
+        } else {
+            payload
+        };
+        let context = manifest_context(&manifest_id, manifest, 1, format_version);
+        let bytes = seal(&plaintext, key, &context)
+            .expect("test root seals")
+            .into_bytes();
+        SealedSnapshotManifest {
+            pointer: ManifestPointer {
+                object_key: ObjectKey::from_manifest_id(&manifest_id).expect("manifest key"),
+                manifest_id,
+                snapshot_id: manifest.snapshot_id.clone(),
+                byte_len: bytes.len() as u64,
+                hash: stable_object_hash(&bytes),
+                key_epoch: 1,
+                kind: ManifestPointerKind::Snapshot,
+            },
+            bytes,
+        }
     }
 
     fn test_manifest() -> SnapshotManifest {
         SnapshotManifest {
-            schema_version: 1,
+            schema_version: bowline_core::workspace_graph::SNAPSHOT_SCHEMA_VERSION,
             snapshot_id: SnapshotId::new("snap_workspace_head"),
             workspace_id: WorkspaceId::new("ws_code"),
             project_id: Some(ProjectId::new("proj_acme_web")),
             kind: SnapshotKind::WorkspaceHead,
             base_snapshot_id: Some(SnapshotId::new("snap_base")),
-            entries: vec![
-                NamespaceEntry {
-                    path: "acme/web".to_string(),
-                    kind: NamespaceEntryKind::Directory,
-                    classification: PathClassification::WorkspaceSync,
-                    mode: MaterializationMode::StructureOnly,
-                    access: vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
-                    content_id: None,
-                    locator: None,
-                    symlink_target: None,
-                    byte_len: None,
-                    hydration_state: HydrationState::StructureOnly,
-                },
-                NamespaceEntry {
-                    path: "acme/web/src/index.ts".to_string(),
-                    kind: NamespaceEntryKind::File,
-                    classification: PathClassification::WorkspaceSync,
-                    mode: MaterializationMode::EncryptedSync,
-                    access: vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
-                    content_id: Some(ContentId::new("cid_src")),
-                    locator: Some(ContentLocator {
-                        content_id: ContentId::new("cid_src"),
-                        storage: ContentStorage::Packed,
-                        raw_size: 12,
-                        pack_id: Some(PackId::new("pk_old_00000001")),
-                        offset: Some(12),
-                        length: Some(40),
-                        chunk_ids: Vec::new(),
-                    }),
-                    symlink_target: None,
-                    byte_len: Some(12),
-                    hydration_state: HydrationState::Cold,
-                },
-                NamespaceEntry {
-                    path: "acme/web/.env.local".to_string(),
-                    kind: NamespaceEntryKind::File,
-                    classification: PathClassification::ProjectEnv,
-                    mode: MaterializationMode::ProjectEnv,
-                    access: vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
-                    content_id: Some(ContentId::new("cid_env")),
-                    locator: None,
-                    symlink_target: None,
-                    byte_len: Some(24),
-                    hydration_state: HydrationState::Cold,
-                },
-                NamespaceEntry {
-                    path: "acme/web/docs/latest".to_string(),
-                    kind: NamespaceEntryKind::Symlink,
-                    classification: PathClassification::WorkspaceSync,
-                    mode: MaterializationMode::EncryptedSync,
-                    access: vec![AccessFlag::HumanReadable],
-                    content_id: None,
-                    locator: None,
-                    symlink_target: Some("../shared".to_string()),
-                    byte_len: None,
-                    hydration_state: HydrationState::Local,
-                },
-            ],
+            namespace_root_id: NamespacePageId::new(format!("nsp_{}", "11".repeat(32))),
+            semantic_manifest_digest: ManifestDigest::new(format!("md_{}", "22".repeat(32))),
+            entry_count: 4,
             refs: vec![WorkspaceRef {
                 name: "workspace".to_string(),
                 target_snapshot_id: SnapshotId::new("snap_workspace_head"),

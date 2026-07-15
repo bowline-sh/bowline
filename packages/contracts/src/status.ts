@@ -25,6 +25,28 @@ export type WorkspaceStatus = {
 export const STATUS_SCOPES = ["project", "workspace", "lease"] as const;
 export type StatusScope = (typeof STATUS_SCOPES)[number];
 
+export const FRESHNESS_VERDICTS = [
+  "current",
+  "behind",
+  "diverged",
+  "unknown",
+] as const;
+export type FreshnessVerdict = (typeof FRESHNESS_VERDICTS)[number];
+
+export const FRESHNESS_AXES = ["snapshot", "git"] as const;
+export type FreshnessAxis = (typeof FRESHNESS_AXES)[number];
+
+export type StaleBaseStatus = {
+  readonly axis: FreshnessAxis;
+  readonly verdict: FreshnessVerdict;
+  readonly summary: string;
+  readonly remedyCommand?: string;
+  readonly projectId?: ProjectId;
+  readonly projectPath?: string;
+  readonly baseSnapshotId?: SnapshotId;
+  readonly latestSnapshotId?: SnapshotId;
+};
+
 export type StatusItemKind =
   | "continuity"
   | "policy"
@@ -34,13 +56,11 @@ export type StatusItemKind =
   | "lease"
   | "watcher"
   | "env"
-  | "hydration"
   | "source"
   | "setup"
   | "metadata"
   | "materialization"
   | "network"
-  | "index"
   | "update";
 
 export type StatusSubjectKind =
@@ -54,14 +74,12 @@ export type StatusSubjectKind =
   | "setup-receipt"
   | "conflict"
   | "work-view"
-  | "hydration"
   | "lease"
   | "overlay"
   | "device"
   | "device-approval-request"
   | "metadata"
-  | "component"
-  | "index";
+  | "component";
 
 export type StatusSubject = {
   readonly kind: StatusSubjectKind;
@@ -89,70 +107,52 @@ export type StatusItem = {
 
 export type LimitedCapability = {
   readonly capability: string;
+  readonly supportCapability?: ControlPlaneSupportCapability;
   readonly unavailableBecause: string;
   readonly stillWorks: readonly string[];
   readonly path?: string;
 };
 
+export const CONTROL_PLANE_SUPPORT_CAPABILITIES = [
+  "device-approval",
+  "project-scoped-workspace-ref-cas",
+  "work-view",
+  "agent-lease",
+  "encrypted-object-store",
+  "recovery",
+] as const;
+export type ControlPlaneSupportCapability =
+  (typeof CONTROL_PLANE_SUPPORT_CAPABILITIES)[number];
+
 export type ComponentState = "ready" | "degraded" | "unavailable";
 export type NetworkState = "online" | "degraded" | "offline";
 
-export const INDEX_STATES = [
-  "ready",
-  "stale",
-  "rebuilding",
-  "degraded",
+export const PROJECT_SETUP_READINESS_STATES = [
+  "unknown",
+  "runnable",
+  "needs-setup",
+  "blocked",
 ] as const;
-export type IndexState = (typeof INDEX_STATES)[number];
+export type ProjectSetupReadinessState =
+  (typeof PROJECT_SETUP_READINESS_STATES)[number];
 
-export type IndexDegradedReason =
-  | "missing"
-  | "corrupt"
-  | "unsupported"
-  | "policy-limited"
-  | "rebuild-failed";
+export const PROJECT_SETUP_RECEIPT_STATES = [
+  "approved",
+  "approval-required",
+  "completed",
+  "failed",
+] as const;
+export type ProjectSetupReceiptState =
+  (typeof PROJECT_SETUP_RECEIPT_STATES)[number];
 
-export type IndexStatus = {
-  readonly state: IndexState;
-  readonly source: "local" | "encrypted-index-pack" | "none";
-  readonly indexedAt?: string;
+export type ProjectSetupReadiness = {
+  readonly state: ProjectSetupReadinessState;
+  readonly reason: string;
+  readonly remedy?: string;
+  readonly identityHash?: string;
+  readonly latestReceiptId?: string;
+  readonly latestReceiptState?: ProjectSetupReceiptState;
   readonly updatedAt?: string;
-  readonly snapshotId?: SnapshotId;
-  readonly indexPackObjectKey?: string;
-  readonly pathCount: number;
-  readonly fileCount: number;
-  readonly indexedBytes: number;
-  readonly pendingPathCount?: number;
-  readonly degradedReason?: IndexDegradedReason;
-  readonly summary: string;
-  readonly nextAction?: SafeAction;
-};
-
-export const HYDRATION_BUDGET_STATES = [
-  "available",
-  "exhausted",
-  "unavailable",
-] as const;
-export type HydrationBudgetState = (typeof HYDRATION_BUDGET_STATES)[number];
-
-export type HydrationBudgetStatus = {
-  readonly state: HydrationBudgetState;
-  readonly limitBytes: number;
-  readonly usedBytes: number;
-  readonly reservedBytes: number;
-  readonly remainingBytes: number;
-  readonly scope: "lease" | "project" | "workspace";
-  readonly leaseId?: LeaseId;
-  readonly projectId?: ProjectId;
-  readonly resetAt?: string;
-  readonly nextAction?: SafeAction;
-};
-
-export type HydrationProgress = {
-  readonly projectId?: ProjectId;
-  readonly bytesDone: number;
-  readonly bytesRemaining: number;
-  readonly cause: string;
 };
 
 export type SyncQueueStatus = {
@@ -160,6 +160,7 @@ export type SyncQueueStatus = {
   readonly claimed: number;
   readonly waitingRetry: number;
   readonly blockedOffline: number;
+  readonly reconciliationRequired: number;
   readonly attention: number;
   readonly completed: number;
 };
@@ -173,29 +174,25 @@ export type EventWatermarks = {
   readonly networkState?: NetworkState;
 };
 
-export type SafeAction = {
+/**
+ * A concrete, runnable command that repairs the current workspace/account
+ * state. Producers set `label`, `command`, and `mutates` directly; `mutates` is
+ * never inferred from the command string. `mutates` drives the TUI's
+ * confirm-before-run gate.
+ */
+export type RepairCommand = {
   readonly label: string;
   readonly command?: string;
-  readonly effectCategory?: SafeActionEffect;
-  readonly targetKind?: SafeActionTarget;
+  readonly mutates: boolean;
 };
 
-export type SafeActionEffect =
-  | "inspect"
-  | "trust"
-  | "setup"
-  | "mutate"
-  | "destructive";
-
-export type SafeActionTarget =
-  | "workspace"
-  | "device"
-  | "setup"
-  | "work-view"
-  | "conflict"
-  | "agent"
-  | "recovery"
-  | "unknown";
+/**
+ * A pending device-approval affordance. `code` and `approveCommand` are
+ * sensitive local trust material carried only on trusted local status surfaces
+ * (CLI/TUI/menu bar); they must never appear in hosted dashboard payloads,
+ * persisted snapshots, shared fixtures, analytics, or logs.
+ */
+export type { DeviceApprovalAffordance } from "./generated/wire-contracts";
 
 export type WorkspaceSummary = {
   readonly projectsNeedingAttention?: readonly ProjectAttentionSummary[];
@@ -207,6 +204,8 @@ export type ObservedWorkspaceSummary = {
   readonly repoCount: number;
   readonly noRemoteRepoCount: number;
   readonly staleRemoteTrackingRepoCount: number;
+  readonly gitPartialProjectCount: number;
+  readonly gitUnavailableProjectCount: number;
   readonly generatedPathCount: number;
   readonly dependencyPathCount: number;
   readonly envFileCount: number;

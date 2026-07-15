@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     error::Error,
-    fmt,
+    fmt, io,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -17,28 +17,45 @@ use crate::{
         EnvelopeContext, EnvelopeError, EnvelopeNonceTracker, SealedEnvelope, StorageKey, open,
         seal, seal_tracked, workspace_id_hash,
     },
-    manifest::{
-        IndexPackPointer, LocatorIndexBinding, LocatorIndexPointer, SealedIndexPack,
-        SealedLocatorIndex,
-    },
+    manifest::{LocatorIndexBinding, LocatorIndexPointer, SealedLocatorIndex},
     store::stable_object_hash,
 };
 
 const PACK_MAGIC: &[u8; 8] = b"bowpk1\0\0";
 const PACK_VERSION: u16 = 2;
-const INDEX_PACK_FORMAT_VERSION: u16 = 1;
 const LOCATOR_INDEX_FORMAT_VERSION: u16 = 1;
 const DIRECTORY_DIGEST_LEN: usize = 32;
 const HEADER_FIXED_LEN: usize = PACK_MAGIC.len() + 2 + 4 + 2 + 2 + DIRECTORY_DIGEST_LEN;
 const ENTRY_FIXED_LEN: usize = 2 + 8 + 8 + 8;
 
+mod batching;
+mod source;
+mod stream;
+
+pub use batching::{
+    write_source_pack_batches_with, write_source_pack_refs, write_source_packs,
+    write_source_packs_with,
+};
+pub use source::{ContentSourceReader, PackRecordReader};
+use source::{SliceContentSource, read_source_record};
+pub use stream::{
+    PackStreamWriteOutput, write_source_pack_reader_batches_with,
+    write_source_pack_ref_batches_with,
+};
+
 static NEXT_PACK_BATCH_SEED: AtomicU64 = AtomicU64::new(1);
-static NEXT_INDEX_PACK_SEED: AtomicU64 = AtomicU64::new(1);
+static NEXT_OPAQUE_INDEX_SEED: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackRecordInput {
     pub content_id: ContentId,
     pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PackRecordRef<'a> {
+    pub content_id: &'a ContentId,
+    pub bytes: &'a [u8],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +82,7 @@ pub struct PackIndex {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PackWriter {
+pub struct PackWriter {
     workspace_id: WorkspaceId,
     pack_id: PackId,
     key: StorageKey,
@@ -88,176 +105,51 @@ impl PackWriter {
     }
 
     pub fn write(&self, records: &[PackRecordInput]) -> Result<PackWriteOutput, PackfileError> {
-        if records.is_empty() {
-            return Err(PackfileError::EmptyPack);
-        }
-
-        let workspace_hash = workspace_id_hash(self.workspace_id.as_str());
-        let mut nonce_tracker = EnvelopeNonceTracker::new();
-        let mut sealed_records = Vec::with_capacity(records.len());
-        for record in records {
-            let context = record_context(
-                &workspace_hash,
-                &self.pack_id,
-                &record.content_id,
-                self.key_epoch,
-                PACK_VERSION,
-            );
-            let sealed = seal_tracked(&record.bytes, self.key, &context, &mut nonce_tracker)?;
-            sealed_records.push(PreparedRecord {
-                content_id: record.content_id.clone(),
-                raw_size: record.bytes.len() as u64,
-                sealed,
-            });
-        }
-
-        let directory_len = directory_len(&self.pack_id, &workspace_hash, &sealed_records)?;
-        let mut cursor = directory_len as u64;
-        let indexed_records = sealed_records
-            .iter()
-            .map(|record| {
-                let entry = PackRecordIndexEntry {
-                    content_id: record.content_id.clone(),
-                    raw_size: record.raw_size,
-                    offset: cursor,
-                    length: record.sealed.as_bytes().len() as u64,
-                };
-                cursor += entry.length;
-                entry
-            })
-            .collect::<Vec<_>>();
-
-        let mut bytes = Vec::with_capacity(cursor as usize);
-        write_header_and_directory(&mut bytes, &self.pack_id, &workspace_hash, &indexed_records)?;
-        for record in &sealed_records {
-            bytes.extend_from_slice(record.sealed.as_bytes());
-        }
-
-        let locators = indexed_records
-            .iter()
-            .map(|record| locator_from_record(&self.pack_id, record))
-            .collect::<Vec<_>>();
-
+        let mut bytes = Vec::new();
+        let streamed = self.write_streaming(records, &mut bytes)?;
         Ok(PackWriteOutput {
-            pack_id: self.pack_id.clone(),
-            object_key: ObjectKey::from_pack_id(&self.pack_id)?,
+            pack_id: streamed.pack_id,
+            object_key: streamed.object_key,
             bytes,
-            locators,
+            locators: streamed.locators,
         })
     }
-}
 
-pub fn write_source_packs(
-    workspace_id: WorkspaceId,
-    records: &[PackRecordInput],
-    target_raw_pack_size: usize,
-    key: StorageKey,
-    key_epoch: u32,
-) -> Result<Vec<PackWriteOutput>, PackfileError> {
-    let mut packs = Vec::new();
-    write_source_packs_with(
-        workspace_id,
-        records,
-        target_raw_pack_size,
-        key,
-        key_epoch,
-        |pack| {
-            packs.push(pack);
-            Ok(())
-        },
-    )?;
-    Ok(packs)
-}
-
-pub fn write_source_packs_with(
-    workspace_id: WorkspaceId,
-    records: &[PackRecordInput],
-    target_raw_pack_size: usize,
-    key: StorageKey,
-    key_epoch: u32,
-    mut on_pack: impl FnMut(PackWriteOutput) -> Result<(), PackfileError>,
-) -> Result<(), PackfileError> {
-    if records.is_empty() {
-        return Ok(());
+    pub fn write_refs(
+        &self,
+        records: &[PackRecordRef<'_>],
+    ) -> Result<PackWriteOutput, PackfileError> {
+        let mut bytes = Vec::new();
+        let streamed = self.write_streaming_refs(records, &mut bytes)?;
+        Ok(PackWriteOutput {
+            pack_id: streamed.pack_id,
+            object_key: streamed.object_key,
+            bytes,
+            locators: streamed.locators,
+        })
     }
 
-    let target_raw_pack_size = target_raw_pack_size.max(1);
-    let batch_seed = new_pack_batch_seed(&workspace_id, records, target_raw_pack_size, key_epoch);
-    let mut batch_start = 0_usize;
-    let mut batch_raw_size = 0_usize;
-    let mut sequence = 1_usize;
-
-    for (index, record) in records.iter().enumerate() {
-        if index > batch_start && batch_raw_size + record.bytes.len() > target_raw_pack_size {
-            on_pack(write_numbered_pack(
-                workspace_id.clone(),
-                &batch_seed,
-                sequence,
-                &records[batch_start..index],
-                key,
-                key_epoch,
-            )?)?;
-            sequence += 1;
-            batch_start = index;
-            batch_raw_size = 0;
-        }
-        batch_raw_size += record.bytes.len();
+    fn seal_record(
+        &self,
+        workspace_hash: &str,
+        content_id: &ContentId,
+        bytes: &[u8],
+        nonce_tracker: &mut EnvelopeNonceTracker,
+    ) -> Result<PreparedRecord, PackfileError> {
+        let context = record_context(
+            workspace_hash,
+            &self.pack_id,
+            content_id,
+            self.key_epoch,
+            PACK_VERSION,
+        );
+        let sealed = seal_tracked(bytes, self.key, &context, nonce_tracker)?;
+        Ok(PreparedRecord {
+            content_id: content_id.clone(),
+            raw_size: bytes.len() as u64,
+            sealed,
+        })
     }
-
-    if batch_start < records.len() {
-        on_pack(write_numbered_pack(
-            workspace_id,
-            &batch_seed,
-            sequence,
-            &records[batch_start..],
-            key,
-            key_epoch,
-        )?)?;
-    }
-
-    Ok(())
-}
-
-pub fn seal_index_pack(
-    workspace_id: WorkspaceId,
-    snapshot_id: SnapshotId,
-    plaintext: &[u8],
-    key: StorageKey,
-    key_epoch: u32,
-) -> Result<SealedIndexPack, PackfileError> {
-    let index_pack_id = opaque_index_pack_id(&workspace_id, &snapshot_id, plaintext, key_epoch);
-    let context = index_pack_context(&workspace_id, &snapshot_id, &index_pack_id, key_epoch);
-    let bytes = seal(plaintext, key, &context)?.into_bytes();
-    let pointer = IndexPackPointer {
-        object_key: ObjectKey::from_index_pack_id(&index_pack_id)?,
-        index_pack_id,
-        snapshot_id,
-        byte_len: bytes.len() as u64,
-        hash: stable_object_hash(&bytes),
-        key_epoch,
-    };
-    Ok(SealedIndexPack { pointer, bytes })
-}
-
-pub fn open_index_pack(
-    sealed: &SealedIndexPack,
-    key: StorageKey,
-    workspace_id: &WorkspaceId,
-) -> Result<Vec<u8>, PackfileError> {
-    if sealed.pointer.byte_len != sealed.bytes.len() as u64 {
-        return Err(PackfileError::PointerIntegrity("byte_len"));
-    }
-    if sealed.pointer.hash != stable_object_hash(&sealed.bytes) {
-        return Err(PackfileError::PointerIntegrity("hash"));
-    }
-
-    let context = index_pack_context(
-        workspace_id,
-        &sealed.pointer.snapshot_id,
-        &sealed.pointer.index_pack_id,
-        sealed.pointer.key_epoch,
-    );
-    open(&sealed.bytes, key, &context).map_err(Into::into)
 }
 
 pub fn seal_locator_index(
@@ -286,7 +178,7 @@ pub fn seal_locator_index(
     );
     let bytes = seal(plaintext, key, &context)?.into_bytes();
     let pointer = LocatorIndexPointer {
-        object_key: ObjectKey::from_index_pack_id(&locator_index_id)?,
+        object_key: ObjectKey::from_opaque_index_id(&locator_index_id)?,
         locator_index_id,
         manifest_id,
         snapshot_id,
@@ -437,27 +329,58 @@ pub(crate) fn read_record_range(
     open(encrypted_record, key, &context).map_err(Into::into)
 }
 
-fn write_numbered_pack(
-    workspace_id: WorkspaceId,
-    batch_seed: &str,
-    sequence: usize,
-    records: &[PackRecordInput],
-    key: StorageKey,
-    key_epoch: u32,
-) -> Result<PackWriteOutput, PackfileError> {
-    let writer = PackWriter::new(
-        workspace_id,
-        opaque_pack_id(batch_seed, sequence),
-        key,
-        key_epoch,
-    );
-    writer.write(records)
-}
-
 fn new_pack_batch_seed(
     workspace_id: &WorkspaceId,
     records: &[PackRecordInput],
     target_raw_pack_size: usize,
+    key_epoch: u32,
+) -> String {
+    new_pack_batch_seed_from_records(
+        workspace_id,
+        records
+            .iter()
+            .map(|record| (&record.content_id, record.bytes.len() as u64)),
+        target_raw_pack_size as u64,
+        key_epoch,
+    )
+}
+
+fn new_pack_ref_batch_seed(
+    workspace_id: &WorkspaceId,
+    records: &[PackRecordRef<'_>],
+    target_raw_pack_size: usize,
+    key_epoch: u32,
+) -> String {
+    new_pack_batch_seed_from_records(
+        workspace_id,
+        records
+            .iter()
+            .map(|record| (record.content_id, record.bytes.len() as u64)),
+        target_raw_pack_size as u64,
+        key_epoch,
+    )
+}
+
+fn new_pack_reader_batch_seed(
+    workspace_id: &WorkspaceId,
+    records: &[PackRecordReader<'_>],
+    target_raw_pack_size: u64,
+    key_epoch: u32,
+) -> String {
+    new_pack_batch_seed_from_records(
+        workspace_id,
+        records
+            .iter()
+            .map(|record| (record.content_id, record.source.logical_len())),
+        target_raw_pack_size,
+        key_epoch,
+    )
+}
+
+fn new_pack_batch_seed_from_records<'a>(
+    workspace_id: &WorkspaceId,
+    records: impl IntoIterator<Item = (&'a ContentId, u64)>,
+    target_raw_pack_size: u64,
     key_epoch: u32,
 ) -> String {
     let sequence = NEXT_PACK_BATCH_SEED.fetch_add(1, Ordering::Relaxed);
@@ -472,9 +395,9 @@ fn new_pack_batch_seed(
     hasher.update(&std::process::id().to_le_bytes());
     hasher.update(&target_raw_pack_size.to_le_bytes());
     hasher.update(&key_epoch.to_le_bytes());
-    for record in records {
-        hasher.update(record.content_id.as_str().as_bytes());
-        hasher.update(&record.bytes.len().to_le_bytes());
+    for (content_id, byte_len) in records {
+        hasher.update(content_id.as_str().as_bytes());
+        hasher.update(&byte_len.to_le_bytes());
     }
     hasher.finalize().to_hex().to_string()
 }
@@ -486,29 +409,6 @@ fn opaque_pack_id(batch_seed: &str, sequence: usize) -> PackId {
     PackId::new(format!("pk_{}", hasher.finalize().to_hex()))
 }
 
-fn opaque_index_pack_id(
-    workspace_id: &WorkspaceId,
-    snapshot_id: &SnapshotId,
-    plaintext: &[u8],
-    key_epoch: u32,
-) -> String {
-    let sequence = NEXT_INDEX_PACK_SEED.fetch_add(1, Ordering::Relaxed);
-    let now_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(workspace_id.as_str().as_bytes());
-    hasher.update(snapshot_id.as_str().as_bytes());
-    hasher.update(&sequence.to_le_bytes());
-    hasher.update(&now_nanos.to_le_bytes());
-    hasher.update(&std::process::id().to_le_bytes());
-    hasher.update(&key_epoch.to_le_bytes());
-    hasher.update(&(plaintext.len() as u64).to_le_bytes());
-    hasher.update(blake3::hash(plaintext).as_bytes());
-    format!("ix_{}", hasher.finalize().to_hex())
-}
-
 fn opaque_locator_index_id(
     workspace_id: &WorkspaceId,
     manifest_id: &ManifestId,
@@ -516,7 +416,7 @@ fn opaque_locator_index_id(
     locator_table_digest: &str,
     key_epoch: u32,
 ) -> String {
-    let sequence = NEXT_INDEX_PACK_SEED.fetch_add(1, Ordering::Relaxed);
+    let sequence = NEXT_OPAQUE_INDEX_SEED.fetch_add(1, Ordering::Relaxed);
     let now_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -541,7 +441,6 @@ fn locator_from_record(pack_id: &PackId, record: &PackRecordIndexEntry) -> Conte
         pack_id: Some(pack_id.clone()),
         offset: Some(record.offset),
         length: Some(record.length),
-        chunk_ids: Vec::new(),
     }
 }
 
@@ -613,22 +512,6 @@ fn record_context(
     }
 }
 
-fn index_pack_context(
-    workspace_id: &WorkspaceId,
-    snapshot_id: &SnapshotId,
-    index_pack_id: &str,
-    key_epoch: u32,
-) -> EnvelopeContext {
-    EnvelopeContext {
-        workspace_id_hash: workspace_id_hash(workspace_id.as_str()),
-        object_kind: ObjectKind::IndexPack,
-        object_id: index_pack_id.to_string(),
-        record_id: snapshot_id.as_str().to_string(),
-        key_epoch,
-        format_version: INDEX_PACK_FORMAT_VERSION,
-    }
-}
-
 fn locator_index_context(
     workspace_id: &WorkspaceId,
     manifest_id: &ManifestId,
@@ -650,21 +533,6 @@ fn locator_index_context(
         key_epoch,
         format_version: LOCATOR_INDEX_FORMAT_VERSION,
     }
-}
-
-fn directory_len(
-    pack_id: &PackId,
-    workspace_hash: &str,
-    records: &[PreparedRecord],
-) -> Result<usize, PackfileError> {
-    let mut len = HEADER_FIXED_LEN + pack_id.as_str().len() + workspace_hash.len();
-    for record in records {
-        len = len
-            .checked_add(ENTRY_FIXED_LEN)
-            .and_then(|value| value.checked_add(record.content_id.as_str().len()))
-            .ok_or(PackfileError::PackTooLarge)?;
-    }
-    Ok(len)
 }
 
 fn write_header_and_directory(
@@ -791,9 +659,11 @@ pub enum PackfileError {
     InvalidRecordRange,
     DirectoryIntegrity,
     DuplicateContentId,
+    ContentSourceLengthMismatch { expected: u64, actual: u64 },
     MissingRecord,
     PointerIntegrity(&'static str),
     Envelope(EnvelopeError),
+    Io(io::Error),
     ObjectKey(crate::ByteStoreError),
 }
 
@@ -814,14 +684,19 @@ impl fmt::Display for PackfileError {
                 formatter.write_str("packfile directory digest did not match")
             }
             Self::DuplicateContentId => formatter.write_str("packfile has duplicate content ID"),
+            Self::ContentSourceLengthMismatch { expected, actual } => write!(
+                formatter,
+                "content source length {actual} did not match declared length {expected}"
+            ),
             Self::MissingRecord => formatter.write_str("packfile record is missing"),
             Self::PointerIntegrity(field) => {
                 write!(
                     formatter,
-                    "index-pack pointer {field} did not match sealed bytes"
+                    "locator-index pointer {field} did not match sealed bytes"
                 )
             }
             Self::Envelope(error) => write!(formatter, "packfile record envelope failed: {error}"),
+            Self::Io(error) => write!(formatter, "packfile IO failed: {error}"),
             Self::ObjectKey(error) => write!(formatter, "packfile object key failed: {error}"),
         }
     }
@@ -831,6 +706,7 @@ impl Error for PackfileError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Envelope(error) => Some(error),
+            Self::Io(error) => Some(error),
             Self::ObjectKey(error) => Some(error),
             _ => None,
         }
@@ -840,6 +716,12 @@ impl Error for PackfileError {
 impl From<EnvelopeError> for PackfileError {
     fn from(error: EnvelopeError) -> Self {
         Self::Envelope(error)
+    }
+}
+
+impl From<io::Error> for PackfileError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
     }
 }
 

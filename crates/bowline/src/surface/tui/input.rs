@@ -1,12 +1,19 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::model::TuiModel;
+use super::model::{OnboardingModel, OnboardingStep, TuiModel};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputOutcome {
     Continue,
     Quit,
     Confirmed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnboardingInputOutcome {
+    Continue,
+    Quit,
+    Done,
 }
 
 pub fn apply_key(model: &mut TuiModel, key: KeyEvent) -> InputOutcome {
@@ -58,12 +65,41 @@ pub fn apply_key(model: &mut TuiModel, key: KeyEvent) -> InputOutcome {
     }
 }
 
+pub fn apply_onboarding_key(model: &mut OnboardingModel, key: KeyEvent) -> OnboardingInputOutcome {
+    match key.code {
+        KeyCode::Esc => OnboardingInputOutcome::Quit,
+        KeyCode::Enter if model.step == OnboardingStep::Done => OnboardingInputOutcome::Done,
+        KeyCode::Enter => {
+            model.advance();
+            OnboardingInputOutcome::Continue
+        }
+        KeyCode::Backspace => {
+            model.pop_char();
+            OnboardingInputOutcome::Continue
+        }
+        KeyCode::Char(ch)
+            if matches!(
+                model.step,
+                OnboardingStep::RootChoice | OnboardingStep::ConnectHost
+            ) =>
+        {
+            model.push_char(ch);
+            OnboardingInputOutcome::Continue
+        }
+        KeyCode::Char('q') => OnboardingInputOutcome::Quit,
+        _ => OnboardingInputOutcome::Continue,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::{InputOutcome, apply_key};
-    use crate::surface::tui::{TuiAction, TuiModel, TuiTone};
+    use super::{InputOutcome, OnboardingInputOutcome, apply_key, apply_onboarding_key};
+    use crate::surface::tui::{
+        TuiAction, TuiModel, TuiTone,
+        model::{OnboardingModel, OnboardingStep},
+    };
 
     fn enter() -> KeyEvent {
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
@@ -71,6 +107,10 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn char_key(ch: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)
     }
 
     #[test]
@@ -97,7 +137,7 @@ mod tests {
             TuiTone::Attention,
             vec![TuiAction {
                 label: "Approve device".to_string(),
-                command: Some("bowline approve --root ~/Code --request req_1".to_string()),
+                command: Some("bowline device approve --root ~/Code --request req_1".to_string()),
                 mutates: true,
             }],
             Vec::new(),
@@ -145,12 +185,14 @@ mod tests {
             vec![
                 TuiAction {
                     label: "Approve device".to_string(),
-                    command: Some("bowline approve --root ~/Code --request req_1".to_string()),
+                    command: Some(
+                        "bowline device approve --root ~/Code --request req_1".to_string(),
+                    ),
                     mutates: true,
                 },
                 TuiAction {
                     label: "Revoke device".to_string(),
-                    command: Some("bowline revoke --root ~/Code --device req_1".to_string()),
+                    command: Some("bowline device revoke --root ~/Code --device req_1".to_string()),
                     mutates: true,
                 },
             ],
@@ -168,7 +210,7 @@ mod tests {
             model
                 .confirmed_action()
                 .and_then(|action| action.command.as_deref()),
-            Some("bowline approve --root ~/Code --request req_1")
+            Some("bowline device approve --root ~/Code --request req_1")
         );
     }
 
@@ -185,7 +227,7 @@ mod tests {
                 },
                 TuiAction {
                     label: "Second".to_string(),
-                    command: Some("bowline explain".to_string()),
+                    command: Some("bowline status".to_string()),
                     mutates: false,
                 },
                 TuiAction {
@@ -228,5 +270,68 @@ mod tests {
             InputOutcome::Continue
         );
         assert_eq!(model.selected, 0);
+    }
+
+    #[test]
+    fn root_text_entry_accepts_typed_path() {
+        let mut model = OnboardingModel::new(String::new());
+        model.step = OnboardingStep::RootChoice;
+
+        for ch in "~/Code".chars() {
+            assert_eq!(
+                apply_onboarding_key(&mut model, char_key(ch)),
+                OnboardingInputOutcome::Continue
+            );
+        }
+
+        assert_eq!(model.root_input, "~/Code");
+    }
+
+    #[test]
+    fn host_text_entry_builds_connect_command() {
+        let mut model = OnboardingModel::new("~/Code".to_string());
+        model.step = OnboardingStep::ConnectHost;
+
+        for ch in "devbox".chars() {
+            apply_onboarding_key(&mut model, char_key(ch));
+        }
+
+        assert_eq!(
+            model.result().connect_command.as_deref(),
+            Some("bowline connect devbox --root ~/Code")
+        );
+    }
+
+    #[test]
+    fn host_connect_uses_default_root_when_input_is_empty() {
+        let mut model = OnboardingModel::new("~/Projects".to_string());
+        model.root_input.clear();
+        model.step = OnboardingStep::ConnectHost;
+
+        for ch in "devbox".chars() {
+            apply_onboarding_key(&mut model, char_key(ch));
+        }
+
+        let result = model.result();
+        assert_eq!(result.root.as_deref(), Some("~/Projects"));
+        assert_eq!(
+            result.connect_command.as_deref(),
+            Some("bowline connect devbox --root ~/Projects")
+        );
+    }
+
+    #[test]
+    fn host_connect_command_escapes_root_for_tui_parser() {
+        let mut model = OnboardingModel::new("~/O'Connor Code".to_string());
+        model.step = OnboardingStep::ConnectHost;
+
+        for ch in "devbox".chars() {
+            apply_onboarding_key(&mut model, char_key(ch));
+        }
+
+        assert_eq!(
+            model.result().connect_command.as_deref(),
+            Some("bowline connect devbox --root ~/'O'\\''Connor Code'")
+        );
     }
 }

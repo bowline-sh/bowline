@@ -7,9 +7,10 @@ use std::{
 };
 
 use crate::fakes::{
-    CompareAndSwapError, ControlPlaneClient, ControlPlaneError, DeterministicClock,
-    DeterministicIdGenerator, FakeControlPlaneClient, WorkspaceRef,
+    CompareAndSwapError, ControlPlaneError, DeterministicClock, DeterministicIdGenerator,
+    FakeControlPlaneClient, WorkspaceControlPlaneClient, WorkspaceRef,
 };
+use bowline_core::ids::{DeviceId, SnapshotId, WorkspaceId};
 
 static NEXT_TEMP_WORKSPACE: AtomicU64 = AtomicU64::new(1);
 
@@ -300,7 +301,7 @@ impl FakeDevice {
     ) -> Result<WorkspaceRef, FakeDeviceError> {
         self.require_online()?;
         self.control_plane
-            .observe_workspace_ref(workspace_id)
+            .observe_workspace_ref(&WorkspaceId::new(workspace_id))
             .map_err(FakeDeviceError::ControlPlane)?
             .ok_or_else(|| FakeDeviceError::WorkspaceMissing {
                 workspace_id: workspace_id.to_string(),
@@ -316,10 +317,10 @@ impl FakeDevice {
         self.require_online()?;
         self.control_plane
             .compare_and_swap_workspace_ref(
-                workspace_id,
+                &WorkspaceId::new(workspace_id),
                 expected_version,
-                snapshot_id,
-                &self.device_id,
+                &SnapshotId::new(snapshot_id),
+                &DeviceId::new(&self.device_id),
             )
             .map_err(FakeDeviceError::CompareAndSwap)
     }
@@ -390,10 +391,17 @@ fn visit_tree(
     for entry in entries {
         let path = entry.path();
         let metadata = fs::symlink_metadata(&path)?;
-        let relative_path = path
-            .strip_prefix(root)
-            .expect("entry below root")
-            .to_path_buf();
+        let relative_path = path.strip_prefix(root).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "walked entry outside root `{}` relative to `{}`: {error}",
+                    path.display(),
+                    root.display()
+                ),
+            )
+        })?;
+        let relative_path = relative_path.to_path_buf();
         let file_type = metadata.file_type();
 
         if file_type.is_symlink() {
@@ -558,7 +566,7 @@ mod tests {
         assert_eq!(advanced_ref, observed_by_b);
         assert_eq!(
             advanced_ref.updated_by_device_id,
-            Some(harness.device_a.device_id)
+            Some(bowline_core::ids::DeviceId::new(harness.device_a.device_id,))
         );
     }
 

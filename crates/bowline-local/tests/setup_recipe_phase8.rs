@@ -1,8 +1,8 @@
 use bowline_local::{
     setup::{
         LocalRegenerateKind, LocalRegenerateOutput, PackageManagerIdentity, SetupInferenceSource,
-        collect_receipt_identity_inputs, infer_setup_plan, load_setup_recipe, parse_setup_recipe,
-        redact_setup_text, validate_setup_cwd,
+        collect_receipt_identity_inputs, infer_setup_plan, learned_setup_candidate,
+        load_setup_recipe, parse_setup_recipe, redact_setup_text, validate_setup_cwd,
     },
     workspace::TempWorkspace,
 };
@@ -68,6 +68,28 @@ fn setup_redactor_covers_env_assignments_tokens_and_home_paths() {
 }
 
 #[test]
+fn learned_setup_candidate_redacts_and_stays_a_suggestion() {
+    let workspace = TempWorkspace::new("phase8-learned-receipt").expect("workspace");
+    workspace.create_project("app").expect("project");
+
+    let candidate = learned_setup_candidate(
+        workspace.root().join("app"),
+        workspace.root().join("app"),
+        "OPENAI_API_KEY=sk-abcdef1234567890 pnpm --filter web dev",
+    )
+    .expect("candidate");
+
+    assert_eq!(candidate.cwd, ".");
+    assert!(candidate.learned);
+    assert!(candidate.command.contains("OPENAI_API_KEY=[redacted]"));
+    assert!(!candidate.command.contains("sk-abcdef"));
+    assert_eq!(
+        candidate.suggestion,
+        format!("last successful boot used: `{}`", candidate.command)
+    );
+}
+
+#[test]
 fn setup_inference_prefers_recipe_and_uses_safe_lockfile_commands() {
     let workspace = TempWorkspace::new("phase8-infer-recipe").expect("workspace");
     workspace
@@ -107,6 +129,7 @@ fn setup_inference_prefers_recipe_and_uses_safe_lockfile_commands() {
         .expect("inference")
         .expect("plan");
     assert_eq!(plan.source, SetupInferenceSource::Lockfiles);
+    assert!(plan.blockers.is_empty());
     let commands = plan
         .commands
         .iter()

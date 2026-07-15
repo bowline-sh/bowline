@@ -1,4 +1,5 @@
 use super::*;
+use crate::metadata::MetadataError;
 
 #[derive(Debug)]
 pub enum SetupRunError {
@@ -10,6 +11,7 @@ pub enum SetupRunError {
     MissingWorkspace,
     MissingRoot,
     MissingProject(String),
+    EmptySetupPlan,
     Json(serde_json::Error),
     Events(LocalEventError),
 }
@@ -32,6 +34,7 @@ impl fmt::Display for SetupRunError {
             Self::MissingProject(path) => {
                 write!(formatter, "no bowline project found for {path}")
             }
+            Self::EmptySetupPlan => formatter.write_str("setup plan did not contain any commands"),
             Self::Json(error) => write!(formatter, "setup receipt JSON failed: {error}"),
             Self::Events(error) => error.fmt(formatter),
         }
@@ -48,7 +51,10 @@ impl Error for SetupRunError {
             Self::UnsafeWorkspacePath(_) => None,
             Self::Json(error) => Some(error),
             Self::Events(error) => Some(error),
-            Self::MissingWorkspace | Self::MissingRoot | Self::MissingProject(_) => None,
+            Self::MissingWorkspace
+            | Self::MissingRoot
+            | Self::MissingProject(_)
+            | Self::EmptySetupPlan => None,
         }
     }
 }

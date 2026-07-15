@@ -1,4 +1,106 @@
 use super::*;
+use bowline_core::wire::generated::{
+    DaemonClientHello, DaemonRpcRequest, DaemonRpcResponse, DaemonServerHello,
+    MACHINE_CONTRACT_VERSION,
+};
+use bowline_daemon_rpc::{DAEMON_RPC_PROTOCOL, DAEMON_RPC_PROTOCOL_VERSION, FrameCodec};
+use std::os::unix::net::UnixStream;
+
+fn spawn_daemon_info_server(
+    listener: UnixListener,
+    status: Option<Value>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream =
+            accept_test_client(&listener, deadline).expect("RPC client should connect");
+        let codec = FrameCodec::default();
+        codec
+            .read_magic(&mut stream)
+            .expect("RPC magic should read");
+        let _: DaemonClientHello = codec.read(&mut stream).expect("client hello should read");
+        codec
+            .write(
+                &mut stream,
+                &DaemonServerHello {
+                    protocol_version: DAEMON_RPC_PROTOCOL_VERSION,
+                    contract_version: MACHINE_CONTRACT_VERSION,
+                    schema_hash: bowline_core::wire::generated::WIRE_SCHEMA_HASH.to_string(),
+                    daemon_version: "test-daemon".to_string(),
+                    capabilities: vec!["daemon.info".to_string(), "status.snapshot".to_string()],
+                    instance_id: "test-daemon-instance".to_string(),
+                },
+            )
+            .expect("server hello should write");
+        let request: DaemonRpcRequest = codec.read(&mut stream).expect("RPC request should read");
+        assert_eq!(request.method, "daemon.info");
+        codec
+            .write(
+                &mut stream,
+                &DaemonRpcResponse {
+                    request_id: request.request_id,
+                    result: Some(serde_json::json!({
+                        "daemonVersion": "test-daemon",
+                    })),
+                    error: None,
+                },
+            )
+            .expect("daemon info response should write");
+        let status_request: DaemonRpcRequest =
+            codec.read(&mut stream).expect("status request should read");
+        assert_eq!(status_request.method, "status.getSnapshot");
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("tests/contracts/status/healthy.json");
+        let mut snapshot: Value = serde_json::from_str(
+            &fs::read_to_string(fixture_path).expect("healthy status fixture"),
+        )
+        .expect("typed healthy status fixture");
+        if let Some(Value::Object(overrides)) = status {
+            let object = snapshot
+                .as_object_mut()
+                .expect("healthy status fixture object");
+            object.extend(overrides);
+        }
+        codec
+            .write(
+                &mut stream,
+                &DaemonRpcResponse {
+                    request_id: status_request.request_id,
+                    result: Some(serde_json::json!({
+                        "instanceId": "test-daemon-instance",
+                        "sequence": 1,
+                        "snapshot": snapshot,
+                    })),
+                    error: None,
+                },
+            )
+            .expect("status response should write");
+    })
+}
+
+fn accept_test_client(listener: &UnixListener, deadline: Instant) -> io::Result<UnixStream> {
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("accepted stream should become blocking");
+                return Ok(stream);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "timed out waiting for CLI handshake",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
 
 #[test]
 fn events_limit_rejects_unbounded_requests() {
@@ -26,7 +128,7 @@ fn trust_commands_fail_without_control_plane_config_instead_of_using_ephemeral_f
         .insert_root("root_code", &workspace_id, "~/Code", "2026-06-26T12:00:00Z")
         .expect("root insert");
     let output = bowline()
-        .args(["devices", "--root", "~/Code", "--json"])
+        .args(["device", "list", "--root", "~/Code", "--json"])
         .current_dir(temp.root())
         .env("BOWLINE_METADATA_DB", db_path)
         .env_remove("CONVEX_URL")
@@ -38,11 +140,12 @@ fn trust_commands_fail_without_control_plane_config_instead_of_using_ephemeral_f
         .output()
         .expect("bowline should run");
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(4));
     let json = parse_stdout_json(output);
-    assert_eq!(json["command"], "devices");
+    assert_eq!(json["command"], "device list");
     assert_eq!(json["status"], "failed");
-    assert_eq!(json["error"]["code"], "runtime_error");
+    assert_eq!(json["error"]["code"], "device_trust_requires_action");
+    assert_eq!(json["error"]["recoverability"], "user-action");
     let message = json["error"]["message"]
         .as_str()
         .expect("error message is a string");
@@ -50,7 +153,117 @@ fn trust_commands_fail_without_control_plane_config_instead_of_using_ephemeral_f
 }
 
 #[test]
-fn approve_without_yes_does_not_mutate_from_noninteractive_shell() {
+fn devices_and_trust_commands_infer_unambiguous_local_root() {
+    let temp = TempWorkspace::new("trust-infer-root").expect("temp workspace");
+    let code_root = temp.root().join("Code");
+    fs::create_dir_all(&code_root).expect("code root");
+    let db_path = temp.root().join("state").join("local.sqlite3");
+    let workspace_id = WorkspaceId::new("ws_code");
+    let store = MetadataStore::open(&db_path).expect("metadata opens");
+    store
+        .insert_workspace(&workspace_id, "User Code", "2026-07-02T12:00:00Z")
+        .expect("workspace insert");
+    store
+        .insert_root(
+            "root_code",
+            &workspace_id,
+            &code_root.display().to_string(),
+            "2026-07-02T12:00:00Z",
+        )
+        .expect("root insert");
+
+    for args in [
+        &["device", "list", "--json"][..],
+        &[
+            "device",
+            "approve",
+            "--request",
+            "device-request:ws_code:dev",
+            "--yes",
+            "--json",
+        ][..],
+    ] {
+        let output = bowline()
+            .args(args)
+            .current_dir(&code_root)
+            .env("BOWLINE_METADATA_DB", db_path.display().to_string())
+            .env_remove("CONVEX_URL")
+            .env_remove("BOWLINE_CONTROL_PLANE_TOKEN")
+            .env_remove("BOWLINE_USE_FAKE_CONTROL_PLANE")
+            .env_remove("BOWLINE_WORKOS_ACCESS_TOKEN")
+            .env_remove("BOWLINE_WORKOS_REFRESH_TOKEN")
+            .env_remove("BOWLINE_WORKSPACE_ID")
+            .output()
+            .expect("bowline should run");
+
+        assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
+        let json = parse_stdout_json(output);
+        assert_ne!(json["status"], "usage-error", "{args:?}");
+        assert_eq!(json["error"]["recoverability"], "user-action", "{args:?}");
+    }
+}
+
+#[test]
+fn bare_trust_command_with_multiple_workspace_roots_lists_candidates() {
+    let temp = TempWorkspace::new("trust-ambiguous-root").expect("temp workspace");
+    let code_root = temp.root().join("Code");
+    let other_root = temp.root().join("OtherCode");
+    fs::create_dir_all(&code_root).expect("code root");
+    fs::create_dir_all(&other_root).expect("other root");
+    let db_path = temp.root().join("state").join("local.sqlite3");
+    let store = MetadataStore::open(&db_path).expect("metadata opens");
+    for (workspace, root_id, root) in [
+        ("ws_code", "root_code", &code_root),
+        ("ws_other", "root_other", &other_root),
+    ] {
+        let workspace_id = WorkspaceId::new(workspace);
+        store
+            .insert_workspace(&workspace_id, "User Code", "2026-07-02T12:00:00Z")
+            .expect("workspace insert");
+        store
+            .insert_root(
+                root_id,
+                &workspace_id,
+                &root.display().to_string(),
+                "2026-07-02T12:00:00Z",
+            )
+            .expect("root insert");
+    }
+
+    let output = bowline()
+        .args([
+            "device",
+            "approve",
+            "--request",
+            "device-request:ws_code:dev",
+            "--yes",
+            "--json",
+        ])
+        .current_dir(temp.root())
+        .env("BOWLINE_METADATA_DB", db_path.display().to_string())
+        .output()
+        .expect("bowline should run");
+
+    assert_eq!(output.status.code(), Some(2));
+    let json = parse_stdout_json(output);
+    assert_eq!(json["command"], "device approve");
+    assert_eq!(json["status"], "usage-error");
+    assert_eq!(json["error"]["code"], "ambiguous_root");
+    let message = json["error"]["message"].as_str().expect("message");
+    assert!(message.contains(&code_root.display().to_string()));
+    assert!(message.contains(&other_root.display().to_string()));
+    let actions = json["nextActions"].as_array().expect("next actions");
+    assert_eq!(actions.len(), 2);
+    assert!(actions.iter().all(|action| {
+        action["command"]
+            .as_str()
+            .expect("command")
+            .contains("--root")
+    }));
+}
+
+#[test]
+fn approve_without_yes_in_human_mode_does_not_mutate_from_noninteractive_shell() {
     let temp = TempWorkspace::new("approve-no-yes-confirmation").expect("temp workspace");
     let db_path = temp.root().join("state").join("local.sqlite3");
     let workspace_id = WorkspaceId::new("ws_code");
@@ -64,11 +277,13 @@ fn approve_without_yes_does_not_mutate_from_noninteractive_shell() {
 
     let output = bowline()
         .args([
+            "device",
             "approve",
             "--root",
             "~/Code",
             "--request",
             "device-request:ws_code:dev-mac",
+            "--human",
         ])
         .current_dir(temp.root())
         .env("BOWLINE_METADATA_DB", db_path)
@@ -97,11 +312,12 @@ fn agent_start_json_reports_missing_workspace() {
         &[("BOWLINE_METADATA_DB", db_path.display().to_string())],
     );
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(4));
     let json = parse_stdout_json(output);
     assert_eq!(json["command"], "agent start");
     assert_eq!(json["status"], "failed");
-    assert_eq!(json["error"]["code"], "runtime_error");
+    assert_eq!(json["error"]["code"], "agent_requires_action");
+    assert_eq!(json["error"]["recoverability"], "user-action");
     assert_eq!(
         json["error"]["message"],
         "no bowline workspace is initialized"
@@ -124,15 +340,15 @@ fn connect_uses_configured_metadata_db_active_root_by_default() {
         ],
     );
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(3));
     let json = parse_stdout_json(output);
     let expected_root = code_root.display().to_string();
     assert_eq!(json["command"], "connect");
     assert_eq!(json["root"], expected_root);
     assert!(
-        json["nextActions"]
+        json["repairActions"]
             .as_array()
-            .expect("next actions")
+            .expect("repair actions")
             .iter()
             .any(|action| action["command"].as_str().is_some_and(|command| {
                 command.contains("bowline connect 'bad host'")
@@ -140,57 +356,6 @@ fn connect_uses_configured_metadata_db_active_root_by_default() {
                     && command.contains(&expected_root)
             })),
         "connect retry action should preserve the configured active root: {json}"
-    );
-}
-
-#[test]
-fn dev_cloud_spike_is_hidden_from_help_but_fake_json_runs() {
-    let help = run_bowline(&["help"]);
-    assert!(help.status.success());
-    let help_stdout = String::from_utf8(help.stdout).expect("help output should be utf8");
-    assert!(!help_stdout.contains("cloud-spike"));
-
-    let help_json = parse_stdout_json(run_bowline(&["help", "--json"]));
-    let help_json_text = serde_json::to_string(&help_json).expect("help json should serialize");
-    assert!(!help_json_text.contains("cloud-spike"));
-    assert!(!help_json_text.contains("dev cloud-spike"));
-
-    let output = run_bowline(&["dev", "cloud-spike", "--json"]);
-    assert!(output.status.success());
-    let json = parse_stdout_json(output);
-    assert_eq!(json["command"], "dev cloud-spike");
-    assert_eq!(json["provider"], "fake");
-    assert_eq!(json["advancedVersion"], 1);
-    assert_eq!(json["staleRefDetected"], true);
-    assert_eq!(json["deviceApprovalHarnessOnly"], true);
-}
-
-#[test]
-fn hosted_cloud_spike_json_skips_without_env() {
-    let temp = TempWorkspace::new("hosted-cloud-spike-missing-env").expect("temp workspace");
-    let output = run_bowline_without_env_in_dir(
-        &["dev", "cloud-spike", "--provider", "hosted", "--json"],
-        &[
-            "CONVEX_URL",
-            "BOWLINE_CONTROL_PLANE_TOKEN",
-            "CLOUDFLARE_ACCOUNT_ID",
-            "BOWLINE_R2_BUCKET",
-            "R2_ACCESS_KEY_ID",
-            "R2_SECRET_ACCESS_KEY",
-        ],
-        temp.root(),
-    );
-
-    assert!(output.status.success());
-    let json = parse_stdout_json(output);
-    assert_eq!(json["command"], "dev cloud-spike");
-    assert_eq!(json["provider"], "hosted");
-    assert_eq!(json["skipped"], true);
-    assert!(
-        !json["missingEnv"]
-            .as_array()
-            .expect("missing env")
-            .is_empty()
     );
 }
 
@@ -203,36 +368,7 @@ fn daemon_status_exercises_socket_handshake() {
         .set_nonblocking(true)
         .expect("test socket should become nonblocking");
 
-    let server = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let (mut stream, _) = loop {
-            match listener.accept() {
-                Ok(connection) => break connection,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    assert!(
-                        Instant::now() < deadline,
-                        "timed out waiting for CLI handshake"
-                    );
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => panic!("accept failed: {error}"),
-            }
-        };
-        stream
-            .set_nonblocking(false)
-            .expect("accepted stream should become blocking");
-
-        let request = read_line(&mut stream).expect("handshake request should be readable");
-        assert_eq!(
-            request,
-            "{\"type\":\"hello\",\"protocol\":\"bowline.local\",\"version\":1}"
-        );
-        stream
-            .write_all(
-                b"{\"type\":\"hello_ack\",\"protocol\":\"bowline.local\",\"version\":1,\"daemonVersion\":\"test-daemon\",\"status\":\"ok\"}\n",
-            )
-            .expect("handshake response should write");
-    });
+    let server = spawn_daemon_info_server(listener, None);
 
     let output = bowline()
         .args(["daemon", "status", "--json", "--socket"])
@@ -248,14 +384,56 @@ fn daemon_status_exercises_socket_handshake() {
     assert_eq!(json["command"], "daemon status");
     assert_eq!(json["daemon"]["state"], "running");
     assert_eq!(json["daemon"]["socket"], socket.display().to_string());
-    assert_eq!(json["daemon"]["protocol"], "bowline.local");
-    assert_eq!(json["daemon"]["version"], 1);
+    assert_eq!(json["daemon"]["protocol"], DAEMON_RPC_PROTOCOL);
+    assert_eq!(json["daemon"]["version"], DAEMON_RPC_PROTOCOL_VERSION);
     assert_eq!(json["daemon"]["daemonVersion"], "test-daemon");
     if let Some(service) = json.get("service") {
         assert!(service["unitPath"].as_str().is_some_and(|path| {
             path.ends_with("bowline.service") || path.ends_with("io.bowline.daemon.plist")
         }));
     }
+}
+
+#[test]
+fn daemon_start_json_keeps_process_state_running_for_degraded_sync() {
+    let socket = unique_socket("daemon-start-degraded-json");
+    let _ = fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).expect("test socket should bind");
+    listener
+        .set_nonblocking(true)
+        .expect("test socket should become nonblocking");
+
+    let server = spawn_daemon_info_server(
+        listener,
+        Some(serde_json::json!({
+            "workspaceId": "ws_code",
+            "status": {
+                "level": "attention",
+                "attentionItems": ["offline"],
+            },
+        })),
+    );
+
+    let output = bowline()
+        .args(["daemon", "start", "--json", "--socket"])
+        .arg(&socket)
+        .env("BOWLINE_WORKSPACE_ID", "ws_code")
+        .env_remove("CONVEX_URL")
+        .env_remove("BOWLINE_CONTROL_PLANE_TOKEN")
+        .env_remove("BOWLINE_WORKOS_ACCESS_TOKEN")
+        .output()
+        .expect("bowline daemon start should run");
+
+    server.join().expect("test daemon should finish");
+    let _ = fs::remove_file(&socket);
+
+    assert!(output.status.success(), "{output:?}");
+    let json = parse_stdout_json(output);
+    assert_eq!(json["command"], "daemon start");
+    assert_eq!(json["daemon"]["state"], "running");
+    assert_eq!(json["daemon"]["syncState"], "degraded");
+    assert_eq!(json["daemon"]["unavailableBecause"], "offline");
+    assert_eq!(json["daemon"]["daemonVersion"], "test-daemon");
 }
 
 #[test]

@@ -1,95 +1,52 @@
 use super::common::*;
 use super::*;
 
+mod claims;
+mod observations;
+mod retention;
+
+pub(crate) use retention::retention_cutoff;
+pub use retention::{LocalMetadataPruneReport, LocalMetadataRetentionPolicy};
+
+// Domain calls may outlive a regular heartbeat interval, so authorization
+// reserves the same full safety window used by the daemon claim supervisor.
+const SYNC_BOUNDARY_SAFETY_LEASE_SECONDS: i64 = 60;
+
+fn same_sync_operation_input(left: &SyncOperationRecord, right: &SyncOperationRecord) -> bool {
+    left.id == right.id
+        && left.workspace_id == right.workspace_id
+        && left.kind == right.kind
+        && left.resource_key == right.resource_key
+        && left.idempotency_key == right.idempotency_key
+        && left.base_version == right.base_version
+        && left.base_snapshot_id == right.base_snapshot_id
+        && left.target_snapshot_id == right.target_snapshot_id
+        && left.device_id == right.device_id
+        && left.payload_json == right.payload_json
+}
+
 impl MetadataStore {
-    pub fn upsert_workspace_sync_head(
-        &self,
-        record: &WorkspaceSyncHeadRecord,
-    ) -> Result<(), MetadataError> {
-        self.insert_workspace(
-            &WorkspaceId::new(record.workspace_ref.workspace_id.clone()),
-            "Code",
-            &record.observed_at,
-        )?;
-        self.connection.execute(
-            "INSERT INTO workspace_sync_heads
-             (workspace_id, version, snapshot_id, updated_at_tick, updated_by_device_id, observed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(workspace_id) DO UPDATE SET
-               version = excluded.version,
-               snapshot_id = excluded.snapshot_id,
-               updated_at_tick = excluded.updated_at_tick,
-               updated_by_device_id = excluded.updated_by_device_id,
-               observed_at = excluded.observed_at",
-            params![
-                record.workspace_ref.workspace_id.as_str(),
-                record.workspace_ref.version,
-                record.workspace_ref.snapshot_id.as_str(),
-                record.workspace_ref.updated_at.tick,
-                record.workspace_ref.updated_by_device_id.as_deref(),
-                record.observed_at.as_str(),
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn workspace_sync_head(
-        &self,
-        workspace_id: &WorkspaceId,
-    ) -> Result<Option<WorkspaceSyncHeadRecord>, MetadataError> {
-        self.connection
-            .query_row(
-                "SELECT workspace_id, version, snapshot_id, updated_at_tick, updated_by_device_id, observed_at
-                 FROM workspace_sync_heads
-                 WHERE workspace_id = ?1",
-                [workspace_id.as_str()],
-                |row| {
-                    Ok(WorkspaceSyncHeadRecord {
-                        workspace_ref: WorkspaceRef {
-                            workspace_id: row.get(0)?,
-                            version: row.get::<_, u64>(1)?,
-                            snapshot_id: row.get(2)?,
-                            updated_at: bowline_control_plane::ControlPlaneTimestamp {
-                                tick: row.get::<_, u64>(3)?,
-                            },
-                            updated_by_device_id: row.get(4)?,
-                        },
-                        observed_at: row.get(5)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(Into::into)
-    }
-
     pub fn enqueue_sync_operation(
         &self,
         record: &SyncOperationRecord,
-    ) -> Result<(), MetadataError> {
+    ) -> Result<SyncOperationEnqueueOutcome, MetadataError> {
         self.insert_workspace(&record.workspace_id, "Code", &record.updated_at)?;
-        self.connection.execute(
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "INSERT INTO sync_operations
-             (id, workspace_id, kind, state, idempotency_key, base_version, base_snapshot_id,
+             (id, workspace_id, kind, resource_key, state, idempotency_key, base_version, base_snapshot_id,
               target_snapshot_id, device_id, payload_json, attempt_count, claimed_by,
-              heartbeat_at, next_attempt_at, last_error, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
-             ON CONFLICT(workspace_id, idempotency_key) DO UPDATE SET
-               kind = excluded.kind,
-               state = CASE
-                 WHEN sync_operations.state = 'completed' THEN sync_operations.state
-                 ELSE excluded.state
-               END,
-               base_version = excluded.base_version,
-               base_snapshot_id = excluded.base_snapshot_id,
-               target_snapshot_id = excluded.target_snapshot_id,
-               device_id = excluded.device_id,
-               payload_json = excluded.payload_json,
-               updated_at = excluded.updated_at",
+              claim_generation, heartbeat_at, lease_expires_at, cancellation_requested_at,
+              next_attempt_at, result_json, last_error_code, last_error, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+             ON CONFLICT(workspace_id, idempotency_key) DO NOTHING",
             params![
                 record.id.as_str(),
                 record.workspace_id.as_str(),
-                record.kind.as_str(),
-                record.state.as_str(),
+                serialize_json_variant(&record.kind)?,
+                record.resource_key.as_string(),
+                serialize_json_variant(&record.state)?,
                 record.idempotency_key.as_str(),
                 record.base_version,
                 record.base_snapshot_id.as_deref(),
@@ -98,14 +55,42 @@ impl MetadataStore {
                 record.payload_json.as_str(),
                 record.attempt_count,
                 record.claimed_by.as_deref(),
+                record.claim_generation,
                 record.heartbeat_at.as_deref(),
+                record.lease_expires_at.as_deref(),
+                record.cancellation_requested_at.as_deref(),
                 record.next_attempt_at.as_deref(),
+                record.result_json.as_deref(),
+                record.last_error_code.as_deref(),
                 record.last_error.as_deref(),
                 record.created_at.as_str(),
                 record.updated_at.as_str(),
             ],
         )?;
-        Ok(())
+        let outcome = if changed == 0 {
+            let existing = transaction.query_row(
+                "SELECT id, workspace_id, kind, resource_key, state, idempotency_key, base_version,
+                        base_snapshot_id, target_snapshot_id, device_id, payload_json, attempt_count,
+                        claimed_by, claim_generation, heartbeat_at, lease_expires_at,
+                        cancellation_requested_at, next_attempt_at, result_json, last_error_code,
+                        last_error, created_at, updated_at
+                 FROM sync_operations
+                 WHERE workspace_id = ?1 AND idempotency_key = ?2",
+                params![record.workspace_id.as_str(), record.idempotency_key.as_str()],
+                sync_operation_from_row,
+            )?;
+            if !same_sync_operation_input(&existing, record) {
+                return Err(MetadataError::InvalidStorageMetadata(format!(
+                    "sync operation idempotency key `{}` was reused with different input",
+                    record.idempotency_key
+                )));
+            }
+            SyncOperationEnqueueOutcome::Existing(existing)
+        } else {
+            SyncOperationEnqueueOutcome::Inserted(record.clone())
+        };
+        transaction.commit()?;
+        Ok(outcome)
     }
 
     pub fn sync_operations(
@@ -113,9 +98,10 @@ impl MetadataStore {
         workspace_id: &WorkspaceId,
     ) -> Result<Vec<SyncOperationRecord>, MetadataError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, workspace_id, kind, state, idempotency_key, base_version, base_snapshot_id,
+            "SELECT id, workspace_id, kind, resource_key, state, idempotency_key, base_version, base_snapshot_id,
                     target_snapshot_id, device_id, payload_json, attempt_count, claimed_by,
-                    heartbeat_at, next_attempt_at, last_error, created_at, updated_at
+                    claim_generation, heartbeat_at, lease_expires_at, cancellation_requested_at,
+                    next_attempt_at, result_json, last_error_code, last_error, created_at, updated_at
              FROM sync_operations
              WHERE workspace_id = ?1
              ORDER BY created_at, id",
@@ -124,22 +110,126 @@ impl MetadataStore {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub fn active_sync_operation_for_device(
+    pub fn completed_sync_operations(
         &self,
         workspace_id: &WorkspaceId,
-        kind: &str,
-        device_id: &DeviceId,
+        since: Option<&str>,
+        until: Option<&str>,
+        limit: Option<u64>,
+    ) -> Result<Vec<SyncOperationRecord>, MetadataError> {
+        self.completed_sync_operations_page(workspace_id, since, until, None, None, limit)
+    }
+
+    pub fn completed_sync_operations_page(
+        &self,
+        workspace_id: &WorkspaceId,
+        since: Option<&str>,
+        until: Option<&str>,
+        before_updated_at: Option<&str>,
+        before_id: Option<&str>,
+        limit: Option<u64>,
+    ) -> Result<Vec<SyncOperationRecord>, MetadataError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, workspace_id, kind, resource_key, state, idempotency_key, base_version, base_snapshot_id,
+                    target_snapshot_id, device_id, payload_json, attempt_count, claimed_by,
+                    claim_generation, heartbeat_at, lease_expires_at, cancellation_requested_at,
+                    next_attempt_at, result_json, last_error_code, last_error, created_at, updated_at
+             FROM sync_operations
+             WHERE workspace_id = ?1
+               AND state = 'completed'
+               AND (?2 IS NULL OR updated_at >= ?2)
+               AND (?3 IS NULL OR updated_at <= ?3)
+               AND (
+                   ?4 IS NULL
+                   OR updated_at < ?4
+                   OR (updated_at = ?4 AND id < ?5)
+               )
+             ORDER BY updated_at DESC, id DESC
+             LIMIT ?6",
+        )?;
+        let rows = statement.query_map(
+            params![
+                workspace_id.as_str(),
+                since,
+                until,
+                before_updated_at,
+                before_id,
+                sql_limit(limit),
+            ],
+            sync_operation_from_row,
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn completed_sync_operation_for_snapshot(
+        &self,
+        workspace_id: &WorkspaceId,
+        snapshot_id: &SnapshotId,
     ) -> Result<Option<SyncOperationRecord>, MetadataError> {
         self.connection
             .query_row(
-                "SELECT id, workspace_id, kind, state, idempotency_key, base_version, base_snapshot_id,
+                "SELECT id, workspace_id, kind, resource_key, state, idempotency_key, base_version, base_snapshot_id,
                         target_snapshot_id, device_id, payload_json, attempt_count, claimed_by,
-                        heartbeat_at, next_attempt_at, last_error, created_at, updated_at
+                        claim_generation, heartbeat_at, lease_expires_at, cancellation_requested_at,
+                        next_attempt_at, result_json, last_error_code, last_error, created_at, updated_at
+                 FROM sync_operations
+                 WHERE workspace_id = ?1
+                   AND state = 'completed'
+                   AND target_snapshot_id = ?2
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT 1",
+                params![workspace_id.as_str(), snapshot_id.as_str()],
+                sync_operation_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn latest_completed_sync_operation_for_device_kind(
+        &self,
+        workspace_id: &WorkspaceId,
+        kind: SyncOperationKind,
+        device_id: &DeviceId,
+    ) -> Result<Option<SyncOperationRecord>, MetadataError> {
+        let kind = serialize_json_variant(&kind)?;
+        self.connection
+            .query_row(
+                "SELECT id, workspace_id, kind, resource_key, state, idempotency_key, base_version, base_snapshot_id,
+                        target_snapshot_id, device_id, payload_json, attempt_count, claimed_by,
+                        claim_generation, heartbeat_at, lease_expires_at, cancellation_requested_at,
+                        next_attempt_at, result_json, last_error_code, last_error, created_at, updated_at
                  FROM sync_operations
                  WHERE workspace_id = ?1
                    AND kind = ?2
                    AND device_id = ?3
-                   AND state != 'completed'
+                   AND state = 'completed'
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT 1",
+                params![workspace_id.as_str(), kind, device_id.as_str()],
+                sync_operation_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn active_sync_operation_for_device(
+        &self,
+        workspace_id: &WorkspaceId,
+        kind: SyncOperationKind,
+        device_id: &DeviceId,
+    ) -> Result<Option<SyncOperationRecord>, MetadataError> {
+        let kind = serialize_json_variant(&kind)?;
+        self.connection
+            .query_row(
+                "SELECT id, workspace_id, kind, resource_key, state, idempotency_key, base_version, base_snapshot_id,
+                        target_snapshot_id, device_id, payload_json, attempt_count, claimed_by,
+                        claim_generation, heartbeat_at, lease_expires_at, cancellation_requested_at,
+                        next_attempt_at, result_json, last_error_code, last_error, created_at, updated_at
+                 FROM sync_operations
+                 WHERE workspace_id = ?1
+                   AND kind = ?2
+                   AND device_id = ?3
+                   AND state NOT IN ('completed', 'cancelled')
                  ORDER BY created_at, id
                  LIMIT 1",
                 params![workspace_id.as_str(), kind, device_id.as_str()],
@@ -149,192 +239,235 @@ impl MetadataStore {
             .map_err(Into::into)
     }
 
-    pub fn claim_next_sync_operation(
+    pub fn complete_claimed_sync_operation(
         &self,
-        workspace_id: &WorkspaceId,
-        claimant: &str,
+        claim: &SyncClaimHandle,
+        result_json: &str,
         now: &str,
-    ) -> Result<Option<SyncOperationRecord>, MetadataError> {
-        let Some(id) = self
-            .connection
-            .query_row(
-                "SELECT id FROM sync_operations
-                 WHERE workspace_id = ?1
-                   AND (
-                     state = 'queued'
-                     OR (state = 'waiting_retry' AND (next_attempt_at IS NULL OR next_attempt_at <= ?2))
-                     OR (state = 'blocked_offline' AND (next_attempt_at IS NULL OR next_attempt_at <= ?2))
-                   )
-                 ORDER BY created_at, id
-                 LIMIT 1",
-                params![workspace_id.as_str(), now],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-        else {
-            return Ok(None);
-        };
-
-        let changed = self.connection.execute(
-            "UPDATE sync_operations
-             SET state = 'claimed',
-                 claimed_by = ?1,
-                 heartbeat_at = ?2,
-                 attempt_count = attempt_count + 1,
-                 updated_at = ?2
-             WHERE id = ?3
-               AND workspace_id = ?4
-               AND (
-                 state = 'queued'
-                 OR (state = 'waiting_retry' AND (next_attempt_at IS NULL OR next_attempt_at <= ?2))
-                 OR (state = 'blocked_offline' AND (next_attempt_at IS NULL OR next_attempt_at <= ?2))
-               )",
-            params![claimant, now, id, workspace_id.as_str()],
-        )?;
-        if changed == 0 {
-            return Ok(None);
-        }
-        self.sync_operation_by_id(&id)
+    ) -> Result<SyncClaimTransition, MetadataError> {
+        self.transition_claimed_sync_operation(ClaimedTransitionRequest {
+            claim,
+            state: "completed",
+            result_json: Some(result_json),
+            error_code: None,
+            message: None,
+            next_attempt_at: None,
+            allow_cancellation_requested: false,
+            require_cancellation_requested: false,
+            now,
+        })
     }
 
-    pub fn refresh_sync_operation_heartbeat(
+    pub fn complete_committed_cancelled_late_sync_operation(
         &self,
-        id: &str,
-        claimant: &str,
+        claim: &SyncClaimHandle,
+        result: &SyncCommittedCancelledLateResult,
         now: &str,
-    ) -> Result<bool, MetadataError> {
-        Ok(self.connection.execute(
-            "UPDATE sync_operations
-             SET heartbeat_at = ?3, updated_at = ?3
-             WHERE id = ?1 AND state = 'claimed' AND claimed_by = ?2",
-            params![id, claimant, now],
-        )? > 0)
+    ) -> Result<SyncClaimTransition, MetadataError> {
+        let result_json = serde_json::to_string(result).map_err(|error| {
+            MetadataError::InvalidStorageMetadata(format!(
+                "committed-cancelled-late result could not be serialized: {error}"
+            ))
+        })?;
+        self.transition_claimed_sync_operation(ClaimedTransitionRequest {
+            claim,
+            state: "completed",
+            result_json: Some(&result_json),
+            error_code: None,
+            message: None,
+            next_attempt_at: None,
+            allow_cancellation_requested: true,
+            require_cancellation_requested: true,
+            now,
+        })
     }
 
-    pub fn complete_sync_operation(
+    pub fn fail_claimed_sync_operation_for_retry(
         &self,
-        id: &str,
-        completion_payload_json: &str,
-        now: &str,
-    ) -> Result<(), MetadataError> {
-        self.connection.execute(
-            "UPDATE sync_operations
-             SET state = 'completed',
-                 payload_json = ?2,
-                 claimed_by = NULL,
-                 heartbeat_at = NULL,
-                 next_attempt_at = NULL,
-                 last_error = NULL,
-                 updated_at = ?3
-             WHERE id = ?1",
-            params![id, completion_payload_json, now],
-        )?;
-        Ok(())
-    }
-
-    pub fn fail_sync_operation_for_retry(
-        &self,
-        id: &str,
+        claim: &SyncClaimHandle,
+        error_code: &str,
         message: &str,
         next_attempt_at: &str,
         now: &str,
-    ) -> Result<(), MetadataError> {
-        self.connection.execute(
-            "UPDATE sync_operations
-             SET state = 'waiting_retry',
-                 claimed_by = NULL,
-                 heartbeat_at = NULL,
-                 next_attempt_at = ?3,
-                 last_error = ?2,
-                 updated_at = ?4
-             WHERE id = ?1",
-            params![id, message, next_attempt_at, now],
-        )?;
-        Ok(())
+    ) -> Result<SyncClaimTransition, MetadataError> {
+        self.transition_claimed_sync_operation(ClaimedTransitionRequest {
+            claim,
+            state: "waiting_retry",
+            result_json: None,
+            error_code: Some(error_code),
+            message: Some(message),
+            next_attempt_at: Some(next_attempt_at),
+            allow_cancellation_requested: false,
+            require_cancellation_requested: false,
+            now,
+        })
     }
 
-    pub fn block_sync_operation_offline(
+    pub fn block_claimed_sync_operation_offline(
         &self,
-        id: &str,
+        claim: &SyncClaimHandle,
+        error_code: &str,
         message: &str,
         next_attempt_at: &str,
         now: &str,
-    ) -> Result<(), MetadataError> {
-        self.connection.execute(
-            "UPDATE sync_operations
-             SET state = 'blocked_offline',
-                 claimed_by = NULL,
-                 heartbeat_at = NULL,
-                 next_attempt_at = ?3,
-                 last_error = ?2,
-                 updated_at = ?4
-             WHERE id = ?1",
-            params![id, message, next_attempt_at, now],
-        )?;
-        Ok(())
+    ) -> Result<SyncClaimTransition, MetadataError> {
+        self.transition_claimed_sync_operation(ClaimedTransitionRequest {
+            claim,
+            state: "blocked_offline",
+            result_json: None,
+            error_code: Some(error_code),
+            message: Some(message),
+            next_attempt_at: Some(next_attempt_at),
+            allow_cancellation_requested: false,
+            require_cancellation_requested: false,
+            now,
+        })
     }
 
-    pub fn mark_sync_operation_attention(
+    pub fn mark_claimed_sync_operation_attention(
         &self,
-        id: &str,
+        claim: &SyncClaimHandle,
+        error_code: &str,
         message: &str,
         now: &str,
-    ) -> Result<(), MetadataError> {
-        self.connection.execute(
-            "UPDATE sync_operations
-             SET state = 'attention',
-                 claimed_by = NULL,
-                 heartbeat_at = NULL,
-                 last_error = ?2,
-                 updated_at = ?3
-             WHERE id = ?1",
-            params![id, message, now],
-        )?;
-        Ok(())
+    ) -> Result<SyncClaimTransition, MetadataError> {
+        self.transition_claimed_sync_operation(ClaimedTransitionRequest {
+            claim,
+            state: "attention",
+            result_json: None,
+            error_code: Some(error_code),
+            message: Some(message),
+            next_attempt_at: None,
+            allow_cancellation_requested: false,
+            require_cancellation_requested: false,
+            now,
+        })
     }
 
-    pub fn complete_obsolete_daemon_reconciles_for_device(
+    pub fn cancel_claimed_sync_operation(
         &self,
-        workspace_id: &WorkspaceId,
-        device_id: &DeviceId,
-        completion_payload_json: &str,
+        claim: &SyncClaimHandle,
+        result_json: &str,
         now: &str,
-    ) -> Result<u64, MetadataError> {
+    ) -> Result<SyncClaimTransition, MetadataError> {
+        self.transition_claimed_sync_operation(ClaimedTransitionRequest {
+            claim,
+            state: "cancelled",
+            result_json: Some(result_json),
+            error_code: None,
+            message: None,
+            next_attempt_at: None,
+            allow_cancellation_requested: true,
+            require_cancellation_requested: true,
+            now,
+        })
+    }
+
+    pub fn defer_claimed_sync_operation_reconciliation(
+        &self,
+        claim: &SyncClaimHandle,
+        message: &str,
+        now: &str,
+    ) -> Result<SyncClaimTransition, MetadataError> {
         let changed = self.connection.execute(
             "UPDATE sync_operations
-             SET state = 'completed',
-                 payload_json = ?3,
+             SET state = 'reconciliation_required',
                  claimed_by = NULL,
+                 claim_token = NULL,
                  heartbeat_at = NULL,
+                 lease_expires_at = NULL,
                  next_attempt_at = NULL,
-                 last_error = NULL,
-                 updated_at = ?4
-             WHERE workspace_id = ?1
-               AND device_id = ?2
-               AND kind = 'daemon-reconcile'
-               AND state IN ('waiting_retry', 'blocked_offline', 'attention')",
+                 result_json = json_object('outcome', 'reconciliation-required'),
+                 last_error_code = NULL,
+                 last_error = ?6,
+                 updated_at = ?5
+             WHERE id = ?1
+               AND state = 'claimed'
+               AND claimed_by = ?2
+               AND claim_token = ?3
+               AND claim_generation = ?4
+               AND cancellation_requested_at IS NOT NULL",
             params![
-                workspace_id.as_str(),
-                device_id.as_str(),
-                completion_payload_json,
+                claim.operation_id(),
+                claim.owner(),
+                claim.token().as_str(),
+                claim.generation(),
                 now,
+                message,
             ],
         )?;
-        Ok(changed as u64)
+        Ok(claim_transition(changed))
     }
 
-    pub fn append_sync_operation_checkpoint(
+    fn transition_claimed_sync_operation(
         &self,
+        request: ClaimedTransitionRequest<'_>,
+    ) -> Result<SyncClaimTransition, MetadataError> {
+        let changed = self.connection.execute(
+            "UPDATE sync_operations
+             SET state = ?5,
+                 result_json = ?6,
+                 last_error_code = ?7,
+                 last_error = ?8,
+                 next_attempt_at = ?9,
+                 claimed_by = NULL,
+                 claim_token = NULL,
+                 heartbeat_at = NULL,
+                 lease_expires_at = NULL,
+                 updated_at = ?10
+             WHERE id = ?1
+               AND state = 'claimed'
+               AND claimed_by = ?2
+               AND claim_token = ?3
+               AND claim_generation = ?4
+               AND julianday(lease_expires_at) > julianday('now')
+               AND (?11 = 1 OR cancellation_requested_at IS NULL)
+               AND (?12 = 0 OR cancellation_requested_at IS NOT NULL)",
+            params![
+                request.claim.operation_id(),
+                request.claim.owner(),
+                request.claim.token().as_str(),
+                request.claim.generation(),
+                request.state,
+                request.result_json,
+                request.error_code,
+                request.message,
+                request.next_attempt_at,
+                request.now,
+                i64::from(request.allow_cancellation_requested),
+                i64::from(request.require_cancellation_requested),
+            ],
+        )?;
+        Ok(claim_transition(changed))
+    }
+
+    pub fn append_claimed_sync_operation_checkpoint(
+        &self,
+        claim: &SyncClaimHandle,
         record: &SyncOperationCheckpointRecord,
-    ) -> Result<(), MetadataError> {
-        self.connection.execute(
+    ) -> Result<SyncClaimTransition, MetadataError> {
+        if record.operation_id != claim.operation_id() {
+            return Ok(SyncClaimTransition::OwnershipLost);
+        }
+        let changed = self.connection.execute(
             "INSERT INTO sync_operation_checkpoints
              (id, workspace_id, operation_id, step, state, payload_json, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+             WHERE EXISTS (
+               SELECT 1 FROM sync_operations
+               WHERE id = ?3
+                 AND state = 'claimed'
+                 AND claimed_by = ?9
+                 AND claim_token = ?10
+                 AND claim_generation = ?11
+                 AND julianday(lease_expires_at) > julianday('now')
+             )
              ON CONFLICT(id) DO UPDATE SET
                state = excluded.state,
                payload_json = excluded.payload_json,
-               updated_at = excluded.updated_at",
+               updated_at = excluded.updated_at
+             WHERE sync_operation_checkpoints.operation_id = excluded.operation_id
+               AND sync_operation_checkpoints.workspace_id = excluded.workspace_id",
             params![
                 record.id.as_str(),
                 record.workspace_id.as_str(),
@@ -344,9 +477,12 @@ impl MetadataStore {
                 record.payload_json.as_str(),
                 record.created_at.as_str(),
                 record.updated_at.as_str(),
+                claim.owner(),
+                claim.token().as_str(),
+                claim.generation(),
             ],
         )?;
-        Ok(())
+        Ok(claim_transition(changed))
     }
 
     pub fn sync_operation_checkpoints(
@@ -366,64 +502,33 @@ impl MetadataStore {
     pub fn requeue_expired_sync_claims(
         &self,
         workspace_id: &WorkspaceId,
-        expired_before: &str,
         now: &str,
     ) -> Result<u64, MetadataError> {
+        let reconciliation_required =
+            serde_json::json!({"outcome": "reconciliation-required"}).to_string();
         let changed = self.connection.execute(
             "UPDATE sync_operations
-             SET state = 'queued',
+             SET state = CASE
+                   WHEN cancellation_requested_at IS NULL THEN 'queued'
+                   ELSE 'reconciliation_required'
+                 END,
                  claimed_by = NULL,
+                 claim_token = NULL,
                  heartbeat_at = NULL,
-                 updated_at = ?3
+                 lease_expires_at = NULL,
+                 next_attempt_at = CASE WHEN cancellation_requested_at IS NULL THEN next_attempt_at ELSE ?2 END,
+                 result_json = CASE WHEN cancellation_requested_at IS NULL THEN result_json ELSE ?3 END,
+                 last_error_code = CASE WHEN cancellation_requested_at IS NULL THEN last_error_code END,
+                 last_error = CASE
+                   WHEN cancellation_requested_at IS NULL THEN last_error
+                   ELSE 'claim expired after cancellation; reconcile remote commit state before completion'
+                 END,
+                 updated_at = ?2
              WHERE workspace_id = ?1
                AND state = 'claimed'
-               AND heartbeat_at < ?2",
-            params![workspace_id.as_str(), expired_before, now],
-        )?;
-        Ok(changed as u64)
-    }
-
-    pub fn requeue_claimed_sync_operations_for_device_kind(
-        &self,
-        workspace_id: &WorkspaceId,
-        kind: &str,
-        device_id: &DeviceId,
-        now: &str,
-    ) -> Result<u64, MetadataError> {
-        let changed = self.connection.execute(
-            "UPDATE sync_operations
-             SET state = 'queued',
-                 claimed_by = NULL,
-                 heartbeat_at = NULL,
-                 updated_at = ?4
-             WHERE workspace_id = ?1
-               AND kind = ?2
-               AND device_id = ?3
-               AND state = 'claimed'",
-            params![workspace_id.as_str(), kind, device_id.as_str(), now],
-        )?;
-        Ok(changed as u64)
-    }
-
-    pub fn requeue_waiting_retry_sync_operations_for_device_kind(
-        &self,
-        workspace_id: &WorkspaceId,
-        kind: &str,
-        device_id: &DeviceId,
-        now: &str,
-    ) -> Result<u64, MetadataError> {
-        let changed = self.connection.execute(
-            "UPDATE sync_operations
-             SET state = 'queued',
-                 claimed_by = NULL,
-                 heartbeat_at = NULL,
-                 next_attempt_at = NULL,
-                 updated_at = ?4
-             WHERE workspace_id = ?1
-               AND kind = ?2
-               AND device_id = ?3
-               AND state = 'waiting_retry'",
-            params![workspace_id.as_str(), kind, device_id.as_str(), now],
+               AND lease_expires_at IS NOT NULL
+               AND julianday(lease_expires_at) <= julianday('now')",
+            params![workspace_id.as_str(), now, reconciliation_required],
         )?;
         Ok(changed as u64)
     }
@@ -431,11 +536,12 @@ impl MetadataStore {
     pub fn requeue_attention_sync_operations_for_device_kind_with_error(
         &self,
         workspace_id: &WorkspaceId,
-        kind: &str,
+        kind: SyncOperationKind,
         device_id: &DeviceId,
         error_substring: &str,
         now: &str,
     ) -> Result<u64, MetadataError> {
+        let kind = serialize_json_variant(&kind)?;
         let changed = self.connection.execute(
             "UPDATE sync_operations
              SET state = 'queued',
@@ -448,142 +554,35 @@ impl MetadataStore {
                AND kind = ?2
                AND device_id = ?3
                AND state = 'attention'
-               AND last_error LIKE ?4",
+               AND last_error LIKE ?4 ESCAPE '\\'",
             params![
                 workspace_id.as_str(),
                 kind,
                 device_id.as_str(),
-                format!("%{error_substring}%"),
+                format!("%{}%", escape_like(error_substring)),
                 now,
             ],
         )?;
         Ok(changed as u64)
     }
+}
 
-    pub fn put_remote_ref_cursor(
-        &self,
-        record: &RemoteRefCursorRecord,
-    ) -> Result<(), MetadataError> {
-        self.insert_workspace(&record.workspace_id, "Code", &record.updated_at)?;
-        self.connection.execute(
-            "INSERT INTO sync_remote_cursors
-             (workspace_id, cursor, last_observed_version, last_observed_snapshot_id, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(workspace_id) DO UPDATE SET
-               cursor = excluded.cursor,
-               last_observed_version = excluded.last_observed_version,
-               last_observed_snapshot_id = excluded.last_observed_snapshot_id,
-               updated_at = excluded.updated_at",
-            params![
-                record.workspace_id.as_str(),
-                record.cursor.as_deref(),
-                record.last_observed_version,
-                record.last_observed_snapshot_id.as_deref(),
-                record.updated_at.as_str(),
-            ],
-        )?;
-        Ok(())
-    }
+struct ClaimedTransitionRequest<'a> {
+    claim: &'a SyncClaimHandle,
+    state: &'a str,
+    result_json: Option<&'a str>,
+    error_code: Option<&'a str>,
+    message: Option<&'a str>,
+    next_attempt_at: Option<&'a str>,
+    allow_cancellation_requested: bool,
+    require_cancellation_requested: bool,
+    now: &'a str,
+}
 
-    pub fn remote_ref_cursor(
-        &self,
-        workspace_id: &WorkspaceId,
-    ) -> Result<Option<RemoteRefCursorRecord>, MetadataError> {
-        self.connection
-            .query_row(
-                "SELECT workspace_id, cursor, last_observed_version, last_observed_snapshot_id, updated_at
-                 FROM sync_remote_cursors
-                 WHERE workspace_id = ?1",
-                [workspace_id.as_str()],
-                |row| {
-                    Ok(RemoteRefCursorRecord {
-                        workspace_id: WorkspaceId::new(row.get::<_, String>(0)?),
-                        cursor: row.get(1)?,
-                        last_observed_version: row.get(2)?,
-                        last_observed_snapshot_id: row.get(3)?,
-                        updated_at: row.get(4)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(Into::into)
-    }
-
-    pub fn sync_operation_counts(
-        &self,
-        workspace_id: &WorkspaceId,
-    ) -> Result<SyncOperationCounts, MetadataError> {
-        let mut counts = SyncOperationCounts::default();
-        let mut statement = self.connection.prepare(
-            "SELECT state, COUNT(*)
-             FROM sync_operations
-             WHERE workspace_id = ?1
-             GROUP BY state",
-        )?;
-        let rows = statement.query_map([workspace_id.as_str()], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
-        })?;
-        for row in rows {
-            let (state, count) = row?;
-            match state.as_str() {
-                "queued" => counts.queued = count,
-                "claimed" => counts.claimed = count,
-                "waiting_retry" => counts.waiting_retry = count,
-                "blocked_offline" => counts.blocked_offline = count,
-                "attention" => counts.attention = count,
-                "completed" => counts.completed = count,
-                _ => {}
-            }
-        }
-        Ok(counts)
-    }
-
-    pub fn sync_operation_counts_for_device(
-        &self,
-        workspace_id: &WorkspaceId,
-        device_id: &DeviceId,
-    ) -> Result<SyncOperationCounts, MetadataError> {
-        let mut counts = SyncOperationCounts::default();
-        let mut statement = self.connection.prepare(
-            "SELECT state, COUNT(*)
-             FROM sync_operations
-             WHERE workspace_id = ?1 AND device_id = ?2
-             GROUP BY state",
-        )?;
-        let rows = statement
-            .query_map(params![workspace_id.as_str(), device_id.as_str()], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
-            })?;
-        for row in rows {
-            let (state, count) = row?;
-            match state.as_str() {
-                "queued" => counts.queued = count,
-                "claimed" => counts.claimed = count,
-                "waiting_retry" => counts.waiting_retry = count,
-                "blocked_offline" => counts.blocked_offline = count,
-                "attention" => counts.attention = count,
-                "completed" => counts.completed = count,
-                _ => {}
-            }
-        }
-        Ok(counts)
-    }
-
-    pub fn sync_operation_by_id(
-        &self,
-        id: &str,
-    ) -> Result<Option<SyncOperationRecord>, MetadataError> {
-        self.connection
-            .query_row(
-                "SELECT id, workspace_id, kind, state, idempotency_key, base_version, base_snapshot_id,
-                        target_snapshot_id, device_id, payload_json, attempt_count, claimed_by,
-                        heartbeat_at, next_attempt_at, last_error, created_at, updated_at
-                 FROM sync_operations
-                 WHERE id = ?1",
-                [id],
-                sync_operation_from_row,
-            )
-            .optional()
-            .map_err(Into::into)
+fn claim_transition(changed: usize) -> SyncClaimTransition {
+    if changed == 0 {
+        SyncClaimTransition::OwnershipLost
+    } else {
+        SyncClaimTransition::Applied
     }
 }

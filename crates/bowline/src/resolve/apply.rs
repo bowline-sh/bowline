@@ -10,6 +10,7 @@ pub(super) enum ResolveError {
     ConflictNotFound(String),
     MissingResolution(String),
     UnsafePath(String),
+    Metadata(bowline_local::metadata::MetadataError),
     Io(io::Error),
 }
 
@@ -21,6 +22,7 @@ impl std::fmt::Display for ResolveError {
                 write!(formatter, "resolution overlay is missing `{path}`")
             }
             Self::UnsafePath(path) => write!(formatter, "resolution path `{path}` is unsafe"),
+            Self::Metadata(error) => write!(formatter, "resolve metadata update failed: {error}"),
             Self::Io(error) => write!(formatter, "resolve action failed: {error}"),
         }
     }
@@ -29,6 +31,12 @@ impl std::fmt::Display for ResolveError {
 impl From<io::Error> for ResolveError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
+    }
+}
+
+impl From<bowline_local::metadata::MetadataError> for ResolveError {
+    fn from(error: bowline_local::metadata::MetadataError) -> Self {
+        Self::Metadata(error)
     }
 }
 
@@ -70,8 +78,8 @@ pub(super) fn apply_decision(
             )?);
         }
         apply_staged_resolutions(&project_root, staged)?;
-        mark_bundle_state(&bundle, "accepted", generated_at)?;
-        enqueue_resolution_sync(&project_root, conflict, "accept", generated_at);
+        enqueue_resolution_sync(&project_root, conflict, "accept", generated_at)?;
+        mark_bundle_state(&bundle, conflict, ConflictState::Accepted, generated_at)?;
         return Ok(ResolveDecisionApplied {
             summary: format!("accepted resolution for conflict `{}`", conflict.id),
         });
@@ -98,8 +106,8 @@ pub(super) fn apply_decision(
         )?);
     }
     apply_staged_resolutions(&project_root, staged)?;
-    mark_bundle_state(&bundle, "rejected", generated_at)?;
-    enqueue_resolution_sync(&project_root, conflict, "reject", generated_at);
+    enqueue_resolution_sync(&project_root, conflict, "reject", generated_at)?;
+    mark_bundle_state(&bundle, conflict, ConflictState::Rejected, generated_at)?;
     Ok(ResolveDecisionApplied {
         summary: format!("rejected resolution for conflict `{}`", conflict.id),
     })
@@ -110,31 +118,25 @@ pub(super) fn enqueue_resolution_sync(
     conflict: &ResolveConflict,
     decision: &str,
     generated_at: &str,
-) {
-    let Ok(db_path) = bowline_local::metadata::default_database_path() else {
-        return;
+) -> Result<(), ResolveError> {
+    let Some(db_path) = crate::runtime::selected_metadata_database_path() else {
+        return Ok(());
     };
     if !db_path.exists() {
-        return;
+        return Ok(());
     }
-    let Ok(store) = MetadataStore::open(&db_path) else {
-        return;
+    let store = MetadataStore::open(&db_path)?;
+    let Some(workspace) = store.current_workspace()? else {
+        return Ok(());
     };
-    let Ok(Some(workspace)) = store.current_workspace() else {
-        return;
-    };
-    let Ok(roots) = store.accepted_roots(&workspace.id) else {
-        return;
-    };
+    let roots = store.accepted_roots(&workspace.id)?;
     if !roots
         .iter()
         .any(|root| path_starts_with(project_root, Path::new(root)))
     {
-        return;
+        return Ok(());
     }
-    let Ok(base) = store.workspace_sync_head(&workspace.id) else {
-        return;
-    };
+    let base = store.workspace_sync_head(&workspace.id)?;
     let base = base.map(|head| head.workspace_ref);
     let payload = serde_json::json!({
         "source": "resolve",
@@ -142,15 +144,7 @@ pub(super) fn enqueue_resolution_sync(
         "conflictId": conflict.id,
         "affectedFiles": conflict.affected_files,
     });
-    append_resolution_event(
-        &store,
-        &workspace.id,
-        project_root,
-        conflict,
-        decision,
-        generated_at,
-    );
-    let _ = store.enqueue_sync_operation(&SyncOperationRecord {
+    store.enqueue_sync_operation(&SyncOperationRecord {
         id: format!(
             "resolve:{}:{}:{}",
             conflict.id,
@@ -158,8 +152,9 @@ pub(super) fn enqueue_resolution_sync(
             stable_suffix(generated_at)
         ),
         workspace_id: workspace.id.clone(),
-        kind: "upload".to_string(),
-        state: "queued".to_string(),
+        kind: SyncOperationKind::Reconcile,
+        resource_key: SyncResourceKey::workspace_sync(workspace.id.clone()),
+        state: SyncOperationState::Queued,
         idempotency_key: format!(
             "resolve:{}:{}:{}",
             conflict.id,
@@ -171,18 +166,33 @@ pub(super) fn enqueue_resolution_sync(
         base_version: base.as_ref().map(|workspace_ref| workspace_ref.version),
         base_snapshot_id: base
             .as_ref()
-            .map(|workspace_ref| workspace_ref.snapshot_id.clone()),
+            .map(|workspace_ref| workspace_ref.snapshot_id.as_str().to_string()),
         target_snapshot_id: None,
         device_id: None,
         payload_json: payload.to_string(),
         attempt_count: 0,
         claimed_by: None,
+        claim_generation: 0,
         heartbeat_at: None,
+        lease_expires_at: None,
+        cancellation_requested_at: None,
         next_attempt_at: None,
+        result_json: None,
+        last_error_code: None,
         last_error: None,
         created_at: generated_at.to_string(),
         updated_at: generated_at.to_string(),
-    });
+    })?;
+    append_resolution_event(
+        &store,
+        &workspace.id,
+        project_root,
+        conflict,
+        decision,
+        generated_at,
+    );
+    crate::wire::wake_durable_work_best_effort();
+    Ok(())
 }
 
 pub(super) fn append_resolution_event(
@@ -205,7 +215,7 @@ pub(super) fn append_resolution_event(
         _ => return,
     };
     let mut event = WorkspaceEvent::new(
-        resolution_event_id(name, &conflict.id, generated_at),
+        resolution_event_id(&name, &conflict.id, generated_at),
         name,
         generated_at,
         EventSeverity::Info,
@@ -247,11 +257,15 @@ pub(super) fn append_resolution_event(
         ),
     );
     event.redaction = EventRedaction::applied(["secret-values-not-included"]);
-    let _ = store.append_event(event);
+    let event_id = event.id.as_str().to_string();
+    let event_name = event.name.clone();
+    if let Err(error) = store.append_event(event) {
+        eprintln!("bowline resolve event append failed for {event_name:?} {event_id}: {error}");
+    }
 }
 
 pub(super) fn resolution_event_id(
-    name: EventName,
+    name: &EventName,
     conflict_id: &str,
     generated_at: &str,
 ) -> EventId {

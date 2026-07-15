@@ -4,12 +4,12 @@ use bowline_control_plane::{BootstrapSessionInput, ControlPlaneClient};
 use bowline_core::{
     commands::{
         AgentWriteTargetMode, BootstrapSecretStore, BootstrapSshCommandOutput, BootstrapStep,
-        BootstrapStepState, BootstrapSyncState, CONTRACT_VERSION, DevicesCommandOutput,
-        StatusCommandOutput,
+        BootstrapStepName, BootstrapStepState, BootstrapSyncState, CONTRACT_VERSION,
+        DevicesCommandOutput, StatusCommandOutput,
     },
     devices::{DeviceApprovalRequest, DeviceFingerprint, DeviceRecord, DeviceTrustState},
     ids::DeviceId,
-    status::{SafeAction, StatusLevel, WorkspaceStatus},
+    status::{StatusItem, StatusItemKind, StatusLevel, WorkspaceStatus},
 };
 use bowline_local::bootstrap::{
     install::{self, BootstrapInstallOptions, RemoteBowlineInstall},
@@ -36,20 +36,7 @@ struct BootstrapOutputBase {
     local_root: Option<String>,
     generated_at: String,
     steps: Vec<BootstrapStep>,
-    agent_handoff: Option<BootstrapAgentHandoff>,
-}
-
-struct BootstrapAgentHandoff {
-    project: String,
-    task: String,
-    agent: Option<String>,
-    lease_id: Option<String>,
-    write_target_mode: Option<AgentWriteTargetMode>,
-    write_target_path: Option<String>,
-    work_view_id: Option<String>,
-    work_view_path: Option<String>,
-    launched: bool,
-    accepted: bool,
+    remote_status_items: Vec<StatusItem>,
 }
 
 struct RemoteAgentHandoffLease {
@@ -74,7 +61,7 @@ pub fn run(args: BootstrapSshArgs, generated_at: String) -> BootstrapSshCommandO
     ) {
         Ok(install) => {
             steps.push(step(
-                "install",
+                BootstrapStepName::Install,
                 BootstrapStepState::Completed,
                 format!(
                     "Installed bowline and bowline-daemon for {} with artifacts {} / {}.",
@@ -87,7 +74,7 @@ pub fn run(args: BootstrapSshArgs, generated_at: String) -> BootstrapSshCommandO
         }
         Err(error) => {
             steps.push(step(
-                "install",
+                BootstrapStepName::Install,
                 BootstrapStepState::Blocked,
                 format!("Remote install failed: {error}"),
             ));
@@ -104,7 +91,7 @@ pub fn run(args: BootstrapSshArgs, generated_at: String) -> BootstrapSshCommandO
         Ok(control_plane) => control_plane,
         Err(error) => {
             steps.push(step(
-                "control-plane",
+                BootstrapStepName::ControlPlane,
                 BootstrapStepState::Blocked,
                 format!("Local control-plane client unavailable: {error}"),
             ));
@@ -121,7 +108,7 @@ pub fn run(args: BootstrapSshArgs, generated_at: String) -> BootstrapSshCommandO
         Ok(key_store) => key_store,
         Err(error) => {
             steps.push(step(
-                "approve",
+                BootstrapStepName::Approve,
                 BootstrapStepState::Blocked,
                 format!("Local secret store unavailable: {error}"),
             ));
@@ -136,18 +123,18 @@ pub fn run(args: BootstrapSshArgs, generated_at: String) -> BootstrapSshCommandO
     };
     let workspace_id = runtime::active_workspace_id();
     let approving_device_id = runtime::daemon_device_id(&workspace_id);
-    run_after_install(
-        &runner,
+    run_after_install(AfterInstallInput {
+        runner: &runner,
         args,
         generated_at,
         steps,
         install,
-        &*control_plane,
-        &*key_store,
+        control_plane: &*control_plane,
+        key_store: &*key_store,
         workspace_id,
-        approving_device_id,
-        remote_bootstrap_secret_env(),
-    )
+        device_id: approving_device_id,
+        remote_secret_env: remote_bootstrap_secret_env(),
+    })
 }
 
 fn normalize_remote_root(mut args: BootstrapSshArgs) -> BootstrapSshArgs {
@@ -166,7 +153,6 @@ fn normalize_remote_root_for_home(root: &str, home: &str) -> String {
         .unwrap_or_else(|| root.to_string())
 }
 
-#[allow(clippy::too_many_arguments)]
 mod after_install;
 mod agent_handoff;
 mod output;

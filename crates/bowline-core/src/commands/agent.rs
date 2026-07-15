@@ -1,35 +1,27 @@
 use super::*;
 
+pub const AGENT_LEASE_STATUS_CREATING: &str = "creating";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum AgentLeaseExecutionState {
-    Active,
-    Blocked,
+pub enum AgentSessionState {
+    Provisional,
+    Open,
     Completed,
-    Expired,
-    Revoked,
+    Cancelled,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+// Handoff-correlation marker mirrored onto the local lease record. `Pending` and
+// `Claimed` mark a cross-device handoff lease before/after the target host
+// materializes the workspace; Bowline no longer produces run-supervision states
+// (the removed `Running`/`ReviewReady`/`Failed`) because it makes the workspace
+// appear and scopes the credential rather than supervising the agent's run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum AgentLeaseOutputState {
-    Empty,
-    Dirty,
-    ReviewReady,
-    Accepted,
-    Discarded,
-    Conflicted,
-    Retained,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AgentLeaseCleanupState {
-    Current,
-    Retained,
-    CleanupPending,
-    CleanupCompleted,
-    Scrubbed,
+pub enum AgentLeaseDispatchState {
+    #[default]
+    None,
+    Pending,
+    Claimed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,80 +30,6 @@ pub enum AgentLeaseBase {
     LatestWorkspace,
     #[serde(rename = "latest:main")]
     LatestMain,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentLeaseScope {
-    pub roots: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub classifications: Vec<PathClassification>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_bytes_per_read: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_files_per_request: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_depth: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentLeaseScopes {
-    pub read: AgentLeaseScope,
-    pub write: AgentLeaseScope,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AgentEnvRestrictionKind {
-    Allowlist,
-    BlockedSecret,
-    GrantRequired,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentEnvRestriction {
-    pub kind: AgentEnvRestrictionKind,
-    pub key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grant_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AgentEnvMaterialization {
-    LeaseWorkView,
-    ProjectPath,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentEnvProfile {
-    pub name: String,
-    pub materialization: AgentEnvMaterialization,
-    pub available_keys: Vec<String>,
-    pub restrictions: Vec<AgentEnvRestriction>,
-    pub grant_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AgentOutputTargetKind {
-    RealProject,
-    WorkView,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentOutputTarget {
-    pub kind: AgentOutputTargetKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub work_view_id: Option<WorkViewId>,
-    pub path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,21 +41,17 @@ pub enum AgentWriteTargetMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentAuditPointer {
-    pub local_event_id: EventId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local_receipt_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encrypted_object_pointer: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AgentLease {
     pub id: LeaseId,
     pub workspace_id: WorkspaceId,
     pub project_id: ProjectId,
     pub device_id: DeviceId,
+    #[serde(default)]
+    pub dispatch_state: AgentLeaseDispatchState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_device_ref: Option<DeviceId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_device_ref: Option<DeviceId>,
     pub write_target_mode: AgentWriteTargetMode,
     pub write_target_path: String,
     pub work_view_id: WorkViewId,
@@ -145,15 +59,7 @@ pub struct AgentLease {
     pub task: String,
     pub base: AgentLeaseBase,
     pub base_snapshot_id: SnapshotId,
-    pub execution_state: AgentLeaseExecutionState,
-    pub output_state: AgentLeaseOutputState,
-    pub scopes: AgentLeaseScopes,
-    pub hydrate_budget_bytes: u64,
-    pub env_profile: AgentEnvProfile,
-    pub env_restrictions: Vec<AgentEnvRestriction>,
-    pub output_target: AgentOutputTarget,
-    pub audit: AgentAuditPointer,
-    pub cleanup_state: AgentLeaseCleanupState,
+    pub session_state: AgentSessionState,
     pub status_summary: String,
     pub expires_at: String,
     pub created_at: String,
@@ -168,51 +74,14 @@ pub enum AgentToolName {
     ListCapabilities,
     #[serde(rename = "resolve_path")]
     ResolvePath,
-    #[serde(rename = "explain_path_policy")]
-    ExplainPathPolicy,
-    #[serde(rename = "list_attention_items")]
-    ListAttentionItems,
-    #[serde(rename = "list_tree_at_snapshot")]
-    ListTreeAtSnapshot,
-    #[serde(rename = "read_file_at_snapshot")]
-    ReadFileAtSnapshot,
-    #[serde(rename = "search_workspace")]
-    SearchWorkspace,
-    #[serde(rename = "symbol_lookup")]
-    SymbolLookup,
-    #[serde(rename = "request_hydration")]
-    RequestHydration,
-    #[serde(rename = "get_hydration_status")]
-    GetHydrationStatus,
-    #[serde(rename = "write_overlay_file")]
-    WriteOverlayFile,
     #[serde(rename = "list_overlay_changes")]
     ListOverlayChanges,
-    #[serde(rename = "diff_snapshots")]
-    DiffSnapshots,
-    #[serde(rename = "run_command_with_receipt")]
-    RunCommandWithReceipt,
-    #[serde(rename = "inspect_setup_receipts")]
-    InspectSetupReceipts,
-    #[serde(rename = "propose_policy_change")]
-    ProposePolicyChange,
-    #[serde(rename = "request_human_decision")]
-    RequestHumanDecision,
-    #[serde(rename = "publish_overlay_for_review")]
-    PublishOverlayForReview,
-    #[serde(rename = "complete_task")]
-    CompleteTask,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentToolCategory {
     Inspection,
-    Exploration,
-    Hydration,
-    Write,
-    Execution,
-    Review,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,25 +94,10 @@ pub enum AgentCapabilityState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DegradedExplorationBounds {
-    pub max_bytes: u64,
-    pub max_files: u64,
-    pub max_depth: u64,
-    pub truncation_reason: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub continuation: Option<String>,
-    pub safe_next_action: SafeAction,
-    pub index_backed_search_unavailable: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AgentCapability {
     pub name: AgentToolName,
     pub category: AgentToolCategory,
     pub state: AgentCapabilityState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bounds: Option<DegradedExplorationBounds>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -286,7 +140,7 @@ pub struct AgentReadinessSignal {
     pub state: AgentReadinessState,
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_action: Option<SafeAction>,
+    pub next_action: Option<RepairCommand>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,7 +156,7 @@ pub struct AgentStartWork {
     pub cwd: String,
     pub context_command: String,
     pub prompt_command: String,
-    pub safe_next_actions: Vec<SafeAction>,
+    pub safe_next_actions: Vec<RepairCommand>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -318,6 +172,8 @@ pub struct AgentToolAuthority {
     pub transport: AgentToolTransport,
     pub peer_credential_checked: bool,
     pub nonce_presented: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_token_file: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -345,7 +201,7 @@ pub enum AgentToolResultOutcome {
 #[serde(rename_all = "camelCase")]
 pub struct AgentToolDenial {
     pub code: String,
-    pub safe_next_actions: Vec<SafeAction>,
+    pub safe_next_actions: Vec<RepairCommand>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -361,8 +217,6 @@ pub struct AgentToolResult {
     pub receipt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub denial: Option<AgentToolDenial>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub degraded: Option<DegradedExplorationBounds>,
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Map<String, serde_json::Value>>,
@@ -374,6 +228,10 @@ pub struct DaemonProcessOutput {
     pub state: String,
     pub socket: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_state: Option<DaemonSyncState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_because: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<u32>,
@@ -381,6 +239,24 @@ pub struct DaemonProcessOutput {
     pub daemon_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DaemonSyncState {
+    Limited,
+    Degraded,
+    Unclassified,
+}
+
+impl DaemonSyncState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Limited => "limited",
+            Self::Degraded => "degraded",
+            Self::Unclassified => "unclassified",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -447,13 +323,11 @@ pub struct AgentContextV1 {
     pub work_view_path: String,
     pub attention: Vec<crate::status::StatusItem>,
     pub capabilities: Vec<AgentCapability>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index: Option<IndexStatus>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hydration_budget: Option<HydrationBudgetStatus>,
+    #[serde(default)]
+    pub freshness: crate::status::FreshnessVerdict,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale_bases: Vec<crate::status::StaleBaseStatus>,
     pub setup_receipts: Vec<String>,
-    pub env: AgentEnvProfile,
-    pub scopes: AgentLeaseScopes,
     pub readiness: AgentProjectReadiness,
     pub start_work: AgentStartWork,
     pub adapter_capabilities: Vec<AgentCliCapability>,
@@ -481,7 +355,33 @@ pub struct AgentLeaseCreateCommandOutput {
     pub project_id: ProjectId,
     pub lease: AgentLease,
     pub status: WorkspaceStatus,
-    pub next_actions: Vec<SafeAction>,
+    pub next_actions: Vec<RepairCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCompleteCommandOutput {
+    pub contract_version: u16,
+    pub command: CommandName,
+    pub generated_at: String,
+    pub workspace_id: WorkspaceId,
+    pub project_id: ProjectId,
+    pub lease: AgentLease,
+    pub status: WorkspaceStatus,
+    pub next_actions: Vec<RepairCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentLeaseUpdateCommandOutput {
+    pub contract_version: u16,
+    pub command: CommandName,
+    pub generated_at: String,
+    pub workspace_id: WorkspaceId,
+    pub project_id: ProjectId,
+    pub lease: AgentLease,
+    pub status: WorkspaceStatus,
+    pub next_actions: Vec<RepairCommand>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -492,7 +392,6 @@ pub struct AgentPrompt {
     pub redaction: AgentPromptRedaction,
     pub text: String,
     pub allowed_tools: Vec<AgentToolName>,
-    pub output_target: AgentOutputTarget,
     pub adapter_capabilities: Vec<AgentCliCapability>,
     pub instructions: Vec<String>,
 }
@@ -514,23 +413,27 @@ pub struct AgentPromptCommandOutput {
     pub lease: AgentLease,
     pub prompt: AgentPrompt,
     pub status: WorkspaceStatus,
-    pub next_actions: Vec<SafeAction>,
+    pub next_actions: Vec<RepairCommand>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentMcpGrant {
+    Read,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentBudgetCommandOutput {
+pub struct AgentMcpTokenCommandOutput {
     pub contract_version: u16,
     pub command: CommandName,
     pub generated_at: String,
     pub workspace_id: WorkspaceId,
     pub project_id: ProjectId,
-    pub lease: AgentLease,
-    pub previous_limit_bytes: u64,
-    pub added_bytes: u64,
-    pub budget: HydrationBudgetStatus,
-    pub status: WorkspaceStatus,
-    pub next_actions: Vec<SafeAction>,
+    pub lease_id: LeaseId,
+    pub token_file: String,
+    pub grants: Vec<AgentMcpGrant>,
+    pub expires_at: String,
 }
 
 pub type AcceptCommandOutput = WorkLifecycleCommandOutput;
@@ -544,6 +447,50 @@ pub enum BootstrapStepState {
     Pending,
     Completed,
     Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BootstrapStepName {
+    Install,
+    AuthorizeBootstrap,
+    ControlPlane,
+    RemoteAuth,
+    PrepareRoot,
+    Request,
+    Parse,
+    Compare,
+    Approve,
+    Accept,
+    Trust,
+    MetadataDefault,
+    DaemonStart,
+    DaemonStatus,
+    Sync,
+    AgentLease,
+}
+
+impl std::fmt::Display for BootstrapStepName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Install => "install",
+            Self::AuthorizeBootstrap => "authorize-bootstrap",
+            Self::ControlPlane => "control-plane",
+            Self::RemoteAuth => "remote-auth",
+            Self::PrepareRoot => "prepare-root",
+            Self::Request => "request",
+            Self::Parse => "parse",
+            Self::Compare => "compare",
+            Self::Approve => "approve",
+            Self::Accept => "accept",
+            Self::Trust => "trust",
+            Self::MetadataDefault => "metadata-default",
+            Self::DaemonStart => "daemon-start",
+            Self::DaemonStatus => "daemon-status",
+            Self::Sync => "sync",
+            Self::AgentLease => "agent-lease",
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -565,7 +512,7 @@ pub enum BootstrapSecretStore {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapStep {
-    pub name: String,
+    pub name: BootstrapStepName,
     pub state: BootstrapStepState,
     pub summary: String,
 }
@@ -595,5 +542,9 @@ pub struct BootstrapSshCommandOutput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_required_phase: Option<u16>,
     pub remote_status: WorkspaceStatus,
-    pub next_actions: Vec<SafeAction>,
+    // Concrete inspect / retry / verify-trust remedies for a blocked bootstrap
+    // step. Bootstrap no longer launches or supervises the remote agent, so
+    // these carry only trust/repair guidance — never an agent-launch action.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repair_actions: Vec<RepairCommand>,
 }

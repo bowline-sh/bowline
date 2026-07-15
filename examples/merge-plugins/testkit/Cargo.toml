@@ -1,0 +1,10 @@
+[package]
+name = "bowline-merge-plugin-testkit"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+wasmtime = { version = "38.0.4", default-features = false, features = ["cranelift", "runtime", "std"] }
+
+[workspace]

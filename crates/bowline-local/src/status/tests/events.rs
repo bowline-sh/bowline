@@ -1,7 +1,37 @@
 use super::*;
 
 #[test]
-fn limited_event_makes_status_limited_and_events_command_lists_it() {
+fn unmapped_non_info_events_emit_canonical_fallback_facts() {
+    let workspace_id = WorkspaceId::new("ws_code");
+    let attention_event = WorkspaceEvent::new(
+        EventId::new("evt_unmapped_attention"),
+        EventName::Unknown("namespace.attention".to_string()),
+        "2026-07-12T00:00:00Z",
+        EventSeverity::Attention,
+        "Namespace needs attention.",
+        workspace_id.clone(),
+    );
+    let limited_event = WorkspaceEvent::new(
+        EventId::new("evt_unmapped_limited"),
+        EventName::Unknown("namespace.limited".to_string()),
+        "2026-07-12T00:00:00Z",
+        EventSeverity::Limited,
+        "Namespace capability is limited.",
+        workspace_id,
+    );
+    let mut acc = StatusAccumulator::new("2026-07-12T00:00:01Z");
+
+    apply_event_status(&attention_event, &mut acc);
+    apply_event_status(&limited_event, &mut acc);
+    let summary = reduce_status_facts(acc.facts, 7, "2026-07-12T00:00:01Z");
+
+    assert_eq!(summary.availability, StatusAvailability::Degraded);
+    assert_eq!(summary.attention, StatusAttention::Required);
+    assert_eq!(summary.facts.len(), 2);
+}
+
+#[test]
+fn corrupt_metadata_event_requires_attention_and_events_command_lists_it() {
     let temp = TempWorkspace::new("status-events").expect("temp workspace");
     let db_path = temp.root().join("state").join("local.sqlite3");
     let workspace_id = WorkspaceId::new("ws_code");
@@ -30,7 +60,7 @@ fn limited_event_makes_status_limited_and_events_command_lists_it() {
         generated_at: "2026-06-23T12:00:00Z".to_string(),
     })
     .expect("status composes");
-    assert_eq!(output.status.level, StatusLevel::Limited);
+    assert_eq!(output.status.level, StatusLevel::Attention);
     assert_eq!(
         output.event_watermarks.last_event_id.unwrap().as_str(),
         "evt_status_001"
@@ -77,6 +107,42 @@ fn human_events_render_serialized_event_names() {
 
     assert!(rendered.contains("source.stale"));
     assert!(!rendered.contains(" event Source is stale."));
+}
+
+#[test]
+fn explicit_unknown_root_returns_no_events() {
+    let temp = TempWorkspace::new("events-explicit-root-miss").expect("temp workspace");
+    let db_path = temp.root().join("state").join("local.sqlite3");
+    let workspace_id = WorkspaceId::new("ws_code");
+    let store = MetadataStore::open(&db_path).expect("metadata opens");
+    seed_workspace_root(&store, &workspace_id);
+    store
+        .append_event(WorkspaceEvent::new(
+            EventId::new("evt_other_workspace"),
+            EventName::SourceStale,
+            "2026-06-23T12:00:00Z",
+            EventSeverity::Attention,
+            "An unrelated workspace event.",
+            workspace_id,
+        ))
+        .expect("event append");
+    drop(store);
+
+    let requested = temp.root().join("unknown-root").display().to_string();
+    let output = compose_events(EventsOptions {
+        db_path: Some(db_path),
+        requested_path: Some(requested.clone()),
+        workspace_scope: true,
+        generated_at: "2026-06-23T12:00:00Z".to_string(),
+        limit: 10,
+    })
+    .expect("events compose");
+
+    assert_eq!(output.workspace_id, None);
+    assert_eq!(output.project_id, None);
+    assert_eq!(output.requested_path.as_deref(), Some(requested.as_str()));
+    assert!(output.events.is_empty());
+    assert_eq!(output.event_watermarks, empty_watermarks());
 }
 
 #[test]
@@ -271,6 +337,75 @@ fn project_status_summarizes_attention_in_other_projects() {
 }
 
 #[test]
+fn status_signal_events_by_project_matches_scoped_queries() {
+    let temp = TempWorkspace::new("events-by-project").expect("temp workspace");
+    let db_path = temp.root().join("state").join("local.sqlite3");
+    let workspace_id = WorkspaceId::new("ws_code");
+    let web_project = ProjectId::new("proj_web");
+    let api_project = ProjectId::new("proj_api");
+
+    let store = MetadataStore::open(&db_path).expect("metadata opens");
+    seed_workspace_root(&store, &workspace_id);
+    seed_project(&store, &web_project, &workspace_id, "root_code", "apps/web");
+    seed_project(
+        &store,
+        &api_project,
+        &workspace_id,
+        "root_code",
+        "apps/web-api",
+    );
+    append_signal_event(
+        &store,
+        &workspace_id,
+        "evt_project_id",
+        Some(web_project.clone()),
+        None,
+        "2026-06-23T12:03:00Z",
+    );
+    append_signal_event(
+        &store,
+        &workspace_id,
+        "evt_path_prefix",
+        None,
+        Some("apps/web/src/main.rs"),
+        "2026-06-23T12:02:00Z",
+    );
+    append_signal_event(
+        &store,
+        &workspace_id,
+        "evt_boundary",
+        None,
+        Some("apps/web-api/src/main.rs"),
+        "2026-06-23T12:01:00Z",
+    );
+
+    let projects = store.projects(&workspace_id).expect("projects");
+    let batched = store
+        .status_signal_events_by_project(&workspace_id, &projects)
+        .expect("batched events");
+
+    for project in projects {
+        let scoped = store
+            .list_status_signal_events_scoped(EventQuery {
+                workspace_id: Some(workspace_id.clone()),
+                project_id: Some(project.id.clone()),
+                path_prefix: Some(project.path.clone()),
+                limit: 0,
+            })
+            .expect("scoped events");
+        let batched_ids = batched
+            .get(&project.id)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|event| event.id)
+            .collect::<Vec<_>>();
+        let scoped_ids = scoped.into_iter().map(|event| event.id).collect::<Vec<_>>();
+        assert_eq!(batched_ids, scoped_ids, "project {}", project.path);
+    }
+}
+
+#[test]
 fn status_uses_recent_actionable_events_for_attention() {
     let temp = TempWorkspace::new("status-recent-events").expect("temp workspace");
     let db_path = temp.root().join("state").join("local.sqlite3");
@@ -292,7 +427,7 @@ fn status_uses_recent_actionable_events_for_attention() {
         store
             .append_event(WorkspaceEvent::new(
                 EventId::new(format!("evt_info_{index:03}")),
-                EventName::IndexUpdated,
+                EventName::SyncStarted,
                 format!("2026-06-23T12:{index:02}:00Z"),
                 EventSeverity::Info,
                 "Informational event.",
@@ -468,6 +603,55 @@ fn recovered_component_events_do_not_keep_status_unhealthy() {
 }
 
 #[test]
+fn post_commit_followup_degraded_event_stays_visible_in_status() {
+    let temp = TempWorkspace::new("status-post-commit-followup-degraded").expect("temp workspace");
+    let db_path = temp.root().join("state").join("local.sqlite3");
+    let workspace_id = WorkspaceId::new("ws_code");
+    let store = MetadataStore::open(&db_path).expect("metadata opens");
+    seed_workspace_root(&store, &workspace_id);
+    store
+        .set_component_state(
+            PostCommitSyncComponent::WorkViewOverlaySync.as_str(),
+            "degraded",
+            "2026-07-05T12:31:00Z",
+        )
+        .expect("sync state");
+    store
+        .append_event(WorkspaceEvent::new(
+            EventId::new("evt_sync_post_commit_degraded"),
+            EventName::SyncDegraded,
+            "2026-07-05T12:31:00Z",
+            EventSeverity::Limited,
+            "Work-view overlay sync is behind.",
+            workspace_id,
+        ))
+        .expect("degraded event append");
+
+    let output = compose_status(StatusOptions {
+        db_path: Some(db_path),
+        requested_path: None,
+        workspace_scope: true,
+        generated_at: "2026-07-05T12:31:01Z".to_string(),
+    })
+    .expect("status composes");
+
+    assert_eq!(output.status.level, StatusLevel::Limited);
+    assert!(
+        output
+            .items
+            .iter()
+            .any(|item| item.summary == "Work-view overlay sync is behind.")
+    );
+    assert!(
+        output
+            .status
+            .attention_items
+            .iter()
+            .any(|item| item == "Work-view overlay sync is behind.")
+    );
+}
+
+#[test]
 fn component_degradation_always_reports_limited_capability() {
     let temp = TempWorkspace::new("status-components").expect("temp workspace");
     let db_path = temp.root().join("state").join("local.sqlite3");
@@ -500,4 +684,25 @@ fn component_degradation_always_reports_limited_capability() {
             .iter()
             .all(|limit| !limit.still_works.is_empty())
     );
+}
+
+fn append_signal_event(
+    store: &MetadataStore,
+    workspace_id: &WorkspaceId,
+    id: &str,
+    project_id: Option<ProjectId>,
+    path: Option<&str>,
+    occurred_at: &str,
+) {
+    let mut event = WorkspaceEvent::new(
+        EventId::new(id),
+        EventName::SourceStale,
+        occurred_at,
+        EventSeverity::Attention,
+        "Source needs attention.",
+        workspace_id.clone(),
+    );
+    event.project_id = project_id;
+    event.path = path.map(ToString::to_string);
+    store.append_event(event).expect("event append");
 }

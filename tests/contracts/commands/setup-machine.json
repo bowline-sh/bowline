@@ -1,0 +1,22 @@
+{
+  "contractVersion": 8,
+  "command": "setup",
+  "generatedAt": "2026-06-25T12:00:00Z",
+  "workspaceId": "ws_code",
+  "root": "~/Code",
+  "rootChoice": "default-selected",
+  "login": {
+    "status": "account-authenticated",
+    "accountId": "acct_json",
+    "workOsUserId": "user_json",
+    "workOsOrganizationId": "org_json",
+    "expiresAt": "2026-06-25T13:00:00Z"
+  },
+  "nextActions": [
+    {
+      "label": "Inspect workspace status",
+      "command": "bowline status --root ~/Code",
+      "mutates": false
+    }
+  ]
+}

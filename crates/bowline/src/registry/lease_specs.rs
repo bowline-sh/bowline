@@ -1,0 +1,50 @@
+use super::*;
+
+pub(super) const LEASE_COMMAND_REGISTRY: &[CommandSpec] = &[CommandSpec {
+    group: "Remote",
+    name: "lease join",
+    summary: "Run inside the sandbox: bind this runtime to a remote lease.",
+    usage: "bowline lease join --root <path> [--lease <id>] [--runtime <runtime>] [--request <id>] [--token-env <name>] [--lease-json-env <name>] [--json] [--dry-run]",
+    options: &[
+        ROOT_OPTION,
+        OptionSpec {
+            name: "--lease",
+            value_name: Some("id"),
+            summary: "Outbound agent lease id to bind to the bootstrap request.",
+            required: false,
+            repeatable: false,
+        },
+        OptionSpec {
+            name: "--runtime",
+            value_name: Some("runtime"),
+            summary: "Runtime label stored on the device request.",
+            required: false,
+            repeatable: false,
+        },
+        REQUEST_OPTION,
+        OptionSpec {
+            name: "--token-env",
+            value_name: Some("name"),
+            summary: "Environment variable containing the single-use bootstrap token.",
+            required: false,
+            repeatable: false,
+        },
+        OptionSpec {
+            name: "--lease-json-env",
+            value_name: Some("name"),
+            summary: "Environment variable containing the serialized lease handoff.",
+            required: false,
+            repeatable: false,
+        },
+        GLOBAL_JSON_OPTION,
+        DRY_RUN_OPTION,
+    ],
+    positionals: NO_POSITIONALS,
+    examples: EMPTY_EXAMPLES,
+    json_output_type: "DevicesCommandOutput",
+    side_effect_level: "mutation",
+    supports_json: true,
+    supports_dry_run: true,
+    bounded_output: None,
+    related_commands: &["agent start", "device approve"],
+}];

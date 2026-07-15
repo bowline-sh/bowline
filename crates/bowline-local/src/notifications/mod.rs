@@ -50,7 +50,7 @@ pub fn pending_device_payloads(status: &StatusCommandOutput) -> Vec<Notification
         .iter()
         .filter(|item| {
             item.kind == StatusItemKind::Device
-                && (item.event_name == Some(EventName::DeviceApprovalRequested)
+                && (item.event_name.as_ref() == Some(&EventName::DeviceApprovalRequested)
                     || item.subject.as_ref().is_some_and(|subject| {
                         subject.kind == StatusSubjectKind::DeviceApprovalRequest
                     }))
@@ -58,22 +58,14 @@ pub fn pending_device_payloads(status: &StatusCommandOutput) -> Vec<Notification
         .map(|item| NotificationPayload {
             title: "bowline device approval".to_string(),
             body: item.summary.clone(),
+            // The concrete approve affordance rides on `device_approvals`,
+            // correlated to this device-approval item by `request_id`.
             action: item.subject.as_ref().and_then(|subject| {
                 status
-                    .next_actions
+                    .device_approvals
                     .iter()
-                    .find(|action| {
-                        action.command.as_deref().is_some_and(|command| {
-                            command.contains("bowline approve ")
-                                && command.contains("--request ")
-                                && command
-                                    .split_whitespace()
-                                    .collect::<Vec<_>>()
-                                    .windows(2)
-                                    .any(|pair| pair == ["--request", subject.id.as_str()])
-                        })
-                    })
-                    .and_then(|action| action.command.clone())
+                    .find(|affordance| affordance.request_id == subject.id)
+                    .map(|affordance| affordance.approve_command.clone())
             }),
         })
         .collect()
@@ -87,11 +79,24 @@ pub fn dispatch_new_notifications<S>(
 where
     S: NotificationSender,
 {
-    let mut report = NotificationDispatchReport {
-        attempted: payloads.len(),
-        ..NotificationDispatchReport::default()
-    };
+    dispatch_new_notifications_with_checkpoint(payloads, dedupe, sender, || true)
+}
+
+pub fn dispatch_new_notifications_with_checkpoint<S>(
+    payloads: &[NotificationPayload],
+    dedupe: &mut NotificationDedupe,
+    sender: &S,
+    mut checkpoint: impl FnMut() -> bool,
+) -> NotificationDispatchReport
+where
+    S: NotificationSender,
+{
+    let mut report = NotificationDispatchReport::default();
     for payload in payloads {
+        if !checkpoint() {
+            break;
+        }
+        report.attempted += 1;
         let key = payload_dedupe_key(payload);
         if dedupe.seen.contains(&key) {
             report.skipped += 1;
@@ -128,7 +133,7 @@ impl NotificationSender for DesktopNotificationSender {
 fn send_desktop_notification(payload: &NotificationPayload) -> Result<(), NotificationSendError> {
     let mut body = payload.body.clone();
     if let Some(action) = &payload.action {
-        body.push_str("\n");
+        body.push('\n');
         body.push_str(action);
     }
     notify_rust::Notification::new()
@@ -209,10 +214,11 @@ mod tests {
         assert_eq!(payloads.len(), 1);
         assert_eq!(payloads[0].title, "bowline device approval");
         assert!(payloads[0].body.contains("Dev-Mac"));
-        assert!(payloads[0].body.contains("maple-river-4821"));
+        // The approve command is sourced from the concrete device-approval
+        // affordance (`device_approvals`), correlated by request id.
         assert_eq!(
             payloads[0].action.as_deref(),
-            Some("bowline approve --root ~/Code --request device-request:ws_code:dev-mac")
+            Some("bowline device approve --root ~/Code --code '<redacted>'")
         );
         assert!(!format!("{payloads:?}").contains("secret"));
     }
@@ -231,7 +237,7 @@ mod tests {
         });
         let mut second = status.items[0].clone();
         second.summary =
-            "Linux-Vivobook requested approval with matching code amber-hill-9182.".to_string();
+            "Linux-Vivobook requested approval with matching code 89ab-cdef.".to_string();
         second.device_id = Some(bowline_core::ids::DeviceId::new("dev_linux_vivobook"));
         second.subject = Some(bowline_core::status::StatusSubject {
             kind: bowline_core::status::StatusSubjectKind::DeviceApprovalRequest,
@@ -239,27 +245,28 @@ mod tests {
             path: None,
         });
         status.items.push(second);
-        status.next_actions.insert(
-            0,
-            bowline_core::status::SafeAction {
-                label: "Approve Linux-Vivobook".to_string(),
-                command: Some(
-                    "bowline approve --root ~/Code --request device-request:ws_code:linux-vivobook"
-                        .to_string(),
-                ),
-            },
-        );
+        status
+            .device_approvals
+            .push(bowline_core::status::DeviceApprovalAffordance {
+                request_id: "device-request:ws_code:linux-vivobook".to_string(),
+                device_name: "Linux-Vivobook".to_string(),
+                code: "<redacted>".to_string(),
+                approve_command:
+                    "bowline device approve --root ~/Code --code '<redacted-vivobook>'".to_string(),
+            });
 
         let payloads = pending_device_payloads(&status);
 
         assert_eq!(payloads.len(), 2);
+        // dev-mac correlates to the fixture affordance; linux-vivobook to the
+        // one just pushed — both by request id.
         assert_eq!(
             payloads[0].action.as_deref(),
-            Some("bowline approve --root ~/Code --request device-request:ws_code:dev-mac")
+            Some("bowline device approve --root ~/Code --code '<redacted>'")
         );
         assert_eq!(
             payloads[1].action.as_deref(),
-            Some("bowline approve --root ~/Code --request device-request:ws_code:linux-vivobook")
+            Some("bowline device approve --root ~/Code --code '<redacted-vivobook>'")
         );
     }
 
@@ -268,10 +275,7 @@ mod tests {
         let payload = NotificationPayload {
             title: "bowline device approval".to_string(),
             body: "Dev-Mac requested approval.".to_string(),
-            action: Some(
-                "bowline approve --root ~/Code --request device-request:ws_code:dev-mac"
-                    .to_string(),
-            ),
+            action: Some("bowline device approve --root ~/Code --code 0123-4567".to_string()),
         };
         let sender = RecordingSender::new();
         let mut dedupe = NotificationDedupe::default();
@@ -292,10 +296,7 @@ mod tests {
         let payload = NotificationPayload {
             title: "bowline device approval".to_string(),
             body: "Dev-Mac requested approval.".to_string(),
-            action: Some(
-                "bowline approve --root ~/Code --request device-request:ws_code:dev-mac"
-                    .to_string(),
-            ),
+            action: Some("bowline device approve --root ~/Code --code 0123-4567".to_string()),
         };
         let mut dedupe = NotificationDedupe::default();
 

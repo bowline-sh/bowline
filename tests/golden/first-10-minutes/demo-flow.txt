@@ -1,10 +1,9 @@
 brew install bowline-sh/tap/bowline
-bowline login --root ~/Code
-bowline approve --root ~/Code --code <matching-code>
+bowline setup --root ~/Code
+bowline device approve --root ~/Code --code <matching-code>
 bowline connect linux-server-1
 cd ~/Code/acme/web
 pnpm dev
-bowline workon auth-fix
-bowline agent start . --task "fix auth callback race"
-bowline review
-bowline accept
+bowline agent start . --task "fix auth callback race" --work-view
+bowline work review <returned-work-view>
+bowline work accept <returned-work-view>

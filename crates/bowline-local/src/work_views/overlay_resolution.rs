@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
-use bowline_core::workspace_graph::{
-    NamespaceEntry, NamespaceEntryKind, SnapshotManifest, normalize_workspace_path,
-};
+use bowline_core::workspace_graph::{NamespaceEntry, NamespaceEntryKind, normalize_workspace_path};
+
+use crate::sync::SnapshotContent;
+
+use super::WorkViewError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkViewOverlay {
@@ -40,50 +42,55 @@ pub enum WorkViewEntrySource {
     Overlay,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkViewOverlayResolver {
-    base_entries: BTreeMap<String, NamespaceEntry>,
+#[derive(Debug)]
+pub struct WorkViewOverlayResolver<'a> {
+    base: &'a SnapshotContent,
     overlay_entries: BTreeMap<String, OverlayEntryKind>,
 }
 
-impl WorkViewOverlayResolver {
-    pub fn new(base: &SnapshotManifest, overlay: WorkViewOverlay) -> Self {
-        let base_entries = base
-            .entries
-            .iter()
-            .map(|entry| (normalize_workspace_path(&entry.path), entry.clone()))
-            .collect();
+impl<'a> WorkViewOverlayResolver<'a> {
+    pub fn new(base: &'a SnapshotContent, overlay: WorkViewOverlay) -> Result<Self, WorkViewError> {
+        if overlay.base_snapshot_id != base.manifest().snapshot_id {
+            return Err(WorkViewError::SnapshotMaterialization {
+                snapshot_id: overlay.base_snapshot_id.as_str().to_string(),
+                reason: "work-view overlay base does not match the page-backed snapshot"
+                    .to_string(),
+            });
+        }
         let overlay_entries = overlay
             .entries
             .into_iter()
             .map(|entry| (normalize_workspace_path(&entry.path), entry.kind))
             .collect();
-        Self {
-            base_entries,
+        Ok(Self {
+            base,
             overlay_entries,
-        }
+        })
     }
 
-    pub fn resolve(&self, path: &str) -> Option<ResolvedWorkViewEntry> {
+    pub fn resolve(&self, path: &str) -> Result<Option<ResolvedWorkViewEntry>, WorkViewError> {
         let path = normalize_workspace_path(path);
         if let Some(entry) = self.overlay_entries.get(&path) {
-            return overlay_entry(&path, entry);
+            return Ok(overlay_entry(&path, entry));
         }
-        self.base_entries.get(&path).map(base_entry)
+        Ok(super::namespace::get_descriptor_entry(self.base, &path)?
+            .as_ref()
+            .map(base_entry))
     }
 
-    pub fn list_paths(&self) -> Vec<ResolvedWorkViewEntry> {
-        let mut paths = self
-            .base_entries
-            .keys()
-            .chain(self.overlay_entries.keys())
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
-        paths.retain(|path| self.resolve(path).is_some());
-        paths
+    pub fn list_paths(&self) -> Result<Vec<ResolvedWorkViewEntry>, WorkViewError> {
+        let mut resolved = super::namespace::collect_descriptor_entries(self.base)?
             .into_iter()
-            .filter_map(|path| self.resolve(&path))
-            .collect()
+            .map(|entry| (normalize_workspace_path(&entry.path), base_entry(&entry)))
+            .collect::<BTreeMap<_, _>>();
+        for (path, entry) in &self.overlay_entries {
+            if let Some(entry) = overlay_entry(path, entry) {
+                resolved.insert(path.clone(), entry);
+            } else {
+                resolved.remove(path);
+            }
+        }
+        Ok(resolved.into_values().collect())
     }
 }
 
@@ -127,7 +134,7 @@ fn base_entry(entry: &NamespaceEntry) -> ResolvedWorkViewEntry {
 #[cfg(test)]
 mod tests {
     use bowline_core::{
-        ids::{SnapshotId, WorkspaceId},
+        ids::WorkspaceId,
         policy::{AccessFlag, MaterializationMode, PathClassification},
         workspace_graph::{HydrationState, RefKind, SnapshotKind, WorkspaceRef},
     };
@@ -143,17 +150,24 @@ mod tests {
         let resolver = WorkViewOverlayResolver::new(
             &base,
             WorkViewOverlay {
-                base_snapshot_id: base.snapshot_id.clone(),
+                base_snapshot_id: base.manifest().snapshot_id.clone(),
                 overlay_version: 1,
                 entries: vec![OverlayEntry {
                     path: "app/src/auth.ts".to_string(),
                     kind: OverlayEntryKind::File { byte_len: 42 },
                 }],
             },
-        );
+        )
+        .expect("resolver");
 
-        let auth = resolver.resolve("app/src/auth.ts").expect("auth entry");
-        let keep = resolver.resolve("app/src/keep.ts").expect("keep entry");
+        let auth = resolver
+            .resolve("app/src/auth.ts")
+            .expect("resolve")
+            .expect("auth entry");
+        let keep = resolver
+            .resolve("app/src/keep.ts")
+            .expect("resolve")
+            .expect("keep entry");
 
         assert_eq!(auth.source, WorkViewEntrySource::Overlay);
         assert_eq!(auth.byte_len, Some(42));
@@ -170,23 +184,34 @@ mod tests {
         let resolver = WorkViewOverlayResolver::new(
             &base,
             WorkViewOverlay {
-                base_snapshot_id: base.snapshot_id.clone(),
+                base_snapshot_id: base.manifest().snapshot_id.clone(),
                 overlay_version: 1,
                 entries: vec![OverlayEntry {
                     path: "app/src/auth.ts".to_string(),
                     kind: OverlayEntryKind::Tombstone,
                 }],
             },
-        );
+        )
+        .expect("resolver");
 
-        assert!(resolver.resolve("app/src/auth.ts").is_none());
+        assert!(
+            resolver
+                .resolve("app/src/auth.ts")
+                .expect("resolve")
+                .is_none()
+        );
         assert_eq!(
-            resolver.resolve("app/src/keep.ts").expect("keep").source,
+            resolver
+                .resolve("app/src/keep.ts")
+                .expect("resolve")
+                .expect("keep")
+                .source,
             WorkViewEntrySource::Base
         );
         assert_eq!(
             resolver
                 .list_paths()
+                .expect("list")
                 .into_iter()
                 .map(|entry| entry.path)
                 .collect::<Vec<_>>(),
@@ -194,21 +219,49 @@ mod tests {
         );
     }
 
-    fn manifest_with_entries(entries: Vec<NamespaceEntry>) -> SnapshotManifest {
-        SnapshotManifest {
-            schema_version: 1,
-            snapshot_id: SnapshotId::new("snap_base"),
-            workspace_id: WorkspaceId::new("ws_code"),
-            project_id: None,
-            kind: SnapshotKind::WorkspaceHead,
-            base_snapshot_id: None,
-            entries,
-            refs: vec![WorkspaceRef {
-                name: "workspace".to_string(),
-                target_snapshot_id: SnapshotId::new("snap_base"),
-                kind: RefKind::Workspace,
-            }],
-        }
+    #[test]
+    fn overlay_resolver_rejects_a_different_page_backed_base() {
+        let base = manifest_with_entries(vec![file_entry("app/src/auth.ts", 17)]);
+        let error = WorkViewOverlayResolver::new(
+            &base,
+            WorkViewOverlay {
+                base_snapshot_id: bowline_core::ids::SnapshotId::new("snap_other"),
+                overlay_version: 1,
+                entries: Vec::new(),
+            },
+        )
+        .expect_err("mismatched base must fail");
+
+        assert!(matches!(
+            error,
+            WorkViewError::SnapshotMaterialization { reason, .. }
+                if reason.contains("does not match")
+        ));
+    }
+
+    fn manifest_with_entries(entries: Vec<NamespaceEntry>) -> SnapshotContent {
+        let workspace_id = WorkspaceId::new("ws_code");
+        let snapshot_id =
+            crate::sync::rebuild_manifest_identity(&workspace_id, &entries, "test").snapshot_id;
+        SnapshotContent::new(
+            bowline_core::workspace_graph::SnapshotDraft {
+                schema_version: bowline_core::workspace_graph::SNAPSHOT_SCHEMA_VERSION,
+                snapshot_id: snapshot_id.clone(),
+                workspace_id,
+                project_id: None,
+                kind: SnapshotKind::WorkspaceHead,
+                base_snapshot_id: None,
+                entries,
+                refs: vec![WorkspaceRef {
+                    name: "workspace".to_string(),
+                    target_snapshot_id: snapshot_id,
+                    kind: RefKind::Workspace,
+                }],
+            },
+            BTreeMap::new(),
+            [7; 32],
+        )
+        .expect("page-backed snapshot")
     }
 
     fn file_entry(path: &str, byte_len: u64) -> NamespaceEntry {
@@ -219,9 +272,10 @@ mod tests {
             mode: MaterializationMode::WorkspaceSync,
             access: vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
             content_id: None,
-            locator: None,
+            content_layout: None,
             symlink_target: None,
             byte_len: Some(byte_len),
+            executability: bowline_core::workspace_graph::FileExecutability::Regular,
             hydration_state: HydrationState::Cold,
         }
     }

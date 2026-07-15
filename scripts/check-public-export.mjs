@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -72,6 +71,7 @@ const ignoredExpansionSegments = new Set([
 ]);
 const ignoredExpansionFilePatterns = [
   /\.tsbuildinfo$/u,
+  /(^|\/)examples\/merge-plugins\/[^/]+\/Cargo\.lock$/u,
   /(^|\/)\.DS_Store$/u,
   /(^|\/)(npm-debug|yarn-error|pnpm-debug)\.log$/u,
 ];
@@ -101,19 +101,13 @@ function escapeRegExp(value) {
 
 function parseArgs(argv) {
   const args = {
-    allTracked: false,
-    filesFrom: null,
     manifest: defaultManifest,
     root: process.cwd(),
   };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === "--all-tracked") {
-      args.allTracked = true;
-    } else if (arg === "--files-from") {
-      args.filesFrom = argv[++index] ?? null;
-    } else if (arg === "--manifest") {
+    if (arg === "--manifest") {
       args.manifest = argv[++index] ?? null;
     } else if (arg === "--root") {
       args.root = argv[++index] ?? null;
@@ -122,9 +116,6 @@ function parseArgs(argv) {
     }
   }
 
-  if (argv.includes("--files-from") && !args.filesFrom) {
-    throw new Error("--files-from requires a fixture path");
-  }
   if (!args.manifest) throw new Error("--manifest requires a path");
   if (!args.root) throw new Error("--root requires a path");
   return args;
@@ -132,22 +123,6 @@ function parseArgs(argv) {
 
 function normalizeFilePath(filePath) {
   return filePath.split(path.sep).join("/");
-}
-
-function gitTrackedFiles(root) {
-  const raw = execFileSync("git", ["-C", root, "ls-files", "-z"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  return raw.split("\0").filter(Boolean);
-}
-
-async function listedFiles(filesFrom) {
-  const fixture = await readFile(filesFrom, "utf8");
-  return fixture
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith("#"));
 }
 
 async function pathExists(filePath) {
@@ -196,16 +171,51 @@ async function manifestFiles(root, manifestPath) {
   return expanded;
 }
 
-async function filesToCheck(root, filesFrom, manifest, allTracked) {
-  if (filesFrom) return listedFiles(filesFrom);
-  if (allTracked) return gitTrackedFiles(root);
+async function workspaceMemberCoverageErrors(root, manifestPath) {
+  const cargoPath = path.join(root, "Cargo.toml");
+  if (!(await pathExists(cargoPath))) return [];
 
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const entries = manifest.include.map(normalizeFilePath);
+  const cargo = await readFile(cargoPath, "utf8");
+  const workspace = cargo.match(
+    /^\[workspace\][\s\S]*?^members\s*=\s*\[([\s\S]*?)^\]/mu,
+  );
+  if (workspace === null) return [];
+
+  const members = [...workspace[1].matchAll(/"([^"]+)"/gu)].map((match) =>
+    normalizeFilePath(match[1]),
+  );
+  return members
+    .filter(
+      (member) =>
+        !entries.some(
+          (entry) => member === entry || member.startsWith(`${entry}/`),
+        ),
+    )
+    .map(
+      (member) =>
+        `${member}: Rust workspace member is absent from the public export`,
+    );
+}
+
+async function filesToCheck(root, manifest) {
   const manifestPath = path.resolve(root, manifest);
-  if (await pathExists(manifestPath)) {
-    return manifestFiles(root, manifestPath);
+  if (!(await pathExists(manifestPath)))
+    throw new Error(`public export manifest not found: ${manifest}`);
+  const outputFiles = new Map(
+    (await manifestFiles(root, manifestPath)).map((file) => [file, file]),
+  );
+  const overridesRoot = path.join(root, "public-overrides");
+  if (await pathExists(overridesRoot)) {
+    for (const source of await expandEntry(root, "public-overrides")) {
+      const output = normalizeFilePath(
+        path.relative("public-overrides", source),
+      );
+      outputFiles.set(output, source);
+    }
   }
-
-  return gitTrackedFiles(root);
+  return outputFiles;
 }
 
 function pathReason(filePath) {
@@ -256,18 +266,16 @@ async function contentReason(root, filePath) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const root = path.resolve(args.root);
-  const files = await filesToCheck(
+  const files = await filesToCheck(root, args.manifest);
+  const errors = await workspaceMemberCoverageErrors(
     root,
-    args.filesFrom,
-    args.manifest,
-    args.allTracked,
+    path.resolve(root, args.manifest),
   );
-  const errors = [];
 
-  for (const file of files) {
-    const normalized = normalizeFilePath(file);
+  for (const [output, source] of files) {
+    const normalized = normalizeFilePath(output);
     const reason =
-      pathReason(normalized) ?? (await contentReason(root, normalized));
+      pathReason(normalized) ?? (await contentReason(root, source));
     if (reason) errors.push(`${normalized}: ${reason}`);
   }
 

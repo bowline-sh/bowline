@@ -1,62 +1,332 @@
 use super::*;
 
+pub(super) mod acceptor;
+mod connection_executor;
+mod coordinator_runtime;
+mod supervisor;
+#[cfg(test)]
+mod tests;
+
+use acceptor::{AcceptorEvent, AcceptorWake, BlockingAcceptor};
+use connection_executor::ConnectionExecutor;
+use coordinator_runtime::run_scheduler;
+use supervisor::{DaemonThreads, ShutdownOutcome};
+
+pub(super) fn handle_shutdown_grace_expiry(component: &'static str) {
+    eprintln!(
+        "bowline-daemon forced shutdown: {component} exceeded the grace deadline; durable recovery remains authoritative"
+    );
+}
+
+#[cfg(not(test))]
+pub(super) fn force_process_shutdown(socket: &Path) -> ! {
+    if let Err(error) = fs::remove_file(socket)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        eprintln!("bowline-daemon forced shutdown could not remove the control socket: {error}");
+    }
+    eprintln!(
+        "bowline-daemon forced shutdown grace expired; the process will terminate after durable cancellation was persisted"
+    );
+    std::process::abort();
+}
+
+#[cfg(test)]
+pub(super) fn force_process_shutdown(_socket: &Path) {
+    eprintln!("bowline-daemon test watchdog observed forced process termination");
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ThreadJoinReport {
+    pub(super) expected: usize,
+    pub(super) joined: usize,
+    pub(super) forced_recovery: bool,
+}
+
+impl ThreadJoinReport {
+    fn record_joined(&mut self, count: usize) {
+        self.expected += count;
+        self.joined += count;
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.expected += other.expected;
+        self.joined += other.joined;
+        self.forced_recovery |= other.forced_recovery;
+    }
+}
+
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Handshake {
     pub(super) daemon_version: String,
-    pub(super) sync_json: Option<String>,
+}
+
+pub(super) struct StatusSnapshot {
+    pub(super) daemon_version: String,
+    pub(super) snapshot: serde_json::Value,
 }
 
 pub(super) struct SocketGuard {
-    pub(super) path: PathBuf,
+    pub(super) path: Option<PathBuf>,
+}
+
+impl SocketGuard {
+    fn cleanup(mut self) -> io::Result<()> {
+        let path = self
+            .path
+            .take()
+            .expect("socket path remains owned until cleanup");
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl Drop for SocketGuard {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-pub(super) fn serve(socket: &Path, once: bool, mut runtime: DaemonRuntime) -> io::Result<()> {
-    prepare_socket(socket)?;
-    let listener = UnixListener::bind(socket)?;
-    listener.set_nonblocking(true)?;
-    let socket_owner_uid = fs::metadata(socket).ok().map(|metadata| metadata.uid());
-    let _guard = SocketGuard {
-        path: socket.to_path_buf(),
-    };
-
-    loop {
-        runtime.poll_sync();
-        runtime.poll_notifications();
-        match listener.accept() {
-            Ok((stream, _)) => {
-                let shutdown = match handle_client(stream, &runtime, socket_owner_uid) {
-                    Ok(shutdown) => shutdown,
-                    Err(error) => {
-                        eprintln!("bowline-daemon ignored client error: {error}");
-                        false
-                    }
-                };
-                if once || shutdown {
-                    break;
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                thread_sleep_short();
-            }
-            Err(error) => return Err(error),
+        if let Some(path) = self.path.take()
+            && let Err(error) = fs::remove_file(path)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            eprintln!("bowline-daemon socket cleanup failed: {error}");
         }
     }
-
-    Ok(())
 }
 
-pub(super) fn thread_sleep_short() {
-    std::thread::sleep(Duration::from_millis(20));
+const MAX_CONCURRENT_CONNECTIONS: usize = 32;
+const CONNECTION_BUSY_RETRY_AFTER: Duration = Duration::from_millis(250);
+
+struct ConnectionGuard {
+    state: Arc<DaemonServerState>,
+    acceptor_wake: AcceptorWake,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.state.active_connections.fetch_sub(1, Ordering::AcqRel);
+        if self.state.shutting_down.load(Ordering::Acquire)
+            && let Err(error) = self.acceptor_wake.stop()
+        {
+            eprintln!("bowline-daemon could not wake RPC acceptor after connection: {error}");
+        }
+    }
+}
+
+pub(super) fn serve(socket: &Path, once: bool, runtime: DaemonRuntime) -> io::Result<()> {
+    prepare_socket(socket)?;
+    let state = Arc::new(DaemonServerState::new(&runtime)?);
+    let threads = DaemonThreads::start(socket, once, runtime, Arc::clone(&state))?;
+    let guard = SocketGuard {
+        path: Some(socket.to_path_buf()),
+    };
+    let accept_error = run_accept_loop(
+        threads.acceptor(),
+        threads.connections(),
+        &state,
+        threads.socket_owner_uid(),
+        threads.rpc_executor(),
+        once,
+    );
+    let reason = if accept_error.is_some() {
+        ShutdownReason::AcceptorFailed
+    } else if once {
+        ShutdownReason::ServeOnceComplete
+    } else {
+        state
+            .shutdown_reason()
+            .unwrap_or(ShutdownReason::ClientRequest)
+    };
+    let report = threads.shutdown(reason)?;
+    log_shutdown_report(report);
+    state.advance_shutdown(ShutdownPhase::RemoveSocketState);
+    guard.cleanup()?;
+    if report.joined_threads != report.expected_threads {
+        return Err(io::Error::other(
+            "daemon shutdown did not join every owned thread",
+        ));
+    }
+    if report.coordinator_metrics.configured_workers != report.coordinator_metrics.joined_workers {
+        return Err(io::Error::other(
+            "daemon coordinator metrics did not account for every lane worker",
+        ));
+    }
+    if report.outcome == ShutdownOutcome::ForcedRecovery {
+        return Err(io::Error::other(
+            "daemon shutdown exceeded its grace deadline; forced recovery was recorded after every owned thread joined",
+        ));
+    }
+    state.advance_shutdown(ShutdownPhase::Complete);
+    accept_error.map_or(Ok(()), Err)
+}
+
+fn log_shutdown_report(report: supervisor::ShutdownReport) {
+    eprintln!(
+        "bowline-daemon shutdown outcome={} elapsed_ms={} grace_ms={} joined_threads={} expected_threads={} coordinator_workers={} coordinator_joined={} coordinator_worker_losses={} coordinator_shutdown_recoveries={} rpc_workers={} rpc_panics={} rpc_queue_delay_max_ns={} rpc_execution_max_ns={} cancellation_latency_max_ns={}",
+        match report.outcome {
+            ShutdownOutcome::Clean => "clean",
+            ShutdownOutcome::ForcedRecovery => "forced-recovery",
+        },
+        report.elapsed.as_millis(),
+        report.grace.as_millis(),
+        report.joined_threads,
+        report.expected_threads,
+        report.coordinator_metrics.configured_workers,
+        report.coordinator_metrics.joined_workers,
+        report.coordinator_metrics.worker_losses,
+        report.coordinator_metrics.shutdown_recoveries,
+        report.rpc_metrics.configured_workers(),
+        report.rpc_metrics.panicked(),
+        report.rpc_metrics.queue_delay_max_nanos(),
+        report.rpc_metrics.execution_max_nanos(),
+        report.rpc_metrics.cancellation_latency_max_nanos(),
+    );
+}
+
+fn run_accept_loop(
+    acceptor: &BlockingAcceptor,
+    connections: &ConnectionExecutor,
+    state: &Arc<DaemonServerState>,
+    socket_owner_uid: Option<u32>,
+    rpc_executor: &Arc<super::protocol_v2::RpcExecutor>,
+    once: bool,
+) -> Option<io::Error> {
+    let mut once_in_flight = false;
+    let mut once_completed = false;
+    let mut acceptor_stopped = false;
+    loop {
+        if acceptor_stopped {
+            if !once_in_flight || once_completed {
+                return None;
+            }
+            match connections.completions().recv() {
+                Ok(()) => once_completed = true,
+                Err(_) => {
+                    return Some(io::Error::other(
+                        "daemon connection completion channel closed",
+                    ));
+                }
+            }
+            continue;
+        }
+        crossbeam_channel::select_biased! {
+            recv(acceptor.events()) -> event => match event {
+                Ok(AcceptorEvent::Accepted(stream)) => {
+                    if once_in_flight {
+                        continue;
+                    }
+                    let admitted = admit_connection(
+                        stream,
+                        connections,
+                        state,
+                        socket_owner_uid,
+                        rpc_executor,
+                        acceptor.wake(),
+                    );
+                    if once {
+                        once_in_flight = true;
+                        once_completed = !admitted;
+                        if let Err(error) = acceptor.stop() {
+                            return Some(error);
+                        }
+                    }
+                }
+                Ok(AcceptorEvent::Failed(error)) => return Some(error),
+                Ok(AcceptorEvent::Stopped) => acceptor_stopped = true,
+                Err(_) => return Some(io::Error::other("daemon acceptor channel closed")),
+            },
+            recv(connections.completions()) -> completion => {
+                if completion.is_err() {
+                    return Some(io::Error::other("daemon connection completion channel closed"));
+                }
+                once_completed |= once_in_flight;
+            },
+        }
+    }
+}
+
+fn admit_connection(
+    stream: UnixStream,
+    connections: &ConnectionExecutor,
+    state: &Arc<DaemonServerState>,
+    socket_owner_uid: Option<u32>,
+    rpc_executor: &Arc<super::protocol_v2::RpcExecutor>,
+    acceptor_wake: AcceptorWake,
+) -> bool {
+    if !reserve_connection(state) {
+        reject_overloaded_connection(stream, state, socket_owner_uid);
+        return false;
+    }
+    if let Err(stream) = connections.try_submit(
+        stream,
+        Arc::clone(state),
+        socket_owner_uid,
+        Arc::clone(rpc_executor),
+        acceptor_wake,
+    ) {
+        state.active_connections.fetch_sub(1, Ordering::AcqRel);
+        reject_overloaded_connection(stream, state, socket_owner_uid);
+        return false;
+    }
+    true
+}
+
+fn reserve_connection(state: &DaemonServerState) -> bool {
+    state
+        .active_connections
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            (active < MAX_CONCURRENT_CONNECTIONS).then_some(active + 1)
+        })
+        .is_ok()
+}
+
+fn reject_overloaded_connection(
+    mut stream: UnixStream,
+    state: &Arc<DaemonServerState>,
+    socket_owner_uid: Option<u32>,
+) {
+    if let Err(error) = verify_connection_magic(&mut stream).and_then(|()| {
+        super::protocol_v2::reject_overloaded_connection(
+            stream,
+            state,
+            socket_owner_uid,
+            CONNECTION_BUSY_RETRY_AFTER,
+        )
+    }) {
+        eprintln!("bowline-daemon could not return connection busy response: {error}");
+    }
+}
+
+fn handle_connection(
+    mut stream: UnixStream,
+    state: &Arc<DaemonServerState>,
+    socket_owner_uid: Option<u32>,
+    executor: Arc<super::protocol_v2::RpcExecutor>,
+) -> io::Result<()> {
+    verify_connection_magic(&mut stream)?;
+    super::protocol_v2::handle_v2_connection(stream, state, socket_owner_uid, executor)
+}
+
+fn verify_connection_magic(stream: &mut UnixStream) -> io::Result<()> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let mut received = [0_u8; bowline_daemon_rpc::CONNECTION_MAGIC.len()];
+    stream.read_exact(&mut received)?;
+    if received != bowline_daemon_rpc::CONNECTION_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "daemon RPC connection magic is invalid",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn prepare_socket(socket: &Path) -> io::Result<()> {
     if let Some(parent) = socket.parent() {
         fs::create_dir_all(parent)?;
+        ensure_owner_only_socket_dir(parent)?;
     }
 
     if socket.exists() {
@@ -66,69 +336,60 @@ pub(super) fn prepare_socket(socket: &Path) -> io::Result<()> {
                 "daemon socket is already in use",
             ));
         }
+        ensure_socket_path_owned_by_current_user(socket)?;
         fs::remove_file(socket)?;
     }
 
     Ok(())
 }
 
-pub(super) fn handle_client(
-    mut stream: UnixStream,
-    runtime: &DaemonRuntime,
-    socket_owner_uid: Option<u32>,
-) -> io::Result<bool> {
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-
-    let request = read_line(&mut stream)?;
-    let mut shutdown = false;
-    let response = match daemon_request_type(&request).as_deref() {
-        Some("hello") if is_hello_request(&request) => format!(
-            "{{\"type\":\"hello_ack\",\"protocol\":\"{PROTOCOL}\",\"version\":{PROTOCOL_VERSION},\"daemonVersion\":{},\"status\":\"ok\"{}}}\n",
-            json_string(env!("CARGO_PKG_VERSION")),
-            runtime.sync_json_field()
-        ),
-        Some("shutdown") if is_shutdown_request(&request) => {
-            shutdown = true;
+fn ensure_owner_only_socket_dir(parent: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(parent)?;
+    if !metadata.file_type().is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
             format!(
-                "{{\"type\":\"shutdown_ack\",\"protocol\":\"{PROTOCOL}\",\"version\":{PROTOCOL_VERSION},\"status\":\"stopping\"}}\n"
-            )
-        }
-        Some("agent.tool.invoke") => handle_agent_tool_request(
-            &request,
-            local_peer_credential_checked(&stream, socket_owner_uid),
-        ),
-        _ => format!(
-            "{{\"type\":\"error\",\"protocol\":\"{PROTOCOL}\",\"version\":{PROTOCOL_VERSION},\"error\":{{\"code\":\"unsupported_request\",\"message\":\"supported request types: hello, shutdown, agent.tool.invoke\"}}}}\n"
-        ),
-    };
-
-    stream.write_all(response.as_bytes())?;
-    stream.flush()?;
-    Ok(shutdown)
+                "daemon socket directory {} is not a directory",
+                parent.display()
+            ),
+        ));
+    }
+    let uid = current_uid();
+    if metadata.uid() != uid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "daemon socket directory {} is owned by uid {}, expected {uid}",
+                parent.display(),
+                metadata.uid()
+            ),
+        ));
+    }
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode != 0o700 {
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
-pub(super) fn daemon_request_type(request: &str) -> Option<String> {
-    let value = serde_json::from_str::<serde_json::Value>(request).ok()?;
-    value.get("type")?.as_str().map(ToOwned::to_owned)
+fn ensure_socket_path_owned_by_current_user(socket: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(socket)?;
+    let uid = current_uid();
+    if metadata.uid() != uid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "daemon socket path {} is owned by uid {}, expected {uid}",
+                socket.display(),
+                metadata.uid()
+            ),
+        ));
+    }
+    Ok(())
 }
 
-pub(super) fn is_hello_request(request: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(request) else {
-        return false;
-    };
-    value.get("type").and_then(serde_json::Value::as_str) == Some("hello")
-        && value.get("protocol").and_then(serde_json::Value::as_str) == Some(PROTOCOL)
-        && value.get("version").and_then(serde_json::Value::as_u64) == Some(PROTOCOL_VERSION.into())
-}
-
-pub(super) fn is_shutdown_request(request: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(request) else {
-        return false;
-    };
-    value.get("type").and_then(serde_json::Value::as_str) == Some("shutdown")
-        && value.get("protocol").and_then(serde_json::Value::as_str) == Some(PROTOCOL)
-        && value.get("version").and_then(serde_json::Value::as_u64) == Some(PROTOCOL_VERSION.into())
+fn current_uid() -> u32 {
+    rustix::process::geteuid().as_raw()
 }
 
 pub(super) fn validate_agent_tool_contract(
@@ -141,43 +402,6 @@ pub(super) fn validate_agent_tool_contract(
         return Err("agent tool protocol version is unsupported");
     }
     Ok(())
-}
-
-pub(super) fn handle_agent_tool_request(request: &str, peer_credential_checked: bool) -> String {
-    let request = match serde_json::from_str::<AgentToolInvokeRequest>(request) {
-        Ok(request) => request,
-        Err(error) => {
-            return format!(
-                "{{\"type\":\"error\",\"protocol\":\"{PROTOCOL}\",\"version\":{PROTOCOL_VERSION},\"error\":{{\"code\":\"invalid_agent_tool_request\",\"message\":{}}}}}\n",
-                json_string(&error.to_string())
-            );
-        }
-    };
-    if let Err(message) = validate_agent_tool_contract(&request) {
-        return format!(
-            "{{\"type\":\"error\",\"protocol\":\"{PROTOCOL}\",\"version\":{PROTOCOL_VERSION},\"error\":{{\"code\":\"unsupported_agent_tool_protocol\",\"message\":{}}}}}\n",
-            json_string(message)
-        );
-    }
-    let local_daemon_peer_checked =
-        peer_credential_checked && request.authority.transport == AgentToolTransport::LocalDaemon;
-    match invoke_agent_tool_from_local_daemon(
-        env::var_os(ENV_METADATA_DB).map(PathBuf::from),
-        request,
-        local_daemon_peer_checked,
-        current_timestamp(),
-    ) {
-        Ok(result) => {
-            let result_json = serde_json::to_string(&result).expect("agent result serializes");
-            format!(
-                "{{\"type\":\"agent.tool.result\",\"protocol\":\"{PROTOCOL}\",\"version\":{PROTOCOL_VERSION},\"result\":{result_json}}}\n"
-            )
-        }
-        Err(error) => format!(
-            "{{\"type\":\"error\",\"protocol\":\"{PROTOCOL}\",\"version\":{PROTOCOL_VERSION},\"error\":{{\"code\":\"agent_tool_failed\",\"message\":{}}}}}\n",
-            json_string(&error.to_string())
-        ),
-    }
 }
 
 pub(super) fn current_timestamp() -> String {
@@ -202,156 +426,70 @@ pub(super) fn local_peer_credential_checked(
         .is_ok_and(|credentials| credentials.euid() == socket_owner_uid)
 }
 
+#[cfg(test)]
 pub(super) fn handshake(socket: &Path) -> io::Result<Handshake> {
-    let mut stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-    stream.write_all(
-        format!(
-            "{{\"type\":\"hello\",\"protocol\":\"{PROTOCOL}\",\"version\":{PROTOCOL_VERSION}}}\n"
-        )
-        .as_bytes(),
-    )?;
-    stream.flush()?;
-
-    let response = read_line(&mut stream)?;
-    if !response.contains("\"type\":\"hello_ack\"")
-        || !response.contains(&format!("\"protocol\":\"{PROTOCOL}\""))
-        || !response.contains(&format!("\"version\":{PROTOCOL_VERSION}"))
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "daemon handshake response did not match the expected protocol",
-        ));
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DaemonInfo {
+        daemon_version: String,
     }
 
+    let options = bowline_daemon_rpc::ClientOptions::new("daemon-cli", env!("CARGO_PKG_VERSION"));
+    let client =
+        bowline_daemon_rpc::DaemonClient::connect(socket, options).map_err(io::Error::other)?;
+    let info: DaemonInfo = client
+        .call(
+            "daemon.info",
+            &serde_json::json!({}),
+            Some(Duration::from_secs(2)),
+        )
+        .map_err(io::Error::other)?;
     Ok(Handshake {
-        daemon_version: extract_json_string(&response, "daemonVersion")
-            .unwrap_or_else(|| "unknown".to_string()),
-        sync_json: extract_json_object(&response, "sync"),
+        daemon_version: info.daemon_version,
+    })
+}
+
+pub(super) fn status_snapshot(socket: &Path) -> io::Result<StatusSnapshot> {
+    let options = bowline_daemon_rpc::ClientOptions::new("daemon-cli", env!("CARGO_PKG_VERSION"));
+    let client =
+        bowline_daemon_rpc::DaemonClient::connect(socket, options).map_err(io::Error::other)?;
+    let daemon_version = client.server_hello().daemon_version.clone();
+    let status: bowline_core::wire::generated::DaemonStatusSnapshotResult = client
+        .call(
+            "status.getSnapshot",
+            &bowline_core::wire::generated::DaemonStatusScopeParams {
+                workspace_root: None,
+                project_path: None,
+            },
+            Some(Duration::from_secs(2)),
+        )
+        .map_err(io::Error::other)?;
+    Ok(StatusSnapshot {
+        daemon_version,
+        snapshot: serde_json::to_value(status.snapshot).map_err(io::Error::other)?,
     })
 }
 
 pub(super) fn request_shutdown(socket: &Path) -> io::Result<()> {
-    let mut stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-    stream.write_all(
-        format!(
-            "{{\"type\":\"shutdown\",\"protocol\":\"{PROTOCOL}\",\"version\":{PROTOCOL_VERSION}}}\n"
+    let options = bowline_daemon_rpc::ClientOptions::new("daemon-cli", env!("CARGO_PKG_VERSION"));
+    let client =
+        bowline_daemon_rpc::DaemonClient::connect(socket, options).map_err(io::Error::other)?;
+    client
+        .call::<_, serde_json::Value>(
+            "daemon.shutdown",
+            &serde_json::json!({}),
+            Some(Duration::from_secs(2)),
         )
-        .as_bytes(),
-    )?;
-    stream.flush()?;
-
-    let response = read_line(&mut stream)?;
-    if !response.contains("\"type\":\"shutdown_ack\"")
-        || !response.contains(&format!("\"protocol\":\"{PROTOCOL}\""))
-        || !response.contains(&format!("\"version\":{PROTOCOL_VERSION}"))
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "daemon shutdown response did not match the expected protocol",
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn read_line(stream: &mut UnixStream) -> io::Result<String> {
-    let mut bytes = Vec::new();
-    let mut one = [0_u8; 1];
-    loop {
-        match stream.read(&mut one) {
-            Ok(0) => break,
-            Ok(_) if one[0] == b'\n' => break,
-            Ok(_) => bytes.push(one[0]),
-            Err(error) => return Err(error),
-        }
-    }
-    String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-}
-
-pub(super) fn extract_json_string(input: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\":\"");
-    let start = input.find(&needle)? + needle.len();
-    let mut value = String::new();
-    let mut escaped = false;
-
-    for character in input[start..].chars() {
-        if escaped {
-            value.push(character);
-            escaped = false;
-            continue;
-        }
-        match character {
-            '\\' => escaped = true,
-            '"' => return Some(value),
-            _ => value.push(character),
-        }
-    }
-
-    None
-}
-
-pub(super) fn extract_json_object(input: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\":");
-    let marker_start = input.find(&needle)?;
-    let object_start =
-        marker_start + needle.len() + input[marker_start + needle.len()..].find('{')?;
-    let mut depth = 0_usize;
-    let mut in_string = false;
-    let mut escaped = false;
-
-    for (offset, character) in input[object_start..].char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match character {
-            '\\' if in_string => escaped = true,
-            '"' => in_string = !in_string,
-            '{' if !in_string => depth += 1,
-            '}' if !in_string => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    let end = object_start + offset + character.len_utf8();
-                    return Some(input[object_start..end].to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
+        .map(|_| ())
+        .map_err(io::Error::other)
 }
 
 pub(super) fn json_string(input: &str) -> String {
-    let mut escaped = String::with_capacity(input.len() + 2);
-    escaped.push('"');
-    for character in input.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            character if character.is_control() => {
-                escaped.push_str(&format!("\\u{:04x}", character as u32));
-            }
-            character => escaped.push(character),
+    match serde_json::to_string(input) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("bowline-daemon JSON string serialization failed: {error}");
+            serde_json::Value::String(String::new()).to_string()
         }
     }
-    escaped.push('"');
-    escaped
-}
-
-pub(super) fn json_string_array(values: &[String]) -> String {
-    format!(
-        "[{}]",
-        values
-            .iter()
-            .map(|value| json_string(value))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
 }

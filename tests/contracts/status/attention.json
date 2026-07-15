@@ -1,7 +1,8 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 8,
   "command": "status",
   "generatedAt": "2026-06-23T12:00:00Z",
+  "statusSummary": { "availability": "ready", "attention": "required", "facts": [], "snapshotVersion": 1, "observedAt": "2026-06-23T12:00:00Z", "freshness": "fresh" },
   "workspaceId": "ws_code",
   "projectId": "proj_acme_web",
   "status": {
@@ -35,10 +36,10 @@
   },
   "nextActions": [
     {
-      "label": "Explain the secret-looking file",
-      "command": "bowline explain ~/Code/acme/web/certs/dev.pem",
-      "effectCategory": "inspect",
-      "targetKind": "workspace"
+      "label": "Inspect the secret-looking file's sync status",
+      "command": "bowline status --root ~/Code/acme/web",
+      "mutates": false
     }
-  ]
+  ],
+  "freshness": "unknown"
 }

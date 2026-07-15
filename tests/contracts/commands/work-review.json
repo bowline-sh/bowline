@@ -1,6 +1,6 @@
 {
-  "contractVersion": 3,
-  "command": "review",
+  "contractVersion": 8,
+  "command": "work review",
   "generatedAt": "2026-06-25T12:00:02Z",
   "action": "diffed",
   "workView": {
@@ -49,9 +49,8 @@
   "nextActions": [
     {
       "label": "Accept auth-fix",
-      "command": "bowline accept auth-fix",
-      "effectCategory": "mutate",
-      "targetKind": "work-view"
+      "command": "bowline work accept auth-fix",
+      "mutates": true
     }
   ]
 }

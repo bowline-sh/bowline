@@ -1,5 +1,5 @@
 import type { DeviceId, EventId, LeaseId, ProjectId, WorkspaceId } from "./ids";
-import type { CONTRACT_VERSION } from "./ids";
+import type { EVENT_SCHEMA_VERSION } from "./ids";
 import type { EventName } from "./event-names";
 import type { EventWatermarks, StatusScope } from "./status";
 import type { CommandOutputBase } from "./commands";
@@ -21,7 +21,6 @@ export type EventSubjectKind =
   | "work-view"
   | "lease"
   | "overlay"
-  | "index"
   | "device"
   | "metadata"
   | "component";
@@ -46,7 +45,7 @@ export type EventRedaction = {
 };
 
 export type WorkspaceEvent = {
-  readonly schemaVersion: typeof CONTRACT_VERSION;
+  readonly schemaVersion: typeof EVENT_SCHEMA_VERSION;
   readonly id: EventId;
   readonly name: EventName;
   readonly occurredAt: string;

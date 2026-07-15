@@ -3,10 +3,13 @@
 //! and degrades to plain text when color is off, so the same code path serves
 //! interactive terminals, pipes, and golden tests.
 
-use bowline_core::commands::{ActionsCommandOutput, IndexState, StatusCommandOutput, WatchFrame};
-use bowline_core::status::{ComponentState, LimitedCapability, SafeAction};
+use bowline_core::commands::{StatusCommandOutput, WatchFrame};
+use bowline_core::status::{
+    ComponentState, FreshnessVerdict, LimitedCapability, RepairCommand, StatusAttention,
+    StatusAvailability,
+};
 
-use crate::io_helpers::shell_word;
+use crate::io_helpers::root_flag;
 
 use super::style::{self, Presentation, Role, Verdict};
 
@@ -38,33 +41,6 @@ pub fn render_status(output: &StatusCommandOutput, pres: &Presentation) -> Strin
         lines.push(String::new());
         lines.push(format!("  {}", style::section("Next", pres)));
         lines.extend(actions);
-    }
-
-    lines.push(String::new());
-    lines.join("\n")
-}
-
-/// Render the `bowline actions` list.
-pub fn render_actions(output: &ActionsCommandOutput, pres: &Presentation) -> String {
-    let verdict = Verdict::from_level(output.status.level);
-    let mut lines = vec![format!("  {}", style::chip(verdict, pres)), String::new()];
-
-    if output.actions.is_empty() {
-        if output.non_actions.is_empty() {
-            lines.push(format!(
-                "  {}",
-                style::paint("Nothing needs you right now.", Role::Label, pres)
-            ));
-        } else {
-            for note in &output.non_actions {
-                lines.push(format!("  {}", style::paint(note, Role::Label, pres)));
-            }
-        }
-    } else {
-        lines.push(format!("  {}", style::section("Next", pres)));
-        for action in &output.actions {
-            lines.push(action_line(action, pres));
-        }
     }
 
     lines.push(String::new());
@@ -172,12 +148,22 @@ fn preparing_message(output: &StatusCommandOutput) -> String {
             "Catching up on sync. Nothing needs you.".to_string()
         }
     } else {
-        "Refreshing the index. Nothing needs you.".to_string()
+        "Preparing workspace status. Nothing needs you.".to_string()
     }
 }
 
 fn body_rows(output: &StatusCommandOutput, pres: &Presentation) -> Vec<String> {
     let mut rows = Vec::new();
+    rows.push(style::kv(
+        "Capability",
+        availability_label(output.status_summary.availability),
+        pres,
+    ));
+    rows.push(style::kv(
+        "Action",
+        attention_label(output.status_summary.attention),
+        pres,
+    ));
     let observed = output
         .workspace_summary
         .as_ref()
@@ -192,10 +178,37 @@ fn body_rows(output: &StatusCommandOutput, pres: &Presentation) -> Vec<String> {
         rows.push(style::kv("Workspace", &workspace, pres));
         rows.push(style::kv("Sync", sync_label(output), pres));
     }
-    if let Some(index) = output.index.as_ref() {
-        rows.push(style::kv("Index", index_label(index.state), pres));
-    }
+    rows.push(style::kv(
+        "Freshness",
+        freshness_label(output.freshness),
+        pres,
+    ));
     rows
+}
+
+fn availability_label(availability: StatusAvailability) -> &'static str {
+    match availability {
+        StatusAvailability::Ready => "ready",
+        StatusAvailability::Degraded => "degraded",
+        StatusAvailability::Unavailable => "unavailable",
+    }
+}
+
+fn attention_label(attention: StatusAttention) -> &'static str {
+    match attention {
+        StatusAttention::None => "none requested",
+        StatusAttention::Recommended => "recommended",
+        StatusAttention::Required => "required",
+    }
+}
+
+fn freshness_label(verdict: FreshnessVerdict) -> &'static str {
+    match verdict {
+        FreshnessVerdict::Current => "current",
+        FreshnessVerdict::Behind => "behind",
+        FreshnessVerdict::Diverged => "diverged",
+        FreshnessVerdict::Unknown => "unknown",
+    }
 }
 
 fn sync_label(output: &StatusCommandOutput) -> &'static str {
@@ -204,15 +217,6 @@ fn sync_label(output: &StatusCommandOutput) -> &'static str {
         Some(ComponentState::Degraded) => "degraded, retrying",
         Some(ComponentState::Unavailable) => "paused",
         None => "starting…",
-    }
-}
-
-fn index_label(state: IndexState) -> &'static str {
-    match state {
-        IndexState::Ready => "current",
-        IndexState::Stale => "refreshing",
-        IndexState::Rebuilding => "building",
-        IndexState::Degraded => "degraded",
     }
 }
 
@@ -268,9 +272,18 @@ fn next_action_lines(
         .iter()
         .map(|action| action_line(action, pres))
         .collect();
+    // Trusted local surface: render pending device-approval affordances (their
+    // concrete `bowline device approve --code …` command) as runnable next actions.
+    for approval in &output.device_approvals {
+        out.push(style::next_action(
+            &approval.approve_command,
+            &format!("approve device (code {})", approval.code),
+            pres,
+        ));
+    }
     if out.is_empty() && verdict == Verdict::Preparing {
         out.push(style::next_action(
-            &format!("bowline status --root {} --watch", status_root_arg(output)),
+            &status_watch_command(output),
             "follow progress live",
             pres,
         ));
@@ -278,16 +291,14 @@ fn next_action_lines(
     out
 }
 
-fn status_root_arg(output: &StatusCommandOutput) -> String {
-    shell_word(
-        output
-            .resolved_workspace_root
-            .as_deref()
-            .unwrap_or("~/Code"),
+fn status_watch_command(output: &StatusCommandOutput) -> String {
+    format!(
+        "bowline status{} --watch",
+        root_flag(output.resolved_workspace_root.as_deref())
     )
 }
 
-fn action_line(action: &SafeAction, pres: &Presentation) -> String {
+fn action_line(action: &RepairCommand, pres: &Presentation) -> String {
     match &action.command {
         Some(command) => style::next_action(command, &action.label, pres),
         None => format!("  {}", style::paint(&action.label, Role::Label, pres)),

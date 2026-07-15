@@ -4,7 +4,7 @@ use bowline_core::{
     commands::{CONTRACT_VERSION, LoginCommandOutput},
     devices::{AccountLoginState, AccountLoginStatus},
     ids::{AccountId, WorkOsOrganizationId, WorkOsUserId},
-    status::SafeAction,
+    status::RepairCommand,
 };
 use reqwest::blocking::Client;
 use serde::Deserialize;
@@ -79,10 +79,10 @@ pub fn start_login(
             authenticated_at: None,
         },
         local_device: None,
-        next_actions: vec![SafeAction {
-            label: "Open the verification URL and confirm the code".to_string(),
-            command: None,
-        }],
+        next_actions: vec![RepairCommand::inspect(
+            "Open the verification URL and confirm the code".to_string(),
+            None,
+        )],
     };
     Ok((authorization, output))
 }
@@ -114,10 +114,10 @@ where
                 authenticated_at: None,
             },
             local_device: None,
-            next_actions: vec![SafeAction {
-                label: "Open the verification URL and confirm the code".to_string(),
-                command: None,
-            }],
+            next_actions: vec![RepairCommand::inspect(
+                "Open the verification URL and confirm the code".to_string(),
+                None,
+            )],
         });
     }
 
@@ -162,10 +162,10 @@ where
             authenticated_at: Some(generated_at),
         },
         local_device: None,
-        next_actions: vec![SafeAction {
-            label: "Choose and trust the workspace root".to_string(),
-            command: Some("bowline login".to_string()),
-        }],
+        next_actions: vec![RepairCommand::inspect(
+            "Choose and trust the workspace root".to_string(),
+            Some("bowline setup".to_string()),
+        )],
     })
 }
 
@@ -197,15 +197,15 @@ where
 {
     let mut tokens = refresh_tokens(client_id, refresh_token)?;
     if let Some(existing) = key_store.load_account_tokens()? {
-        preserve_existing_account_session_id(&existing, &mut tokens);
+        preserve_existing_account_session(&existing, &mut tokens);
     }
     key_store.store_account_tokens(tokens.clone())?;
     Ok(tokens)
 }
 
-fn preserve_existing_account_session_id(existing: &AccountTokens, refreshed: &mut AccountTokens) {
-    if existing.account_id == refreshed.account_id && refreshed.account_session_id.is_none() {
-        refreshed.account_session_id = existing.account_session_id.clone();
+fn preserve_existing_account_session(existing: &AccountTokens, refreshed: &mut AccountTokens) {
+    if existing.account_id == refreshed.account_id && refreshed.account_session.is_none() {
+        refreshed.account_session = existing.account_session.clone();
     }
 }
 
@@ -215,7 +215,7 @@ fn account_tokens_from_response(token: TokenResponse) -> AccountTokens {
         access_token: token.access_token,
         refresh_token: token.refresh_token,
         expires_at: token.expires_at.unwrap_or_else(|| "unknown".to_string()),
-        account_session_id: None,
+        account_session: None,
     }
 }
 
@@ -355,7 +355,8 @@ mod tests {
     use bowline_core::ids::AccountId;
 
     use crate::{
-        account::workos::preserve_existing_account_session_id, device_keys::AccountTokens,
+        account::workos::preserve_existing_account_session,
+        device_keys::{AccountSessionCredentials, AccountTokens},
     };
 
     #[test]
@@ -365,21 +366,27 @@ mod tests {
             access_token: "old-access".to_string(),
             refresh_token: "old-refresh".to_string(),
             expires_at: "old-expiry".to_string(),
-            account_session_id: Some("bowline_session_existing".to_string()),
+            account_session: Some(AccountSessionCredentials {
+                session_id: "bowline_session_existing".to_string(),
+                revocation_token: "bowline_revoke_existing".to_string(),
+            }),
         };
         let mut refreshed = AccountTokens {
             account_id: AccountId::new("user_123"),
             access_token: "new-access".to_string(),
             refresh_token: "new-refresh".to_string(),
             expires_at: "new-expiry".to_string(),
-            account_session_id: None,
+            account_session: None,
         };
 
-        preserve_existing_account_session_id(&existing, &mut refreshed);
+        preserve_existing_account_session(&existing, &mut refreshed);
 
         assert_eq!(
-            refreshed.account_session_id.as_deref(),
-            Some("bowline_session_existing")
+            refreshed.account_session,
+            Some(AccountSessionCredentials {
+                session_id: "bowline_session_existing".to_string(),
+                revocation_token: "bowline_revoke_existing".to_string(),
+            })
         );
     }
 }

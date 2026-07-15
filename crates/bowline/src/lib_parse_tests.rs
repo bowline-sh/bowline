@@ -1,20 +1,19 @@
-use crate::idempotency::{command_has_cwd_relative_target, path_depends_on_cwd};
-
 use super::{
-    ActionsArgs, ApproveArgs, Command, DEFAULT_AGENT_HYDRATE_BUDGET_BYTES, RevokeArgs, StatusArgs,
-    TrustRequestSelector, TuiArgs, UpdateArgs, WorkspaceSelection, agent,
-    bootstrap::BootstrapSshArgs, devices::DevicesArgs, login, parse_args, recovery::RecoveryArgs,
-    resolve,
+    Command, McpArgs, MergePluginApproveArgs, ParseError, SetupArgs, SetupMode, StatusArgs,
+    TuiArgs, UpdateArgs, WorkspaceSelection, agent, bootstrap::BootstrapSshArgs,
+    devices::DevicesArgs, login, parse_args, recovery::RecoveryArgs, resolve,
+    work::WorkSelectorArgs,
 };
+
 use bowline_core::commands::{AgentLeaseBase, CommandName};
 
 #[test]
-fn parses_global_json_anywhere() {
+fn parses_command_scoped_json_after_the_command_path() {
     let cli = parse_args(["status", "--root", "~/Code", "--json"]);
 
     assert!(cli.json);
     assert_eq!(
-        cli.command,
+        cli.command.expect("parsed command"),
         Command::Status(StatusArgs {
             selection: WorkspaceSelection {
                 root: "~/Code".to_string(),
@@ -30,7 +29,6 @@ fn parses_global_json_anywhere() {
 fn json_login_does_not_poll_before_printing_verification_url() {
     let args = super::login_args_for_output(
         login::LoginArgs {
-            root: None,
             no_poll: false,
             headless: false,
         },
@@ -42,11 +40,157 @@ fn json_login_does_not_poll_before_printing_verification_url() {
 }
 
 #[test]
+fn parses_setup_as_machine_onboarding_without_path() {
+    let cli = parse_args(["setup"]);
+
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::Setup(SetupArgs {
+            mode: SetupMode::Machine { root: None },
+        })
+    );
+}
+
+#[test]
+fn parses_setup_root_as_machine_onboarding() {
+    let cli = parse_args(["setup", "--root", "~/Code"]);
+
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::Setup(SetupArgs {
+            mode: SetupMode::Machine {
+                root: Some("~/Code".to_string()),
+            },
+        })
+    );
+}
+
+#[test]
+fn parses_setup_path_as_project_setup() {
+    let cli = parse_args(["setup", ".", "--yes"]);
+
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::Setup(SetupArgs {
+            mode: SetupMode::Project {
+                project_path: ".".to_string(),
+                yes: true,
+            },
+        })
+    );
+}
+
+#[test]
+fn setup_path_rejects_root_selection() {
+    let cli = parse_args(["setup", ".", "--root", "~/Code"]);
+
+    assert!(matches!(cli.command, Err(ParseError::Command(error))
+        if error.command == CommandName::Setup
+            && error.code == "usage_error"
+            && error.message == "bowline setup <path> cannot be combined with --root <path>"));
+}
+
+#[test]
+fn bare_login_parses_without_root() {
+    let cli = parse_args(["login"]);
+
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::Login(login::LoginArgs {
+            no_poll: false,
+            headless: false,
+        })
+    );
+}
+
+#[test]
+fn login_root_points_to_setup() {
+    let cli = parse_args(["login", "--root", "~/Code"]);
+
+    assert!(matches!(cli.command, Err(ParseError::Usage {
+        command: CommandName::Login,
+        message,
+    }) if message == "unknown bowline login option `--root`"));
+}
+
+#[test]
 fn parses_logout() {
     let cli = parse_args(["logout", "--json"]);
 
     assert!(cli.json);
-    assert_eq!(cli.command, Command::Logout);
+    assert_eq!(cli.command.expect("parsed command"), Command::Logout);
+}
+
+#[test]
+fn parses_merge_plugin_approval() {
+    let cli = parse_args([
+        "device",
+        "approve",
+        "--merge-plugin",
+        "--root",
+        "~/Code",
+        "--id",
+        "notebooks",
+        "--plugin-version",
+        "1.0.0",
+        "--digest",
+        "blake3:abc",
+        "--matcher-version",
+        "2",
+        "--validator-version",
+        "3",
+        "--yes",
+    ]);
+
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::ApproveMergePlugin(MergePluginApproveArgs {
+            selection: WorkspaceSelection {
+                root: "~/Code".to_string(),
+                project: None,
+            },
+            id: "notebooks".to_string(),
+            version: "1.0.0".to_string(),
+            digest: "blake3:abc".to_string(),
+            matcher_version: Some("2".to_string()),
+            validator_version: Some("3".to_string()),
+            yes: true,
+        })
+    );
+}
+
+#[test]
+fn parses_merge_plugin_approval_without_optional_contract_assertions() {
+    let cli = parse_args([
+        "device",
+        "approve",
+        "--merge-plugin",
+        "--root",
+        "~/Code",
+        "--id",
+        "notebooks",
+        "--plugin-version",
+        "1.0.0",
+        "--digest",
+        "blake3:abc",
+        "--yes",
+    ]);
+
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::ApproveMergePlugin(MergePluginApproveArgs {
+            selection: WorkspaceSelection {
+                root: "~/Code".to_string(),
+                project: None,
+            },
+            id: "notebooks".to_string(),
+            version: "1.0.0".to_string(),
+            digest: "blake3:abc".to_string(),
+            matcher_version: None,
+            validator_version: None,
+            yes: true,
+        })
+    );
 }
 
 #[test]
@@ -55,7 +199,7 @@ fn parses_update_check_json() {
 
     assert!(cli.json);
     assert_eq!(
-        cli.command,
+        cli.command.expect("parsed command"),
         Command::Update(UpdateArgs {
             check: true,
             version: None,
@@ -64,11 +208,98 @@ fn parses_update_check_json() {
 }
 
 #[test]
+fn parses_mcp_stdio_server() {
+    let cli = parse_args(["mcp"]);
+
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::Mcp(McpArgs {
+            lease_id: None,
+            token_file: None,
+        })
+    );
+}
+
+#[test]
+fn parses_mcp_stdio_server_binding() {
+    let cli = parse_args([
+        "mcp",
+        "--lease",
+        "lease_123",
+        "--token-file",
+        "/tmp/bowline-mcp-token",
+    ]);
+
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::Mcp(McpArgs {
+            lease_id: Some("lease_123".to_string()),
+            token_file: Some("/tmp/bowline-mcp-token".to_string()),
+        })
+    );
+}
+
+#[test]
+fn parses_agent_mcp_token() {
+    let cli = parse_args(["agent", "mcp-token", "--lease", "lease_123"]);
+
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::AgentMcpToken(agent::AgentMcpTokenArgs {
+            lease_id: "lease_123".to_string(),
+            grants: vec![bowline_core::commands::AgentMcpGrant::Read],
+        })
+    );
+}
+
+#[test]
+fn parses_agent_complete_selector() {
+    let cli = parse_args(["agent", "complete", "--lease", "lease_123"]);
+
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::AgentComplete(agent::AgentLeaseSelectorArgs {
+            lease_id: "lease_123".to_string(),
+        })
+    );
+}
+
+#[test]
+fn parses_agent_cancel_selector() {
+    let cli = parse_args(["agent", "cancel", "--lease", "lease_123"]);
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::AgentCancel(agent::AgentLeaseSelectorArgs {
+            lease_id: "lease_123".to_string(),
+        })
+    );
+}
+
+#[test]
+fn parses_bounded_agent_extension() {
+    let cli = parse_args(["agent", "extend", "--lease", "lease_123", "--hours", "72"]);
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::AgentExtend(agent::AgentLeaseExtendArgs {
+            lease_id: "lease_123".to_string(),
+            hours: 72,
+        })
+    );
+    for hours in ["0", "169"] {
+        assert!(
+            parse_args(["agent", "extend", "--lease", "lease_123", "--hours", hours])
+                .command
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn parses_update_version() {
     let cli = parse_args(["update", "--version", "0.1.1"]);
 
     assert_eq!(
-        cli.command,
+        cli.command.expect("parsed command"),
         Command::Update(UpdateArgs {
             check: false,
             version: Some("0.1.1".to_string()),
@@ -82,23 +313,10 @@ fn update_version_requires_value() {
 
     assert_eq!(
         cli.command,
-        Command::UsageError {
+        Err(ParseError::Usage {
             command: CommandName::Update,
-            message: "missing value for --version".to_string(),
-        }
-    );
-}
-
-#[test]
-fn prewarm_usage_message_matches_invoked_command() {
-    let cli = parse_args(["prewarm", "--bad"]);
-
-    assert_eq!(
-        cli.command,
-        Command::UsageError {
-            command: CommandName::Prewarm,
-            message: "unknown bowline prewarm option `--bad`".to_string(),
-        }
+            message: "bowline update --version requires a value".to_string(),
+        })
     );
 }
 
@@ -107,7 +325,7 @@ fn parses_status_watch_workspace() {
     let cli = parse_args(["status", "--root", "~/Code", "--watch", "--all"]);
 
     assert_eq!(
-        cli.command,
+        cli.command.expect("parsed command"),
         Command::Status(StatusArgs {
             selection: WorkspaceSelection {
                 root: "~/Code".to_string(),
@@ -115,6 +333,62 @@ fn parses_status_watch_workspace() {
             },
             watch: true,
             include_all: true,
+        })
+    );
+}
+
+#[test]
+fn parses_value_flags_with_equals_syntax() {
+    let status = parse_args(["status", "--root=~/Code", "--project=app", "--json"]);
+    assert!(status.json);
+    assert_eq!(
+        status.command.expect("parsed command"),
+        Command::Status(StatusArgs {
+            selection: WorkspaceSelection {
+                root: "~/Code".to_string(),
+                project: Some("app".to_string()),
+            },
+            watch: false,
+            include_all: false,
+        })
+    );
+
+    let connect = parse_args([
+        "connect",
+        "linux-server-1",
+        "--root=/tmp/code",
+        "--binary=target/release/bowline",
+        "--project=foo",
+        "--task=implement sync",
+        "--agent=codex",
+    ]);
+    assert_eq!(
+        connect.command.expect("parsed command"),
+        Command::BootstrapSsh(BootstrapSshArgs {
+            host: "linux-server-1".to_string(),
+            root: "/tmp/code".to_string(),
+            artifact: Some("target/release/bowline".to_string()),
+            project: Some("foo".to_string()),
+            task: Some("implement sync".to_string()),
+            agent: Some("codex".to_string()),
+        })
+    );
+
+    let resolve = parse_args([
+        "resolve",
+        "~/Code/app",
+        "--agent=codex",
+        "--diff=conflict-1",
+    ]);
+    assert_eq!(
+        resolve.command.expect("parsed command"),
+        Command::Resolve(resolve::ResolveArgs {
+            project_or_path: "~/Code/app".to_string(),
+            copy_prompt: false,
+            tui: false,
+            diff: Some("conflict-1".to_string()),
+            agent: Some(resolve::ResolveAgent::Codex),
+            decision: None,
         })
     );
 }
@@ -132,13 +406,16 @@ fn parses_agent_lease_create() {
 
     assert!(cli.json);
     assert_eq!(
-        cli.command,
+        cli.command.expect("parsed command"),
         Command::AgentLeaseCreate(agent::AgentLeaseCreateArgs {
             project_path: "/tmp/project".to_string(),
             task: "fix race".to_string(),
             base: AgentLeaseBase::LatestWorkspace,
-            hydrate_budget_bytes: DEFAULT_AGENT_HYDRATE_BUDGET_BYTES,
             work_view: false,
+            force_stale: false,
+            on_device: None,
+            remote_runtime: None,
+            remote_root: None,
         })
     );
 }
@@ -155,13 +432,159 @@ fn parses_agent_lease_create_work_view_opt_in() {
     ]);
 
     assert_eq!(
-        cli.command,
+        cli.command.expect("parsed command"),
         Command::AgentLeaseCreate(agent::AgentLeaseCreateArgs {
             project_path: "/tmp/project".to_string(),
             task: "try router rewrite".to_string(),
             base: AgentLeaseBase::LatestWorkspace,
-            hydrate_budget_bytes: DEFAULT_AGENT_HYDRATE_BUDGET_BYTES,
             work_view: true,
+            force_stale: false,
+            on_device: None,
+            remote_runtime: None,
+            remote_root: None,
+        })
+    );
+}
+
+#[test]
+fn parses_agent_lease_create_force_stale_override() {
+    let cli = parse_args([
+        "agent",
+        "start",
+        "/tmp/project",
+        "--task",
+        "continue anyway",
+        "--force-stale",
+    ]);
+
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::AgentLeaseCreate(agent::AgentLeaseCreateArgs {
+            project_path: "/tmp/project".to_string(),
+            task: "continue anyway".to_string(),
+            base: AgentLeaseBase::LatestWorkspace,
+            work_view: false,
+            force_stale: true,
+            on_device: None,
+            remote_runtime: None,
+            remote_root: None,
+        })
+    );
+}
+
+#[test]
+fn parses_agent_lease_create_on_authorized_device_as_work_view() {
+    let cli = parse_args([
+        "agent",
+        "start",
+        "/tmp/project",
+        "--task",
+        "run elsewhere",
+        "--on",
+        "mac-mini",
+    ]);
+
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::AgentLeaseCreate(agent::AgentLeaseCreateArgs {
+            project_path: "/tmp/project".to_string(),
+            task: "run elsewhere".to_string(),
+            base: AgentLeaseBase::LatestWorkspace,
+            work_view: true,
+            force_stale: false,
+            on_device: Some("mac-mini".to_string()),
+            remote_runtime: None,
+            remote_root: None,
+        })
+    );
+}
+
+#[test]
+fn rejects_agent_lease_create_on_and_remote_together() {
+    let cli = parse_args([
+        "agent",
+        "start",
+        "/tmp/project",
+        "--task",
+        "ambiguous target",
+        "--on",
+        "mac-mini",
+        "--remote",
+        "codex-cloud",
+    ]);
+
+    assert!(matches!(cli.command, Err(ParseError::Command(_))));
+}
+
+#[test]
+fn parses_agent_lease_create_remote_as_work_view() {
+    let cli = parse_args([
+        "agent",
+        "start",
+        "/tmp/project",
+        "--task",
+        "run remote",
+        "--remote",
+        "codex-cloud",
+        "--remote-root",
+        "/workspace/Code",
+    ]);
+
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::AgentLeaseCreate(agent::AgentLeaseCreateArgs {
+            project_path: "/tmp/project".to_string(),
+            task: "run remote".to_string(),
+            base: AgentLeaseBase::LatestWorkspace,
+            work_view: true,
+            force_stale: false,
+            on_device: None,
+            remote_runtime: Some("codex-cloud".to_string()),
+            remote_root: Some("/workspace/Code".to_string()),
+        })
+    );
+}
+
+#[test]
+fn rejects_removed_lease_run_subcommand() {
+    let cli = parse_args([
+        "lease",
+        "run",
+        "--lease",
+        "lease_remote",
+        "--",
+        "npm test -- --json",
+    ]);
+
+    assert!(cli.command.is_err());
+}
+
+#[test]
+fn parses_lease_join_token_env_handoff() {
+    let cli = parse_args([
+        "lease",
+        "join",
+        "--root",
+        "~/Code/project",
+        "--lease",
+        "lease_remote",
+        "--runtime",
+        "codex-cloud",
+        "--token-env",
+        "BOWLINE_BOOTSTRAP_TOKEN",
+        "--json",
+    ]);
+
+    assert!(cli.json);
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::LeaseJoin(super::lease::LeaseJoinArgs {
+            root: "~/Code/project".to_string(),
+            lease_id: Some("lease_remote".to_string()),
+            runtime: Some("codex-cloud".to_string()),
+            request_id: None,
+            token_env: Some("BOWLINE_BOOTSTRAP_TOKEN".to_string()),
+            lease_json_env: "BOWLINE_AGENT_LEASE_JSON".to_string(),
         })
     );
 }
@@ -170,7 +593,7 @@ fn parses_agent_lease_create_work_view_opt_in() {
 fn rejects_bootstrap_ssh_alias() {
     let cli = parse_args(["bootstrap", "ssh", "linux-server-1", "--root", "/tmp/code"]);
 
-    assert!(matches!(cli.command, Command::UsageError { .. }));
+    assert!(cli.command.is_err());
 }
 
 #[test]
@@ -189,7 +612,7 @@ fn parses_connect_agent_handoff() {
     ]);
 
     assert_eq!(
-        cli.command,
+        cli.command.expect("parsed command"),
         Command::BootstrapSsh(BootstrapSshArgs {
             host: "linux-server-1".to_string(),
             root: "~/Code".to_string(),
@@ -206,7 +629,7 @@ fn parses_connect_explicit_root() {
     let cli = parse_args(["connect", "linux-server-1", "--root", "/tmp/code"]);
 
     assert_eq!(
-        cli.command,
+        cli.command.expect("parsed command"),
         Command::BootstrapSsh(BootstrapSshArgs {
             host: "linux-server-1".to_string(),
             root: "/tmp/code".to_string(),
@@ -219,27 +642,53 @@ fn parses_connect_explicit_root() {
 }
 
 #[test]
-fn legacy_diff_usage_message_matches_invoked_command() {
-    let cli = parse_args(["diff"]);
-    let Command::CommandUsageError(error) = cli.command else {
-        panic!("diff without a selector should return a usage error");
-    };
+fn diff_without_selector_defaults_to_cwd() {
+    let cli = parse_args(["work", "diff"]);
 
-    assert_eq!(error.command, CommandName::Diff);
+    assert!(matches!(
+        cli.command.expect("parsed command"),
+        Command::WorkDiff(_)
+    ));
+}
+
+#[test]
+fn parses_repeatable_work_view_path_selectors() {
+    let cli = parse_args([
+        "work",
+        "accept",
+        "agent-output",
+        "--path",
+        "src/a.ts",
+        "--path=src/b.ts",
+    ]);
+
     assert_eq!(
-        error.message,
-        "bowline diff requires a work-view id or name"
+        cli.command.expect("parsed command"),
+        Command::WorkAccept(WorkSelectorArgs {
+            selector: "agent-output".to_string(),
+            paths: vec!["src/a.ts".to_string(), "src/b.ts".to_string()],
+        })
     );
 }
 
 #[test]
-fn parses_devices_request_default_and_explicit_root() {
-    let default_cli = parse_args(["devices", "request"]);
-    assert!(matches!(default_cli.command, Command::CommandUsageError(_)));
+fn review_requires_selector_even_with_path_filter() {
+    let cli = parse_args(["work", "review", "--path", "src/a.ts"]);
 
-    let explicit_cli = parse_args(["devices", "request", "--root", "/tmp/code"]);
+    assert!(matches!(cli.command, Err(ParseError::Usage { .. })));
+}
+
+#[test]
+fn parses_device_request_default_and_explicit_root() {
+    let default_cli = parse_args(["device", "request"]);
+    assert!(matches!(
+        default_cli.command,
+        Ok(Command::Devices(DevicesArgs::Request { .. })) | Err(ParseError::Command(_))
+    ));
+
+    let explicit_cli = parse_args(["device", "request", "--root", "/tmp/code"]);
     assert_eq!(
-        explicit_cli.command,
+        explicit_cli.command.expect("parsed command"),
         Command::Devices(DevicesArgs::Request {
             selection: WorkspaceSelection {
                 root: "/tmp/code".to_string(),
@@ -262,7 +711,7 @@ fn parses_resolve_phase_7_shape() {
 
     assert!(cli.json);
     assert_eq!(
-        cli.command,
+        cli.command.expect("parsed command"),
         Command::Resolve(resolve::ResolveArgs {
             project_or_path: "~/Code/app".to_string(),
             copy_prompt: true,
@@ -275,21 +724,10 @@ fn parses_resolve_phase_7_shape() {
 }
 
 #[test]
-fn parses_actions_and_tui_entrypoints() {
-    let actions = parse_args(["actions", "--root", "~/Code", "--project", "app"]);
-    assert_eq!(
-        actions.command,
-        Command::Actions(ActionsArgs {
-            selection: WorkspaceSelection {
-                root: "~/Code".to_string(),
-                project: Some("app".to_string()),
-            },
-        })
-    );
-
+fn parses_tui_entrypoint() {
     let tui = parse_args(["tui", "--root", "~/Code", "--project", "app"]);
     assert_eq!(
-        tui.command,
+        tui.command.expect("parsed command"),
         Command::Tui(TuiArgs {
             selection: WorkspaceSelection {
                 root: "~/Code".to_string(),
@@ -303,7 +741,7 @@ fn parses_actions_and_tui_entrypoints() {
 fn parses_resolve_tui_flag() {
     let cli = parse_args(["resolve", "~/Code/app", "--tui"]);
     assert_eq!(
-        cli.command,
+        cli.command.expect("parsed command"),
         Command::Resolve(resolve::ResolveArgs {
             project_or_path: "~/Code/app".to_string(),
             copy_prompt: false,
@@ -339,6 +777,16 @@ fn splits_tui_action_commands_with_shell_quoted_paths() {
         ])
     );
     assert_eq!(
+        super::split_tui_command_line("bowline connect devbox --root ~/O\\'Connor\\ Code"),
+        Ok(vec![
+            "bowline".to_string(),
+            "connect".to_string(),
+            "devbox".to_string(),
+            "--root".to_string(),
+            "~/O'Connor Code".to_string(),
+        ])
+    );
+    assert_eq!(
         super::split_tui_command_line("bowline status --root ~/Code --project 'unterminated"),
         Err("unterminated quote in TUI action command")
     );
@@ -370,7 +818,7 @@ fn parses_resolve_accept_reject_as_single_action() {
     let accept = parse_args(["resolve", "~/Code/app", "--accept", "conflict-1"]);
 
     assert_eq!(
-        accept.command,
+        accept.command.expect("parsed command"),
         Command::Resolve(resolve::ResolveArgs {
             project_or_path: "~/Code/app".to_string(),
             copy_prompt: false,
@@ -383,7 +831,7 @@ fn parses_resolve_accept_reject_as_single_action() {
 
     let diff = parse_args(["resolve", "~/Code/app", "--diff", "conflict-1"]);
     assert_eq!(
-        diff.command,
+        diff.command.expect("parsed command"),
         Command::Resolve(resolve::ResolveArgs {
             project_or_path: "~/Code/app".to_string(),
             copy_prompt: false,
@@ -403,7 +851,7 @@ fn parses_resolve_accept_reject_as_single_action() {
         "conflict-2",
     ]);
 
-    assert!(matches!(reject.command, Command::UsageError { .. }));
+    assert!(matches!(reject.command, Err(ParseError::Usage { .. })));
 }
 
 #[test]
@@ -411,7 +859,7 @@ fn parses_recovery_words_from_stdin_shape_only() {
     let cli = parse_args(["recover", "verify", "rk_123"]);
 
     assert_eq!(
-        cli.command,
+        cli.command.expect("parsed command"),
         Command::Recovery(RecoveryArgs::Verify {
             envelope_id: "rk_123".to_string(),
         })
@@ -422,25 +870,7 @@ fn parses_recovery_words_from_stdin_shape_only() {
 fn rejects_recovery_words_in_argv() {
     let cli = parse_args(["recover", "verify", "rk_123", "secret", "words"]);
 
-    assert!(matches!(cli.command, Command::CommandUsageError(_)));
-}
-
-#[test]
-fn next_exploration_cursor_stops_at_accepted_cap() {
-    assert_eq!(
-        super::next_exploration_cursor(9_900, 100, true),
-        Some("v1:10000".to_string())
-    );
-    assert_eq!(super::next_exploration_cursor(10_000, 100, true), None);
-    assert_eq!(super::next_exploration_cursor(0, 100, false), None);
-}
-
-#[test]
-fn idempotency_cwd_identity_only_for_relative_paths() {
-    assert!(path_depends_on_cwd("apps/web"));
-    assert!(path_depends_on_cwd("."));
-    assert!(!path_depends_on_cwd("/tmp/project"));
-    assert!(!path_depends_on_cwd("~/Code/project"));
+    assert!(matches!(cli.command, Err(ParseError::Command(_))));
 }
 
 #[test]
@@ -452,7 +882,7 @@ fn shell_word_preserves_home_expansion_for_paths_with_spaces() {
     );
     assert_eq!(
         crate::io_helpers::shell_word("~/O'Connor Code"),
-        "~/'O'\"'\"'Connor Code'"
+        "~/'O'\\''Connor Code'"
     );
     assert_eq!(
         super::split_tui_command_line("bowline status --root ~/'Code Projects'").unwrap(),
@@ -460,272 +890,7 @@ fn shell_word_preserves_home_expansion_for_paths_with_spaces() {
     );
 }
 
-#[test]
-fn connect_relative_targets_require_cwd_identity() {
-    let base = BootstrapSshArgs {
-        host: "linux-server-1".to_string(),
-        root: "~/Code".to_string(),
-        artifact: None,
-        project: None,
-        task: None,
-        agent: None,
-    };
-    assert!(!command_has_cwd_relative_target(&Command::BootstrapSsh(
-        base.clone()
-    )));
-
-    let mut relative_root = base.clone();
-    relative_root.root = "Code".to_string();
-    assert!(command_has_cwd_relative_target(&Command::BootstrapSsh(
-        relative_root
-    )));
-
-    let mut relative_binary = base.clone();
-    relative_binary.artifact = Some("target/release/bowline".to_string());
-    assert!(command_has_cwd_relative_target(&Command::BootstrapSsh(
-        relative_binary
-    )));
-
-    let mut relative_project = base;
-    relative_project.project = Some("apps/web".to_string());
-    assert!(command_has_cwd_relative_target(&Command::BootstrapSsh(
-        relative_project
-    )));
-}
-
-#[test]
-fn trust_relative_targets_require_cwd_identity() {
-    let absolute_selection = WorkspaceSelection {
-        root: "/tmp/Code".to_string(),
-        project: None,
-    };
-    let relative_root_selection = WorkspaceSelection {
-        root: "Code".to_string(),
-        project: None,
-    };
-    let relative_project_selection = WorkspaceSelection {
-        root: "/tmp/Code".to_string(),
-        project: Some("apps/web".to_string()),
-    };
-
-    assert!(!command_has_cwd_relative_target(&Command::Approve(
-        ApproveArgs {
-            selection: absolute_selection.clone(),
-            selector: TrustRequestSelector::Request("req_1".to_string()),
-            yes: true,
-        }
-    )));
-    assert!(command_has_cwd_relative_target(&Command::Approve(
-        ApproveArgs {
-            selection: relative_root_selection.clone(),
-            selector: TrustRequestSelector::Request("req_1".to_string()),
-            yes: true,
-        }
-    )));
-    assert!(command_has_cwd_relative_target(&Command::Deny(
-        ApproveArgs {
-            selection: relative_project_selection,
-            selector: TrustRequestSelector::Code("123456".to_string()),
-            yes: false,
-        }
-    )));
-    assert!(command_has_cwd_relative_target(&Command::Revoke(
-        RevokeArgs {
-            selection: relative_root_selection,
-            device_id: "dev_1".to_string(),
-        }
-    )));
-}
-
-#[test]
-fn recovery_json_omits_one_time_generated_words() {
-    let output = super::recovery::RecoveryRunOutput {
-        output: bowline_core::commands::RecoveryCommandOutput {
-            contract_version: bowline_core::commands::CONTRACT_VERSION,
-            command: bowline_core::commands::CommandName::Recover,
-            generated_at: "2026-06-24T12:00:00Z".to_string(),
-            action: bowline_core::commands::RecoveryCommandAction::Create,
-            workspace_id: Some(bowline_core::ids::WorkspaceId::new("ws_recovery_json")),
-            recovery_key: bowline_core::devices::RecoveryKeyState {
-                lifecycle: bowline_core::devices::RecoveryKeyLifecycle::GeneratedUnverified,
-                envelope_id: Some(bowline_core::ids::RecoveryEnvelopeId::new("rk_json")),
-                fingerprint: Some("rkp_json".to_string()),
-                created_at: Some("2026-06-24T12:00:00Z".to_string()),
-                verified_at: None,
-                rotated_at: None,
-                revoked_at: None,
-            },
-            device_request: None,
-            encrypted_grant: None,
-            next_actions: Vec::new(),
-        },
-        generated_words: Some("alpha beta gamma".to_string()),
-    };
-
-    let json = serde_json::to_value(&output.output).expect("recovery json output serializes");
-
-    assert!(json.get("generatedWords").is_none());
-    assert_eq!(json["action"], "create");
-    assert_eq!(json["recoveryKey"]["lifecycle"], "generated-unverified");
-}
-
-#[test]
-fn devices_list_human_output_includes_pending_matching_code() {
-    let workspace_id = bowline_core::ids::WorkspaceId::new("ws_devices");
-    let output = bowline_core::commands::DevicesCommandOutput {
-        contract_version: bowline_core::commands::CONTRACT_VERSION,
-        command: bowline_core::commands::CommandName::Devices,
-        generated_at: "2026-06-24T12:00:00Z".to_string(),
-        action: bowline_core::commands::DeviceCommandAction::List,
-        workspace_id: Some(workspace_id.clone()),
-        local_device: None,
-        devices: Vec::new(),
-        revoked_devices: Vec::new(),
-        pending_requests: vec![bowline_core::devices::DeviceApprovalRequest {
-            request_id: bowline_core::ids::DeviceApprovalRequestId::new(
-                "device-request:ws_devices:linux",
-            ),
-            workspace_id: workspace_id.clone(),
-            requester_device_id: bowline_core::ids::DeviceId::new("device_linux"),
-            device_name: "linux-server-1".to_string(),
-            platform: bowline_core::devices::DevicePlatform::Linux,
-            device_public_key: bowline_core::devices::PublicDeviceKey::new("age1linux"),
-            device_fingerprint: bowline_core::devices::DeviceFingerprint::new("fp_linux"),
-            matching_code: "842113".to_string(),
-            requested_at: "2026-06-24T12:00:00Z".to_string(),
-            expires_at: "2026-06-24T12:10:00Z".to_string(),
-            state: bowline_core::devices::DeviceApprovalRequestState::Pending,
-            host: Some("linux-server-1".to_string()),
-            root: Some("~/Code".to_string()),
-        }],
-        created_request: None,
-        approved_device: None,
-        denied_request: None,
-        revoked_device: None,
-        recovery_key: Some(bowline_core::devices::RecoveryKeyState::missing()),
-        next_actions: Vec::new(),
-    };
-
-    let human = super::render_devices_human(&output);
-
-    assert!(human.contains("code 842113"));
-    assert!(human.contains("device-request:ws_devices:linux"));
-}
-
-#[test]
-fn device_status_item_uses_explicit_subject_and_device_identity() {
-    let output = bowline_core::commands::StatusCommandOutput {
-        contract_version: bowline_core::commands::CONTRACT_VERSION,
-        command: bowline_core::commands::CommandName::Status,
-        generated_at: "2026-06-24T12:00:00Z".to_string(),
-        workspace_id: bowline_core::ids::WorkspaceId::new("ws_devices"),
-        project_id: Some(bowline_core::ids::ProjectId::new("proj_devices")),
-        scope: None,
-        requested_path: None,
-        resolved_workspace_root: None,
-        workspace_summary: None,
-        index: None,
-        hydration_budget: None,
-        hydration_progress: Vec::new(),
-        sync_queue: None,
-        status: bowline_core::status::WorkspaceStatus::healthy(),
-        items: Vec::new(),
-        limits: Vec::new(),
-        event_watermarks: bowline_core::status::EventWatermarks {
-            last_scan_at: None,
-            last_event_id: None,
-            event_lag_ms: Some(0),
-            sync_state: None,
-            watcher_state: None,
-            network_state: None,
-        },
-        next_actions: Vec::new(),
-    };
-
-    let item = super::device_status_item(
-        &output,
-        bowline_core::status::StatusSubjectKind::DeviceApprovalRequest,
-        "device-request:ws_devices:linux",
-        Some(bowline_core::ids::DeviceId::new("device_linux")),
-        "linux-server-1 is waiting for approval.".to_string(),
-    );
-
-    let subject = item.subject.expect("device status has a subject");
-    assert_eq!(
-        subject.kind,
-        bowline_core::status::StatusSubjectKind::DeviceApprovalRequest
-    );
-    assert_eq!(subject.id, "device-request:ws_devices:linux");
-    assert_eq!(item.device_id.expect("device id").as_str(), "device_linux");
-    assert_eq!(
-        item.project_id.expect("project id").as_str(),
-        "proj_devices"
-    );
-}
-
-#[test]
-fn bootstrap_ssh_success_requires_trusted_remote_and_unblocked_steps() {
-    let mut output = bowline_core::commands::BootstrapSshCommandOutput {
-        contract_version: bowline_core::commands::CONTRACT_VERSION,
-        command: bowline_core::commands::CommandName::Connect,
-        generated_at: "2026-06-24T12:00:00Z".to_string(),
-        workspace_id: Some(bowline_core::ids::WorkspaceId::new("ws_bootstrap")),
-        project_id: None,
-        host: "linux-server-1".to_string(),
-        root: "~/Code".to_string(),
-        steps: vec![bowline_core::commands::BootstrapStep {
-            name: "trust".to_string(),
-            state: bowline_core::commands::BootstrapStepState::Completed,
-            summary: "Remote device is trusted.".to_string(),
-        }],
-        device_request: None,
-        authorized_device: None,
-        remote_device_fingerprint: None,
-        trusted: true,
-        secret_store: bowline_core::commands::BootstrapSecretStore::ServerLocal,
-        sync: bowline_core::commands::BootstrapSyncState::Ready,
-        next_required_phase: None,
-        remote_status: bowline_core::status::WorkspaceStatus::healthy(),
-        next_actions: Vec::new(),
-    };
-
-    assert!(super::bootstrap_ssh_succeeded(&output));
-
-    output.trusted = false;
-    assert!(!super::bootstrap_ssh_succeeded(&output));
-
-    output.trusted = true;
-    output.steps[0].state = bowline_core::commands::BootstrapStepState::Blocked;
-    assert!(!super::bootstrap_ssh_succeeded(&output));
-
-    output.steps[0].name = "sync".to_string();
-    assert!(!super::bootstrap_ssh_succeeded(&output));
-
-    output.steps[0].state = bowline_core::commands::BootstrapStepState::Completed;
-    assert!(super::bootstrap_ssh_succeeded(&output));
-}
-
-#[test]
-fn workspace_selection_preserves_complete_project_paths() {
-    assert_eq!(
-        super::selected_workspace_path(super::WorkspaceSelection {
-            root: "~/Code".to_string(),
-            project: Some("~/Code/acme/web".to_string()),
-        }),
-        Some("~/Code/acme/web".to_string())
-    );
-    assert_eq!(
-        super::selected_workspace_path(super::WorkspaceSelection {
-            root: "~/Code".to_string(),
-            project: Some("/tmp/acme/web".to_string()),
-        }),
-        Some("/tmp/acme/web".to_string())
-    );
-    assert_eq!(
-        super::selected_workspace_path(super::WorkspaceSelection {
-            root: "~/Code".to_string(),
-            project: Some("acme/web".to_string()),
-        }),
-        Some("~/Code/acme/web".to_string())
-    );
-}
+mod canonical_grammar_tests;
+mod contract_tests;
+mod lib_parse_output_tests;
+mod output_mode_tests;

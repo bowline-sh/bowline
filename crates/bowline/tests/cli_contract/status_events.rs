@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn phase8_env_and_setup_prewarm_do_not_leak_or_sync_generated_state() {
+fn phase8_env_and_project_setup_do_not_leak_or_sync_generated_state() {
     let temp = TempWorkspace::new("cli-phase-8").expect("temp workspace");
     let code_root = temp.root().join("Code");
     let web_dir = code_root.join("apps").join("web");
@@ -19,9 +19,9 @@ fn phase8_env_and_setup_prewarm_do_not_leak_or_sync_generated_state() {
     .expect("setup recipe");
     let db_path = temp.root().join(".state").join("local.sqlite3");
 
-    let init = run_bowline_with_env(
+    let setup = run_bowline_with_env(
         &[
-            "init",
+            "setup",
             "--root",
             code_root.to_str().expect("code root"),
             "--json",
@@ -29,11 +29,12 @@ fn phase8_env_and_setup_prewarm_do_not_leak_or_sync_generated_state() {
         &[
             ("BOWLINE_METADATA_DB", db_path.display().to_string()),
             ("BOWLINE_GENERATED_AT", "2026-06-25T12:00:00Z".to_string()),
+            ("BOWLINE_USE_FAKE_CONTROL_PLANE", "1".to_string()),
         ],
     );
-    assert!(init.status.success());
-    let init_stdout = String::from_utf8(init.stdout).expect("init stdout");
-    assert!(!init_stdout.contains("super-secret-value"));
+    assert!(setup.status.success());
+    let setup_stdout = String::from_utf8(setup.stdout).expect("setup stdout");
+    assert!(!setup_stdout.contains("super-secret-value"));
 
     let status = run_bowline_with_env(
         &[
@@ -54,7 +55,7 @@ fn phase8_env_and_setup_prewarm_do_not_leak_or_sync_generated_state() {
     assert!(!status_text.contains("super-secret-value"));
 
     let blocked = run_bowline_with_env(
-        &["prewarm", web_dir.to_str().expect("web dir"), "--json"],
+        &["setup", web_dir.to_str().expect("web dir"), "--json"],
         &[
             ("BOWLINE_METADATA_DB", db_path.display().to_string()),
             ("BOWLINE_GENERATED_AT", "2026-06-25T12:00:01Z".to_string()),
@@ -62,15 +63,15 @@ fn phase8_env_and_setup_prewarm_do_not_leak_or_sync_generated_state() {
     );
     assert!(blocked.status.success());
     let blocked_json = parse_stdout_json(blocked);
-    assert_eq!(blocked_json["command"], "prewarm");
+    assert_eq!(blocked_json["command"], "setup");
     assert_eq!(blocked_json["outcome"]["state"], "setup-blocked");
     assert!(!web_dir.join(".setup-done").exists());
 
     let approved = run_bowline_with_env(
         &[
-            "prewarm",
+            "setup",
             web_dir.to_str().expect("web dir"),
-            "--approve-setup",
+            "--yes",
             "--json",
         ],
         &[
@@ -176,7 +177,7 @@ fn status_watch_json_emits_sync_queue_change_frame() {
 fn status_watch_human_emits_initial_frame() {
     let db_path = unique_db("watch-status-human");
     let mut child = bowline()
-        .args(["status", "--root", "~/Code", "--watch"])
+        .args(["status", "--root", "~/Code", "--watch", "--human"])
         .env("BOWLINE_METADATA_DB", db_path.display().to_string())
         .env("BOWLINE_GENERATED_AT", "2026-06-24T12:00:00Z")
         .env("TERM", "xterm-256color")
@@ -235,7 +236,7 @@ fn status_json_derives_safe_actions_from_status() {
 
     assert!(output.status.success());
     let json = parse_stdout_json(output);
-    assert_eq!(json["contractVersion"], 3);
+    assert_eq!(json["contractVersion"], 8);
     assert_eq!(json["command"], "status");
     assert_eq!(json["status"]["level"], "attention");
     assert_eq!(
@@ -259,19 +260,19 @@ fn tui_noninteractive_falls_back_to_actions_output() {
 }
 
 #[test]
-fn tui_json_reports_typed_usage_error() {
+fn tui_rejects_json_output_mode() {
     let output = run_bowline(&["tui", "--json"]);
 
     assert_eq!(output.status.code(), Some(2));
     let json = parse_stdout_json(output);
-    assert_eq!(json["contractVersion"], 3);
+    assert_eq!(json["contractVersion"], 8);
     assert_eq!(json["command"], "tui");
     assert_eq!(json["status"], "usage-error");
     assert_eq!(json["error"]["code"], "usage_error");
-    assert_eq!(
-        json["nextActions"][0]["command"],
-        "bowline tui --root ~/Code"
-    );
+    let command = json["nextActions"][0]["command"]
+        .as_str()
+        .expect("next action command");
+    assert_eq!(command, "bowline help tui --json");
 }
 
 #[test]
@@ -285,7 +286,12 @@ fn resolve_tui_noninteractive_falls_back_to_resolve_output() {
     create_conflict_bundle_with_id(&bundle, "conflict_tui", "src/auth.ts", false);
 
     let output = run_bowline_with_env(
-        &["resolve", project.to_str().expect("project path"), "--tui"],
+        &[
+            "resolve",
+            project.to_str().expect("project path"),
+            "--tui",
+            "--human",
+        ],
         &[("BOWLINE_GENERATED_AT", "2026-06-25T12:00:00Z".to_string())],
     );
 
@@ -446,9 +452,9 @@ fn events_json_reports_corrupt_metadata_as_command_error() {
         &[("BOWLINE_METADATA_DB", db_path.display().to_string())],
     );
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(3));
     let json = parse_stdout_json(output);
-    assert_eq!(json["contractVersion"], 3);
+    assert_eq!(json["contractVersion"], 8);
     assert_eq!(json["command"], "events");
     assert_eq!(json["status"], "failed");
     assert_eq!(json["error"]["code"], "runtime_error");

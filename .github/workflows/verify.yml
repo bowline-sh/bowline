@@ -5,36 +5,32 @@ on:
   push:
     branches: ["main"]
 
+concurrency:
+  group:
+    ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
         with:
           version: 10.30.0
-
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: clippy, rustfmt
-
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-
       - run: pnpm install --frozen-lockfile
-      - name: Verify
-        run: |
-          if [ -d apps/web ]; then
-            pnpm verify
-          else
-            pnpm verify:public
-          fi
+      - run: pnpm verify

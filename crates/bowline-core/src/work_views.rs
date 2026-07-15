@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ids::{DeviceId, ProjectId, SnapshotId, WorkViewId, WorkspaceId},
-    status::{SafeAction, WorkspaceStatus},
+    status::{RepairCommand, WorkspaceStatus},
 };
+
+pub const OVERLAY_HEAD_EMPTY: &str = "overlay_empty";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -12,8 +14,6 @@ pub enum WorkViewLifecycle {
     ReviewReady,
     Accepted,
     Discarded,
-    Expired,
-    Archived,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +82,12 @@ pub struct WorkView {
     pub updated_at: String,
 }
 
+impl WorkView {
+    pub fn has_overlay(&self) -> bool {
+        self.overlay_head != OVERLAY_HEAD_EMPTY
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WorkDiffChangeKind {
@@ -105,6 +111,7 @@ pub struct WorkDiffEntry {
 #[serde(rename_all = "kebab-case")]
 pub enum WorkCommandAction {
     Created,
+    Reused,
     Listed,
     Diffed,
     ReviewReady,
@@ -117,14 +124,14 @@ pub enum WorkCommandAction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkonCommandOutput {
+pub struct WorkCreateCommandOutput {
     pub contract_version: u16,
     pub command: crate::commands::CommandName,
     pub generated_at: String,
     pub action: WorkCommandAction,
     pub work_view: WorkView,
     pub status: WorkspaceStatus,
-    pub next_actions: Vec<SafeAction>,
+    pub next_actions: Vec<RepairCommand>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,7 +145,7 @@ pub struct WorkListCommandOutput {
     pub work_views: Vec<WorkView>,
     pub include_hidden: bool,
     pub status: WorkspaceStatus,
-    pub next_actions: Vec<SafeAction>,
+    pub next_actions: Vec<RepairCommand>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +158,7 @@ pub struct WorkDiffCommandOutput {
     pub work_view: WorkView,
     pub changes: Vec<WorkDiffEntry>,
     pub status: WorkspaceStatus,
-    pub next_actions: Vec<SafeAction>,
+    pub next_actions: Vec<RepairCommand>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,9 +168,13 @@ pub struct WorkLifecycleCommandOutput {
     pub command: crate::commands::CommandName,
     pub generated_at: String,
     pub action: WorkCommandAction,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub partial: bool,
     pub work_view: WorkView,
     pub status: WorkspaceStatus,
-    pub next_actions: Vec<SafeAction>,
+    pub next_actions: Vec<RepairCommand>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,5 +188,9 @@ pub struct WorkCleanupCommandOutput {
     pub previewed_paths: Vec<String>,
     pub deleted_paths: Vec<String>,
     pub status: WorkspaceStatus,
-    pub next_actions: Vec<SafeAction>,
+    pub next_actions: Vec<RepairCommand>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }

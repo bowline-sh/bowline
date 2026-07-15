@@ -17,61 +17,32 @@ fn schema_initialization_is_idempotent_and_enables_wal() {
 }
 
 #[test]
-fn command_idempotency_reservation_does_not_overwrite_conflicts() {
-    let temp = TempWorkspace::new("metadata-command-idempotency").expect("temp workspace");
+fn current_version_with_noncanonical_tables_is_refused() {
+    let temp = TempWorkspace::new("metadata-noncanonical-current").expect("temp workspace");
     let db_path = temp.root().join(".state").join("local.sqlite3");
     let store = MetadataStore::open(&db_path).expect("metadata opens");
-    let workspace_id = WorkspaceId::new("ws_idem");
     store
-        .insert_workspace(&workspace_id, "Idempotency", "2026-06-29T12:00:00Z")
-        .expect("workspace");
+        .connection()
+        .execute(
+            "CREATE TABLE obsolete_schema_history (version INTEGER PRIMARY KEY)",
+            [],
+        )
+        .expect("add noncanonical table");
+    drop(store);
 
-    let mut record = CommandIdempotencyRecord {
-        workspace_id: workspace_id.clone(),
-        idempotency_key: "key-1".to_string(),
-        command: "workon".to_string(),
-        request_hash: "hash-a".to_string(),
-        result_json: "{}".to_string(),
-        status: "pending".to_string(),
-        created_at: "2026-06-29T12:00:00Z".to_string(),
-        updated_at: "2026-06-29T12:00:00Z".to_string(),
-        expires_at: "2026-07-06T12:00:00Z".to_string(),
-    };
-    assert!(
-        store
-            .try_insert_command_idempotency_record(&record)
-            .expect("reservation insert")
+    assert_eq!(
+        MetadataStore::inspect(&db_path).state,
+        DatabaseState::UnsupportedSchema
     );
-
-    let mut conflicting = record.clone();
-    conflicting.request_hash = "hash-b".to_string();
-    assert!(
-        !store
-            .try_insert_command_idempotency_record(&conflicting)
-            .expect("conflicting reservation ignored")
-    );
-
-    record.result_json = "{\"ok\":true}".to_string();
-    record.status = "success".to_string();
-    store
-        .finish_command_idempotency_record(&record)
-        .expect("finish reservation");
-    conflicting.result_json = "{\"ok\":false}".to_string();
-    conflicting.status = "success".to_string();
-    store
-        .upsert_command_idempotency_record(&conflicting)
-        .expect("conflicting upsert is ignored");
-
-    let stored = store
-        .command_idempotency_record(&workspace_id, "key-1")
-        .expect("stored record")
-        .expect("record exists");
-    assert_eq!(stored.request_hash, "hash-a");
-    assert_eq!(stored.result_json, "{\"ok\":true}");
+    assert!(matches!(
+        MetadataStore::open(&db_path).expect_err("noncanonical schema is refused"),
+        MetadataError::UnsupportedSchema
+    ));
 }
 
 #[test]
 fn older_versioned_schema_is_refused_without_reinitializing() {
+    // Greenfield metadata accepts exactly the canonical schema revision.
     let temp = TempWorkspace::new("metadata-version-refused").expect("temp workspace");
     let db_path = temp.root().join(".state").join("local.sqlite3");
     fs::create_dir_all(db_path.parent().expect("db parent")).expect("state dir");
@@ -100,6 +71,107 @@ fn older_versioned_schema_is_refused_without_reinitializing() {
             .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
             .expect("schema version"),
         1
+    );
+}
+
+#[test]
+fn version_7_schema_is_refused_without_mutation() {
+    // Greenfield metadata accepts exactly the canonical schema revision.
+    let temp = TempWorkspace::new("metadata-v7-refused").expect("temp workspace");
+    let db_path = temp.root().join(".state").join("local.sqlite3");
+    let store = MetadataStore::open(&db_path).expect("metadata opens");
+    drop(store);
+    let connection = Connection::open(&db_path).expect("db");
+    connection
+        .execute_batch(
+            "DROP TABLE merge_plugin_approvals;
+             PRAGMA user_version = 7;",
+        )
+        .expect("simulate v7");
+    drop(connection);
+
+    assert_eq!(
+        MetadataStore::inspect(&db_path).state,
+        DatabaseState::UnsupportedSchema
+    );
+    let error = MetadataStore::open(&db_path).expect_err("v7 schema is refused");
+    assert!(matches!(error, MetadataError::UnsupportedSchema));
+    let connection = Connection::open(&db_path).expect("inspect db");
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            .expect("schema version"),
+        7
+    );
+}
+
+#[test]
+fn version_8_setup_receipt_schema_is_refused_without_mutation() {
+    // Greenfield metadata accepts exactly the canonical schema revision.
+    let temp = TempWorkspace::new("metadata-v8-refused").expect("temp workspace");
+    let db_path = temp.root().join(".state").join("local.sqlite3");
+    let store = MetadataStore::open(&db_path).expect("metadata opens");
+    drop(store);
+    let connection = Connection::open(&db_path).expect("db");
+    connection
+        .execute_batch(
+            "DROP INDEX idx_setup_receipts_identity_readiness;
+             ALTER TABLE setup_receipts DROP COLUMN readiness_state;
+             ALTER TABLE setup_receipts DROP COLUMN readiness_reason;
+             ALTER TABLE setup_receipts DROP COLUMN readiness_remedy;
+             PRAGMA user_version = 8;",
+        )
+        .expect("simulate v8 setup receipt schema");
+    drop(connection);
+
+    assert_eq!(
+        MetadataStore::inspect(&db_path).state,
+        DatabaseState::UnsupportedSchema
+    );
+    let error = MetadataStore::open(&db_path).expect_err("v8 schema is refused");
+    assert!(matches!(error, MetadataError::UnsupportedSchema));
+    let connection = Connection::open(&db_path).expect("inspect db");
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            .expect("schema version"),
+        8
+    );
+}
+
+#[test]
+fn version_10_stat_cache_schema_is_refused_without_mutation() {
+    // Greenfield metadata accepts exactly the canonical schema revision.
+    let temp = TempWorkspace::new("metadata-v10-stat-cache-refused").expect("temp workspace");
+    let db_path = temp.root().join(".state").join("local.sqlite3");
+    fs::create_dir_all(db_path.parent().expect("db parent")).expect("state dir");
+    let connection = Connection::open(&db_path).expect("old db");
+    connection
+        .execute_batch(
+            "CREATE TABLE scan_stat_cache (
+               workspace_id TEXT NOT NULL,
+               path TEXT NOT NULL,
+               size INTEGER NOT NULL CHECK (size >= 0),
+               byte_len INTEGER NOT NULL CHECK (byte_len >= 0),
+               PRIMARY KEY (workspace_id, path)
+             );
+             PRAGMA user_version = 10;",
+        )
+        .expect("simulate v10 stat cache schema");
+    drop(connection);
+
+    assert_eq!(
+        MetadataStore::inspect(&db_path).state,
+        DatabaseState::UnsupportedSchema
+    );
+    let error = MetadataStore::open(&db_path).expect_err("v10 schema is refused");
+    assert!(matches!(error, MetadataError::UnsupportedSchema));
+    let connection = Connection::open(&db_path).expect("inspect db");
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            .expect("schema version"),
+        10
     );
 }
 
@@ -202,6 +274,7 @@ fn phase8_env_records_and_setup_receipts_round_trip_without_plaintext_values() {
             occurrence_index: 0,
             line_kind: "key-value".to_string(),
             access: vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
+            value_ciphertext_ref: Some("env-envelope-v1:test-ciphertext-a".to_string()),
             encrypted_locator_json: "{\"contentId\":\"cid_env_1\",\"storage\":\"packed\"}"
                 .to_string(),
             format_json: "{\"quote\":\"none\"}".to_string(),
@@ -221,6 +294,7 @@ fn phase8_env_records_and_setup_receipts_round_trip_without_plaintext_values() {
             occurrence_index: 0,
             line_kind: "key-value".to_string(),
             access: vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
+            value_ciphertext_ref: Some("env-envelope-v1:test-ciphertext-b".to_string()),
             encrypted_locator_json: "{\"contentId\":\"cid_env_2\",\"storage\":\"packed\"}"
                 .to_string(),
             format_json: "{\"quote\":\"double\"}".to_string(),
@@ -261,6 +335,10 @@ fn phase8_env_records_and_setup_receipts_round_trip_without_plaintext_values() {
             env_profile: "default".to_string(),
             output_path: Some(".bowline/logs/setup.log".to_string()),
             redacted_summary: "installed dependencies with [redacted]".to_string(),
+            setup_identity_hash: "setupid_phase8".to_string(),
+            readiness_state: "runnable".to_string(),
+            readiness_reason: "Setup command completed for the current setup identity.".to_string(),
+            readiness_remedy: String::new(),
             receipt_json: "{\"command\":\"pnpm install --ignore-scripts\"}".to_string(),
             updated_at: "2026-06-25T00:00:02Z".to_string(),
         })
@@ -269,5 +347,7 @@ fn phase8_env_records_and_setup_receipts_round_trip_without_plaintext_values() {
     let receipts = store.setup_receipts(&workspace_id).expect("setup receipts");
     assert_eq!(receipts.len(), 1);
     assert_eq!(receipts[0].state, "completed");
+    assert_eq!(receipts[0].setup_identity_hash, "setupid_phase8");
+    assert_eq!(receipts[0].readiness_state, "runnable");
     assert!(receipts[0].redacted_summary.contains("[redacted]"));
 }

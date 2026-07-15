@@ -1,0 +1,38 @@
+{
+  "contractVersion": 8,
+  "command": "handoff",
+  "generatedAt": "2026-06-29T12:00:00Z",
+  "outcome": "confirmation_required",
+  "target": "linux-home",
+  "projectPath": "~/Code/bowline",
+  "candidates": [
+    {
+      "agent": "codex",
+      "sessionId": "sess_codex_1",
+      "sourcePath": "~/.codex/sessions/sess_codex_1.jsonl",
+      "projectPath": "~/Code/bowline",
+      "modifiedAtUnixSeconds": 1782734400,
+      "selected": false
+    },
+    {
+      "agent": "claude",
+      "sessionId": "sess_claude_1",
+      "sourcePath": "~/.claude/projects/bowline/sess_claude_1.jsonl",
+      "projectPath": "~/Code/bowline",
+      "modifiedAtUnixSeconds": 1782734300,
+      "selected": false
+    }
+  ],
+  "error": {
+    "code": "confirmation_required",
+    "message": "Codex and Claude sessions detected; send latest (codex)?",
+    "recoverability": "user-action"
+  },
+  "nextActions": [
+    {
+      "label": "Confirm latest codex handoff",
+      "command": "bowline handoff linux-home --agent codex",
+      "mutates": true
+    }
+  ]
+}

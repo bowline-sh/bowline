@@ -1,11 +1,14 @@
 import type {
+  Brand,
   ContentId,
+  ManifestDigest,
+  NamespacePageId,
   PackId,
   ProjectId,
   SnapshotId,
   WorkspaceId,
 } from "./ids";
-import type { CONTRACT_VERSION } from "./ids";
+import type { SNAPSHOT_SCHEMA_VERSION } from "./ids";
 import type {
   AccessFlag,
   MaterializationMode,
@@ -41,7 +44,10 @@ export const HYDRATION_STATES = [
 ] as const;
 export type HydrationState = (typeof HYDRATION_STATES)[number];
 
-export const CONTENT_STORAGES = ["inline", "packed", "chunked"] as const;
+export const FILE_EXECUTABILITIES = ["regular", "executable"] as const;
+export type FileExecutability = (typeof FILE_EXECUTABILITIES)[number];
+
+export const CONTENT_STORAGES = ["inline", "packed"] as const;
 export type ContentStorage = (typeof CONTENT_STORAGES)[number];
 
 export type ContentLocator = {
@@ -51,7 +57,30 @@ export type ContentLocator = {
   readonly packId?: PackId;
   readonly offset?: number;
   readonly length?: number;
-  readonly chunkIds?: readonly ContentId[];
+};
+
+export type SegmentId = Brand<"SegmentId">;
+
+export type SegmentLocator = {
+  readonly ordinal: number;
+  readonly plaintextLength: number;
+  readonly segmentId: SegmentId;
+  readonly packId: PackId;
+  readonly offset: number;
+  readonly length: number;
+  readonly formatVersion: number;
+};
+
+/**
+ * Physical representation of one logical file. `NamespaceEntry.contentId`
+ * remains the whole-file identity while segments describe physical storage.
+ */
+export type ContentLayout = {
+  readonly kind: "segmented-v1";
+  readonly logicalContentId: ContentId;
+  readonly logicalLength: number;
+  readonly segmentSize: number;
+  readonly segments: readonly SegmentLocator[];
 };
 
 export type NamespaceEntry = {
@@ -61,9 +90,10 @@ export type NamespaceEntry = {
   readonly mode: MaterializationMode;
   readonly access?: readonly AccessFlag[];
   readonly contentId?: ContentId;
-  readonly locator?: ContentLocator;
+  readonly contentLayout?: ContentLayout;
   readonly symlinkTarget?: string;
   readonly byteLen?: number;
+  readonly executability?: FileExecutability;
   readonly hydrationState: HydrationState;
 };
 
@@ -74,12 +104,14 @@ export type WorkspaceRef = {
 };
 
 export type SnapshotManifest = {
-  readonly schemaVersion: typeof CONTRACT_VERSION;
+  readonly schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION;
   readonly snapshotId: SnapshotId;
   readonly workspaceId: WorkspaceId;
   readonly projectId?: ProjectId;
   readonly kind: SnapshotKind;
   readonly baseSnapshotId?: SnapshotId;
-  readonly entries: readonly NamespaceEntry[];
+  readonly namespaceRootId: NamespacePageId;
+  readonly semanticManifestDigest: ManifestDigest;
+  readonly entryCount: number;
   readonly refs: readonly WorkspaceRef[];
 };

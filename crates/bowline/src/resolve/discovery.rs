@@ -47,70 +47,56 @@ pub(super) fn read_bundle(path: &Path) -> Option<ResolveConflict> {
         return None;
     }
 
-    let manifest = fs::read_to_string(&manifest_path).ok()?;
-    let manifest: Value = serde_json::from_str(&manifest).ok()?;
-    let id = string_field(&manifest, &["conflictId", "id"])
-        .unwrap_or_else(|| fallback_conflict_id(path));
-    let affected_files =
-        string_array_field(&manifest, &["affectedFiles", "affectedPaths", "paths"]);
-    let active_view =
-        string_field(&manifest, &["activeView"]).unwrap_or_else(|| "local".to_string());
-    let state = string_field(&manifest, &["state"]).unwrap_or_else(|| "unresolved".to_string());
-    if state != "unresolved" {
+    let manifest = fs::read(&manifest_path).ok()?;
+    let record: ConflictRecord = serde_json::from_slice(&manifest).ok()?;
+    if record.state != ConflictState::Unresolved {
         return None;
     }
-    let reason = string_field(&manifest, &["reason"]).unwrap_or_default();
-    let conflict_kind =
-        string_field(&manifest, &["conflictKind"]).unwrap_or_else(|| infer_conflict_kind(&reason));
-    let contains_secrets = bool_field(&manifest, &["containsSecrets", "secretBearing"]);
-    let workspace_root = string_field(&manifest, &["workspaceRoot"]);
-    let spans = spans_field(&manifest);
 
     Some(ResolveConflict {
-        id,
-        state,
+        id: record.id,
+        occurrence_version: record.occurrence_version,
+        state: "unresolved".to_string(),
         bundle_path: path.display().to_string(),
-        conflict_kind,
-        workspace_root,
-        reason,
-        affected_files,
-        spans,
-        active_view,
+        conflict_kind: conflict_kind_name(record.conflict_kind).to_string(),
+        workspace_root: record.workspace_root.map(|root| root.display().to_string()),
+        reason: record.reason,
+        affected_files: record.paths,
+        spans: record
+            .spans
+            .into_iter()
+            .map(|span| ResolveConflictSpan {
+                path: span.path,
+                base_start_line: span.base_start_line,
+                base_end_line: span.base_end_line,
+                local_start_line: span.local_start_line,
+                local_end_line: span.local_end_line,
+                remote_start_line: span.remote_start_line,
+                remote_end_line: span.remote_end_line,
+                base_context_hash: span.base_context_hash,
+                local_context_hash: span.local_context_hash,
+                remote_context_hash: span.remote_context_hash,
+            })
+            .collect(),
+        active_view: match record.active_view {
+            bowline_local::sync::ConflictActiveView::Local => "local",
+            bowline_local::sync::ConflictActiveView::Remote => "remote",
+        }
+        .to_string(),
         has_resolution_overlay: path.join("resolution").is_dir(),
-        contains_secrets,
+        contains_secrets: record.contains_secrets,
     })
 }
 
-pub(super) fn infer_conflict_kind(reason: &str) -> String {
-    match reason {
-        "delete-versus-edit conflict" => "delete-edit",
-        "path kind conflict" => "path-shape",
-        "opaque Git state conflict" => "opaque-git",
-        "structured text merge did not validate" => "structured-text",
-        _ => "text",
+fn conflict_kind_name(kind: ConflictKind) -> &'static str {
+    match kind {
+        ConflictKind::Text => "text",
+        ConflictKind::StructuredText => "structured-text",
+        ConflictKind::Binary => "binary",
+        ConflictKind::OpaqueGit => "opaque-git",
+        ConflictKind::DeleteEdit => "delete-edit",
+        ConflictKind::PathShape => "path-shape",
+        ConflictKind::EnvKey => "env-key",
+        ConflictKind::MergePlugin => "merge-plugin",
     }
-    .to_string()
-}
-
-pub(super) fn spans_field(manifest: &Value) -> Vec<ResolveConflictSpan> {
-    manifest
-        .get("spans")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|span| {
-            Some(ResolveConflictSpan {
-                path: string_field(span, &["path"])?,
-                base_start_line: u32_field(span, &["baseStartLine"])?,
-                base_end_line: u32_field(span, &["baseEndLine"])?,
-                local_start_line: u32_field(span, &["localStartLine"])?,
-                local_end_line: u32_field(span, &["localEndLine"])?,
-                remote_start_line: u32_field(span, &["remoteStartLine"])?,
-                remote_end_line: u32_field(span, &["remoteEndLine"])?,
-                base_context_hash: string_field(span, &["baseContextHash"]),
-                local_context_hash: string_field(span, &["localContextHash"]),
-                remote_context_hash: string_field(span, &["remoteContextHash"]),
-            })
-        })
-        .collect()
 }

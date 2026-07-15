@@ -25,7 +25,7 @@ fn resolve_json_lists_bundle_and_prints_redacted_prompt() {
 
     assert!(output.status.success());
     let json = parse_stdout_json(output);
-    assert_eq!(json["contractVersion"], 3);
+    assert_eq!(json["contractVersion"], 8);
     assert_eq!(json["command"], "resolve");
     assert_eq!(json["action"], "copy-prompt");
     assert_eq!(json["status"]["level"], "attention");
@@ -141,7 +141,7 @@ fn resolve_json_missing_diff_conflict_returns_failure() {
         &[("BOWLINE_GENERATED_AT", "2026-06-24T12:00:00Z".to_string())],
     );
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(3));
     let json = parse_stdout_json(output);
     assert_eq!(json["action"], "diff");
     assert!(json.get("diff").is_none());
@@ -261,7 +261,7 @@ fn resolve_agent_requires_secret_scope_for_secret_bearing_conflict() {
             ("BOWLINE_GENERATED_AT", "2026-06-24T12:00:00Z".to_string()),
         ],
     );
-    assert_eq!(denied.status.code(), Some(1));
+    assert_eq!(denied.status.code(), Some(3));
     let json = parse_stdout_json(denied);
     assert_eq!(json["status"]["level"], "attention");
     assert!(
@@ -393,7 +393,7 @@ fn resolve_json_discovers_daemon_state_root_conflicts() {
     let project = temp.root().join("Code");
     let state_root = temp.root().join("state");
     let bundle = state_root.join("conflicts").join("conflict_same_line");
-    create_conflict_bundle(&bundle, false);
+    create_conflict_bundle_with_workspace_root(&bundle, false, &project);
 
     let output = run_bowline_with_env(
         &["resolve", project.to_str().expect("project path"), "--json"],
@@ -405,6 +405,72 @@ fn resolve_json_discovers_daemon_state_root_conflicts() {
     assert_eq!(json["status"]["level"], "attention");
     assert_eq!(json["conflicts"].as_array().expect("conflicts").len(), 1);
     assert_eq!(json["conflicts"][0]["id"], "conflict_same_line");
+    let actions = serde_json::to_string(&json["nextActions"]).expect("actions serialize");
+    assert!(actions.contains(project.to_str().expect("project path")));
+    assert!(!actions.contains("bowline/private --accept"));
+}
+
+#[test]
+fn resolve_json_scopes_mixed_root_actions_per_conflict() {
+    let temp = TempWorkspace::new("resolve-mixed-roots").expect("temp workspace");
+    let requested_root = temp.root().join("Requested Root");
+    let other_root = temp.root().join("Other Root");
+    let state_root = temp.root().join("state");
+    let local_bundle = requested_root.join(".bowline/conflicts/conflict_requested");
+    create_conflict_bundle_manifest(
+        &local_bundle,
+        "conflict_requested",
+        "apps/web/config.txt",
+        false,
+        None,
+    );
+    let remote_bundle = state_root.join("conflicts/conflict_other");
+    create_conflict_bundle_manifest(
+        &remote_bundle,
+        "conflict_other",
+        "apps/api/config.txt",
+        false,
+        Some(&other_root),
+    );
+
+    let output = run_bowline_with_env(
+        &[
+            "resolve",
+            requested_root.to_str().expect("requested root"),
+            "--json",
+        ],
+        &[("BOWLINE_STATE_ROOT", state_root.display().to_string())],
+    );
+
+    assert!(output.status.success());
+    let json = parse_stdout_json(output);
+    let actions = json["availableActions"].as_array().expect("actions");
+    assert!(
+        !actions.iter().any(|action| {
+            action["command"].as_str().is_some_and(|command| {
+                command.contains("--copy-prompt") || command.contains("--agent")
+            })
+        }),
+        "a shared prompt command must not silently select one root"
+    );
+    for (conflict_id, root) in [
+        ("conflict_requested", &requested_root),
+        ("conflict_other", &other_root),
+    ] {
+        let commands = actions
+            .iter()
+            .filter(|action| {
+                action["label"]
+                    .as_str()
+                    .is_some_and(|label| label.ends_with(conflict_id))
+            })
+            .map(|action| action["command"].as_str().expect("command"))
+            .collect::<Vec<_>>();
+        assert_eq!(commands.len(), 3);
+        assert!(commands.iter().all(|command| {
+            command.starts_with(&format!("bowline resolve '{}'", root.display()))
+        }));
+    }
 }
 
 #[test]
@@ -471,7 +537,14 @@ fn resolve_accept_queues_upload_for_initialized_workspace() {
     let temp = TempWorkspace::new("resolve-accept-sync-queue").expect("temp workspace");
     let home = temp.root().join("home");
     fs::create_dir_all(&home).expect("home");
-    let db_path = database_path_for_platform(Platform::Macos, &home, None);
+    let platform = if cfg!(target_os = "macos") {
+        Platform::Macos
+    } else if cfg!(target_os = "linux") {
+        Platform::Linux
+    } else {
+        Platform::Other
+    };
+    let db_path = database_path_for_platform(platform, &home, None);
     let code_root = temp.root().join("Code");
     let project = code_root.join("app");
     fs::create_dir_all(&project).expect("project");
@@ -481,11 +554,11 @@ fn resolve_accept_queues_upload_for_initialized_workspace() {
     store
         .upsert_workspace_sync_head(&bowline_local::metadata::WorkspaceSyncHeadRecord {
             workspace_ref: bowline_control_plane::WorkspaceRef {
-                workspace_id: workspace_id.as_str().to_string(),
+                workspace_id: workspace_id.clone(),
                 version: 9,
-                snapshot_id: "snap-9".to_string(),
+                snapshot_id: SnapshotId::new("snap-9"),
                 updated_at: bowline_control_plane::ControlPlaneTimestamp { tick: 9 },
-                updated_by_device_id: Some("device-a".to_string()),
+                updated_by_device_id: Some(DeviceId::new("device-a")),
             },
             observed_at: "2026-06-24T11:59:00Z".to_string(),
         })
@@ -518,6 +591,7 @@ fn resolve_accept_queues_upload_for_initialized_workspace() {
         ],
         &[
             ("HOME", home.display().to_string()),
+            ("BOWLINE_METADATA_DB", db_path.display().to_string()),
             ("BOWLINE_GENERATED_AT", "2026-06-24T12:00:00Z".to_string()),
         ],
     );
@@ -535,8 +609,8 @@ fn resolve_accept_queues_upload_for_initialized_workspace() {
                 .starts_with("resolve:conflict_same_line:accept")
         })
         .expect("resolve accept queued sync");
-    assert_eq!(operation.kind, "upload");
-    assert_eq!(operation.state, "queued");
+    assert_eq!(operation.kind, SyncOperationKind::Reconcile);
+    assert_eq!(operation.state, SyncOperationState::Queued);
     assert_eq!(operation.base_version, Some(9));
     assert!(operation.payload_json.contains("\"decision\":\"accept\""));
     let events = store.list_events(20).expect("events read");
@@ -559,6 +633,182 @@ fn resolve_accept_queues_upload_for_initialized_workspace() {
             .contains("SECRET=resolved"),
         "resolution event must not contain secret values"
     );
+}
+
+#[test]
+fn resolve_accept_fails_when_resolution_sync_enqueue_fails() {
+    let temp = TempWorkspace::new("resolve-accept-sync-queue-failure").expect("temp workspace");
+    let home = temp.root().join("home");
+    fs::create_dir_all(&home).expect("home");
+    let platform = if cfg!(target_os = "macos") {
+        Platform::Macos
+    } else if cfg!(target_os = "linux") {
+        Platform::Linux
+    } else {
+        Platform::Other
+    };
+    let db_path = database_path_for_platform(platform, &home, None);
+    let code_root = temp.root().join("Code");
+    let project = code_root.join("app");
+    fs::create_dir_all(&project).expect("project");
+    seed_daemon_start_workspace(&db_path, &code_root);
+    let workspace_id = WorkspaceId::new("ws_code");
+    let store = MetadataStore::open(&db_path).expect("metadata opens");
+    store
+        .upsert_workspace_sync_head(&bowline_local::metadata::WorkspaceSyncHeadRecord {
+            workspace_ref: bowline_control_plane::WorkspaceRef {
+                workspace_id: workspace_id.clone(),
+                version: 9,
+                snapshot_id: SnapshotId::new("snap-9"),
+                updated_at: bowline_control_plane::ControlPlaneTimestamp { tick: 9 },
+                updated_by_device_id: Some(DeviceId::new("device-a")),
+            },
+            observed_at: "2026-06-24T11:59:00Z".to_string(),
+        })
+        .expect("head stored");
+    store
+        .enqueue_sync_operation(&bowline_local::metadata::SyncOperationRecord {
+            id: "resolve:conflict_same_line:accept:2026_06_24T12_00_00Z".to_string(),
+            workspace_id: workspace_id.clone(),
+            kind: SyncOperationKind::Reconcile,
+            resource_key: SyncResourceKey::workspace_sync(workspace_id.clone()),
+            state: SyncOperationState::Queued,
+            idempotency_key: "preexisting-different-key".to_string(),
+            base_version: Some(9),
+            base_snapshot_id: Some("snap-9".to_string()),
+            target_snapshot_id: None,
+            device_id: None,
+            payload_json: "{}".to_string(),
+            attempt_count: 0,
+            claimed_by: None,
+            claim_generation: 0,
+            heartbeat_at: None,
+            lease_expires_at: None,
+            cancellation_requested_at: None,
+            next_attempt_at: None,
+            result_json: None,
+            last_error_code: None,
+            last_error: None,
+            created_at: "2026-06-24T11:59:00Z".to_string(),
+            updated_at: "2026-06-24T11:59:00Z".to_string(),
+        })
+        .expect("preexisting operation");
+    drop(store);
+
+    let bundle = project
+        .join(".bowline")
+        .join("conflicts")
+        .join("conflict_same_line");
+    create_conflict_bundle(&bundle, false);
+    fs::create_dir_all(bundle.join("resolution").join("apps").join("web")).expect("resolution");
+    fs::write(
+        bundle
+            .join("resolution")
+            .join("apps")
+            .join("web")
+            .join(".env.local"),
+        b"SECRET=resolved\n",
+    )
+    .expect("resolution file");
+
+    let output = run_bowline_with_env(
+        &[
+            "resolve",
+            project.to_str().expect("project path"),
+            "--accept",
+            "conflict_same_line",
+            "--json",
+        ],
+        &[
+            ("HOME", home.display().to_string()),
+            ("BOWLINE_METADATA_DB", db_path.display().to_string()),
+            ("BOWLINE_GENERATED_AT", "2026-06-24T12:00:00Z".to_string()),
+        ],
+    );
+
+    assert!(!output.status.success());
+    let json = parse_stdout_json(output);
+    assert_eq!(json["status"]["level"], "attention");
+    assert!(
+        json["status"]["summary"]
+            .as_str()
+            .expect("status summary")
+            .contains("resolve metadata update failed")
+    );
+    assert_eq!(
+        fs::read(project.join("apps").join("web").join(".env.local")).expect("project file"),
+        b"SECRET=resolved\n"
+    );
+    let manifest = fs::read_to_string(bundle.join("manifest.json")).expect("manifest");
+    assert!(!manifest.contains("\"state\": \"accepted\""));
+    assert!(store_events(&db_path).is_empty());
+}
+
+#[test]
+fn resolve_accept_fails_when_existing_metadata_db_cannot_open() {
+    let temp = TempWorkspace::new("resolve-accept-metadata-open-failure").expect("temp workspace");
+    let home = temp.root().join("home");
+    fs::create_dir_all(&home).expect("home");
+    let platform = if cfg!(target_os = "macos") {
+        Platform::Macos
+    } else if cfg!(target_os = "linux") {
+        Platform::Linux
+    } else {
+        Platform::Other
+    };
+    let db_path = database_path_for_platform(platform, &home, None);
+    fs::create_dir_all(db_path.parent().expect("database parent")).expect("database parent");
+    fs::create_dir_all(&db_path).expect("database path directory");
+
+    let code_root = temp.root().join("Code");
+    let project = code_root.join("app");
+    fs::create_dir_all(&project).expect("project");
+    let bundle = project
+        .join(".bowline")
+        .join("conflicts")
+        .join("conflict_same_line");
+    create_conflict_bundle(&bundle, false);
+    fs::create_dir_all(bundle.join("resolution").join("apps").join("web")).expect("resolution");
+    fs::write(
+        bundle
+            .join("resolution")
+            .join("apps")
+            .join("web")
+            .join(".env.local"),
+        b"SECRET=resolved\n",
+    )
+    .expect("resolution file");
+
+    let output = run_bowline_with_env(
+        &[
+            "resolve",
+            project.to_str().expect("project path"),
+            "--accept",
+            "conflict_same_line",
+            "--json",
+        ],
+        &[
+            ("HOME", home.display().to_string()),
+            ("BOWLINE_METADATA_DB", db_path.display().to_string()),
+            ("BOWLINE_GENERATED_AT", "2026-06-24T12:00:00Z".to_string()),
+        ],
+    );
+
+    assert!(!output.status.success());
+    let json = parse_stdout_json(output);
+    assert_eq!(json["status"]["level"], "attention");
+    assert!(
+        json["status"]["summary"]
+            .as_str()
+            .expect("status summary")
+            .contains("resolve metadata update failed")
+    );
+    assert_eq!(
+        fs::read(project.join("apps").join("web").join(".env.local")).expect("project file"),
+        b"SECRET=resolved\n"
+    );
+    let manifest = fs::read_to_string(bundle.join("manifest.json")).expect("manifest");
+    assert!(!manifest.contains("\"state\": \"accepted\""));
 }
 
 #[test]
@@ -652,7 +902,7 @@ fn resolve_accept_does_not_partially_apply_when_later_file_is_invalid() {
         &[("BOWLINE_GENERATED_AT", "2026-06-24T12:00:00Z".to_string())],
     );
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(3));
     let json = parse_stdout_json(output);
     assert_eq!(json["status"]["level"], "attention");
     assert!(
@@ -702,7 +952,7 @@ fn resolve_accept_preflights_all_destinations_before_applying_files() {
         &[("BOWLINE_GENERATED_AT", "2026-06-24T12:00:00Z".to_string())],
     );
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(3));
     let json = parse_stdout_json(output);
     assert_eq!(json["status"]["level"], "attention");
     assert!(
@@ -801,7 +1051,7 @@ fn resolve_accept_rejects_direct_state_root_bundle_path() {
         ],
     );
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(3));
     let json = parse_stdout_json(output);
     assert_eq!(json["status"]["level"], "attention");
     assert!(
@@ -944,7 +1194,7 @@ fn resolve_accept_rejects_state_root_bundle_for_wrong_project_root() {
         ],
     );
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(3));
     let json = parse_stdout_json(output);
     assert_eq!(json["status"]["level"], "attention");
     assert!(
@@ -984,7 +1234,7 @@ fn resolve_reject_rejects_state_root_bundle_for_wrong_project_root() {
         ],
     );
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(3));
     let json = parse_stdout_json(output);
     assert_eq!(json["status"]["level"], "attention");
     assert!(
@@ -1066,7 +1316,7 @@ fn resolve_accept_rejects_private_state_targets() {
             &[("BOWLINE_GENERATED_AT", "2026-06-24T12:00:00Z".to_string())],
         );
 
-        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.status.code(), Some(3));
         let json = parse_stdout_json(output);
         assert_eq!(json["status"]["level"], "attention");
         assert!(
@@ -1116,7 +1366,7 @@ fn resolve_accept_rejects_symlinked_resolution_overlay() {
         &[("BOWLINE_GENERATED_AT", "2026-06-24T12:00:00Z".to_string())],
     );
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(3));
     let json = parse_stdout_json(output);
     assert_eq!(json["status"]["level"], "attention");
     assert!(
@@ -1169,7 +1419,7 @@ fn resolve_accept_rejects_symlinked_project_destination() {
         &[("BOWLINE_GENERATED_AT", "2026-06-24T12:00:00Z".to_string())],
     );
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(3));
     let json = parse_stdout_json(output);
     assert_eq!(json["status"]["level"], "attention");
     assert!(
@@ -1240,7 +1490,14 @@ fn resolve_reject_queues_upload_for_initialized_workspace() {
     let temp = TempWorkspace::new("resolve-reject-sync-queue").expect("temp workspace");
     let home = temp.root().join("home");
     fs::create_dir_all(&home).expect("home");
-    let db_path = database_path_for_platform(Platform::Macos, &home, None);
+    let platform = if cfg!(target_os = "macos") {
+        Platform::Macos
+    } else if cfg!(target_os = "linux") {
+        Platform::Linux
+    } else {
+        Platform::Other
+    };
+    let db_path = database_path_for_platform(platform, &home, None);
     let code_root = temp.root().join("Code");
     let project = code_root.join("app");
     fs::create_dir_all(&project).expect("project");
@@ -1250,11 +1507,11 @@ fn resolve_reject_queues_upload_for_initialized_workspace() {
     store
         .upsert_workspace_sync_head(&bowline_local::metadata::WorkspaceSyncHeadRecord {
             workspace_ref: bowline_control_plane::WorkspaceRef {
-                workspace_id: workspace_id.as_str().to_string(),
+                workspace_id: workspace_id.clone(),
                 version: 10,
-                snapshot_id: "snap-10".to_string(),
+                snapshot_id: SnapshotId::new("snap-10"),
                 updated_at: bowline_control_plane::ControlPlaneTimestamp { tick: 10 },
-                updated_by_device_id: Some("device-b".to_string()),
+                updated_by_device_id: Some(DeviceId::new("device-b")),
             },
             observed_at: "2026-06-24T11:59:00Z".to_string(),
         })
@@ -1292,6 +1549,7 @@ fn resolve_reject_queues_upload_for_initialized_workspace() {
         ],
         &[
             ("HOME", home.display().to_string()),
+            ("BOWLINE_METADATA_DB", db_path.display().to_string()),
             ("BOWLINE_GENERATED_AT", "2026-06-24T12:00:00Z".to_string()),
         ],
     );
@@ -1309,8 +1567,8 @@ fn resolve_reject_queues_upload_for_initialized_workspace() {
                 .starts_with("resolve:conflict_same_line:reject")
         })
         .expect("resolve reject queued sync");
-    assert_eq!(operation.kind, "upload");
-    assert_eq!(operation.state, "queued");
+    assert_eq!(operation.kind, SyncOperationKind::Reconcile);
+    assert_eq!(operation.state, SyncOperationState::Queued);
     assert_eq!(operation.base_version, Some(10));
     assert!(operation.payload_json.contains("\"decision\":\"reject\""));
     let events = store.list_events(20).expect("events read");
@@ -1332,6 +1590,125 @@ fn resolve_reject_queues_upload_for_initialized_workspace() {
 }
 
 #[test]
+fn resolve_reject_fails_before_applying_when_resolution_sync_enqueue_fails() {
+    let temp = TempWorkspace::new("resolve-reject-sync-queue-failure").expect("temp workspace");
+    let home = temp.root().join("home");
+    fs::create_dir_all(&home).expect("home");
+    let platform = if cfg!(target_os = "macos") {
+        Platform::Macos
+    } else if cfg!(target_os = "linux") {
+        Platform::Linux
+    } else {
+        Platform::Other
+    };
+    let db_path = database_path_for_platform(platform, &home, None);
+    let code_root = temp.root().join("Code");
+    let project = code_root.join("app");
+    fs::create_dir_all(&project).expect("project");
+    seed_daemon_start_workspace(&db_path, &code_root);
+    let workspace_id = WorkspaceId::new("ws_code");
+    let store = MetadataStore::open(&db_path).expect("metadata opens");
+    store
+        .upsert_workspace_sync_head(&bowline_local::metadata::WorkspaceSyncHeadRecord {
+            workspace_ref: bowline_control_plane::WorkspaceRef {
+                workspace_id: workspace_id.clone(),
+                version: 10,
+                snapshot_id: SnapshotId::new("snap-10"),
+                updated_at: bowline_control_plane::ControlPlaneTimestamp { tick: 10 },
+                updated_by_device_id: Some(DeviceId::new("device-b")),
+            },
+            observed_at: "2026-06-24T11:59:00Z".to_string(),
+        })
+        .expect("head stored");
+    store
+        .enqueue_sync_operation(&bowline_local::metadata::SyncOperationRecord {
+            id: "resolve:conflict_same_line:reject:2026_06_24T12_00_00Z".to_string(),
+            workspace_id: workspace_id.clone(),
+            kind: SyncOperationKind::Reconcile,
+            resource_key: SyncResourceKey::workspace_sync(workspace_id.clone()),
+            state: SyncOperationState::Queued,
+            idempotency_key: "preexisting-different-key".to_string(),
+            base_version: Some(10),
+            base_snapshot_id: Some("snap-10".to_string()),
+            target_snapshot_id: None,
+            device_id: None,
+            payload_json: "{}".to_string(),
+            attempt_count: 0,
+            claimed_by: None,
+            claim_generation: 0,
+            heartbeat_at: None,
+            lease_expires_at: None,
+            cancellation_requested_at: None,
+            next_attempt_at: None,
+            result_json: None,
+            last_error_code: None,
+            last_error: None,
+            created_at: "2026-06-24T11:59:00Z".to_string(),
+            updated_at: "2026-06-24T11:59:00Z".to_string(),
+        })
+        .expect("preexisting operation");
+    drop(store);
+
+    let bundle = project
+        .join(".bowline")
+        .join("conflicts")
+        .join("conflict_same_line");
+    create_conflict_bundle(&bundle, false);
+    fs::write(
+        bundle
+            .join("remote")
+            .join("apps")
+            .join("web")
+            .join(".env.local"),
+        b"SECRET=remote\n",
+    )
+    .expect("remote side");
+    fs::create_dir_all(project.join("apps").join("web")).expect("project dirs");
+    fs::write(
+        project.join("apps").join("web").join(".env.local"),
+        b"SECRET=local unresolved\n",
+    )
+    .expect("local file");
+
+    let output = run_bowline_with_env(
+        &[
+            "resolve",
+            project.to_str().expect("project path"),
+            "--reject",
+            "conflict_same_line",
+            "--json",
+        ],
+        &[
+            ("HOME", home.display().to_string()),
+            ("BOWLINE_METADATA_DB", db_path.display().to_string()),
+            ("BOWLINE_GENERATED_AT", "2026-06-24T12:00:00Z".to_string()),
+        ],
+    );
+
+    assert!(!output.status.success());
+    let json = parse_stdout_json(output);
+    assert_eq!(json["status"]["level"], "attention");
+    assert!(
+        json["status"]["summary"]
+            .as_str()
+            .expect("status summary")
+            .contains("resolve metadata update failed")
+    );
+    assert_eq!(
+        fs::read(project.join("apps").join("web").join(".env.local")).expect("project file"),
+        b"SECRET=remote\n"
+    );
+    let manifest = fs::read_to_string(bundle.join("manifest.json")).expect("manifest");
+    assert!(!manifest.contains("\"state\": \"rejected\""));
+    assert!(store_events(&db_path).is_empty());
+}
+
+fn store_events(db_path: &Path) -> Vec<bowline_core::events::WorkspaceEvent> {
+    let store = MetadataStore::open(db_path).expect("metadata reopens");
+    store.list_events(20).expect("events read")
+}
+
+#[test]
 fn resolve_reject_refuses_missing_remote_side_for_non_delete_conflict() {
     let temp = TempWorkspace::new("resolve-reject-missing-remote").expect("temp workspace");
     let project = temp.root().join("Code").join("app");
@@ -1343,11 +1720,12 @@ fn resolve_reject_refuses_missing_remote_side_for_non_delete_conflict() {
     fs::create_dir_all(bundle.join("local").join("apps").join("web")).expect("local dir");
     fs::create_dir_all(bundle.join("remote").join("apps").join("web")).expect("remote dir");
     fs::create_dir_all(bundle.join("resolution")).expect("resolution dir");
-    fs::write(
-        bundle.join("manifest.json"),
-        r#"{"conflictId":"conflict_kind","affectedFiles":["apps/web/link"],"activeView":"local","reason":"path kind conflict","containsSecrets":false}"#,
-    )
-    .expect("manifest");
+    let mut record = bowline_local::sync::ConflictRecord::path_conflict("apps/web/link");
+    record.id = "conflict_kind".to_string();
+    record.bundle_path = Some(bundle.clone());
+    record.base_snapshot_id = Some("snap_fixture_base".to_string());
+    record.remote_snapshot_id = Some("snap_fixture_remote".to_string());
+    write_conflict_manifest(&bundle, &record);
     fs::create_dir_all(project.join("apps").join("web")).expect("project dir");
     fs::write(project.join("apps").join("web").join("link"), b"local\n").expect("local file");
 
@@ -1362,7 +1740,7 @@ fn resolve_reject_refuses_missing_remote_side_for_non_delete_conflict() {
         &[("BOWLINE_GENERATED_AT", "2026-06-24T12:00:00Z".to_string())],
     );
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(3));
     let json = parse_stdout_json(output);
     assert_eq!(json["status"]["level"], "attention");
     assert!(

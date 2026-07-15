@@ -1,4 +1,5 @@
 use super::*;
+use std::process::Stdio;
 
 pub(super) fn print_daemon_service_install(socket: &Path, json: bool) -> ExitCode {
     let generated_at = generated_at();
@@ -15,7 +16,7 @@ pub(super) fn print_daemon_service_install(socket: &Path, json: bool) -> ExitCod
         }
         Err(message) => {
             print_service_error(CommandName::DaemonInstall, "daemon install", &message, json);
-            ExitCode::from(EXIT_RUNTIME)
+            CommandExitCode::BlockedOrDegradedBySafety.into()
         }
     }
 }
@@ -35,7 +36,7 @@ pub(super) fn print_daemon_service_restart(json: bool) -> ExitCode {
         }
         Err(message) => {
             print_service_error(CommandName::DaemonRestart, "daemon restart", &message, json);
-            ExitCode::from(EXIT_RUNTIME)
+            CommandExitCode::BlockedOrDegradedBySafety.into()
         }
     }
 }
@@ -60,7 +61,7 @@ pub(super) fn print_daemon_service_uninstall(json: bool) -> ExitCode {
                 &message,
                 json,
             );
-            ExitCode::from(EXIT_RUNTIME)
+            CommandExitCode::BlockedOrDegradedBySafety.into()
         }
     }
 }
@@ -169,10 +170,10 @@ pub(super) fn print_service_error(
                 retry_after_seconds: None,
                 correlation_id: None,
             },
-            next_actions: vec![SafeAction {
-                label: "Inspect daemon status".to_string(),
-                command: Some("bowline daemon status --json".to_string()),
-            }],
+            next_actions: vec![RepairCommand::inspect(
+                "Inspect daemon status".to_string(),
+                Some("bowline daemon status --json".to_string()),
+            )],
         });
         return;
     }
@@ -275,7 +276,7 @@ pub(super) fn daemon_launch_config(socket: &Path) -> Result<DaemonLaunchConfig, 
         .into_iter()
         .next()
         .ok_or_else(|| {
-            "no accepted workspace root; run `bowline login --root <path>` first".to_string()
+            "no accepted workspace root; run `bowline setup --root <path>` first".to_string()
         })?;
     let root = expand_home_path(&root);
     let daemon = daemon_binary_path()?;
@@ -446,13 +447,10 @@ pub(super) fn persisted_daemon_device_id_for_workspace(
     state_root: &Path,
     workspace_id: &bowline_core::ids::WorkspaceId,
 ) -> Option<String> {
-    let persisted_workspace_id = persisted_daemon_env_value(state_root, "BOWLINE_WORKSPACE_ID")?;
-    if persisted_workspace_id != workspace_id.as_str() {
-        return None;
-    }
-    persisted_daemon_env_value(state_root, "BOWLINE_DEVICE_ID")
+    runtime::persisted_daemon_device_id_for_workspace(state_root, workspace_id)
 }
 
+#[cfg(test)]
 pub(super) fn persisted_daemon_env_value(state_root: &Path, name: &str) -> Option<String> {
     persisted_daemon_env(state_root)
         .into_iter()
@@ -468,6 +466,7 @@ pub(super) fn valid_persisted_daemon_env_key(key: &str) -> bool {
             | "BOWLINE_DEVICE_NAME"
             | "BOWLINE_SECRET_STORE"
             | "BOWLINE_ACCOUNT_SESSION_ID"
+            | "BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN"
             | "BOWLINE_CONTROL_PLANE_TOKEN"
             | "BOWLINE_WORKOS_ACCESS_TOKEN"
             | "BOWLINE_WORKOS_CLIENT_ID"
@@ -599,9 +598,9 @@ pub(super) fn print_daemon_status(socket: &Path, json: bool) {
                     "{}",
                     daemon_status_json(
                         socket,
-                        "running",
+                        DaemonProcessState::Running,
                         Some(&handshake.daemon_version),
-                        handshake.sync_json.as_deref(),
+                        Some(&handshake.status_json),
                         service.as_ref()
                     )
                 );
@@ -617,7 +616,13 @@ pub(super) fn print_daemon_status(socket: &Path, json: bool) {
             if json {
                 println!(
                     "{}",
-                    daemon_status_json(socket, "stopped", None, None, service.as_ref())
+                    daemon_status_json(
+                        socket,
+                        DaemonProcessState::Stopped,
+                        None,
+                        None,
+                        service.as_ref()
+                    )
                 );
             } else {
                 println!("bowline daemon: stopped");
@@ -629,9 +634,9 @@ pub(super) fn print_daemon_status(socket: &Path, json: bool) {
 
 pub(super) fn daemon_status_json(
     socket: &Path,
-    state: &str,
+    state: DaemonProcessState,
     daemon_version: Option<&str>,
-    sync_json: Option<&str>,
+    status_json: Option<&str>,
     service: Option<&DaemonServiceStatus>,
 ) -> String {
     serde_json::to_string(&DaemonStatusOutput {
@@ -639,7 +644,7 @@ pub(super) fn daemon_status_json(
         command: CommandName::DaemonStatus,
         generated_at: generated_at(),
         daemon: daemon_process_output(socket, state, daemon_version, None, true),
-        sync: sync_json.and_then(|sync| serde_json::from_str(sync).ok()),
+        sync: status_json.and_then(|status| serde_json::from_str(status).ok()),
         service: service.map(daemon_service_state_from_status),
     })
     .expect("daemon status output should serialize")

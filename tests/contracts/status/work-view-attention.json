@@ -1,14 +1,20 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 8,
   "command": "status",
   "generatedAt": "2026-06-25T12:00:05Z",
+  "statusSummary": {
+    "availability": "ready",
+    "attention": "recommended",
+    "facts": [],
+    "snapshotVersion": 1,
+    "observedAt": "2026-06-25T12:00:05Z",
+    "freshness": "fresh"
+  },
   "workspaceId": "ws_code",
   "projectId": "proj_acme_web",
   "status": {
     "level": "attention",
-    "attentionItems": [
-      "auth-fix is ready for review."
-    ]
+    "attentionItems": ["auth-fix is ready for review."]
   },
   "items": [
     {
@@ -36,9 +42,9 @@
   "nextActions": [
     {
       "label": "Review auth-fix",
-      "command": "bowline review auth-fix",
-      "effectCategory": "inspect",
-      "targetKind": "work-view"
+      "command": "bowline work review auth-fix",
+      "mutates": false
     }
-  ]
+  ],
+  "freshness": "unknown"
 }

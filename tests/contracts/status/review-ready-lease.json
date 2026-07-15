@@ -1,7 +1,31 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 8,
   "command": "status",
   "generatedAt": "2026-06-25T12:20:00Z",
+  "statusSummary": {
+    "availability": "ready",
+    "attention": "recommended",
+    "primaryFactId": "lease:lease_auth_callback",
+    "facts": [
+      {
+        "id": "lease:lease_auth_callback",
+        "kind": "lease.review_ready",
+        "source": "local-work-store",
+        "scope": "lease",
+        "scopeId": "lease_auth_callback",
+        "availabilityImpact": "none",
+        "attentionImpact": "recommended",
+        "summaryKey": "status.lease.review_ready",
+        "parameters": {},
+        "action": { "kind": "review-work", "targetId": "lease_auth_callback" },
+        "observedAt": "2026-06-25T12:20:00Z",
+        "dedupeKey": "lease:lease_auth_callback"
+      }
+    ],
+    "snapshotVersion": 1,
+    "observedAt": "2026-06-25T12:20:00Z",
+    "freshness": "fresh"
+  },
   "workspaceId": "ws_code",
   "projectId": "proj_acme_web",
   "scope": "lease",
@@ -25,27 +49,6 @@
       "projectId": "proj_acme_web",
       "snapshotId": "snap_workspace_123",
       "eventName": "lease.review_ready"
-    },
-    {
-      "kind": "lease",
-      "summary": "Overlay output changed inside the lease work view.",
-      "subject": {
-        "kind": "overlay",
-        "id": "overlay_auth_callback"
-      },
-      "leaseId": "lease_auth_callback",
-      "projectId": "proj_acme_web",
-      "eventName": "overlay.changed"
-    },
-    {
-      "kind": "lease",
-      "summary": "Publishing was requested for human review.",
-      "subject": {
-        "kind": "lease",
-        "id": "lease_auth_callback"
-      },
-      "leaseId": "lease_auth_callback",
-      "eventName": "publish.requested"
     }
   ],
   "limits": [],
@@ -59,9 +62,9 @@
   "nextActions": [
     {
       "label": "Review lease output",
-      "command": "bowline review lease_auth_callback",
-      "effectCategory": "inspect",
-      "targetKind": "work-view"
+      "command": "bowline work review lease_auth_callback",
+      "mutates": false
     }
-  ]
+  ],
+  "freshness": "unknown"
 }

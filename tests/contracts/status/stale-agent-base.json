@@ -1,7 +1,8 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 8,
   "command": "status",
   "generatedAt": "2026-06-23T12:00:00Z",
+  "statusSummary": { "availability": "degraded", "attention": "required", "facts": [], "snapshotVersion": 1, "observedAt": "2026-06-23T12:00:00Z", "freshness": "stale" },
   "workspaceId": "ws_code",
   "projectId": "proj_acme_web",
   "scope": "project",
@@ -10,18 +11,20 @@
   "status": {
     "level": "attention",
     "attentionItems": [
-      "Agent lease lease_auth_callback is based on a stale workspace snapshot."
+      "Agent lease lease_auth_callback is based on an older snapshot for ~/Code/acme/web."
     ]
   },
   "items": [
     {
-      "kind": "lease",
-      "summary": "The lease can continue only after its base is refreshed or reviewed.",
+      "kind": "source",
+      "summary": "Agent lease lease_auth_callback is based on an older snapshot for ~/Code/acme/web.",
       "subject": {
-        "kind": "lease",
-        "id": "lease_auth_callback"
+        "kind": "project",
+        "id": "proj_acme_web",
+        "path": "~/Code/acme/web"
       },
-      "leaseId": "lease_auth_callback",
+      "path": "~/Code/acme/web",
+      "projectId": "proj_acme_web",
       "snapshotId": "snap_workspace_base_old",
       "eventName": "source.stale"
     }
@@ -36,10 +39,22 @@
   },
   "nextActions": [
     {
-      "label": "Inspect the lease",
-      "command": "bowline agent context --lease lease_auth_callback --json",
-      "effectCategory": "inspect",
-      "targetKind": "agent"
+      "label": "Inspect freshness",
+      "command": "bowline status --watch",
+      "mutates": false
+    }
+  ],
+  "freshness": "behind",
+  "staleBases": [
+    {
+      "axis": "snapshot",
+      "verdict": "behind",
+      "summary": "Agent lease lease_auth_callback is based on an older snapshot for ~/Code/acme/web.",
+      "remedyCommand": "bowline status --watch",
+      "projectId": "proj_acme_web",
+      "projectPath": "~/Code/acme/web",
+      "baseSnapshotId": "snap_workspace_base_old",
+      "latestSnapshotId": "snap_workspace_base"
     }
   ]
 }

@@ -8,6 +8,17 @@ impl MetadataStore {
         source_path: &str,
         records: &[EnvRecord],
     ) -> Result<(), MetadataError> {
+        self.with_committed(|store| {
+            store.replace_env_records_for_source_uncommitted(workspace_id, source_path, records)
+        })
+    }
+
+    pub(crate) fn replace_env_records_for_source_uncommitted(
+        &self,
+        workspace_id: &WorkspaceId,
+        source_path: &str,
+        records: &[EnvRecord],
+    ) -> Result<(), MetadataError> {
         let source_path = self.workspace_relative_path(workspace_id, source_path)?;
         let normalized_records = records
             .iter()
@@ -18,16 +29,14 @@ impl MetadataStore {
                 Ok(record)
             })
             .collect::<Result<Vec<_>, MetadataError>>()?;
-        let transaction = self.connection.transaction()?;
-        transaction.execute(
+        self.connection.execute(
             "DELETE FROM env_records
              WHERE workspace_id = ?1 AND source_path = ?2",
             params![workspace_id.as_str(), source_path],
         )?;
         for record in normalized_records {
-            upsert_env_record_tx(&transaction, &record)?;
+            self.upsert_env_record(&record)?;
         }
-        transaction.commit()?;
         Ok(())
     }
 
@@ -42,7 +51,7 @@ impl MetadataStore {
                   value_ciphertext_ref, updated_at, profile, occurrence_index, line_kind,
                   encrypted_locator_json, format_json, materialization_state, restriction_state,
                   key_epoch, metadata_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
                  ON CONFLICT(id) DO UPDATE SET
                    workspace_id = excluded.workspace_id,
                    project_id = excluded.project_id,
@@ -67,6 +76,7 @@ impl MetadataStore {
                     record.source_path.as_str(),
                     record.key_name.as_str(),
                     serialize_access_flags(&record.access)?,
+                    record.value_ciphertext_ref.as_deref(),
                     record.updated_at.as_str(),
                     record.profile.as_str(),
                     record.occurrence_index,
@@ -86,7 +96,7 @@ impl MetadataStore {
     pub fn env_records(&self, workspace_id: &WorkspaceId) -> Result<Vec<EnvRecord>, MetadataError> {
         let mut statement = self.connection.prepare(
             "SELECT id, workspace_id, project_id, source_path, key_name, access,
-                    updated_at, profile, occurrence_index, line_kind, encrypted_locator_json,
+                    value_ciphertext_ref, updated_at, profile, occurrence_index, line_kind, encrypted_locator_json,
                     format_json, materialization_state, restriction_state, key_epoch, metadata_json
              FROM env_records
              WHERE workspace_id = ?1
@@ -104,7 +114,7 @@ impl MetadataStore {
         let source_path = self.workspace_relative_path(workspace_id, source_path)?;
         let mut statement = self.connection.prepare(
             "SELECT id, workspace_id, project_id, source_path, key_name, access,
-                    updated_at, profile, occurrence_index, line_kind, encrypted_locator_json,
+                    value_ciphertext_ref, updated_at, profile, occurrence_index, line_kind, encrypted_locator_json,
                     format_json, materialization_state, restriction_state, key_epoch, metadata_json
              FROM env_records
              WHERE workspace_id = ?1 AND source_path = ?2
@@ -123,8 +133,10 @@ impl MetadataStore {
             "INSERT INTO setup_receipts
              (id, workspace_id, project_id, command, state, receipt_json, updated_at,
               recipe_hash, approval_state, trigger, cwd, os, arch, env_profile,
-              output_path, redacted_summary)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+              output_path, redacted_summary, setup_identity_hash, readiness_state,
+              readiness_reason, readiness_remedy)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                     ?17, ?18, ?19, ?20)
              ON CONFLICT(id) DO UPDATE SET
                workspace_id = excluded.workspace_id,
                project_id = excluded.project_id,
@@ -140,7 +152,11 @@ impl MetadataStore {
                arch = excluded.arch,
                env_profile = excluded.env_profile,
                output_path = excluded.output_path,
-               redacted_summary = excluded.redacted_summary",
+               redacted_summary = excluded.redacted_summary,
+               setup_identity_hash = excluded.setup_identity_hash,
+               readiness_state = excluded.readiness_state,
+               readiness_reason = excluded.readiness_reason,
+               readiness_remedy = excluded.readiness_remedy",
             params![
                 record.id.as_str(),
                 record.workspace_id.as_str(),
@@ -158,6 +174,10 @@ impl MetadataStore {
                 record.env_profile.as_str(),
                 record.output_path.as_deref(),
                 record.redacted_summary.as_str(),
+                record.setup_identity_hash.as_str(),
+                record.readiness_state.as_str(),
+                record.readiness_reason.as_str(),
+                record.readiness_remedy.as_str(),
             ],
         )?;
         Ok(())
@@ -170,7 +190,8 @@ impl MetadataStore {
         let mut statement = self.connection.prepare(
             "SELECT id, workspace_id, project_id, command, state, receipt_json, updated_at,
                     recipe_hash, approval_state, trigger, cwd, os, arch, env_profile,
-                    output_path, redacted_summary
+                    output_path, redacted_summary, setup_identity_hash, readiness_state,
+                    readiness_reason, readiness_remedy
              FROM setup_receipts
              WHERE workspace_id = ?1
              ORDER BY updated_at DESC, id",
@@ -179,199 +200,124 @@ impl MetadataStore {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub fn upsert_projected_node(&self, record: &ProjectedNodeRecord) -> Result<(), MetadataError> {
-        let path = self.workspace_relative_path(&record.workspace_id, &record.path)?;
-        self.connection.execute(
-            "INSERT INTO projected_nodes
-             (workspace_id, node_id, project_id, parent_node_id, path, kind, content_id,
-              hydration_state, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(workspace_id, node_id) DO UPDATE SET
-               project_id = excluded.project_id,
-               parent_node_id = excluded.parent_node_id,
-               path = excluded.path,
-               kind = excluded.kind,
-               content_id = excluded.content_id,
-               hydration_state = excluded.hydration_state,
-               updated_at = excluded.updated_at",
-            params![
-                record.workspace_id.as_str(),
-                record.node_id.as_str(),
-                record.project_id.as_ref().map(|id| id.as_str()),
-                record.parent_node_id.as_deref(),
-                path,
-                serialize_json_variant(&record.kind)?,
-                record.content_id.as_ref().map(|id| id.as_str()),
-                serialize_json_variant(&record.hydration_state)?,
-                record.updated_at.as_str(),
-            ],
-        )?;
-        if record.kind == NamespaceEntryKind::File {
-            let index_target = match record.project_id.as_ref() {
-                Some(project_id) => {
-                    let index_path = self
-                        .project_by_id(&record.workspace_id, project_id)?
-                        .map(|project| project_relative_index_path(&path, &project.path))
-                        .unwrap_or_else(|| path.clone());
-                    Some((project_id.clone(), index_path))
-                }
-                None => self.current_project_by_path(&path)?.map(|project| {
-                    let index_path = project_relative_index_path(&path, &project.path);
-                    (project.id, index_path)
-                }),
-            };
-            if let Some((project_id, index_path)) = index_target {
-                self.mark_index_work_pending_for_path(
-                    &record.workspace_id,
-                    Some(&project_id),
-                    &index_path,
-                    "projected-node-updated",
-                    &record.updated_at,
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn projected_node_by_path(
+    pub fn setup_receipt_by_id(
         &self,
         workspace_id: &WorkspaceId,
-        path: &str,
-    ) -> Result<Option<ProjectedNodeRecord>, MetadataError> {
-        let path = self.workspace_relative_path(workspace_id, path)?;
+        receipt_id: &str,
+    ) -> Result<Option<SetupReceiptRecord>, MetadataError> {
         self.connection
             .query_row(
-                "SELECT workspace_id, node_id, project_id, parent_node_id, path, kind, content_id,
-                        hydration_state, updated_at
-                 FROM projected_nodes
-                 WHERE workspace_id = ?1 AND path = ?2
+                "SELECT id, workspace_id, project_id, command, state, receipt_json, updated_at,
+                        recipe_hash, approval_state, trigger, cwd, os, arch, env_profile,
+                        output_path, redacted_summary, setup_identity_hash, readiness_state,
+                        readiness_reason, readiness_remedy
+                 FROM setup_receipts
+                 WHERE workspace_id = ?1 AND id = ?2
                  LIMIT 1",
-                params![workspace_id.as_str(), path],
-                projected_node_from_row,
+                params![workspace_id.as_str(), receipt_id],
+                setup_receipt_from_row,
             )
             .optional()
             .map_err(Into::into)
     }
 
-    pub fn projected_nodes_for_project(
+    pub fn setup_receipt_for_recipe(
         &self,
         workspace_id: &WorkspaceId,
         project_id: &ProjectId,
-    ) -> Result<Vec<ProjectedNodeRecord>, MetadataError> {
+        recipe_hash: &str,
+        states: &[&str],
+    ) -> Result<Option<SetupReceiptRecord>, MetadataError> {
         let mut statement = self.connection.prepare(
-            "SELECT workspace_id, node_id, project_id, parent_node_id, path, kind, content_id,
-                    hydration_state, updated_at
-             FROM projected_nodes
-             WHERE workspace_id = ?1 AND project_id = ?2
-             ORDER BY path",
-        )?;
-        let rows = statement.query_map(
-            params![workspace_id.as_str(), project_id.as_str()],
-            projected_node_from_row,
-        )?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-    }
-
-    pub fn projected_nodes_for_workspace(
-        &self,
-        workspace_id: &WorkspaceId,
-    ) -> Result<Vec<ProjectedNodeRecord>, MetadataError> {
-        let mut statement = self.connection.prepare(
-            "SELECT workspace_id, node_id, project_id, parent_node_id, path, kind, content_id,
-                    hydration_state, updated_at
-             FROM projected_nodes
+            "SELECT id, workspace_id, project_id, command, state, receipt_json, updated_at,
+                    recipe_hash, approval_state, trigger, cwd, os, arch, env_profile,
+                    output_path, redacted_summary, setup_identity_hash, readiness_state,
+                    readiness_reason, readiness_remedy
+             FROM setup_receipts
              WHERE workspace_id = ?1
-             ORDER BY path",
+               AND project_id = ?2
+               AND recipe_hash = ?3
+             ORDER BY updated_at DESC, id DESC",
         )?;
-        let rows = statement.query_map([workspace_id.as_str()], projected_node_from_row)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        let mut rows = statement.query_map(
+            params![workspace_id.as_str(), project_id.as_str(), recipe_hash],
+            setup_receipt_from_row,
+        )?;
+        rows.find_map(|row| match row {
+            Ok(receipt) if states.contains(&receipt.state.as_str()) => Some(Ok(receipt)),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .transpose()
+        .map_err(Into::into)
     }
 
-    pub fn delete_unlisted_workspace_projected_nodes(
+    pub fn setup_receipt_for_command(
         &self,
         workspace_id: &WorkspaceId,
-        retained_paths: &BTreeSet<String>,
-    ) -> Result<(), MetadataError> {
+        project_id: &ProjectId,
+        command: &str,
+        states: &[&str],
+    ) -> Result<Option<SetupReceiptRecord>, MetadataError> {
         let mut statement = self.connection.prepare(
-            "SELECT path FROM projected_nodes
-             WHERE workspace_id = ?1 AND project_id IS NULL",
-        )?;
-        let rows = statement.query_map([workspace_id.as_str()], |row| row.get::<_, String>(0))?;
-        let stale_paths = rows
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter(|path| !retained_paths.contains(path))
-            .collect::<Vec<_>>();
-        drop(statement);
-        for path in stale_paths {
-            self.connection.execute(
-                "DELETE FROM projected_nodes
-                 WHERE workspace_id = ?1 AND project_id IS NULL AND path = ?2",
-                params![workspace_id.as_str(), path],
-            )?;
-        }
-        Ok(())
-    }
-
-    pub fn enqueue_hydration(&self, record: &HydrationQueueRecord) -> Result<(), MetadataError> {
-        let path = self.workspace_relative_path(&record.workspace_id, &record.path)?;
-        self.connection.execute(
-            "INSERT INTO hydration_queue
-             (id, workspace_id, project_id, path, content_id, priority, state, cause, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(workspace_id, path, cause) DO UPDATE SET
-               id = excluded.id,
-               project_id = excluded.project_id,
-               content_id = excluded.content_id,
-               priority = excluded.priority,
-               state = excluded.state,
-               updated_at = excluded.updated_at",
-            params![
-                record.id.as_str(),
-                record.workspace_id.as_str(),
-                record.project_id.as_ref().map(|id| id.as_str()),
-                path,
-                record.content_id.as_ref().map(|id| id.as_str()),
-                record.priority.as_str(),
-                record.state.as_str(),
-                record.cause.as_str(),
-                record.updated_at.as_str(),
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn hydration_queue(
-        &self,
-        workspace_id: &WorkspaceId,
-    ) -> Result<Vec<HydrationQueueRecord>, MetadataError> {
-        let mut statement = self.connection.prepare(
-            "SELECT id, workspace_id, project_id, path, content_id, priority, state, cause, updated_at
-             FROM hydration_queue
+            "SELECT id, workspace_id, project_id, command, state, receipt_json, updated_at,
+                    recipe_hash, approval_state, trigger, cwd, os, arch, env_profile,
+                    output_path, redacted_summary, setup_identity_hash, readiness_state,
+                    readiness_reason, readiness_remedy
+             FROM setup_receipts
              WHERE workspace_id = ?1
-             ORDER BY CASE priority
-               WHEN 'active-read' THEN 0
-               WHEN 'explicit-pin' THEN 1
-               WHEN 'agent-lease' THEN 2
-               WHEN 'hot-project-prefetch' THEN 3
-               WHEN 'index-request' THEN 4
-               WHEN 'background' THEN 5
-               ELSE 6
-             END, updated_at, id",
+               AND project_id = ?2
+               AND command = ?3
+             ORDER BY updated_at DESC, id DESC",
         )?;
-        let rows = statement.query_map([workspace_id.as_str()], |row| {
-            Ok(HydrationQueueRecord {
-                id: row.get(0)?,
-                workspace_id: WorkspaceId::new(row.get::<_, String>(1)?),
-                project_id: row.get::<_, Option<String>>(2)?.map(ProjectId::new),
-                path: row.get(3)?,
-                content_id: row.get::<_, Option<String>>(4)?.map(ContentId::new),
-                priority: row.get(5)?,
-                state: row.get(6)?,
-                cause: row.get(7)?,
-                updated_at: row.get(8)?,
-            })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        let mut rows = statement.query_map(
+            params![workspace_id.as_str(), project_id.as_str(), command],
+            setup_receipt_from_row,
+        )?;
+        rows.find_map(|row| match row {
+            Ok(receipt) if states.contains(&receipt.state.as_str()) => Some(Ok(receipt)),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .transpose()
+        .map_err(Into::into)
+    }
+
+    pub fn setup_receipt_for_identity(
+        &self,
+        workspace_id: &WorkspaceId,
+        project_id: &ProjectId,
+        setup_identity_hash: &str,
+    ) -> Result<Option<SetupReceiptRecord>, MetadataError> {
+        self.connection
+            .query_row(
+                "SELECT id, workspace_id, project_id, command, state, receipt_json, updated_at,
+                        recipe_hash, approval_state, trigger, cwd, os, arch, env_profile,
+                        output_path, redacted_summary, setup_identity_hash, readiness_state,
+                        readiness_reason, readiness_remedy
+                 FROM setup_receipts
+                 WHERE workspace_id = ?1
+                   AND project_id = ?2
+                   AND setup_identity_hash = ?3
+                 ORDER BY updated_at DESC,
+                          CASE state
+                            WHEN 'failed' THEN 0
+                            WHEN 'blocked' THEN 0
+                            WHEN 'completed' THEN 1
+                            WHEN 'approved' THEN 2
+                            WHEN 'approval-required' THEN 2
+                            ELSE 3
+                          END,
+                          id DESC
+                 LIMIT 1",
+                params![
+                    workspace_id.as_str(),
+                    project_id.as_str(),
+                    setup_identity_hash
+                ],
+                setup_receipt_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
     }
 }

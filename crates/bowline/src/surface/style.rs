@@ -8,8 +8,8 @@
 use std::env;
 use std::io::{self, IsTerminal};
 
-use bowline_core::commands::{IndexState, StatusCommandOutput};
-use bowline_core::status::{SafeAction, StatusLevel};
+use bowline_core::commands::StatusCommandOutput;
+use bowline_core::status::{RepairCommand, StatusLevel};
 use crossterm::style::Stylize;
 
 /// Fixed rule width used whenever we are not attached to an interactive
@@ -125,10 +125,10 @@ impl Verdict {
     /// Derive the verdict from a composed status output.
     ///
     /// Limited and Needs-you come straight from the level. A Healthy workspace
-    /// that is still catching up (first sync pending, index building) reads as
-    /// the calm `Preparing`; a settled one reads `Ready`.
+    /// that is still catching up on sync reads as the calm `Preparing`; a
+    /// settled one reads `Ready`.
     pub fn from_output(output: &StatusCommandOutput) -> Self {
-        match output.status.level {
+        match output.status_summary.presentation_level() {
             StatusLevel::Limited => Verdict::Limited,
             StatusLevel::Attention => Verdict::NeedsYou,
             StatusLevel::Healthy => {
@@ -138,16 +138,6 @@ impl Verdict {
                     Verdict::Ready
                 }
             }
-        }
-    }
-
-    /// Coarse verdict from a bare status level (for surfaces without the full
-    /// output, like the actions list). Cannot distinguish Preparing from Ready.
-    pub fn from_level(level: StatusLevel) -> Self {
-        match level {
-            StatusLevel::Healthy => Verdict::Ready,
-            StatusLevel::Attention => Verdict::NeedsYou,
-            StatusLevel::Limited => Verdict::Limited,
         }
     }
 
@@ -189,16 +179,12 @@ fn is_in_progress(output: &StatusCommandOutput) -> bool {
         output.event_watermarks.sync_state,
         Some(bowline_core::status::ComponentState::Ready)
     );
-    let index_catching_up = output
-        .index
-        .as_ref()
-        .is_some_and(|index| matches!(index.state, IndexState::Stale | IndexState::Rebuilding));
     let has_workspace = output
         .workspace_summary
         .as_ref()
         .and_then(|summary| summary.observed.as_ref())
         .is_some();
-    (sync_catching_up && has_workspace) || index_catching_up
+    sync_catching_up && has_workspace
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +281,7 @@ pub fn count_noun(count: u64, singular: &str, plural: &str) -> String {
 
 /// A shared `Next` actions block: a dim header plus `→ command   label` lines.
 /// Returns empty when there are no actions.
-pub fn next_actions_block(actions: &[SafeAction], pres: &Presentation) -> Vec<String> {
+pub fn next_actions_block(actions: &[RepairCommand], pres: &Presentation) -> Vec<String> {
     if actions.is_empty() {
         return Vec::new();
     }

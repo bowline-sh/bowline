@@ -10,14 +10,19 @@ use bowline_core::{
         DeviceApprovalRequest, DeviceApprovalRequestState, DeviceFingerprint, DevicePlatform,
         DeviceRecord, DeviceTrustState, EncryptedDeviceGrant, RecoveryKeyState,
     },
-    ids::{DeviceApprovalRequestId, DeviceId, EncryptedDeviceGrantId, WorkspaceId},
-    status::SafeAction,
+    ids::{DeviceApprovalRequestId, DeviceId, EncryptedDeviceGrantId, LeaseId, WorkspaceId},
+    status::RepairCommand,
 };
 
-use crate::device_keys::{DeviceKeyError, DeviceKeyStore, WorkspaceKeyMaterial};
+use crate::device_keys::{
+    DeviceKeyError, DeviceKeyStore, DeviceProofVerifier, WorkspaceKeyMaterial,
+};
 
 pub mod grants;
 pub mod recovery;
+
+#[cfg(test)]
+mod cache_tests;
 
 #[derive(Debug)]
 pub enum TrustError {
@@ -50,7 +55,7 @@ where
     let device_name = device_name.into();
     let generated_at = generated_at.into();
     let identity = key_store.load_or_create_device_identity()?;
-    let trust = control_plane.list_device_trust(workspace_id.as_str())?;
+    let trust = control_plane.list_device_trust(&workspace_id)?;
     if let Some(existing) = trust
         .authorized_devices
         .iter()
@@ -58,9 +63,9 @@ where
         .cloned()
     {
         if existing.device_fingerprint != identity.fingerprint.as_str() {
-            return Err(ControlPlaneError::Limited {
-                capability: "device-trust",
-                reason: "local device identity does not match the existing trust root",
+            return Err(ControlPlaneError::Rejected {
+                code: bowline_control_plane::RejectionCode::DeviceNotTrusted,
+                message: "local device identity does not match the existing trust root".to_string(),
             }
             .into());
         }
@@ -81,7 +86,7 @@ where
     }
     if !trust.revoked_devices.is_empty()
         || !control_plane
-            .list_recovery_envelopes(workspace_id.as_str())?
+            .list_recovery_envelopes(&workspace_id)?
             .is_empty()
     {
         return Err(ControlPlaneError::Conflict {
@@ -92,19 +97,25 @@ where
     }
 
     let device_authorization_proof_verifier =
-        grants::device_authorization_proof_verifier(&identity);
+        grants::device_authorization_proof_verifier(&identity).map_err(TrustError::Grant)?;
     if key_store.load_workspace_key(&workspace_id)?.is_none() {
         let generated = WorkspaceKeyMaterial::generate(workspace_id.clone(), 1)?;
         key_store.store_workspace_key(generated)?;
     }
     let authorized = control_plane.create_first_authorized_device(FirstAuthorizedDeviceInput {
-        workspace_id: workspace_id.as_str().to_string(),
-        device_id: device_id.as_str().to_string(),
+        workspace_id: workspace_id.clone(),
+        device_id: device_id.clone(),
         device_name: device_name.clone(),
         platform: platform_string(platform).to_string(),
         device_fingerprint: identity.fingerprint.as_str().to_string(),
         device_authorization_proof_verifier,
     })?;
+    cache_device_proof_verifier(
+        key_store,
+        workspace_id.clone(),
+        device_id.clone(),
+        grants::device_authorization_proof_verifier(&identity).map_err(TrustError::Grant)?,
+    )?;
 
     Ok(FirstDeviceTrustRoot {
         local_device: device_record_from_authorized(authorized, workspace_id, true, generated_at),
@@ -139,7 +150,9 @@ pub struct DeviceRequestOptions {
     pub device_name: String,
     pub platform: DevicePlatform,
     pub host: Option<String>,
+    pub lease_id: Option<String>,
     pub root: Option<String>,
+    pub runtime: Option<String>,
     pub generated_at: String,
 }
 
@@ -153,26 +166,35 @@ where
     K: DeviceKeyStore + ?Sized,
 {
     let identity = key_store.load_or_create_device_identity()?;
+    let device_authorization_proof_verifier =
+        grants::device_authorization_proof_verifier(&identity).map_err(TrustError::Grant)?;
     let matching_code = matching_code(
         options.workspace_id.as_str(),
         options.device_id.as_str(),
         identity.public_key.as_str(),
+        &device_authorization_proof_verifier,
     );
     let mut input = DeviceRequestInput::new(DeviceRequestInputDraft {
-        workspace_id: options.workspace_id.as_str().to_string(),
-        device_id: options.device_id.as_str().to_string(),
+        workspace_id: options.workspace_id.clone(),
+        device_id: options.device_id.clone(),
         device_name: options.device_name.clone(),
         device_public_key: identity.public_key.as_str().to_string(),
         device_fingerprint: identity.fingerprint.as_str().to_string(),
+        device_authorization_proof_verifier: device_authorization_proof_verifier.clone(),
         matching_code,
     });
     input.platform = platform_string(options.platform).to_string();
     input.host = options.host;
+    input.lease_id = options.lease_id.map(LeaseId::new);
     input.root = options.root;
-    input.device_authorization_proof_verifier =
-        grants::device_authorization_proof_verifier(&identity);
-
+    input.runtime = options.runtime;
     let request = control_plane.create_device_request(input)?;
+    cache_device_proof_verifier(
+        key_store,
+        options.workspace_id.clone(),
+        options.device_id.clone(),
+        device_authorization_proof_verifier,
+    )?;
     Ok(core_request_from_control_plane(request))
 }
 
@@ -193,7 +215,7 @@ where
     C: ControlPlaneClient + ?Sized,
     K: DeviceKeyStore + ?Sized,
 {
-    let trust = control_plane.list_device_trust(options.workspace_id.as_str())?;
+    let trust = control_plane.list_device_trust(&options.workspace_id)?;
     let request = trust
         .pending_requests
         .iter()
@@ -202,16 +224,29 @@ where
         .ok_or_else(|| {
             TrustError::MissingPendingRequest(options.request_id.as_str().to_string())
         })?;
+    let expected_matching_code = matching_code(
+        &request.workspace_id,
+        &request.device_id,
+        &request.device_public_key,
+        &request.device_authorization_proof_verifier,
+    );
+    if request.matching_code != expected_matching_code {
+        return Err(ControlPlaneError::Conflict {
+            resource: "device-request",
+            reason: "matching code does not bind requester verifier",
+        }
+        .into());
+    }
     let finish_command = request
         .root
         .as_ref()
         .map(|root| {
             format!(
-                "bowline login --root {} --no-poll --json",
-                crate::bootstrap::ssh::shell_quote(root)
+                "bowline setup --root {} --json",
+                bowline_core::shell::quote_word(root)
             )
         })
-        .unwrap_or_else(|| "bowline login --root <path> --no-poll --json".to_string());
+        .unwrap_or_else(|| "bowline setup --root <path> --json".to_string());
     let workspace_key = key_store
         .load_workspace_key(&options.workspace_id)?
         .ok_or_else(|| TrustError::MissingWorkspaceKey(options.workspace_id.clone()))?;
@@ -221,10 +256,20 @@ where
         &options.workspace_id,
         &options.approver_device_id,
         "approve-device-request",
-        options.request_id.as_str(),
-    );
-    let ciphertext = grants::encrypt_workspace_key_for_request(&workspace_key, &request)
-        .map_err(TrustError::Grant)?;
+        &grants::device_request_proof_subject(options.request_id.as_str()),
+    )
+    .map_err(TrustError::Grant)?;
+    let approved_by_device_proof_verifier =
+        grants::device_authorization_proof_verifier(&identity).map_err(TrustError::Grant)?;
+    let ciphertext = grants::encrypt_workspace_key_for_request(
+        &workspace_key,
+        &request,
+        Some(grants::DeviceGrantAuthorizer {
+            device_id: options.approver_device_id.clone(),
+            device_authorization_proof_verifier: approved_by_device_proof_verifier,
+        }),
+    )
+    .map_err(TrustError::Grant)?;
     let requester_device_id = DeviceId::new(request.device_id.clone());
     let grant_acceptance_proof =
         grants::grant_acceptance_proof(&workspace_key, &options.request_id, &requester_device_id);
@@ -232,13 +277,19 @@ where
         grants::grant_acceptance_proof_verifier(&grant_acceptance_proof);
     let approval = control_plane.approve_device_request(DeviceApprovalInput {
         request_id: request.request_id.clone(),
-        approved_by_device_id: options.approver_device_id.as_str().to_string(),
+        approved_by_device_id: options.approver_device_id.clone(),
         approved_by_device_proof,
         encrypted_grant_ciphertext: ciphertext,
         grant_acceptance_proof_verifier,
         key_epoch: workspace_key.key_epoch,
         expires_in_ticks: 600,
     })?;
+    cache_device_proof_verifier(
+        key_store,
+        options.workspace_id.clone(),
+        DeviceId::new(request.device_id.clone()),
+        request.device_authorization_proof_verifier.clone(),
+    )?;
     let approved_device = DeviceRecord {
         id: DeviceId::new(approval.device_id.clone()),
         name: approval.device_name.clone(),
@@ -269,13 +320,13 @@ where
         denied_request: None,
         revoked_device: None,
         recovery_key: Some(RecoveryKeyState::missing()),
-        next_actions: vec![SafeAction {
-            label: format!(
+        next_actions: vec![RepairCommand::mutating(
+            format!(
                 "{} can finish login on the requesting device",
                 approval.device_name
             ),
-            command: Some(finish_command),
-        }],
+            Some(finish_command),
+        )],
     })
 }
 
@@ -290,26 +341,44 @@ where
     C: ControlPlaneClient + ?Sized,
     K: DeviceKeyStore + ?Sized,
 {
-    let Some(grant) =
-        control_plane.get_encrypted_device_grant(request_id.as_str(), device_id.as_str())?
-    else {
+    let Some(grant) = control_plane.get_encrypted_device_grant(request_id, device_id)? else {
         return Err(TrustError::MissingPendingRequest(
             request_id.as_str().to_string(),
         ));
     };
     let identity = key_store.load_or_create_device_identity()?;
-    let material =
+    let decrypted =
         grants::decrypt_workspace_key_from_grant(&identity, &grant).map_err(TrustError::Grant)?;
-    if &material.workspace_id != workspace_id {
+    if &decrypted.workspace_key.workspace_id != workspace_id {
         return Err(TrustError::Grant(grants::GrantError::WorkspaceMismatch));
     }
-    let grant_acceptance_proof = grants::grant_acceptance_proof(&material, request_id, device_id);
+    if let Some(authorizing_device) = decrypted.authorizing_device.as_ref()
+        && authorizing_device.device_id.as_str() != grant.approved_by_device_id
+    {
+        return Err(TrustError::Grant(grants::GrantError::AuthorizerMismatch));
+    }
+    let grant_acceptance_proof =
+        grants::grant_acceptance_proof(&decrypted.workspace_key, request_id, device_id);
     let accepted = control_plane.confirm_device_grant_accepted(GrantAcceptanceInput {
-        request_id: request_id.as_str().to_string(),
-        device_id: device_id.as_str().to_string(),
+        request_id: request_id.clone(),
+        device_id: device_id.clone(),
         grant_acceptance_proof,
     })?;
-    key_store.store_workspace_key(material)?;
+    key_store.store_workspace_key(decrypted.workspace_key)?;
+    if let Some(authorizing_device) = decrypted.authorizing_device {
+        cache_device_proof_verifier(
+            key_store,
+            workspace_id.clone(),
+            authorizing_device.device_id,
+            authorizing_device.device_authorization_proof_verifier,
+        )?;
+    }
+    cache_device_proof_verifier(
+        key_store,
+        workspace_id.clone(),
+        device_id.clone(),
+        grants::device_authorization_proof_verifier(&identity).map_err(TrustError::Grant)?,
+    )?;
     Ok(EncryptedDeviceGrant {
         grant_id: EncryptedDeviceGrantId::new(accepted.grant_id),
         request_id: request_id.clone(),
@@ -324,6 +393,23 @@ where
         state: bowline_core::devices::EncryptedDeviceGrantState::Accepted,
         accepted_at: accepted.accepted_at.map(|timestamp| timestamp.to_string()),
     })
+}
+
+fn cache_device_proof_verifier<K>(
+    key_store: &K,
+    workspace_id: WorkspaceId,
+    device_id: DeviceId,
+    proof_verifier: String,
+) -> Result<(), TrustError>
+where
+    K: DeviceKeyStore + ?Sized,
+{
+    key_store.store_device_proof_verifier(DeviceProofVerifier {
+        workspace_id,
+        device_id,
+        proof_verifier,
+    })?;
+    Ok(())
 }
 
 impl fmt::Display for TrustError {
@@ -396,13 +482,23 @@ pub(crate) fn core_request_from_control_plane(
             }
         },
         host: request.host,
+        lease_id: request.lease_id.map(String::from),
+        lease_handoff_digest: request.lease_handoff_digest,
         root: request.root,
+        setup_receipts_digest: request.setup_receipts_digest,
     }
 }
 
-fn matching_code(workspace_id: &str, device_id: &str, public_key: &str) -> String {
-    let hash = blake3::hash(format!("{workspace_id}:{device_id}:{public_key}").as_bytes());
-    format!("bowline-{}", &hash.to_hex()[..6])
+fn matching_code(
+    workspace_id: &str,
+    device_id: &str,
+    public_key: &str,
+    proof_verifier: &str,
+) -> String {
+    let hash = blake3::hash(
+        format!("{workspace_id}:{device_id}:{public_key}:{proof_verifier}").as_bytes(),
+    );
+    format!("bowline-{}", hash.to_hex())
 }
 
 fn platform_string(platform: DevicePlatform) -> &'static str {
@@ -440,18 +536,18 @@ pub fn devices_output_for_request(
         denied_request: None,
         revoked_device: None,
         recovery_key: Some(RecoveryKeyState::missing()),
-        next_actions: vec![SafeAction {
-            label: "Approve this device from an already trusted device".to_string(),
-            command: None,
-        }],
+        next_actions: vec![RepairCommand::mutating(
+            "Approve this device from an already trusted device".to_string(),
+            None,
+        )],
     }
 }
 
 #[cfg(test)]
 mod tests {
     use bowline_control_plane::{
-        ControlPlaneClient, ControlPlaneError, DeterministicClock, DeterministicIdGenerator,
-        DeviceApprovalInput, FakeControlPlaneClient,
+        ControlPlaneError, DeterministicClock, DeterministicIdGenerator, DeviceApprovalInput,
+        DeviceControlPlaneClient, FakeControlPlaneClient,
     };
     use bowline_core::{
         devices::DevicePlatform,
@@ -459,14 +555,13 @@ mod tests {
     };
 
     use super::{
-        ApproveDeviceOptions, DeviceRequestOptions, TrustError, accept_device_grant,
-        approve_device_request, create_device_request, devices_output_for_request,
-        ensure_first_device_trust_root, grants,
+        DeviceRequestOptions, TrustError, accept_device_grant, create_device_request,
+        devices_output_for_request, ensure_first_device_trust_root, grants,
     };
     use crate::{
         device_keys::{
-            AccountTokens, DeviceIdentity, DeviceKeyError, DeviceKeyStore, SecretUnavailableReason,
-            WorkspaceKeyMaterial,
+            AccountTokens, DeviceIdentity, DeviceKeyError, DeviceKeyStore, DeviceProofVerifier,
+            SecretUnavailableReason, WorkspaceKeyMaterial,
         },
         fakes::FakeKeychain,
     };
@@ -504,6 +599,26 @@ mod tests {
             workspace_id: &WorkspaceId,
         ) -> Result<Option<WorkspaceKeyMaterial>, DeviceKeyError> {
             self.inner.load_workspace_key(workspace_id)
+        }
+
+        fn store_device_proof_verifier(
+            &self,
+            verifier: DeviceProofVerifier,
+        ) -> Result<(), DeviceKeyError> {
+            self.inner.store_device_proof_verifier(verifier)
+        }
+
+        fn load_device_proof_verifiers(&self) -> Result<Vec<DeviceProofVerifier>, DeviceKeyError> {
+            self.inner.load_device_proof_verifiers()
+        }
+
+        fn replace_device_proof_verifiers_for_workspace(
+            &self,
+            workspace_id: &WorkspaceId,
+            verifiers: Vec<DeviceProofVerifier>,
+        ) -> Result<(), DeviceKeyError> {
+            self.inner
+                .replace_device_proof_verifiers_for_workspace(workspace_id, verifiers)
         }
 
         fn mark_secret_unavailable(
@@ -581,7 +696,7 @@ mod tests {
             TrustError::DeviceKeys(DeviceKeyError::Unavailable(_))
         ));
         let trust = control_plane
-            .list_device_trust(workspace_id.as_str())
+            .list_device_trust(&workspace_id)
             .expect("trust list");
         assert!(trust.authorized_devices.is_empty());
     }
@@ -630,7 +745,7 @@ mod tests {
                 .is_none()
         );
         let trust = control_plane
-            .list_device_trust(workspace_id.as_str())
+            .list_device_trust(&workspace_id)
             .expect("trust list");
         assert_eq!(trust.authorized_devices.len(), 1);
         assert_eq!(original_key.workspace_id, workspace_id);
@@ -654,7 +769,9 @@ mod tests {
                 device_name: "Fresh Linux".to_string(),
                 platform: DevicePlatform::Linux,
                 host: None,
+                lease_id: None,
                 root: Some("~/Remote Code".to_string()),
+                runtime: None,
                 generated_at: "t000000000002".to_string(),
             },
         )
@@ -675,62 +792,6 @@ mod tests {
                 .first()
                 .and_then(|action| action.command.as_deref()),
             None
-        );
-    }
-
-    #[test]
-    fn approve_output_points_requester_at_login_finish_command() {
-        let control_plane = FakeControlPlaneClient::new(
-            DeterministicClock::new(1),
-            DeterministicIdGenerator::new("approve-finish-action-test"),
-        );
-        let workspace_id = WorkspaceId::new("workspace-approve-finish-action");
-        control_plane.create_workspace(workspace_id.as_str());
-        let trusted_keychain = FakeKeychain::default();
-        ensure_first_device_trust_root(
-            &control_plane,
-            &trusted_keychain,
-            workspace_id.clone(),
-            DeviceId::new("trusted-device"),
-            "Trusted Mac",
-            DevicePlatform::Macos,
-            "t000000000001",
-        )
-        .expect("first device");
-        let requester_keychain = FakeKeychain::default();
-        let request = create_device_request(
-            &control_plane,
-            &requester_keychain,
-            DeviceRequestOptions {
-                workspace_id: workspace_id.clone(),
-                device_id: DeviceId::new("fresh-linux"),
-                device_name: "Fresh Linux".to_string(),
-                platform: DevicePlatform::Linux,
-                host: None,
-                root: Some("~/Code Projects".to_string()),
-                generated_at: "t000000000002".to_string(),
-            },
-        )
-        .expect("fresh device request");
-
-        let output = approve_device_request(
-            &control_plane,
-            &trusted_keychain,
-            ApproveDeviceOptions {
-                workspace_id,
-                request_id: request.request_id,
-                approver_device_id: DeviceId::new("trusted-device"),
-                generated_at: "t000000000003".to_string(),
-            },
-        )
-        .expect("approve device request");
-
-        assert_eq!(
-            output
-                .next_actions
-                .first()
-                .and_then(|action| action.command.as_deref()),
-            Some("bowline login --root '~/Code Projects' --no-poll --json")
         );
     }
 
@@ -768,25 +829,27 @@ mod tests {
                 device_name: "Fresh Linux".to_string(),
                 platform: DevicePlatform::Linux,
                 host: None,
+                lease_id: None,
                 root: Some("~/Code".to_string()),
+                runtime: None,
                 generated_at: "t000000000002".to_string(),
             },
         )
         .expect("fresh device request");
         let pending_request = control_plane
-            .list_device_trust(workspace_id.as_str())
+            .list_device_trust(&workspace_id)
             .expect("trust list")
             .pending_requests
             .into_iter()
             .find(|pending| pending.request_id == request.request_id.as_str())
             .expect("pending request");
         let ciphertext =
-            grants::encrypt_workspace_key_for_request(&workspace_key, &pending_request)
+            grants::encrypt_workspace_key_for_request(&workspace_key, &pending_request, None)
                 .expect("grant ciphertext");
         control_plane
             .approve_device_request_for_harness(DeviceApprovalInput {
-                request_id: request.request_id.as_str().to_string(),
-                approved_by_device_id: "trusted-device".to_string(),
+                request_id: request.request_id.clone(),
+                approved_by_device_id: DeviceId::new("trusted-device"),
                 approved_by_device_proof: String::new(),
                 encrypted_grant_ciphertext: ciphertext,
                 grant_acceptance_proof_verifier: "gap_wrong".to_string(),
@@ -806,8 +869,8 @@ mod tests {
 
         assert!(matches!(
             error,
-            TrustError::ControlPlane(ControlPlaneError::Limited {
-                capability: "device-grant",
+            TrustError::ControlPlane(ControlPlaneError::Rejected {
+                code: bowline_control_plane::RejectionCode::DeviceNotTrusted,
                 ..
             })
         ));
@@ -818,7 +881,7 @@ mod tests {
                 .is_none()
         );
         let trust = control_plane
-            .list_device_trust(workspace_id.as_str())
+            .list_device_trust(&workspace_id)
             .expect("trust list");
         assert!(
             !trust

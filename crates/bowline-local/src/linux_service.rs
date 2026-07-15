@@ -1,11 +1,12 @@
 use std::{
-    env,
-    error::Error,
-    fmt, fs, io,
+    env, fmt, fs, io,
     path::{Path, PathBuf},
 };
 
-use crate::bootstrap::process::{ProcessError, ProcessRunner};
+use crate::{
+    bootstrap::process::ProcessRunner,
+    service_runtime::{self, ServiceRuntimeError},
+};
 
 pub const SERVICE_NAME: &str = "bowline.service";
 
@@ -42,18 +43,14 @@ pub enum LinuxServiceState {
     Unknown(String),
 }
 
-#[derive(Debug)]
-pub enum LinuxServiceError {
-    MissingHome,
-    Io(io::Error),
-    Process(ProcessError),
-    Unavailable(String),
-    CommandFailed {
-        program: String,
-        status_code: i32,
-        stderr: String,
-    },
+service_runtime::service_error! {
+    pub enum LinuxServiceError {
+        MissingHome => "HOME is unavailable",
+    }
+    io_context: "service file operation failed",
 }
+
+service_runtime::service_outcome_parts!(LinuxServiceOutcome, LinuxServiceState);
 
 pub fn current_platform_supported() -> bool {
     cfg!(target_os = "linux")
@@ -130,23 +127,20 @@ pub fn service_status<R>(
 where
     R: ProcessRunner,
 {
-    let output = runner.run(
+    let output = service_runtime::run_service_command(
+        runner,
         "systemctl",
-        &[
-            "--user".to_string(),
-            "show".to_string(),
-            SERVICE_NAME.to_string(),
-            "--property=ActiveState".to_string(),
-            "--value".to_string(),
+        [
+            "--user",
+            "show",
+            SERVICE_NAME,
+            "--property=ActiveState",
+            "--value",
         ],
-    )?;
-    if output.status_code != 0 {
-        return Err(systemctl_failure(
-            "systemctl",
-            output.status_code,
-            output.stderr,
-        ));
-    }
+        |_| false,
+        systemctl_failure,
+    )
+    .map_err(LinuxServiceError::from)?;
     let active = output.stdout.lines().next().unwrap_or("").trim();
     let state = match active {
         "active" => LinuxServiceState::Active,
@@ -176,42 +170,30 @@ pub fn unit_path(unit_dir: &Path) -> PathBuf {
 }
 
 fn outcome(unit_path: PathBuf, state: LinuxServiceState) -> LinuxServiceOutcome {
-    LinuxServiceOutcome {
-        service_name: SERVICE_NAME.to_string(),
-        unit_path,
-        state,
-    }
+    service_runtime::service_outcome(SERVICE_NAME, unit_path, state)
 }
 
 fn run_systemctl<R>(runner: &R, args: &[&str]) -> Result<(), LinuxServiceError>
 where
     R: ProcessRunner,
 {
-    let mut full_args = vec!["--user".to_string()];
-    full_args.extend(args.iter().map(|arg| arg.to_string()));
-    let output = runner.run("systemctl", &full_args)?;
-    if output.status_code != 0 {
-        return Err(systemctl_failure(
-            "systemctl",
-            output.status_code,
-            output.stderr,
-        ));
-    }
-    Ok(())
+    service_runtime::run_service_command(
+        runner,
+        "systemctl",
+        ["--user"].into_iter().chain(args.iter().copied()),
+        |_| false,
+        systemctl_failure,
+    )
+    .map(|_| ())
+    .map_err(LinuxServiceError::from)
 }
 
-fn systemctl_failure(program: &str, status_code: i32, stderr: String) -> LinuxServiceError {
-    if user_manager_unavailable(&stderr) {
-        return LinuxServiceError::Unavailable(
-            "systemd user manager is unavailable; start a user session or enable lingering"
-                .to_string(),
-        );
-    }
-    LinuxServiceError::CommandFailed {
-        program: program.to_string(),
-        status_code,
-        stderr,
-    }
+fn systemctl_failure(failure: service_runtime::CommandFailure) -> ServiceRuntimeError {
+    service_runtime::classify_command_failure(
+        failure,
+        user_manager_unavailable,
+        "systemd user manager is unavailable; start a user session or enable lingering",
+    )
 }
 
 fn user_manager_unavailable(stderr: &str) -> bool {
@@ -274,124 +256,19 @@ impl fmt::Display for LinuxServiceState {
     }
 }
 
-impl fmt::Display for LinuxServiceError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingHome => formatter.write_str("HOME is unavailable"),
-            Self::Io(error) => write!(formatter, "service file operation failed: {error}"),
-            Self::Process(error) => error.fmt(formatter),
-            Self::Unavailable(message) => formatter.write_str(message),
-            Self::CommandFailed {
-                program,
-                status_code,
-                stderr,
-            } => write!(
-                formatter,
-                "`{program}` failed with status {status_code}: {stderr}"
-            ),
-        }
-    }
-}
-
-impl Error for LinuxServiceError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            Self::Process(error) => Some(error),
-            _ => None,
-        }
-    }
-}
-
-impl From<io::Error> for LinuxServiceError {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
-impl From<ProcessError> for LinuxServiceError {
-    fn from(error: ProcessError) -> Self {
-        Self::Process(error)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, collections::VecDeque, fs, path::PathBuf, rc::Rc};
+    use std::{fs, path::PathBuf};
 
-    use crate::bootstrap::process::{ProcessError, ProcessOutput, ProcessRunner};
+    use crate::{
+        bootstrap::process::ProcessOutput,
+        service_runtime::test_support::{RecordingRunner, SequenceRunner},
+    };
 
     use super::{
         LinuxServiceConfig, LinuxServiceOptions, LinuxServiceState, install_or_update_service,
         render_systemd_user_unit, restart_service, service_status, uninstall_service, unit_path,
     };
-
-    #[derive(Clone)]
-    struct RecordingRunner {
-        calls: Rc<RefCell<Vec<Vec<String>>>>,
-        output: ProcessOutput,
-    }
-
-    impl RecordingRunner {
-        fn ok() -> Self {
-            Self {
-                calls: Rc::new(RefCell::new(Vec::new())),
-                output: ProcessOutput {
-                    status_code: 0,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                },
-            }
-        }
-
-        fn with_output(output: ProcessOutput) -> Self {
-            Self {
-                calls: Rc::new(RefCell::new(Vec::new())),
-                output,
-            }
-        }
-    }
-
-    impl ProcessRunner for RecordingRunner {
-        fn run(&self, program: &str, args: &[String]) -> Result<ProcessOutput, ProcessError> {
-            let mut call = vec![program.to_string()];
-            call.extend(args.iter().cloned());
-            self.calls.borrow_mut().push(call);
-            Ok(self.output.clone())
-        }
-    }
-
-    #[derive(Clone)]
-    struct SequenceRunner {
-        calls: Rc<RefCell<Vec<Vec<String>>>>,
-        outputs: Rc<RefCell<VecDeque<ProcessOutput>>>,
-    }
-
-    impl SequenceRunner {
-        fn new(outputs: Vec<ProcessOutput>) -> Self {
-            Self {
-                calls: Rc::new(RefCell::new(Vec::new())),
-                outputs: Rc::new(RefCell::new(outputs.into())),
-            }
-        }
-    }
-
-    impl ProcessRunner for SequenceRunner {
-        fn run(&self, program: &str, args: &[String]) -> Result<ProcessOutput, ProcessError> {
-            let mut call = vec![program.to_string()];
-            call.extend(args.iter().cloned());
-            self.calls.borrow_mut().push(call);
-            Ok(self
-                .outputs
-                .borrow_mut()
-                .pop_front()
-                .unwrap_or_else(|| ProcessOutput {
-                    status_code: 0,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                }))
-        }
-    }
 
     #[test]
     fn rendered_unit_runs_daemon_serve_directly() {

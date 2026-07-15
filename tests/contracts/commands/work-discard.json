@@ -1,6 +1,6 @@
 {
-  "contractVersion": 3,
-  "command": "discard",
+  "contractVersion": 8,
+  "command": "work discard",
   "generatedAt": "2026-06-25T12:00:04Z",
   "action": "discarded",
   "workView": {
@@ -24,7 +24,9 @@
     },
     "ownerDeviceId": "dev_mac",
     "followedBy": [],
-    "hostMaterializations": ["macbook"],
+    "hostMaterializations": [
+      "macbook"
+    ],
     "attention": [],
     "createdAt": "2026-06-25T12:00:00Z",
     "updatedAt": "2026-06-25T12:00:04Z"

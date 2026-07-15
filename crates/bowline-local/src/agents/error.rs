@@ -3,13 +3,28 @@ use super::*;
 #[derive(Debug)]
 pub enum AgentError {
     MissingWorkspace,
-    MissingProject { path: String },
-    MissingLease { lease_id: LeaseId },
-    MissingWorkView { id: String },
-    InvalidLease { reason: String },
-    ToolDenied { code: String },
+    MissingProject {
+        path: String,
+    },
+    MissingLease {
+        lease_id: LeaseId,
+    },
+    MissingWorkView {
+        id: String,
+    },
+    StaleBaseHeld {
+        summary: String,
+        remedy_command: String,
+    },
+    InvalidLease {
+        reason: String,
+    },
+    ToolDenied {
+        code: String,
+    },
     Metadata(MetadataError),
     WorkView(WorkViewError),
+    Setup(crate::setup::SetupRunError),
     Event(LocalEventError),
     Io(io::Error),
     Json(serde_json::Error),
@@ -30,10 +45,18 @@ impl fmt::Display for AgentError {
             Self::MissingWorkView { id } => {
                 write!(formatter, "lease work view `{id}` was not found")
             }
+            Self::StaleBaseHeld {
+                summary,
+                remedy_command,
+            } => write!(
+                formatter,
+                "agent lease is held by stale-base protection: {summary} Run `{remedy_command}` or pass --force-stale to start anyway."
+            ),
             Self::InvalidLease { reason } => write!(formatter, "agent lease is invalid: {reason}"),
             Self::ToolDenied { code } => write!(formatter, "agent tool denied: {code}"),
             Self::Metadata(error) => error.fmt(formatter),
             Self::WorkView(error) => error.fmt(formatter),
+            Self::Setup(error) => error.fmt(formatter),
             Self::Event(error) => error.fmt(formatter),
             Self::Io(error) => write!(formatter, "agent file operation failed: {error}"),
             Self::Json(error) => write!(formatter, "agent JSON operation failed: {error}"),
@@ -46,6 +69,7 @@ impl Error for AgentError {
         match self {
             Self::Metadata(error) => Some(error),
             Self::WorkView(error) => Some(error),
+            Self::Setup(error) => Some(error),
             Self::Event(error) => Some(error),
             Self::Io(error) => Some(error),
             Self::Json(error) => Some(error),
@@ -63,6 +87,12 @@ impl From<MetadataError> for AgentError {
 impl From<WorkViewError> for AgentError {
     fn from(error: WorkViewError) -> Self {
         Self::WorkView(error)
+    }
+}
+
+impl From<crate::setup::SetupRunError> for AgentError {
+    fn from(error: crate::setup::SetupRunError) -> Self {
+        Self::Setup(error)
     }
 }
 

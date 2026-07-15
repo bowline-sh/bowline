@@ -1,0 +1,40 @@
+{
+  "manifestVersion": 1,
+  "records": [
+    {
+      "declaration": "WireWorkspaceEvent",
+      "hostedAllowed": false,
+      "sensitiveFields": []
+    },
+    {
+      "declaration": "DeviceApprovalAffordance",
+      "hostedAllowed": false,
+      "sensitiveFields": [
+        {
+          "name": "code",
+          "redaction": "replace-with-redacted-marker"
+        },
+        {
+          "name": "approveCommand",
+          "redaction": "replace-with-redacted-marker"
+        }
+      ]
+    },
+    {
+      "declaration": "DaemonStatusScopeParams",
+      "hostedAllowed": false,
+      "sensitiveFields": []
+    },
+    {
+      "declaration": "DaemonDeviceActionParams",
+      "hostedAllowed": false,
+      "sensitiveFields": []
+    },
+    {
+      "declaration": "DaemonSyncRequestParams",
+      "hostedAllowed": false,
+      "sensitiveFields": []
+    }
+  ],
+  "schemaHash": "90aaff183a675d00a355085f8a588d3d135b786f9e88fb8cde5c8a153078173e"
+}

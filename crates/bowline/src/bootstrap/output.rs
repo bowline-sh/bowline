@@ -1,4 +1,5 @@
 use super::*;
+use bowline_core::status::RepairCommand;
 
 pub(super) fn output_base(
     args: &BootstrapSshArgs,
@@ -11,7 +12,7 @@ pub(super) fn output_base(
         local_root: runtime::active_workspace_root(),
         generated_at: generated_at.to_string(),
         steps,
-        agent_handoff: requested_agent_handoff(args),
+        remote_status_items: Vec::new(),
     }
 }
 
@@ -52,7 +53,7 @@ pub(super) fn bootstrap_output(
     } else {
         BootstrapSyncState::Blocked
     };
-    let next_actions = bootstrap_next_actions(&base, trusted, sync, &remote_status);
+    let repair_actions = bootstrap_repair_actions(&base, trusted, sync, &remote_status);
 
     BootstrapSshCommandOutput {
         contract_version: CONTRACT_VERSION,
@@ -75,53 +76,39 @@ pub(super) fn bootstrap_output(
         sync,
         next_required_phase: None,
         remote_status,
-        next_actions,
+        repair_actions,
     }
 }
 
-pub(super) fn bootstrap_next_actions(
+// Bootstrap no longer launches or supervises the remote agent — the trusted host
+// materializes the workspace on arrival. This surface is now purely trust/repair
+// guidance: inspect / retry / verify-trust remedies for blocked bootstrap steps.
+pub(super) fn bootstrap_repair_actions(
     base: &BootstrapOutputBase,
     trusted: bool,
     sync: BootstrapSyncState,
     remote_status: &WorkspaceStatus,
-) -> Vec<SafeAction> {
+) -> Vec<RepairCommand> {
     let mut actions = Vec::new();
     let root = remote_path_arg(&base.root);
     let remote_status_command =
         ssh_command(&base.host, &format!("bowline status --root {root} --json"));
 
     if trusted {
-        actions.push(SafeAction {
-            label: "Inspect remote status".to_string(),
-            command: Some(remote_status_command.clone()),
-        });
-        actions.push(SafeAction {
-            label: "Inspect remote next actions".to_string(),
-            command: Some(remote_status_command.clone()),
-        });
+        actions.push(RepairCommand::inspect(
+            "Inspect remote status",
+            Some(remote_status_command.clone()),
+        ));
     }
 
     match sync {
-        BootstrapSyncState::Ready => {
-            if let Some(handoff) = &base.agent_handoff {
-                actions.extend(agent_handoff_actions(base, handoff));
-            } else {
-                actions.push(SafeAction {
-                    label: "Start agent work in a project".to_string(),
-                    command: Some(ssh_command(
-                        &base.host,
-                        &format!(
-                            "cd {root}/<project> && bowline agent start . --task '<task>' --base latest-workspace --hydrate-budget 512MiB --json"
-                        ),
-                    )),
-                });
-            }
-        }
+        // Ready: the workspace materializes on the trusted host; no repair needed.
+        BootstrapSyncState::Ready => {}
         BootstrapSyncState::Prepared => {
-            actions.push(SafeAction {
-                label: "Start the remote daemon".to_string(),
-                command: Some(ssh_command(&base.host, "bowline daemon start --json")),
-            });
+            actions.push(RepairCommand::mutating(
+                "Start the remote daemon",
+                Some(ssh_command(&base.host, "bowline daemon start --json")),
+            ));
         }
         BootstrapSyncState::Blocked => {
             if let Some(blocked) = base
@@ -130,228 +117,151 @@ pub(super) fn bootstrap_next_actions(
                 .rev()
                 .find(|step| step.state == BootstrapStepState::Blocked)
             {
-                actions.extend(blocked_step_actions(
-                    base,
-                    blocked.name.as_str(),
-                    remote_status,
-                ));
+                actions.extend(blocked_repair_actions(base, blocked.name));
             } else if remote_status.needs_attention() {
-                actions.push(SafeAction {
-                    label: "Inspect remote status".to_string(),
-                    command: Some(remote_status_command),
-                });
+                actions.push(RepairCommand::inspect(
+                    "Inspect remote status",
+                    Some(remote_status_command),
+                ));
             }
         }
     }
 
-    dedupe_actions(actions)
+    dedupe_repair_actions(actions)
 }
 
-pub(super) fn blocked_step_actions(
+pub(super) fn blocked_repair_actions(
     base: &BootstrapOutputBase,
-    blocked_step: &str,
-    remote_status: &WorkspaceStatus,
-) -> Vec<SafeAction> {
+    blocked_step: BootstrapStepName,
+) -> Vec<RepairCommand> {
     let root = remote_path_arg(&base.root);
     let local_root = remote_path_arg(base.local_root.as_deref().unwrap_or("~/Code"));
-    let retry = SafeAction {
-        label: "Retry remote bootstrap".to_string(),
-        command: Some(format!(
+    let retry = RepairCommand::mutating(
+        "Retry remote bootstrap",
+        Some(format!(
             "bowline connect {} --root {} --json",
-            shell_quote(&base.host),
-            shell_quote(&base.root)
+            bowline_core::shell::quote_word(&base.host),
+            bowline_core::shell::quote_word(&base.root)
         )),
-    };
+    );
     match blocked_step {
-        "install" | "authorize-bootstrap" | "control-plane" => vec![retry],
-        "request" | "parse" | "compare" | "accept" => vec![
-            SafeAction {
-                label: "Inspect remote device requests".to_string(),
-                command: Some(ssh_command(
+        BootstrapStepName::Install
+        | BootstrapStepName::AuthorizeBootstrap
+        | BootstrapStepName::ControlPlane
+        | BootstrapStepName::RemoteAuth => vec![retry],
+        BootstrapStepName::Request
+        | BootstrapStepName::Parse
+        | BootstrapStepName::Compare
+        | BootstrapStepName::Accept => vec![
+            RepairCommand::inspect(
+                "Inspect remote device requests",
+                Some(ssh_command(
                     &base.host,
                     &format!("bowline status --root {root} --json"),
                 )),
-            },
+            ),
             retry,
         ],
-        "approve" => vec![
-            SafeAction {
-                label: "Inspect local device requests".to_string(),
-                command: Some(format!("bowline status --root {local_root} --json")),
-            },
+        BootstrapStepName::Approve => vec![
+            RepairCommand::inspect(
+                "Inspect local device requests",
+                Some(format!("bowline status --root {local_root} --json")),
+            ),
             retry,
         ],
-        "trust" => vec![
-            SafeAction {
-                label: "Verify local device trust".to_string(),
-                command: Some(format!("bowline status --root {local_root} --json")),
-            },
-            SafeAction {
-                label: "Verify remote device trust".to_string(),
-                command: Some(ssh_command(
+        BootstrapStepName::Trust => vec![
+            RepairCommand::inspect(
+                "Verify local device trust",
+                Some(format!("bowline status --root {local_root} --json")),
+            ),
+            RepairCommand::inspect(
+                "Verify remote device trust",
+                Some(ssh_command(
                     &base.host,
                     &format!("bowline status --root {root} --json"),
                 )),
-            },
+            ),
             retry,
         ],
-        "prepare-root" => vec![
-            SafeAction {
-                label: "Log in on remote root".to_string(),
-                command: Some(ssh_command(
+        BootstrapStepName::PrepareRoot => vec![
+            RepairCommand::mutating(
+                "Set up remote root",
+                Some(ssh_command(
                     &base.host,
-                    &format!("bowline login --root {root} --no-poll --json"),
+                    &format!("bowline setup --root {root} --json"),
                 )),
-            },
+            ),
             retry,
         ],
-        "daemon-start" | "daemon-status" => vec![
-            SafeAction {
-                label: "Start remote daemon".to_string(),
-                command: Some(ssh_command(&base.host, "bowline daemon start --json")),
-            },
-            SafeAction {
-                label: "Inspect remote daemon status".to_string(),
-                command: Some(ssh_command(&base.host, "bowline daemon status --json")),
-            },
-            retry,
-        ],
-        "sync" => vec![
-            SafeAction {
-                label: "Inspect remote daemon status".to_string(),
-                command: Some(ssh_command(&base.host, "bowline daemon status --json")),
-            },
-            SafeAction {
-                label: "Inspect remote status".to_string(),
-                command: Some(ssh_command(
+        BootstrapStepName::MetadataDefault => vec![
+            RepairCommand::inspect(
+                "Inspect remote status",
+                Some(ssh_command(
                     &base.host,
                     &format!("bowline status --root {root} --json"),
                 )),
-            },
+            ),
             retry,
         ],
-        "agent-lease" | "agent-run" | "agent-complete" | "agent-accept" => base
-            .agent_handoff
-            .as_ref()
-            .map(|handoff| {
-                let mut actions = Vec::new();
-                if remote_status_mentions_conflict(remote_status) {
-                    actions.push(SafeAction {
-                        label: "Resolve remote conflicts".to_string(),
-                        command: Some(ssh_command(
-                            &base.host,
-                            &format!("bowline resolve {} --json", remote_path_arg(&base.root)),
-                        )),
-                    });
-                }
-                actions.push(agent_lease_create_action(base, handoff));
-                actions.push(retry.clone());
-                actions
-            })
-            .unwrap_or_else(|| vec![retry]),
-        _ => vec![retry],
+        BootstrapStepName::DaemonStart | BootstrapStepName::DaemonStatus => vec![
+            RepairCommand::mutating(
+                "Start remote daemon",
+                Some(ssh_command(&base.host, "bowline daemon start --json")),
+            ),
+            RepairCommand::inspect(
+                "Inspect remote daemon status",
+                Some(ssh_command(&base.host, "bowline daemon status --json")),
+            ),
+            retry,
+        ],
+        BootstrapStepName::Sync => vec![
+            RepairCommand::inspect(
+                "Inspect remote daemon status",
+                Some(ssh_command(&base.host, "bowline daemon status --json")),
+            ),
+            RepairCommand::inspect(
+                "Inspect remote status",
+                Some(ssh_command(
+                    &base.host,
+                    &format!("bowline status --root {root} --json"),
+                )),
+            ),
+            retry,
+        ],
+        // The handoff lease is prepared, but bootstrap does not launch/complete/
+        // accept the agent; a blocked handoff is repaired by resolving remote
+        // conflicts (if any) and retrying, never by an agent-launch action.
+        BootstrapStepName::AgentLease => {
+            let mut actions = Vec::new();
+            if remote_status_has_conflict(&base.remote_status_items) {
+                actions.push(RepairCommand::inspect(
+                    "Resolve remote conflicts",
+                    Some(ssh_command(
+                        &base.host,
+                        &format!("bowline resolve {} --json", remote_path_arg(&base.root)),
+                    )),
+                ));
+            }
+            actions.push(retry);
+            actions
+        }
     }
 }
 
-pub(super) fn remote_status_mentions_conflict(status: &WorkspaceStatus) -> bool {
-    status
-        .attention_items
+pub(super) fn remote_status_has_conflict(items: &[StatusItem]) -> bool {
+    items
         .iter()
-        .any(|item| item.to_ascii_lowercase().contains("conflict"))
-}
-
-pub(super) fn agent_handoff_actions(
-    base: &BootstrapOutputBase,
-    handoff: &BootstrapAgentHandoff,
-) -> Vec<SafeAction> {
-    if handoff.accepted {
-        return Vec::new();
-    }
-    let Some(lease_id) = handoff.lease_id.as_deref() else {
-        return vec![agent_lease_create_action(base, handoff)];
-    };
-    let mut actions = Vec::new();
-    if let Some(path) = handoff.write_target_path.as_deref() {
-        actions.push(SafeAction {
-            label: match handoff.write_target_mode {
-                Some(AgentWriteTargetMode::Direct) => "Open remote agent project".to_string(),
-                Some(AgentWriteTargetMode::WorkView) => "Open remote agent work view".to_string(),
-                None => "Open remote agent target".to_string(),
-            },
-            command: Some(ssh_command(
-                &base.host,
-                &format!("cd {}", remote_path_arg(path)),
-            )),
-        });
-    }
-    actions.push(SafeAction {
-        label: "Inspect remote agent context".to_string(),
-        command: Some(ssh_command(
-            &base.host,
-            &format!(
-                "bowline agent context --lease {} --json",
-                shell_quote(lease_id)
-            ),
-        )),
-    });
-    if !handoff.launched
-        && handoff.agent.as_deref() == Some("codex")
-        && let Some(path) = handoff.write_target_path.as_deref()
-    {
-        actions.push(SafeAction {
-            label: match handoff.write_target_mode {
-                Some(AgentWriteTargetMode::Direct) => "Launch Codex on remote project".to_string(),
-                Some(AgentWriteTargetMode::WorkView) => {
-                    "Launch Codex on remote work view".to_string()
-                }
-                None => "Launch Codex on remote target".to_string(),
-            },
-            command: Some(ssh_command(
-                &base.host,
-                &format!(
-                    "export PATH=\"$HOME/.local/bin:$PATH\"; ~/.local/bin/bowline agent prompt --lease {} | codex exec --cd {} --sandbox workspace-write --add-dir ~/.local/share/bowline --add-dir ~/.local/state/bowline --add-dir ~/.local/state/bowline --add-dir \"$HOME/Library/Application Support/bowline\" --skip-git-repo-check -",
-                    shell_quote(lease_id),
-                    remote_path_arg(path),
-                ),
-            )),
-        });
-    }
-    actions.push(SafeAction {
-        label: match handoff.agent.as_deref() {
-            Some(agent) => format!("Copy prompt for {agent}"),
-            None => "Copy remote agent prompt".to_string(),
-        },
-        command: Some(ssh_command(
-            &base.host,
-            &format!("bowline agent prompt --lease {}", shell_quote(lease_id)),
-        )),
-    });
-    actions
-}
-
-pub(super) fn agent_lease_create_action(
-    base: &BootstrapOutputBase,
-    handoff: &BootstrapAgentHandoff,
-) -> SafeAction {
-    let root = remote_path_arg(&base.root);
-    let project = remote_path_arg(&handoff.project);
-    SafeAction {
-        label: "Start remote agent work".to_string(),
-        command: Some(ssh_command(
-            &base.host,
-            &format!(
-                "cd {root} && bowline agent start {project} --task {} --base latest-workspace --hydrate-budget 512MiB --json",
-                shell_quote(&handoff.task),
-            ),
-        )),
-    }
+        .any(|item| item.kind == StatusItemKind::Conflict)
 }
 
 pub(super) fn ssh_command(host: &str, remote_command: &str) -> String {
     format!(
         "ssh {} {}",
-        shell_quote(host),
-        shell_quote(&format!("bash -lc {}", shell_quote(remote_command)))
+        bowline_core::shell::quote_word(host),
+        bowline_core::shell::quote_word(&format!(
+            "bash -lc {}",
+            bowline_core::shell::quote_word(remote_command)
+        ))
     )
 }
 
@@ -363,35 +273,17 @@ pub(super) fn remote_path_arg(path: &str) -> String {
         if rest.is_empty() {
             return "~/".to_string();
         }
-        if shell_safe_path(rest) {
-            return format!("~/{rest}");
-        }
-        return format!("~/{}", shell_quote(rest));
+        return format!("~/{}", bowline_core::shell::quote_word(rest));
     }
-    if shell_safe_path(path) {
-        return path.to_string();
-    }
-    shell_quote(path)
+    bowline_core::shell::quote_word(path)
 }
 
-pub(super) fn shell_safe_path(value: &str) -> bool {
-    !value.is_empty()
-        && value.chars().all(|character| {
-            character.is_ascii_alphanumeric()
-                || matches!(character, '/' | '.' | '_' | '-' | ':' | '@' | '+')
-        })
-}
-
-pub(super) fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r#"'"'"'"#))
-}
-
-pub(super) fn dedupe_actions(actions: Vec<SafeAction>) -> Vec<SafeAction> {
-    let mut deduped = Vec::new();
+pub(super) fn dedupe_repair_actions(actions: Vec<RepairCommand>) -> Vec<RepairCommand> {
+    let mut deduped: Vec<RepairCommand> = Vec::new();
     for action in actions {
-        let already_present = deduped.iter().any(|existing: &SafeAction| {
-            existing.label == action.label && existing.command == action.command
-        });
+        let already_present = deduped
+            .iter()
+            .any(|existing| existing.label == action.label && existing.command == action.command);
         if !already_present {
             deduped.push(action);
         }
@@ -400,12 +292,12 @@ pub(super) fn dedupe_actions(actions: Vec<SafeAction>) -> Vec<SafeAction> {
 }
 
 pub(super) fn step(
-    name: impl Into<String>,
+    name: BootstrapStepName,
     state: BootstrapStepState,
     summary: impl Into<String>,
 ) -> BootstrapStep {
     BootstrapStep {
-        name: name.into(),
+        name,
         state,
         summary: summary.into(),
     }

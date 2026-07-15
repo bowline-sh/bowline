@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
 
 import {
   ACCESS_FLAGS,
+  CONTROL_PLANE_SUPPORT_CAPABILITIES,
   EVENT_NAMES,
   isEventName,
+  isDeviceApprovalAffordance,
+  isRepairCommand,
   isStatusCommandOutput,
   MATERIALIZATION_MODES,
   parseEventName,
@@ -15,23 +17,11 @@ import {
   statusNeedsAttention,
   type WorkspaceStatus,
 } from "../index";
-
-const statusFixtureNames = [
-  "healthy",
-  "attention",
-  "limited",
-  "conflict",
-  "pending-device",
-  "degraded-watcher",
-  "active-lease",
-  "review-ready-lease",
-  "metadata-corrupt-limited",
-  "stale-agent-base",
-  "work-view-attention",
-  "index-ready",
-  "index-degraded",
-  "sync-queue-limited",
-] as const;
+import {
+  isRecord,
+  manifestEntriesFor,
+  readContractFixture,
+} from "./support/contractFixtures";
 
 describe("workspace status contract", () => {
   it("treats healthy status without attention items as quiet", () => {
@@ -84,11 +74,6 @@ describe("workspace status contract", () => {
       "hydration.started",
       "hydration.completed",
       "hydration.blocked",
-      "hydration.budget_reserved",
-      "hydration.budget_committed",
-      "hydration.budget_released",
-      "hydration.budget_denied",
-      "hydration.budget_override_granted",
       "policy.classified",
       "policy.needs_approval",
       "policy.changed",
@@ -105,28 +90,23 @@ describe("workspace status contract", () => {
       "work.accepted",
       "work.discarded",
       "work.restored",
-      "work.expired",
-      "work.archived",
       "work.cleanup_previewed",
       "work.cleanup_completed",
       "lease.created",
       "lease.updated",
-      "lease.expired",
+      "lease.dispatched",
+      "lease.claimed",
       "lease.completed",
-      "lease.blocked",
-      "lease.revoked",
+      "lease.cancelled",
+      "lease.extended",
       "lease.review_ready",
-      "lease.tool_invoked",
-      "lease.tool_denied",
-      "lease.hydration_requested",
-      "lease.cleanup_completed",
       "overlay.changed",
-      "publish.requested",
       "conflict.created",
       "conflict.bundle_created",
       "conflict.resolution_proposed",
       "conflict.resolution_accepted",
       "conflict.resolution_rejected",
+      "merge.plugin_applied",
       "daemon.degraded",
       "daemon.recovered",
       "device.approval_requested",
@@ -139,12 +119,11 @@ describe("workspace status contract", () => {
       "recovery_key.revoked",
       "auth.login_started",
       "auth.login_completed",
-      "index.updated",
-      "index.degraded",
       "sync.started",
       "sync.completed",
       "sync.limited",
       "sync.degraded",
+      "sync.stat_cache_divergence",
       "sync.recovered",
       "watcher.degraded",
       "watcher.recovered",
@@ -152,10 +131,18 @@ describe("workspace status contract", () => {
       "network.recovered",
       "metadata.corrupt",
     ]);
-    expect(SCHEMA_SOURCE_OF_TRUTH).toBe("hand-written-fixtures");
+    expect(SCHEMA_SOURCE_OF_TRUTH).toBe("contracts/wire");
+    expect(CONTROL_PLANE_SUPPORT_CAPABILITIES).toEqual([
+      "device-approval",
+      "project-scoped-workspace-ref-cas",
+      "work-view",
+      "agent-lease",
+      "encrypted-object-store",
+      "recovery",
+    ]);
   });
 
-  it.each(statusFixtureNames)(
+  it.each(statusFixtureNames())(
     "accepts the shared %s status fixture",
     (fixtureName) => {
       const fixture = readStatusFixture(fixtureName);
@@ -177,30 +164,210 @@ describe("workspace status contract", () => {
     },
   );
 
-  it("rejects unknown status levels and event names", () => {
+  it("rejects unknown status levels and preserves unknown event names", () => {
     expect(() => parseStatusLevel("blocked")).toThrow(
       "Unknown status level: blocked",
     );
-    expect(() => parseEventName("status.unknown")).toThrow(
-      "Unknown event name: status.unknown",
+    expect(parseEventName("status.unknown")).toBe("status.unknown");
+  });
+
+  it("accepts concrete repair commands with a producer-set mutation flag", () => {
+    expect(
+      isRepairCommand({
+        label: "Resolve conflicts",
+        command: "bowline resolve ~/Code",
+        mutates: true,
+      }),
+    ).toBe(true);
+
+    expect(
+      isRepairCommand({
+        label: "Review path policy",
+        mutates: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects repair commands missing the mutation flag", () => {
+    expect(
+      isRepairCommand({
+        label: "Resolve conflicts",
+        command: "bowline resolve ~/Code",
+      }),
+    ).toBe(false);
+
+    expect(
+      isRepairCommand({
+        command: "bowline resolve ~/Code",
+        mutates: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts device-approval affordances and rejects malformed ones", () => {
+    expect(
+      isDeviceApprovalAffordance({
+        requestId: "device-request:ws_code:dev-mac",
+        deviceName: "Dev Mac",
+        code: "42-31",
+        approveCommand: "bowline device approve --root ~/Code --code 42-31",
+      }),
+    ).toBe(true);
+
+    expect(
+      isDeviceApprovalAffordance({
+        requestId: "device-request:ws_code:dev-mac",
+        deviceName: "Dev Mac",
+        approveCommand: "bowline device approve --root ~/Code --code 42-31",
+      }),
+    ).toBe(false);
+  });
+
+  it("applies device-approval refinements inside status output", () => {
+    const approval = {
+      requestId: "device-request:ws_code:dev-mac",
+      deviceName: "Dev Mac",
+      code: "42-31",
+      approveCommand: "bowline device approve --root ~/Code --code 42-31",
+    };
+    const withApprovals = {
+      ...expectRecord(readStatusFixture("healthy")),
+      deviceApprovals: [approval, { ...approval, requestId: "second" }],
+    };
+
+    expect(isStatusCommandOutput(withApprovals)).toBe(true);
+    expect(
+      isStatusCommandOutput({
+        ...withApprovals,
+        deviceApprovals: [approval, { ...approval, requestId: "" }],
+      }),
+    ).toBe(false);
+    expect(
+      isStatusCommandOutput({
+        ...withApprovals,
+        deviceApprovals: [approval, { ...approval, approveCommand: "" }],
+      }),
+    ).toBe(false);
+    expect(isDeviceApprovalAffordance({ ...approval, requestId: "" })).toBe(
+      false,
     );
+    const withoutDeviceName = { ...approval } as Partial<typeof approval>;
+    delete withoutDeviceName.deviceName;
+    expect(isDeviceApprovalAffordance(withoutDeviceName)).toBe(false);
+    expect(isDeviceApprovalAffordance({ ...approval, deviceName: "" })).toBe(
+      false,
+    );
+    expect(
+      isDeviceApprovalAffordance({ ...approval, approveCommand: "" }),
+    ).toBe(false);
+    expect(
+      isStatusCommandOutput({
+        ...withApprovals,
+        deviceApprovals: [{ ...approval, code: 42 }],
+      }),
+    ).toBe(false);
+    expect(isStatusCommandOutput(readStatusFixture("healthy"))).toBe(true);
+  });
+
+  it("rejects unknown typed support capabilities", () => {
+    const fixture = {
+      ...expectRecord(readStatusFixture("healthy")),
+      limits: [
+        {
+          capability: "Control plane support",
+          supportCapability: "teleport-workspace",
+          unavailableBecause: "The hosted control plane does not support it.",
+          stillWorks: ["Local status"],
+        },
+      ],
+    };
+
+    expect(isStatusCommandOutput(fixture)).toBe(false);
   });
 
   it("rejects status output without workspaceId", () => {
     const withoutWorkspaceId = {
-      ...(readStatusFixture("healthy") as Record<string, unknown>),
+      ...expectRecord(readStatusFixture("healthy")),
     };
     delete withoutWorkspaceId.workspaceId;
 
     expect(isStatusCommandOutput(withoutWorkspaceId)).toBe(false);
   });
+
+  it("requires sync queue counters to be nonnegative integers", () => {
+    const negative = expectRecord(readStatusFixture("sync-queue-limited"));
+    expectRecord(negative.syncQueue).queued = -1;
+    expect(isStatusCommandOutput(negative)).toBe(false);
+
+    const fractional = expectRecord(readStatusFixture("sync-queue-limited"));
+    expectRecord(fractional.syncQueue).queued = 1.5;
+    expect(isStatusCommandOutput(fractional)).toBe(false);
+  });
+
+  it("rejects unknown setup readiness states", () => {
+    const invalid = {
+      ...expectRecord(readStatusFixture("setup-readiness-blocked")),
+      setupReadiness: {
+        ...expectRecord(
+          expectRecord(readStatusFixture("setup-readiness-blocked"))
+            .setupReadiness,
+        ),
+        state: "ready-ish",
+      },
+    };
+
+    expect(isStatusCommandOutput(invalid)).toBe(false);
+  });
+
+  it("accepts needs-setup setup readiness with a concrete remedy", () => {
+    const fixture = {
+      ...expectRecord(readStatusFixture("setup-readiness-blocked")),
+      setupReadiness: {
+        state: "needs-setup",
+        reason: "Lockfile-backed setup has not run for pnpm-lock.yaml.",
+        remedy: "Run setup for this hot project on the current machine.",
+        identityHash: "setupid_needs",
+      },
+      nextActions: [
+        {
+          label: "Run setup",
+          command: "bowline setup apps/web",
+          mutates: true,
+        },
+      ],
+    };
+
+    expect(isStatusCommandOutput(fixture)).toBe(true);
+  });
+
+  it("accepts runnable setup readiness without receipt metadata", () => {
+    const fixture = {
+      ...expectRecord(readStatusFixture("setup-readiness-blocked")),
+      setupReadiness: {
+        state: "runnable",
+        reason: "No setup recipe or lockfile-backed restore is required.",
+      },
+    };
+
+    expect(isStatusCommandOutput(fixture)).toBe(true);
+  });
 });
 
-function readStatusFixture(name: string): unknown {
-  const fixtureUrl = new URL(
-    `../../../../tests/contracts/status/${name}.json`,
-    import.meta.url,
+function statusFixtureNames(): string[] {
+  return manifestEntriesFor("status", "StatusCommandOutput").map((entry) =>
+    entry.path.replace(/^status\//, "").replace(/\.json$/, ""),
   );
+}
 
-  return JSON.parse(readFileSync(fixtureUrl, "utf8")) as unknown;
+function readStatusFixture(name: string): unknown {
+  return readContractFixture(`status/${name}.json`);
+}
+
+function expectRecord(value: unknown): Record<string, unknown> {
+  expect(isRecord(value)).toBe(true);
+  if (!isRecord(value)) {
+    throw new Error("Expected fixture to be a JSON object");
+  }
+
+  return value;
 }

@@ -6,8 +6,16 @@ export const ACCOUNT_SESSION_ERROR_CODES = {
   revoked: "account_session_revoked",
 } as const;
 
+export const WORKSPACE_ACCESS_ERROR_CODES = {
+  membershipRequired: "control_plane/workspace_membership_required",
+  ownerRequired: "control_plane/workspace_owner_required",
+} as const;
+
 export type AccountSessionErrorCode =
   (typeof ACCOUNT_SESSION_ERROR_CODES)[keyof typeof ACCOUNT_SESSION_ERROR_CODES];
+
+export type WorkspaceAccessErrorCode =
+  (typeof WORKSPACE_ACCESS_ERROR_CODES)[keyof typeof WORKSPACE_ACCESS_ERROR_CODES];
 
 export type AccountLoginStatus =
   | "not-logged-in"

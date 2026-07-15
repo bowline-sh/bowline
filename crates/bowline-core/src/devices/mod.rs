@@ -67,7 +67,28 @@ pub struct DeviceApprovalRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_handoff_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_receipts_digest: Option<String>,
+}
+
+/// Short, human-comparable rendering of a device matching code.
+///
+/// The full `matching_code` (`bowline-<64 hex>`) is the binding value and must
+/// stay full wherever it is verified. This display-only token lets both devices
+/// render the same short code for eyeball comparison.
+pub fn display_matching_code(full: &str) -> String {
+    let digest = full.strip_prefix("bowline-").unwrap_or(full);
+    let head: String = digest.chars().take(8).collect();
+    if head.len() == 8 {
+        format!("{}-{}", &head[..4], &head[4..])
+    } else {
+        head
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -294,7 +315,7 @@ mod tests {
 
     use super::{
         AuthorizedDevice, DeviceApprovalRequest, DeviceApprovalRequestState, DeviceFingerprint,
-        DevicePlatform, PublicDeviceKey, approve_device,
+        DevicePlatform, PublicDeviceKey, approve_device, display_matching_code,
     };
 
     #[test]
@@ -312,7 +333,10 @@ mod tests {
             expires_at: "2026-06-23T12:10:00Z".to_string(),
             state: DeviceApprovalRequestState::Pending,
             host: Some("linux-server-1".to_string()),
+            lease_id: None,
+            lease_handoff_digest: None,
             root: Some("~/Code".to_string()),
+            setup_receipts_digest: None,
         };
 
         let device = approve_device(
@@ -334,5 +358,30 @@ mod tests {
                 device_fingerprint: DeviceFingerprint::new("fp_linux"),
             }
         );
+    }
+
+    #[test]
+    fn display_matching_code_groups_first_eight_digest_hex() {
+        assert_eq!(
+            display_matching_code(
+                "bowline-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            ),
+            "0123-4567"
+        );
+    }
+
+    #[test]
+    fn display_matching_code_is_deterministic_and_distinguishes_prefixes() {
+        let first = "bowline-aaaaaaaa9abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let second = "bowline-bbbbbbbb9abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        assert_eq!(display_matching_code(first), display_matching_code(first));
+        assert_ne!(display_matching_code(first), display_matching_code(second));
+    }
+
+    #[test]
+    fn display_matching_code_handles_short_unexpected_inputs() {
+        assert_eq!(display_matching_code("bowline-ab"), "ab");
+        assert_eq!(display_matching_code("xyz"), "xyz");
     }
 }

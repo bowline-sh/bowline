@@ -3,63 +3,65 @@ bowline command shell
 Discovery:
   bowline help [topic] [--json]
   bowline version [--json]
-  bowline contract --json
+  bowline contract [topic] [--summary] [--json]
+  bowline mcp [--lease <id>] [--token-file <path>] [--socket <path>]
 
 Workspace:
   bowline update [--check] [--version <version>] [--json]
-  bowline login --root <path> [--headless] [--no-poll]
+  bowline login [--headless] [--no-poll] [--json]
   bowline logout [--json]
-  bowline status --root <path> [--project <path>] [--watch] [--all] [--json]
-  bowline init --root <path> [--json]
-  bowline setup [path] [--yes] [--json]
-  bowline prewarm <project> [--approve-setup] [--json]
-  bowline actions --root <path> [--project <path>] [--json]
-  bowline search <query> [path] [--limit <n>] [--cursor <cursor>] [--path-prefix <prefix>] [--json]
-  bowline symbols <name> [path] [--limit <n>] [--cursor <cursor>] [--path-prefix <prefix>] [--json]
-  bowline explain <path> [--json]
-  bowline events --root <path> [--project <path>] [--limit <n>] [--json]
-  bowline resolve [path] [--tui|--copy-prompt|--diff <conflict>] [--json]
-  bowline tui --root <path> [--project <path>]
+  bowline status [--root <path>] [--project <path>] [--watch] [--all] [--json]
+  bowline setup [--root <path>] [--socket <path>] [--json] | bowline setup <path> [--yes] [--socket <path>] [--json]
+  bowline events [--root <path>] [--project <path>] [--limit <n>] [--json|--human|--quiet]
+  bowline history [path] [--limit <n>] [--cursor <cursor>] [--since <time>] [--until <time>] [--json|--human|--quiet]
+  bowline resolve [path] [--tui] [--copy-prompt] [--diff <conflict>] [--agent <agent>] [--accept <conflict>|--reject <conflict>] [--json]
+  bowline tui [--root <path>] [--project <path>] [--socket <path>]
+  bowline forget-local <project> [--yes] [--json] [--dry-run]
+  bowline archive <project> [--restore] [--json] [--dry-run]
+  bowline purge <project> [--grace <days>|--cancel] [--json] [--dry-run]
 
 Trust:
-  bowline approve --root <path> (--request <id>|--code <matching-code>) [--yes] [--json] [--dry-run] [--idempotency-key <key>]
-  bowline deny --root <path> (--request <id>|--code <matching-code>) [--json] [--dry-run] [--idempotency-key <key>]
-  bowline revoke --root <path> --device <id> [--json] [--dry-run] [--idempotency-key <key>]
-  bowline recover [status|create|verify <id>|rotate|revoke <id>|use <id>] [--json] [--dry-run] [--idempotency-key <key>]
-  bowline devices [request|accept] --root <path> [--request <id>] [--json]
-  bowline connect <host> [--root <path>] [--project <project> --task <task> --agent <agent>] [--json] [--dry-run] [--idempotency-key <key>]
+  bowline device approve [--root <path>] ((--request <id>|--code <short-code>)|--merge-plugin --id <id> --plugin-version <version> --digest <digest> [--matcher-version <version>] [--validator-version <version>]) [--yes] [--json] [--dry-run]
+  bowline device deny [--root <path>] (--request <id>|--code <short-code>) [--json] [--dry-run]
+  bowline device revoke [--root <path>] --device <id> [--json] [--dry-run]
+  bowline recover <status|create|verify <id>|rotate|revoke <id>|use <id>> [--json] [--dry-run]
+  bowline device list [--root <path>] [--json|--human|--quiet]
+  bowline device request [--root <path>] [--json]
+  bowline device accept [--root <path>] --request <id> [--json]
 
-Work:
-  bowline workon [project] <name> [--json] [--dry-run] [--idempotency-key <key>]
-  bowline work [--include-hidden] [--json]
-  bowline diff <target> [--json]
-  bowline review <target> [--json]
-  bowline accept <target> [--json] [--dry-run] [--idempotency-key <key>]
-  bowline discard <target> [--json] [--dry-run] [--idempotency-key <key>]
-  bowline restore <target> [--json] [--dry-run] [--idempotency-key <key>]
-  bowline cleanup [--apply] [--json] [--dry-run] [--idempotency-key <key>]
+Remote:
+  bowline connect <host> [--root <path>] [--binary <path>] [--project <project> --task <task> --agent <agent>] [--json] [--dry-run]
+  bowline handoff <target> [--agent codex|claude] [--session <id-or-path>] [--prompt <text>|--prompt-file <path>] [--project <path>] [--json] [--dry-run]
+  bowline lease join --root <path> [--lease <id>] [--runtime <runtime>] [--request <id>] [--token-env <name>] [--lease-json-env <name>] [--json] [--dry-run]
 
 Agent:
-  bowline agent start [project] --task <task> [--base <base>] [--hydrate-budget <bytes>] [--work-view] [--json] [--dry-run] [--idempotency-key <key>]
+  bowline agent start [project] --task <task> [--base <base>] [--work-view] [--force-stale] [--on <authorized-device>] [--remote <runtime>] [--remote-root <path>] [--json] [--dry-run]
   bowline agent context --lease <id> [--json]
   bowline agent prompt --lease <id> [--json]
-  bowline agent publish --lease <id> [--json] [--dry-run] [--idempotency-key <key>]
-  bowline agent complete --lease <id> [--json] [--dry-run] [--idempotency-key <key>]
-  bowline agent budget --lease <id> --add <bytes> [--json] [--dry-run] [--idempotency-key <key>]
+  bowline agent complete --lease <id> [--json] [--dry-run]
+  bowline agent cancel --lease <id> [--json] [--dry-run]
+  bowline agent extend --lease <id> --hours <1..168> [--json] [--dry-run]
+  bowline agent mcp-token --lease <id> [--json]
+
+Work:
+  bowline work create [project] <name> [--from <restore-point>] [--json] [--dry-run]
+  bowline work list [--all] [--json|--human|--quiet]
+  bowline work diff [target] [--path <glob>...] [--json]
+  bowline work review <target> [--path <glob>...] [--json]
+  bowline work accept <target> [--path <glob>...] [--json] [--dry-run]
+  bowline work discard <target> [--json] [--dry-run]
+  bowline work restore <target> [--json] [--dry-run]
+  bowline work cleanup [--apply] [--json] [--dry-run]
 
 Daemon:
   bowline daemon start [--json]
   bowline daemon stop [--json]
   bowline daemon status [--json]
-  bowline daemon install [--json] [--dry-run] [--idempotency-key <key>]
-  bowline daemon restart [--json] [--dry-run] [--idempotency-key <key>]
-  bowline daemon uninstall [--json] [--dry-run] [--idempotency-key <key>]
+  bowline daemon install [--json] [--dry-run]
+  bowline daemon restart [--json] [--dry-run]
+  bowline daemon uninstall [--json] [--dry-run]
 
 Support:
   bowline diagnostics collect --root <path> [--json]
 
-Global options:
-  --json
-  --socket <path>
-  --dry-run
-  --idempotency-key <key>
+Command options follow the complete command path. Inspect `bowline help <command>` for the exact definition.

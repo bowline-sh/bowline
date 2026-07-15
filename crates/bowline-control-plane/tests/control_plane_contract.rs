@@ -1,19 +1,49 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL};
 use bowline_control_plane::{
-    ByteRange, CompactEventKind, CompareAndSwapError, ConflictMetadataPublish,
-    ConflictResolutionMark, ConflictResolutionState, ControlPlaneClient, ControlPlaneError,
-    ControlPlaneTimestamp, DeleteIntentRequest, DeviceApprovalInput, DeviceRequestInput,
+    ByteRange, Capability, CompactEventKind, CompareAndSwapError, ConflictOccurrenceReconcile,
+    ConflictOccurrenceState, ConflictReconcileOutcome, ControlPlaneClient, ControlPlaneError,
+    ControlPlaneTimestamp, DeviceApprovalInput, DeviceControlPlaneClient, DeviceRequestInput,
     DeviceRequestInputDraft, DeviceRevocationInput, DownloadIntentRequest, FakeControlPlaneClient,
-    FirstAuthorizedDeviceInput, GrantAcceptanceInput, LeaseCreate, LeaseExecutionState,
-    LeaseOutputState, LeaseUpdate, LeaseWriteTargetMode, ObjectKind, ObjectManifestCommit,
-    ObjectPointer, ObjectRetentionStateUpdate, RecoveryDeviceAuthorizationInput,
-    RecoveryEnvelopeInput, RecoveryEnvelopeState, UploadIntentRequest, WorkViewCreate,
+    FirstAuthorizedDeviceInput, GrantAcceptanceInput, LeaseControlPlaneClient, LeaseCreate,
+    LeaseSessionState, LeaseUpdate, LeaseWriteTargetMode, ObjectControlPlaneClient, ObjectKind,
+    ObjectPointer, ObjectRetentionStateUpdate, RecoveryControlPlaneClient,
+    RecoveryDeviceAuthorizationInput, RecoveryEnvelopeInput, RecoveryEnvelopeState, RejectionCode,
+    SnapshotRootCommit, UploadIntentRequest, WorkViewControlPlaneClient, WorkViewCreate,
     WorkViewLifecycleState, WorkViewLifecycleUpdate, WorkViewOverlayCommit, WorkViewUpdateError,
-    is_opaque_object_key,
+    WorkspaceControlPlaneClient, device_request_proof_subject, device_revocation_proof_subject,
+    is_opaque_object_key, recovery_envelope_payload_proof_subject, recovery_envelope_proof_subject,
 };
+use bowline_core::ids::*;
 use bowline_storage::RetentionState;
 use p256::ecdsa::{Signature, SigningKey, VerifyingKey, signature::Signer};
 use sha2::{Digest, Sha256};
+
+#[path = "support/snapshot_graph.rs"]
+mod snapshot_graph_support;
+use snapshot_graph_support::{SnapshotGraphCommit, SnapshotGraphRecord, SnapshotGraphTestApi};
+
+fn assert_device_not_trusted(error: ControlPlaneError) {
+    assert!(matches!(
+        error,
+        ControlPlaneError::Rejected {
+            code: RejectionCode::DeviceNotTrusted,
+            ..
+        }
+    ));
+}
+
+fn assert_domain_contract<T: ControlPlaneClient>() {}
+
+#[test]
+fn fake_client_implements_the_canonical_domain_contract() {
+    assert_domain_contract::<FakeControlPlaneClient>();
+}
+
+#[cfg(feature = "hosted-convex")]
+#[test]
+fn hosted_client_implements_the_same_canonical_domain_contract() {
+    assert_domain_contract::<bowline_control_plane::HostedControlPlaneClient>();
+}
 
 #[test]
 fn fake_client_creates_workspace_ref_and_returns_it() {
@@ -22,7 +52,7 @@ fn fake_client_creates_workspace_ref_and_returns_it() {
 
     assert_eq!(
         control_plane
-            .get_workspace_ref("workspace-1")
+            .get_workspace_ref(&WorkspaceId::new("workspace-1"))
             .expect("fake control plane reads refs"),
         Some(initial_ref)
     );
@@ -33,20 +63,20 @@ fn fake_cas_advances_ref_and_appends_one_compact_event() {
     let control_plane = FakeControlPlaneClient::default();
     let initial_ref = control_plane.create_workspace("workspace-1");
     let before_events = control_plane
-        .list_events("workspace-1")
+        .list_events(&WorkspaceId::new("workspace-1"))
         .expect("events are readable");
 
     let advanced_ref = control_plane
         .compare_and_swap_workspace_ref(
-            "workspace-1",
+            &WorkspaceId::new("workspace-1"),
             initial_ref.version,
-            "snapshot-1",
-            "device-1",
+            &SnapshotId::new("snapshot-1"),
+            &DeviceId::new("device-1"),
         )
         .expect("matching CAS advances");
 
     let after_events = control_plane
-        .list_events("workspace-1")
+        .list_events(&WorkspaceId::new("workspace-1"))
         .expect("events are readable");
     assert_eq!(advanced_ref.version, 1);
     assert_eq!(advanced_ref.snapshot_id, "snapshot-1");
@@ -64,19 +94,19 @@ fn fake_cas_with_stale_base_returns_current_ref() {
 
     control_plane
         .compare_and_swap_workspace_ref(
-            "workspace-1",
+            &WorkspaceId::new("workspace-1"),
             initial_ref.version,
-            "snapshot-a",
-            "device-a",
+            &SnapshotId::new("snapshot-a"),
+            &DeviceId::new("device-a"),
         )
         .expect("first writer wins");
 
     let stale = control_plane
         .compare_and_swap_workspace_ref(
-            "workspace-1",
+            &WorkspaceId::new("workspace-1"),
             initial_ref.version,
-            "snapshot-b",
-            "device-b",
+            &SnapshotId::new("snapshot-b"),
+            &DeviceId::new("device-b"),
         )
         .expect_err("second writer sees a typed stale-ref error");
 
@@ -90,163 +120,202 @@ fn fake_cas_with_stale_base_returns_current_ref() {
 }
 
 #[test]
-fn conflict_metadata_publish_list_and_resolve_are_device_scoped() {
+fn fake_project_scoped_cas_records_project_id_in_ref_history() {
+    let control_plane = FakeControlPlaneClient::default();
+    let initial_ref = control_plane.create_workspace("workspace-1");
+
+    control_plane
+        .compare_and_swap_workspace_ref_for_project(
+            &WorkspaceId::new("workspace-1"),
+            initial_ref.version,
+            &SnapshotId::new("snapshot-project-a"),
+            &DeviceId::new("device-a"),
+            Some(&ProjectId::new("project-a")),
+        )
+        .expect("scoped CAS advances");
+
+    let history = control_plane
+        .list_workspace_ref_history(&WorkspaceId::new("workspace-1"), 10)
+        .expect("history is readable");
+
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].project_id.as_deref(), Some("project-a"));
+}
+
+#[test]
+fn fake_client_reports_only_typed_supported_capabilities() {
+    let control_plane = FakeControlPlaneClient::default();
+    assert_capability_matrix(
+        &control_plane,
+        &[
+            (Capability::WorkspaceRefHistory, true),
+            (Capability::StorageGc, true),
+            (Capability::ObjectMetadata, true),
+            (Capability::WorkViews, true),
+            (Capability::AgentLeases, true),
+            (Capability::DeviceBootstrap, true),
+            (Capability::DeviceTrust, true),
+            (Capability::RecoveryKey, true),
+        ],
+    );
+}
+
+#[cfg(feature = "hosted-convex")]
+#[test]
+fn hosted_client_reports_only_typed_supported_capabilities() {
+    let control_plane = bowline_control_plane::HostedControlPlaneClient::try_new_with_token(
+        "http://127.0.0.1:3210",
+        "token",
+    )
+    .expect("hosted client can be constructed for capability reporting");
+    assert_capability_matrix(
+        &control_plane,
+        &[
+            (Capability::WorkspaceRefHistory, true),
+            (Capability::StorageGc, true),
+            (Capability::ObjectMetadata, true),
+            (Capability::WorkViews, true),
+            (Capability::AgentLeases, true),
+            (Capability::DeviceBootstrap, true),
+            (Capability::DeviceTrust, true),
+            (Capability::RecoveryKey, true),
+        ],
+    );
+}
+
+fn assert_capability_matrix(
+    control_plane: &dyn ControlPlaneClient,
+    expected: &[(Capability, bool)],
+) {
+    let capabilities = control_plane.capabilities();
+
+    assert_eq!(
+        expected.len(),
+        Capability::ALL.len(),
+        "capability matrix must make one support decision per known capability"
+    );
+
+    for capability in Capability::ALL {
+        let matching_rows = expected
+            .iter()
+            .filter(|(expected_capability, _)| expected_capability == capability)
+            .count();
+        assert_eq!(
+            matching_rows, 1,
+            "capability matrix must contain exactly one row for {capability}"
+        );
+    }
+
+    for (capability, supported) in expected {
+        assert!(
+            capabilities.contains(capability) == *supported,
+            "reported capability support for {capability} did not match expected {supported}"
+        );
+        assert_eq!(control_plane.supports_capability(*capability), *supported);
+    }
+}
+
+#[test]
+fn conflict_occurrences_are_monotonic_exact_and_device_scoped() {
     let control_plane = FakeControlPlaneClient::default().with_local_device_id("device-1");
     control_plane.create_workspace("workspace-1");
 
-    let record = control_plane
-        .publish_conflict_metadata(ConflictMetadataPublish {
-            workspace_id: "workspace-1".to_string(),
-            conflict_id: "conflict_abc123".to_string(),
-            conflict_kind: "env-key".to_string(),
-            paths: vec!["apps/web/.env.local".to_string()],
-            contains_secrets: true,
-            base_snapshot_id: "snap_base".to_string(),
-            remote_snapshot_id: "snap_remote".to_string(),
-            detected_by_device_id: "device-1".to_string(),
-            bundle_object: None,
-        })
-        .expect("trusted local device publishes conflict metadata");
+    let initial = conflict_occurrence(10, ConflictOccurrenceState::Unresolved);
+    let applied = control_plane
+        .reconcile_conflict_occurrence(initial.clone())
+        .expect("trusted local device reconciles conflict occurrence");
+    assert_eq!(applied.outcome, ConflictReconcileOutcome::Applied);
+    assert_eq!(applied.conflict.state, ConflictOccurrenceState::Unresolved);
+    assert_eq!(applied.conflict.occurrence_version, 10);
 
-    assert_eq!(record.state, "unresolved");
-    assert!(record.contains_secrets);
-    assert_eq!(record.paths, vec!["apps/web/.env.local".to_string()]);
-    assert_eq!(
-        control_plane
-            .list_events("workspace-1")
-            .expect("events")
-            .last()
-            .expect("conflict event")
-            .kind,
-        CompactEventKind::ConflictDetected
-    );
-
-    let listed = control_plane
-        .list_workspace_conflicts("workspace-1", "device-1")
-        .expect("trusted local device lists unresolved conflicts");
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].conflict_id, "conflict_abc123");
-
-    let wrong_device = control_plane
-        .list_workspace_conflicts("workspace-1", "device-2")
-        .expect_err("fake device scope is enforced");
-    assert!(matches!(wrong_device, ControlPlaneError::Limited { .. }));
-
-    let resolved = control_plane
-        .mark_conflict_resolved(ConflictResolutionMark {
-            workspace_id: "workspace-1".to_string(),
-            conflict_id: "conflict_abc123".to_string(),
-            resolved_by_device_id: "device-1".to_string(),
-            resolution: ConflictResolutionState::Accepted,
-        })
-        .expect("trusted local device resolves conflict metadata");
-    assert_eq!(resolved.state, "accepted");
-    assert_eq!(resolved.resolved_by_device_id.as_deref(), Some("device-1"));
-    let event_count_after_first_resolve = control_plane
-        .list_events("workspace-1")
+    let event_count = control_plane
+        .list_events(&WorkspaceId::new("workspace-1"))
         .expect("events")
         .len();
-    let retried = control_plane
-        .mark_conflict_resolved(ConflictResolutionMark {
-            workspace_id: "workspace-1".to_string(),
-            conflict_id: "conflict_abc123".to_string(),
-            resolved_by_device_id: "device-1".to_string(),
-            resolution: ConflictResolutionState::Accepted,
-        })
-        .expect("terminal conflict mark is idempotent");
-    assert_eq!(retried, resolved);
+    let retry = control_plane
+        .reconcile_conflict_occurrence(initial.clone())
+        .expect("exact occurrence retry is idempotent");
+    assert_eq!(retry.outcome, ConflictReconcileOutcome::Idempotent);
     assert_eq!(
         control_plane
-            .list_events("workspace-1")
+            .list_events(&WorkspaceId::new("workspace-1"))
             .expect("events")
             .len(),
-        event_count_after_first_resolve,
-        "idempotent conflict resolution marks must not append duplicate events"
+        event_count
     );
-    let conflicting_terminal_mark = control_plane
-        .mark_conflict_resolved(ConflictResolutionMark {
-            workspace_id: "workspace-1".to_string(),
-            conflict_id: "conflict_abc123".to_string(),
-            resolved_by_device_id: "device-1".to_string(),
-            resolution: ConflictResolutionState::Rejected,
-        })
-        .expect_err("terminal conflict resolution state is immutable");
+
+    let mut stale = initial.clone();
+    stale.occurrence_version = 9;
+    stale.base_snapshot_id = SnapshotId::new("snap_stale");
+    let superseded = control_plane
+        .reconcile_conflict_occurrence(stale)
+        .expect("stale occurrence is fenced");
+    assert_eq!(superseded.outcome, ConflictReconcileOutcome::Superseded);
+    assert_eq!(superseded.conflict.occurrence_version, 10);
+
+    let mut replacement = initial.clone();
+    replacement.occurrence_version = 11;
+    replacement.base_snapshot_id = SnapshotId::new("snap_base_2");
+    replacement.remote_snapshot_id = SnapshotId::new("snap_remote_2");
+    let replaced = control_plane
+        .reconcile_conflict_occurrence(replacement.clone())
+        .expect("higher occurrence replaces lower atomically");
+    assert_eq!(replaced.outcome, ConflictReconcileOutcome::Applied);
+    assert_eq!(replaced.conflict.occurrence_version, 11);
+
+    let mut accepted = replacement.clone();
+    accepted.desired_state = ConflictOccurrenceState::Accepted;
+    let resolved = control_plane
+        .reconcile_conflict_occurrence(accepted.clone())
+        .expect("exact occurrence resolves");
+    assert_eq!(resolved.outcome, ConflictReconcileOutcome::Applied);
+    assert_eq!(resolved.conflict.state, ConflictOccurrenceState::Accepted);
+    assert_eq!(
+        resolved.conflict.resolved_by_device_id.as_deref(),
+        Some("device-1")
+    );
+    assert_eq!(
+        control_plane
+            .reconcile_conflict_occurrence(accepted)
+            .expect("resolution retry is idempotent")
+            .outcome,
+        ConflictReconcileOutcome::Idempotent
+    );
+
+    let mut inexact_resolution = replacement;
+    inexact_resolution.occurrence_version = 12;
+    inexact_resolution.desired_state = ConflictOccurrenceState::Rejected;
     assert!(matches!(
-        conflicting_terminal_mark,
+        control_plane
+            .reconcile_conflict_occurrence(inexact_resolution)
+            .expect_err("resolution requires an exact occurrence"),
         ControlPlaneError::Conflict { .. }
     ));
-    assert_eq!(
-        control_plane
-            .list_events("workspace-1")
-            .expect("events")
-            .len(),
-        event_count_after_first_resolve,
-        "rejected stale terminal mark must not append events"
-    );
-    assert_eq!(
-        control_plane
-            .list_workspace_conflicts("workspace-1", "device-1")
-            .expect("unresolved conflicts after resolution"),
-        Vec::new()
-    );
-    let events_after_resolve = control_plane
-        .list_events("workspace-1")
-        .expect("events")
-        .len();
-    let republished = control_plane
-        .publish_conflict_metadata(ConflictMetadataPublish {
-            workspace_id: "workspace-1".to_string(),
-            conflict_id: "conflict_abc123".to_string(),
-            conflict_kind: "env-key".to_string(),
-            paths: vec!["apps/web/.env.local".to_string()],
-            contains_secrets: true,
-            base_snapshot_id: "snap_base".to_string(),
-            remote_snapshot_id: "snap_remote".to_string(),
-            detected_by_device_id: "device-1".to_string(),
-            bundle_object: None,
-        })
-        .expect("publish retry after terminal state is idempotent");
-    assert_eq!(republished.state, "accepted");
-    assert_eq!(
-        control_plane
-            .list_events("workspace-1")
-            .expect("events")
-            .len(),
-        events_after_resolve,
-        "publish retry must not reopen terminal conflict metadata"
-    );
-    let recurring = control_plane
-        .publish_conflict_metadata(ConflictMetadataPublish {
-            workspace_id: "workspace-1".to_string(),
-            conflict_id: "conflict_abc123".to_string(),
-            conflict_kind: "env-key".to_string(),
-            paths: vec!["apps/web/.env.local".to_string()],
-            contains_secrets: true,
-            base_snapshot_id: "snap_base_2".to_string(),
-            remote_snapshot_id: "snap_remote_2".to_string(),
-            detected_by_device_id: "device-1".to_string(),
-            bundle_object: None,
-        })
-        .expect("new snapshot pair reopens recurring conflict metadata");
-    assert_eq!(recurring.state, "unresolved");
-    assert_eq!(recurring.base_snapshot_id, "snap_base_2");
-    assert_eq!(recurring.remote_snapshot_id, "snap_remote_2");
-    assert_eq!(
-        control_plane
-            .list_workspace_conflicts("workspace-1", "device-1")
-            .expect("recurring unresolved conflict is visible")
-            .len(),
-        1
-    );
-    assert_eq!(
-        control_plane
-            .list_events("workspace-1")
-            .expect("events")
-            .last()
-            .expect("recurring detected event")
-            .kind,
-        CompactEventKind::ConflictDetected
-    );
+
+    let wrong_device = control_plane
+        .list_workspace_conflicts(&WorkspaceId::new("workspace-1"), &DeviceId::new("device-2"))
+        .expect_err("fake device scope is enforced");
+    assert_device_not_trusted(wrong_device);
+}
+
+fn conflict_occurrence(
+    occurrence_version: u64,
+    desired_state: ConflictOccurrenceState,
+) -> ConflictOccurrenceReconcile {
+    ConflictOccurrenceReconcile {
+        workspace_id: WorkspaceId::new("workspace-1"),
+        conflict_id: ConflictId::new("conflict_abc123"),
+        conflict_kind: "env-key".to_string(),
+        paths: vec!["apps/web/.env.local".to_string()],
+        contains_secrets: true,
+        base_snapshot_id: SnapshotId::new("snap_base"),
+        remote_snapshot_id: SnapshotId::new("snap_remote"),
+        occurrence_version,
+        desired_state,
+        device_id: DeviceId::new("device-1"),
+        reason: "remote workspace head diverged".to_string(),
+        bundle_object: None,
+    }
 }
 
 #[test]
@@ -289,16 +358,16 @@ fn upload_and_download_intents_use_opaque_object_keys() {
         .expect("manifest upload intent");
     let manifest_object = ObjectPointer {
         object_key: manifest_upload.object_key.clone(),
-        content_id: "manifest-content".to_string(),
+        content_id: ContentId::new("manifest-content"),
         byte_len: 64,
         hash: "b3_manifest".to_string(),
         key_epoch: 1,
         kind: ObjectKind::SnapshotManifest,
         created_at: ControlPlaneTimestamp { tick: 10 },
     };
-    let pack_object = ObjectPointer {
+    let direct_object = ObjectPointer {
         object_key: pack_upload.object_key.clone(),
-        content_id: "content-1".to_string(),
+        content_id: ContentId::new("content-1"),
         byte_len: pack_upload.byte_len,
         hash: "b3_pack".to_string(),
         key_epoch: 1,
@@ -307,19 +376,19 @@ fn upload_and_download_intents_use_opaque_object_keys() {
     };
 
     control_plane
-        .commit_object_manifest(ObjectManifestCommit {
-            workspace_id: "workspace-1".to_string(),
-            snapshot_id: "snapshot-1".to_string(),
-            manifest_id: "manifest-1".to_string(),
+        .commit_snapshot_graph(SnapshotGraphCommit {
+            workspace_id: WorkspaceId::new("workspace-1"),
+            snapshot_id: SnapshotId::new("snapshot-1"),
+            manifest_id: ManifestId::new("manifest-1"),
             manifest_object,
-            pack_objects: vec![pack_object],
-            committed_by_device_id: "device-1".to_string(),
+            direct_objects: vec![direct_object],
+            committed_by_device_id: DeviceId::new("device-1"),
         })
         .expect("manifest commit publishes object pointers");
 
     let download = control_plane
         .create_download_intent(DownloadIntentRequest {
-            workspace_id: "workspace-1".to_string(),
+            workspace_id: WorkspaceId::new("workspace-1"),
             object_key: pack_upload.object_key.clone(),
             range: Some(ByteRange::new(4, 16)),
         })
@@ -360,9 +429,9 @@ fn explicit_object_keys_are_scoped_by_workspace() {
         assert_eq!(pack_upload.object_key, shared_pack_key);
         assert_eq!(manifest_upload.object_key, shared_manifest_key);
 
-        let pack_object = ObjectPointer {
+        let direct_object = ObjectPointer {
             object_key: shared_pack_key.to_string(),
-            content_id: format!("content-{workspace_id}"),
+            content_id: ContentId::new(format!("content-{workspace_id}")),
             byte_len: 128,
             hash: format!("b3_pack_{workspace_id}"),
             key_epoch: 1,
@@ -371,7 +440,7 @@ fn explicit_object_keys_are_scoped_by_workspace() {
         };
         let manifest_object = ObjectPointer {
             object_key: shared_manifest_key.to_string(),
-            content_id: format!("manifest-{workspace_id}"),
+            content_id: ContentId::new(format!("manifest-{workspace_id}")),
             byte_len: 64,
             hash: format!("b3_manifest_{workspace_id}"),
             key_epoch: 1,
@@ -380,22 +449,22 @@ fn explicit_object_keys_are_scoped_by_workspace() {
         };
 
         control_plane
-            .commit_object_manifest(ObjectManifestCommit {
-                workspace_id: workspace_id.to_string(),
-                snapshot_id: format!("snapshot-{workspace_id}"),
-                manifest_id: format!("manifest-{workspace_id}"),
+            .commit_snapshot_graph(SnapshotGraphCommit {
+                workspace_id: WorkspaceId::new(workspace_id),
+                snapshot_id: SnapshotId::new(format!("snapshot-{workspace_id}")),
+                manifest_id: ManifestId::new(format!("manifest-{workspace_id}")),
                 manifest_object,
-                pack_objects: vec![pack_object],
-                committed_by_device_id: "device-1".to_string(),
+                direct_objects: vec![direct_object],
+                committed_by_device_id: DeviceId::new("device-1"),
             })
             .expect("same logical object key commits independently per workspace");
     }
 
     let metadata_a = control_plane
-        .head_object_metadata("workspace-a", shared_pack_key)
+        .head_object_metadata(&WorkspaceId::new("workspace-a"), shared_pack_key)
         .expect("workspace a metadata");
     let metadata_b = control_plane
-        .head_object_metadata("workspace-b", shared_pack_key)
+        .head_object_metadata(&WorkspaceId::new("workspace-b"), shared_pack_key)
         .expect("workspace b metadata");
 
     assert_eq!(metadata_a.key.as_str(), shared_pack_key);
@@ -404,7 +473,7 @@ fn explicit_object_keys_are_scoped_by_workspace() {
     assert_eq!(metadata_b.hash, "b3_pack_workspace-b");
 
     assert!(matches!(
-        control_plane.head_object_metadata("workspace-missing", shared_pack_key),
+        control_plane.head_object_metadata(&WorkspaceId::new("workspace-missing"), shared_pack_key),
         Err(ControlPlaneError::WorkspaceMissing { .. })
     ));
 }
@@ -413,7 +482,7 @@ fn explicit_object_keys_are_scoped_by_workspace() {
 fn delete_intents_require_delete_eligible_metadata() {
     let control_plane = FakeControlPlaneClient::default();
     control_plane.create_workspace("workspace-delete");
-    let pack_object = commit_one_pack_object(
+    let direct_object = commit_one_direct_object(
         &control_plane,
         "workspace-delete",
         "snapshot-delete",
@@ -422,66 +491,68 @@ fn delete_intents_require_delete_eligible_metadata() {
     );
 
     let not_eligible = control_plane
-        .create_delete_intent(
-            DeleteIntentRequest::new("workspace-delete", &pack_object.object_key)
-                .with_object_kind(ObjectKind::SourcePack)
-                .with_key_epoch(pack_object.key_epoch),
+        .create_storage_gc_delete_intent(
+            &WorkspaceId::new("workspace-delete"),
+            &direct_object.object_key,
         )
         .expect_err("current objects are not delete-eligible");
     assert!(matches!(
         not_eligible,
         ControlPlaneError::Conflict {
-            resource: "delete intent",
+            resource: "storage GC delete intent",
             ..
         }
     ));
 
-    let metadata = control_plane
+    let forbidden = control_plane
         .mark_object_retention_state(ObjectRetentionStateUpdate::new(
             "workspace-delete",
-            &pack_object.object_key,
+            &direct_object.object_key,
             RetentionState::DeleteEligible,
         ))
-        .expect("mark delete eligible");
-    assert_eq!(metadata.retention_state, RetentionState::DeleteEligible);
+        .expect_err("delete eligibility requires the GC authority");
+    assert!(matches!(
+        forbidden,
+        ControlPlaneError::Conflict {
+            resource: "object retention",
+            ..
+        }
+    ));
 
-    let intent = control_plane
-        .create_delete_intent(
-            DeleteIntentRequest::new("workspace-delete", &pack_object.object_key)
-                .with_object_kind(ObjectKind::SourcePack)
-                .with_key_epoch(pack_object.key_epoch),
+    let still_live = control_plane
+        .create_storage_gc_delete_intent(
+            &WorkspaceId::new("workspace-delete"),
+            &direct_object.object_key,
         )
-        .expect("delete intent");
-    assert_eq!(intent.object_key, pack_object.object_key);
-    assert_eq!(intent.object_kind, ObjectKind::SourcePack);
-    assert!(intent.signed_url.url.contains("action=delete"));
-    assert!(!format!("{:?}", intent.signed_url).contains("action=delete"));
-    assert!(format!("{:?}", intent.signed_url).contains("<redacted>"));
+        .expect_err("a live object never receives a fake delete intent");
+    assert!(matches!(
+        still_live,
+        ControlPlaneError::Conflict {
+            resource: "storage GC delete intent",
+            ..
+        }
+    ));
 }
 
 #[test]
-fn index_and_locator_upload_intents_use_index_object_keys() {
+fn locator_upload_intents_use_index_object_keys() {
     let control_plane = FakeControlPlaneClient::default();
     control_plane.create_workspace("workspace-1");
 
-    for (kind, content_id) in [
-        (ObjectKind::IndexPack, "index-content"),
-        (ObjectKind::LocatorIndex, "locator-content"),
-    ] {
-        let upload = control_plane
-            .create_upload_intent(
-                UploadIntentRequest::new("workspace-1", kind, 128).with_content_id(content_id),
-            )
-            .expect("upload intent");
+    let upload = control_plane
+        .create_upload_intent(
+            UploadIntentRequest::new("workspace-1", ObjectKind::LocatorIndex, 128)
+                .with_content_id("locator-content"),
+        )
+        .expect("upload intent");
 
-        assert_eq!(upload.object_kind, kind);
-        assert!(upload.object_key.starts_with("indexes_ix_"));
-        assert!(is_opaque_object_key(&upload.object_key));
-    }
+    assert_eq!(upload.object_kind, ObjectKind::LocatorIndex);
+    assert!(upload.object_key.starts_with("indexes_ix_"));
+    assert!(is_opaque_object_key(&upload.object_key));
 }
 
 #[test]
-fn object_manifest_commit_records_only_object_pointers_and_event() {
+fn snapshot_graph_commit_records_only_object_pointers_and_event() {
     let control_plane = FakeControlPlaneClient::default();
     control_plane.create_workspace("workspace-1");
 
@@ -500,16 +571,16 @@ fn object_manifest_commit_records_only_object_pointers_and_event() {
 
     let manifest_object = ObjectPointer {
         object_key: manifest_upload.object_key,
-        content_id: "manifest-content".to_string(),
+        content_id: ContentId::new("manifest-content"),
         byte_len: 64,
         hash: "b3_manifest".to_string(),
         key_epoch: 1,
         kind: ObjectKind::SnapshotManifest,
         created_at: ControlPlaneTimestamp { tick: 10 },
     };
-    let pack_object = ObjectPointer {
+    let direct_object = ObjectPointer {
         object_key: pack_upload.object_key,
-        content_id: "pack-content".to_string(),
+        content_id: ContentId::new("pack-content"),
         byte_len: 256,
         hash: "b3_pack".to_string(),
         key_epoch: 7,
@@ -518,64 +589,64 @@ fn object_manifest_commit_records_only_object_pointers_and_event() {
     };
 
     let record = control_plane
-        .commit_object_manifest(ObjectManifestCommit {
-            workspace_id: "workspace-1".to_string(),
-            snapshot_id: "snapshot-1".to_string(),
-            manifest_id: "manifest-1".to_string(),
+        .commit_snapshot_graph(SnapshotGraphCommit {
+            workspace_id: WorkspaceId::new("workspace-1"),
+            snapshot_id: SnapshotId::new("snapshot-1"),
+            manifest_id: ManifestId::new("manifest-1"),
             manifest_object: manifest_object.clone(),
-            pack_objects: vec![pack_object.clone()],
-            committed_by_device_id: "device-1".to_string(),
+            direct_objects: vec![direct_object.clone()],
+            committed_by_device_id: DeviceId::new("device-1"),
         })
         .expect("manifest commit");
 
     assert_eq!(record.manifest_object, manifest_object);
-    assert_eq!(record.pack_objects, vec![pack_object.clone()]);
-    assert_eq!(record.pack_objects[0].key_epoch, 7);
+    assert_eq!(record.direct_objects, vec![direct_object.clone()]);
+    assert_eq!(record.direct_objects[0].key_epoch, 7);
     let pack_metadata = control_plane
-        .head_object_metadata("workspace-1", &pack_object.object_key)
+        .head_object_metadata(&WorkspaceId::new("workspace-1"), &direct_object.object_key)
         .expect("pack metadata");
     assert_eq!(pack_metadata.key_epoch, 7);
     assert!(
         control_plane
-            .list_events("workspace-1")
+            .list_events(&WorkspaceId::new("workspace-1"))
             .expect("events")
             .iter()
             .any(
-                |event| event.kind == CompactEventKind::ObjectManifestCommitted
+                |event| event.kind == CompactEventKind::SnapshotRootCommitted
                     && event.subject == "manifest-1"
             )
     );
 
     let repeated = control_plane
-        .commit_object_manifest(ObjectManifestCommit {
-            workspace_id: "workspace-1".to_string(),
-            snapshot_id: "snapshot-1".to_string(),
-            manifest_id: "manifest-1".to_string(),
+        .commit_snapshot_graph(SnapshotGraphCommit {
+            workspace_id: WorkspaceId::new("workspace-1"),
+            snapshot_id: SnapshotId::new("snapshot-1"),
+            manifest_id: ManifestId::new("manifest-1"),
             manifest_object: manifest_object.clone(),
-            pack_objects: vec![pack_object.clone()],
-            committed_by_device_id: "device-2".to_string(),
+            direct_objects: vec![direct_object.clone()],
+            committed_by_device_id: DeviceId::new("device-2"),
         })
         .expect("idempotent manifest commit from another device");
     assert_eq!(repeated, record);
     assert_eq!(repeated.committed_by_device_id, "device-1");
 
     let remote_metadata = control_plane
-        .head_object_metadata("workspace-1", &pack_object.object_key)
+        .head_object_metadata(&WorkspaceId::new("workspace-1"), &direct_object.object_key)
         .expect("committed object metadata is readable through the control plane");
     assert_eq!(remote_metadata.hash, "b3_pack");
     assert_eq!(remote_metadata.byte_len, 256);
 
     let mismatched_existing_object = control_plane
-        .commit_object_manifest(ObjectManifestCommit {
-            workspace_id: "workspace-1".to_string(),
-            snapshot_id: "snapshot-2".to_string(),
-            manifest_id: "manifest-2".to_string(),
+        .commit_snapshot_graph(SnapshotGraphCommit {
+            workspace_id: WorkspaceId::new("workspace-1"),
+            snapshot_id: SnapshotId::new("snapshot-2"),
+            manifest_id: ManifestId::new("manifest-2"),
             manifest_object,
-            pack_objects: vec![ObjectPointer {
+            direct_objects: vec![ObjectPointer {
                 hash: "b3_different_pack".to_string(),
-                ..pack_object
+                ..direct_object
             }],
-            committed_by_device_id: "device-1".to_string(),
+            committed_by_device_id: DeviceId::new("device-1"),
         })
         .expect_err("existing object metadata must match exactly");
     assert!(matches!(
@@ -585,11 +656,11 @@ fn object_manifest_commit_records_only_object_pointers_and_event() {
 }
 
 #[test]
-fn snapshot_manifest_pointer_is_lookupable_by_snapshot_id() {
+fn snapshot_graph_root_is_lookupable_by_snapshot_id() {
     let control_plane = FakeControlPlaneClient::default();
     control_plane.create_workspace("workspace-1");
 
-    let record = commit_snapshot_manifest(
+    let record = commit_snapshot_graph_fixture(
         &control_plane,
         "workspace-1",
         "snapshot-1",
@@ -600,21 +671,24 @@ fn snapshot_manifest_pointer_is_lookupable_by_snapshot_id() {
     .expect("manifest commit");
 
     let fetched = control_plane
-        .get_snapshot_manifest_pointer("workspace-1", "snapshot-1")
+        .get_snapshot_graph(
+            &WorkspaceId::new("workspace-1"),
+            &SnapshotId::new("snapshot-1"),
+        )
         .expect("snapshot lookup")
-        .expect("snapshot manifest pointer exists");
+        .expect("snapshot graph root exists");
 
     assert_eq!(fetched, record);
     assert_eq!(fetched.manifest_object.kind, ObjectKind::SnapshotManifest);
-    assert_eq!(fetched.pack_objects[0].kind, ObjectKind::SourcePack);
+    assert_eq!(fetched.direct_objects[0].kind, ObjectKind::SourcePack);
 }
 
 #[test]
-fn object_manifest_commit_rejects_different_manifest_for_same_snapshot() {
+fn snapshot_graph_commit_rejects_different_manifest_for_same_snapshot() {
     let control_plane = FakeControlPlaneClient::default();
     control_plane.create_workspace("workspace-1");
 
-    commit_snapshot_manifest(
+    commit_snapshot_graph_fixture(
         &control_plane,
         "workspace-1",
         "snapshot-1",
@@ -638,60 +712,66 @@ fn object_manifest_commit_rejects_different_manifest_for_same_snapshot() {
         .expect("pack upload intent");
 
     let error = control_plane
-        .commit_object_manifest(ObjectManifestCommit {
-            workspace_id: "workspace-1".to_string(),
-            snapshot_id: "snapshot-1".to_string(),
-            manifest_id: "manifest-snapshot-1-different".to_string(),
+        .commit_snapshot_graph(SnapshotGraphCommit {
+            workspace_id: WorkspaceId::new("workspace-1"),
+            snapshot_id: SnapshotId::new("snapshot-1"),
+            manifest_id: ManifestId::new("manifest-snapshot-1-different"),
             manifest_object: ObjectPointer {
                 object_key: manifest_upload.object_key,
-                content_id: "manifest-content-2".to_string(),
+                content_id: ContentId::new("manifest-content-2"),
                 byte_len: 64,
                 hash: "b3_manifest-content-2".to_string(),
                 key_epoch: 1,
                 kind: ObjectKind::SnapshotManifest,
                 created_at: ControlPlaneTimestamp { tick: 12 },
             },
-            pack_objects: vec![ObjectPointer {
+            direct_objects: vec![ObjectPointer {
                 object_key: pack_upload.object_key,
-                content_id: "pack-content-2".to_string(),
+                content_id: ContentId::new("pack-content-2"),
                 byte_len: 256,
                 hash: "b3_pack-content-2".to_string(),
                 key_epoch: 1,
                 kind: ObjectKind::SourcePack,
                 created_at: ControlPlaneTimestamp { tick: 13 },
             }],
-            committed_by_device_id: "device-1".to_string(),
+            committed_by_device_id: DeviceId::new("device-1"),
         })
         .expect_err("same snapshot cannot point at a different manifest");
 
     assert!(matches!(error, ControlPlaneError::Conflict { .. }));
     let fetched = control_plane
-        .get_snapshot_manifest_pointer("workspace-1", "snapshot-1")
+        .get_snapshot_graph(
+            &WorkspaceId::new("workspace-1"),
+            &SnapshotId::new("snapshot-1"),
+        )
         .expect("snapshot lookup")
-        .expect("snapshot manifest pointer exists");
+        .expect("snapshot graph root exists");
     assert_eq!(fetched.manifest_id, "manifest-snapshot-1");
 }
 
 #[test]
-fn missing_snapshot_manifest_pointer_returns_none() {
+fn missing_snapshot_graph_root_returns_none() {
     let control_plane = FakeControlPlaneClient::default();
     control_plane.create_workspace("workspace-1");
 
     assert_eq!(
         control_plane
-            .get_snapshot_manifest_pointer("workspace-1", "missing-snapshot")
+            .get_snapshot_graph(
+                &WorkspaceId::new("workspace-1"),
+                &SnapshotId::new("missing-snapshot")
+            )
             .expect("snapshot lookup"),
         None
     );
 }
 
 #[test]
-fn snapshot_manifest_lookup_is_workspace_scoped() {
+fn snapshot_graph_lookup_is_workspace_scoped() {
     let control_plane = FakeControlPlaneClient::default();
     control_plane.create_workspace("workspace-a");
     control_plane.create_workspace("workspace-b");
 
-    let workspace_a = commit_snapshot_manifest(
+    let workspace_a = commit_snapshot_graph_fixture(
         &control_plane,
         "workspace-a",
         "snapshot-shared",
@@ -700,7 +780,7 @@ fn snapshot_manifest_lookup_is_workspace_scoped() {
         "pack-content-a",
     )
     .expect("workspace a manifest commit");
-    let workspace_b = commit_snapshot_manifest(
+    let workspace_b = commit_snapshot_graph_fixture(
         &control_plane,
         "workspace-b",
         "snapshot-shared",
@@ -712,19 +792,28 @@ fn snapshot_manifest_lookup_is_workspace_scoped() {
 
     assert_eq!(
         control_plane
-            .get_snapshot_manifest_pointer("workspace-a", "snapshot-shared")
+            .get_snapshot_graph(
+                &WorkspaceId::new("workspace-a"),
+                &SnapshotId::new("snapshot-shared")
+            )
             .expect("workspace a snapshot lookup"),
         Some(workspace_a)
     );
     assert_eq!(
         control_plane
-            .get_snapshot_manifest_pointer("workspace-b", "snapshot-shared")
+            .get_snapshot_graph(
+                &WorkspaceId::new("workspace-b"),
+                &SnapshotId::new("snapshot-shared")
+            )
             .expect("workspace b snapshot lookup"),
         Some(workspace_b)
     );
     assert_eq!(
         control_plane
-            .get_snapshot_manifest_pointer("workspace-b", "snapshot-a-only")
+            .get_snapshot_graph(
+                &WorkspaceId::new("workspace-b"),
+                &SnapshotId::new("snapshot-a-only")
+            )
             .expect("wrong workspace lookup"),
         None
     );
@@ -736,7 +825,7 @@ fn trusted_workspace_rejects_untrusted_manifest_commit_and_lookup() {
     control_plane.create_workspace("workspace-trust");
     create_first_device(&control_plane, "workspace-trust", "device-1");
 
-    let commit = commit_snapshot_manifest(
+    let commit = commit_snapshot_graph_fixture(
         &control_plane,
         "workspace-trust",
         "snapshot-untrusted",
@@ -745,28 +834,58 @@ fn trusted_workspace_rejects_untrusted_manifest_commit_and_lookup() {
         "pack-content-untrusted",
     )
     .expect_err("untrusted device cannot commit a manifest");
-    assert!(matches!(commit, ControlPlaneError::Limited { .. }));
+    assert_device_not_trusted(commit);
+
+    let trusted = commit_snapshot_graph_fixture(
+        &control_plane,
+        "workspace-trust",
+        "snapshot-trusted-root",
+        "device-1",
+        "manifest-content-trusted-root",
+        "pack-content-trusted-root",
+    )
+    .expect("trusted device commits source graph");
+    let root_suffix = Sha256::digest(b"snapshot-trusted-root")
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let root_commit = control_plane
+        .commit_snapshot_root(SnapshotRootCommit {
+            workspace_id: WorkspaceId::new("workspace-trust"),
+            snapshot_id: SnapshotId::new("snapshot-untrusted-root-only"),
+            manifest_id: trusted.manifest_id,
+            manifest_object: trusted.manifest_object,
+            namespace_root_id: format!("nsp_{root_suffix}"),
+            extra_root_logical_ids: Vec::new(),
+            committed_by_device_id: DeviceId::new("device-2"),
+        })
+        .expect_err("untrusted device cannot commit an existing metadata root");
+    assert_device_not_trusted(root_commit);
 
     let untrusted_reader = control_plane.clone().with_local_device_id("device-2");
     let lookup = untrusted_reader
-        .get_snapshot_manifest_pointer("workspace-trust", "snapshot-untrusted")
+        .get_snapshot_graph(
+            &WorkspaceId::new("workspace-trust"),
+            &SnapshotId::new("snapshot-untrusted"),
+        )
         .expect_err("untrusted device cannot lookup manifests");
-    assert!(matches!(lookup, ControlPlaneError::Limited { .. }));
+    assert_device_not_trusted(lookup);
 }
 
 #[test]
-fn revoked_device_cannot_commit_or_lookup_snapshot_manifest() {
+fn revoked_device_cannot_commit_or_lookup_snapshot_graph() {
     let control_plane = FakeControlPlaneClient::default();
     control_plane.create_workspace("workspace-revoked-object");
     create_first_device(&control_plane, "workspace-revoked-object", "device-1");
     let request = control_plane
         .create_device_request(
             DeviceRequestInput::new(DeviceRequestInputDraft {
-                workspace_id: "workspace-revoked-object".to_string(),
-                device_id: "device-2".to_string(),
+                workspace_id: WorkspaceId::new("workspace-revoked-object"),
+                device_id: DeviceId::new("device-2"),
                 device_name: "linux".to_string(),
                 device_public_key: "age1device2".to_string(),
                 device_fingerprint: "fp_device_2".to_string(),
+                device_authorization_proof_verifier: device_verifier("device-2"),
                 matching_code: "maple-river-4821".to_string(),
             })
             .with_device_proof_verifier("device-2"),
@@ -776,12 +895,12 @@ fn revoked_device_cannot_commit_or_lookup_snapshot_manifest() {
     control_plane
         .approve_device_request(DeviceApprovalInput {
             request_id: request_id.clone(),
-            approved_by_device_id: "device-1".to_string(),
+            approved_by_device_id: DeviceId::new("device-1"),
             approved_by_device_proof: device_proof(
                 "workspace-revoked-object",
                 "device-1",
                 "approve-device-request",
-                &request_id,
+                &device_request_proof_subject(&request_id),
             ),
             encrypted_grant_ciphertext: "age-encrypted-workspace-key".to_string(),
             grant_acceptance_proof_verifier: grant_acceptance_proof_verifier(
@@ -796,7 +915,7 @@ fn revoked_device_cannot_commit_or_lookup_snapshot_manifest() {
     control_plane
         .confirm_device_grant_accepted(GrantAcceptanceInput {
             request_id: request_id.clone(),
-            device_id: "device-2".to_string(),
+            device_id: DeviceId::new("device-2"),
             grant_acceptance_proof: grant_acceptance_proof(
                 "workspace-revoked-object",
                 &request_id,
@@ -805,7 +924,7 @@ fn revoked_device_cannot_commit_or_lookup_snapshot_manifest() {
         })
         .expect("requester accepts grant");
 
-    let record = commit_snapshot_manifest(
+    let record = commit_snapshot_graph_fixture(
         &control_plane,
         "workspace-revoked-object",
         "snapshot-before-revoke",
@@ -817,20 +936,20 @@ fn revoked_device_cannot_commit_or_lookup_snapshot_manifest() {
 
     control_plane
         .revoke_device(DeviceRevocationInput {
-            workspace_id: "workspace-revoked-object".to_string(),
-            device_id: "device-2".to_string(),
-            revoked_by_device_id: "device-1".to_string(),
+            workspace_id: WorkspaceId::new("workspace-revoked-object"),
+            device_id: DeviceId::new("device-2"),
+            revoked_by_device_id: DeviceId::new("device-1"),
             revoked_by_device_proof: device_proof(
                 "workspace-revoked-object",
                 "device-1",
                 "revoke-device",
-                "device-2",
+                &device_revocation_proof_subject("device-2"),
             ),
             reason: "lost device".to_string(),
         })
         .expect("trusted device revokes device-2");
 
-    let revoked_commit = commit_snapshot_manifest(
+    let revoked_commit = commit_snapshot_graph_fixture(
         &control_plane,
         "workspace-revoked-object",
         "snapshot-after-revoke",
@@ -839,25 +958,31 @@ fn revoked_device_cannot_commit_or_lookup_snapshot_manifest() {
         "pack-content-after-revoke",
     )
     .expect_err("revoked device cannot commit a manifest");
-    assert!(matches!(revoked_commit, ControlPlaneError::Limited { .. }));
+    assert_device_not_trusted(revoked_commit);
 
     let revoked_reader = control_plane.clone().with_local_device_id("device-2");
     let revoked_lookup = revoked_reader
-        .get_snapshot_manifest_pointer("workspace-revoked-object", "snapshot-before-revoke")
+        .get_snapshot_graph(
+            &WorkspaceId::new("workspace-revoked-object"),
+            &SnapshotId::new("snapshot-before-revoke"),
+        )
         .expect_err("revoked device cannot lookup manifests");
-    assert!(matches!(revoked_lookup, ControlPlaneError::Limited { .. }));
+    assert_device_not_trusted(revoked_lookup);
 
     let trusted_reader = control_plane.with_local_device_id("device-1");
     assert_eq!(
         trusted_reader
-            .get_snapshot_manifest_pointer("workspace-revoked-object", "snapshot-before-revoke")
+            .get_snapshot_graph(
+                &WorkspaceId::new("workspace-revoked-object"),
+                &SnapshotId::new("snapshot-before-revoke")
+            )
             .expect("trusted reader lookup"),
         Some(record)
     );
 }
 
 #[test]
-fn object_manifest_commit_rejects_unreserved_or_mismatched_objects() {
+fn snapshot_graph_commit_rejects_unreserved_or_mismatched_objects() {
     let control_plane = FakeControlPlaneClient::default();
     control_plane.create_workspace("workspace-1");
     let manifest_upload = control_plane
@@ -869,7 +994,7 @@ fn object_manifest_commit_rejects_unreserved_or_mismatched_objects() {
 
     let unreserved_pack = ObjectPointer {
         object_key: "packs_pk_0011223344556677".to_string(),
-        content_id: "pack-content".to_string(),
+        content_id: ContentId::new("pack-content"),
         byte_len: 256,
         hash: "b3_pack".to_string(),
         key_epoch: 1,
@@ -877,21 +1002,21 @@ fn object_manifest_commit_rejects_unreserved_or_mismatched_objects() {
         created_at: ControlPlaneTimestamp { tick: 11 },
     };
     let error = control_plane
-        .commit_object_manifest(ObjectManifestCommit {
-            workspace_id: "workspace-1".to_string(),
-            snapshot_id: "snapshot-unreserved".to_string(),
-            manifest_id: "manifest-unreserved".to_string(),
+        .commit_snapshot_graph(SnapshotGraphCommit {
+            workspace_id: WorkspaceId::new("workspace-1"),
+            snapshot_id: SnapshotId::new("snapshot-unreserved"),
+            manifest_id: ManifestId::new("manifest-unreserved"),
             manifest_object: ObjectPointer {
                 object_key: manifest_upload.object_key.clone(),
-                content_id: "manifest-content".to_string(),
+                content_id: ContentId::new("manifest-content"),
                 byte_len: 64,
                 hash: "b3_manifest".to_string(),
                 key_epoch: 1,
                 kind: ObjectKind::SnapshotManifest,
                 created_at: ControlPlaneTimestamp { tick: 10 },
             },
-            pack_objects: vec![unreserved_pack],
-            committed_by_device_id: "device-1".to_string(),
+            direct_objects: vec![unreserved_pack],
+            committed_by_device_id: DeviceId::new("device-1"),
         })
         .expect_err("unreserved pack cannot become downloadable");
     assert!(matches!(error, ControlPlaneError::ObjectMissing { .. }));
@@ -903,29 +1028,29 @@ fn object_manifest_commit_rejects_unreserved_or_mismatched_objects() {
         )
         .expect("pack upload intent");
     let mismatch = control_plane
-        .commit_object_manifest(ObjectManifestCommit {
-            workspace_id: "workspace-1".to_string(),
-            snapshot_id: "snapshot-mismatch".to_string(),
-            manifest_id: "manifest-mismatch".to_string(),
+        .commit_snapshot_graph(SnapshotGraphCommit {
+            workspace_id: WorkspaceId::new("workspace-1"),
+            snapshot_id: SnapshotId::new("snapshot-mismatch"),
+            manifest_id: ManifestId::new("manifest-mismatch"),
             manifest_object: ObjectPointer {
                 object_key: manifest_upload.object_key,
-                content_id: "manifest-content".to_string(),
+                content_id: ContentId::new("manifest-content"),
                 byte_len: 64,
                 hash: "b3_manifest".to_string(),
                 key_epoch: 1,
                 kind: ObjectKind::SnapshotManifest,
                 created_at: ControlPlaneTimestamp { tick: 10 },
             },
-            pack_objects: vec![ObjectPointer {
+            direct_objects: vec![ObjectPointer {
                 object_key: pack_upload.object_key,
-                content_id: "pack-content".to_string(),
+                content_id: ContentId::new("pack-content"),
                 byte_len: 128,
                 hash: "b3_pack".to_string(),
                 key_epoch: 1,
                 kind: ObjectKind::SourcePack,
                 created_at: ControlPlaneTimestamp { tick: 11 },
             }],
-            committed_by_device_id: "device-1".to_string(),
+            committed_by_device_id: DeviceId::new("device-1"),
         })
         .expect_err("reserved object metadata must match");
     assert!(matches!(mismatch, ControlPlaneError::Conflict { .. }));
@@ -954,14 +1079,16 @@ fn agent_overlay_uploads_use_opaque_keys_and_commit_to_work_view_head() {
     control_plane.create_workspace("workspace-work");
     let work_view = control_plane
         .create_work_view(WorkViewCreate {
-            workspace_id: "workspace-work".to_string(),
-            work_view_id: "work-1".to_string(),
-            project_id: "acme-web".to_string(),
+            workspace_id: WorkspaceId::new("workspace-work"),
+            work_view_id: WorkViewId::new("work-1"),
+            project_id: ProjectId::new("acme-web"),
             name: "try-cache".to_string(),
             visible_path: ".work/acme-web/try-cache".to_string(),
-            base_snapshot_id: "empty".to_string(),
+            base_snapshot_id: SnapshotId::new("empty"),
             base_workspace_version: 0,
-            created_by_device_id: "device-1".to_string(),
+            expires_at: None,
+            retain_until: None,
+            created_by_device_id: DeviceId::new("device-1"),
         })
         .expect("work view create");
     assert_eq!(work_view.overlay_version, 0);
@@ -980,7 +1107,7 @@ fn agent_overlay_uploads_use_opaque_keys_and_commit_to_work_view_head() {
 
     let overlay_object = ObjectPointer {
         object_key: overlay_upload.object_key.clone(),
-        content_id: "overlay-content-1".to_string(),
+        content_id: ContentId::new("overlay-content-1"),
         byte_len: 512,
         hash: "b3_overlay-content-1".to_string(),
         key_epoch: 1,
@@ -989,11 +1116,11 @@ fn agent_overlay_uploads_use_opaque_keys_and_commit_to_work_view_head() {
     };
     let updated = control_plane
         .commit_work_view_overlay(WorkViewOverlayCommit {
-            workspace_id: "workspace-work".to_string(),
-            work_view_id: "work-1".to_string(),
+            workspace_id: WorkspaceId::new("workspace-work"),
+            work_view_id: WorkViewId::new("work-1"),
             expected_overlay_version: 0,
             overlay_object: overlay_object.clone(),
-            committed_by_device_id: "device-1".to_string(),
+            committed_by_device_id: DeviceId::new("device-1"),
         })
         .expect("overlay commit");
 
@@ -1001,14 +1128,17 @@ fn agent_overlay_uploads_use_opaque_keys_and_commit_to_work_view_head() {
     assert_eq!(updated.overlay_head, Some(overlay_object.clone()));
     assert_eq!(
         control_plane
-            .head_object_metadata("workspace-work", &overlay_object.object_key)
+            .head_object_metadata(
+                &WorkspaceId::new("workspace-work"),
+                &overlay_object.object_key
+            )
             .expect("overlay metadata")
             .kind,
         bowline_storage::ObjectKind::AgentOverlay
     );
     assert!(
         control_plane
-            .list_events("workspace-work")
+            .list_events(&WorkspaceId::new("workspace-work"))
             .expect("events")
             .iter()
             .any(|event| event.kind == CompactEventKind::WorkUpdated && event.subject == "work-1")
@@ -1020,40 +1150,49 @@ fn work_view_create_requires_current_or_committed_base_snapshot() {
     let control_plane = FakeControlPlaneClient::default();
     control_plane.create_workspace("workspace-work-base");
     let base_ref = control_plane
-        .compare_and_swap_workspace_ref("workspace-work-base", 0, "snap_base", "device-1")
+        .compare_and_swap_workspace_ref(
+            &WorkspaceId::new("workspace-work-base"),
+            0,
+            &SnapshotId::new("snap_base"),
+            &DeviceId::new("device-1"),
+        )
         .expect("base ref");
     let advanced_ref = control_plane
         .compare_and_swap_workspace_ref(
-            "workspace-work-base",
+            &WorkspaceId::new("workspace-work-base"),
             base_ref.version,
-            "snap_next",
-            "device-1",
+            &SnapshotId::new("snap_next"),
+            &DeviceId::new("device-1"),
         )
         .expect("advanced ref");
 
     control_plane
         .create_work_view(WorkViewCreate {
-            workspace_id: "workspace-work-base".to_string(),
-            work_view_id: "work-current".to_string(),
-            project_id: "acme-web".to_string(),
+            workspace_id: WorkspaceId::new("workspace-work-base"),
+            work_view_id: WorkViewId::new("work-current"),
+            project_id: ProjectId::new("acme-web"),
             name: "current-base".to_string(),
             visible_path: ".work/acme-web/current-base".to_string(),
             base_snapshot_id: advanced_ref.snapshot_id,
             base_workspace_version: advanced_ref.version,
-            created_by_device_id: "device-1".to_string(),
+            expires_at: None,
+            retain_until: None,
+            created_by_device_id: DeviceId::new("device-1"),
         })
         .expect("current workspace ref is a valid base");
 
     let missing_historical = control_plane
         .create_work_view(WorkViewCreate {
-            workspace_id: "workspace-work-base".to_string(),
-            work_view_id: "work-missing-base".to_string(),
-            project_id: "acme-web".to_string(),
+            workspace_id: WorkspaceId::new("workspace-work-base"),
+            work_view_id: WorkViewId::new("work-missing-base"),
+            project_id: ProjectId::new("acme-web"),
             name: "missing-base".to_string(),
             visible_path: ".work/acme-web/missing-base".to_string(),
-            base_snapshot_id: "snap_base".to_string(),
+            base_snapshot_id: SnapshotId::new("snap_base"),
             base_workspace_version: base_ref.version,
-            created_by_device_id: "device-1".to_string(),
+            expires_at: None,
+            retain_until: None,
+            created_by_device_id: DeviceId::new("device-1"),
         })
         .expect_err("historical base needs committed manifest");
     assert!(matches!(
@@ -1074,41 +1213,43 @@ fn work_view_create_requires_current_or_committed_base_snapshot() {
         )
         .expect("wrong pack upload intent");
     control_plane
-        .commit_object_manifest(ObjectManifestCommit {
-            workspace_id: "workspace-work-base".to_string(),
-            snapshot_id: "snap_real".to_string(),
-            manifest_id: "snap_missing".to_string(),
+        .commit_snapshot_graph(SnapshotGraphCommit {
+            workspace_id: WorkspaceId::new("workspace-work-base"),
+            snapshot_id: SnapshotId::new("snap_real"),
+            manifest_id: ManifestId::new("snap_missing"),
             manifest_object: ObjectPointer {
                 object_key: wrong_manifest_upload.object_key,
-                content_id: "manifest-wrong".to_string(),
+                content_id: ContentId::new("manifest-wrong"),
                 byte_len: 64,
                 hash: "b3_manifest-wrong".to_string(),
                 key_epoch: 1,
                 kind: ObjectKind::SnapshotManifest,
                 created_at: ControlPlaneTimestamp { tick: 30 },
             },
-            pack_objects: vec![ObjectPointer {
+            direct_objects: vec![ObjectPointer {
                 object_key: wrong_pack_upload.object_key,
-                content_id: "pack-wrong".to_string(),
+                content_id: ContentId::new("pack-wrong"),
                 byte_len: 256,
                 hash: "b3_pack-wrong".to_string(),
                 key_epoch: 1,
                 kind: ObjectKind::SourcePack,
                 created_at: ControlPlaneTimestamp { tick: 31 },
             }],
-            committed_by_device_id: "device-1".to_string(),
+            committed_by_device_id: DeviceId::new("device-1"),
         })
         .expect("manifest with snapshot-looking id commits");
     let manifest_id_is_not_a_snapshot = control_plane
         .create_work_view(WorkViewCreate {
-            workspace_id: "workspace-work-base".to_string(),
-            work_view_id: "work-manifest-id".to_string(),
-            project_id: "acme-web".to_string(),
+            workspace_id: WorkspaceId::new("workspace-work-base"),
+            work_view_id: WorkViewId::new("work-manifest-id"),
+            project_id: ProjectId::new("acme-web"),
             name: "manifest-id-base".to_string(),
             visible_path: ".work/acme-web/manifest-id-base".to_string(),
-            base_snapshot_id: "snap_missing".to_string(),
+            base_snapshot_id: SnapshotId::new("snap_missing"),
             base_workspace_version: 0,
-            created_by_device_id: "device-1".to_string(),
+            expires_at: None,
+            retain_until: None,
+            created_by_device_id: DeviceId::new("device-1"),
         })
         .expect_err("manifest id alone is not a committed base snapshot");
     assert!(matches!(
@@ -1116,7 +1257,7 @@ fn work_view_create_requires_current_or_committed_base_snapshot() {
         ControlPlaneError::Conflict { .. }
     ));
 
-    commit_snapshot_manifest(
+    commit_snapshot_graph_fixture(
         &control_plane,
         "workspace-work-base",
         "snap_base",
@@ -1128,14 +1269,16 @@ fn work_view_create_requires_current_or_committed_base_snapshot() {
 
     let historical = control_plane
         .create_work_view(WorkViewCreate {
-            workspace_id: "workspace-work-base".to_string(),
-            work_view_id: "work-historical".to_string(),
-            project_id: "acme-web".to_string(),
+            workspace_id: WorkspaceId::new("workspace-work-base"),
+            work_view_id: WorkViewId::new("work-historical"),
+            project_id: ProjectId::new("acme-web"),
             name: "historical-base".to_string(),
             visible_path: ".work/acme-web/historical-base".to_string(),
-            base_snapshot_id: "snap_base".to_string(),
+            base_snapshot_id: SnapshotId::new("snap_base"),
             base_workspace_version: base_ref.version,
-            created_by_device_id: "device-1".to_string(),
+            expires_at: None,
+            retain_until: None,
+            created_by_device_id: DeviceId::new("device-1"),
         })
         .expect("committed historical base is valid");
     assert_eq!(historical.base_snapshot_id, "snap_base");
@@ -1147,31 +1290,33 @@ fn stale_work_view_overlay_head_returns_current_record() {
     control_plane.create_workspace("workspace-stale-work");
     control_plane
         .create_work_view(WorkViewCreate {
-            workspace_id: "workspace-stale-work".to_string(),
-            work_view_id: "work-stale".to_string(),
-            project_id: "acme-web".to_string(),
+            workspace_id: WorkspaceId::new("workspace-stale-work"),
+            work_view_id: WorkViewId::new("work-stale"),
+            project_id: ProjectId::new("acme-web"),
             name: "stale-head".to_string(),
             visible_path: ".work/acme-web/stale-head".to_string(),
-            base_snapshot_id: "empty".to_string(),
+            base_snapshot_id: SnapshotId::new("empty"),
             base_workspace_version: 0,
-            created_by_device_id: "device-1".to_string(),
+            expires_at: None,
+            retain_until: None,
+            created_by_device_id: DeviceId::new("device-1"),
         })
         .expect("work view create");
     let first = reserve_overlay_object(&control_plane, "workspace-stale-work", "overlay-first", 20);
     control_plane
         .commit_work_view_overlay(WorkViewOverlayCommit {
-            workspace_id: "workspace-stale-work".to_string(),
-            work_view_id: "work-stale".to_string(),
+            workspace_id: WorkspaceId::new("workspace-stale-work"),
+            work_view_id: WorkViewId::new("work-stale"),
             expected_overlay_version: 0,
             overlay_object: first,
-            committed_by_device_id: "device-1".to_string(),
+            committed_by_device_id: DeviceId::new("device-1"),
         })
         .expect("first overlay commit");
 
     let stale = control_plane
         .commit_work_view_overlay(WorkViewOverlayCommit {
-            workspace_id: "workspace-stale-work".to_string(),
-            work_view_id: "work-stale".to_string(),
+            workspace_id: WorkspaceId::new("workspace-stale-work"),
+            work_view_id: WorkViewId::new("work-stale"),
             expected_overlay_version: 0,
             overlay_object: reserve_overlay_object(
                 &control_plane,
@@ -1179,7 +1324,7 @@ fn stale_work_view_overlay_head_returns_current_record() {
                 "overlay-second",
                 21,
             ),
-            committed_by_device_id: "device-2".to_string(),
+            committed_by_device_id: DeviceId::new("device-2"),
         })
         .expect_err("stale overlay writer gets current head");
 
@@ -1198,29 +1343,31 @@ fn work_view_lifecycle_updates_emit_phase_9_events_and_filter_lists() {
     control_plane.create_workspace("workspace-lifecycle");
     control_plane
         .create_work_view(WorkViewCreate {
-            workspace_id: "workspace-lifecycle".to_string(),
-            work_view_id: "work-life".to_string(),
-            project_id: "acme-web".to_string(),
+            workspace_id: WorkspaceId::new("workspace-lifecycle"),
+            work_view_id: WorkViewId::new("work-life"),
+            project_id: ProjectId::new("acme-web"),
             name: "review".to_string(),
             visible_path: ".work/acme-web/review".to_string(),
-            base_snapshot_id: "empty".to_string(),
+            base_snapshot_id: SnapshotId::new("empty"),
             base_workspace_version: 0,
-            created_by_device_id: "device-1".to_string(),
+            expires_at: None,
+            retain_until: None,
+            created_by_device_id: DeviceId::new("device-1"),
         })
         .expect("work view create");
 
     let review_ready = control_plane
         .update_work_view_lifecycle(WorkViewLifecycleUpdate {
-            workspace_id: "workspace-lifecycle".to_string(),
-            work_view_id: "work-life".to_string(),
+            workspace_id: WorkspaceId::new("workspace-lifecycle"),
+            work_view_id: WorkViewId::new("work-life"),
             lifecycle: WorkViewLifecycleState::ReviewReady,
-            updated_by_device_id: "device-1".to_string(),
+            updated_by_device_id: DeviceId::new("device-1"),
         })
         .expect("review-ready update");
     assert_eq!(review_ready.lifecycle, WorkViewLifecycleState::ReviewReady);
     assert_eq!(
         control_plane
-            .list_work_views("workspace-lifecycle", false)
+            .list_work_views(&WorkspaceId::new("workspace-lifecycle"), false)
             .expect("default list")
             .len(),
         1
@@ -1228,31 +1375,35 @@ fn work_view_lifecycle_updates_emit_phase_9_events_and_filter_lists() {
 
     control_plane
         .update_work_view_lifecycle(WorkViewLifecycleUpdate {
-            workspace_id: "workspace-lifecycle".to_string(),
-            work_view_id: "work-life".to_string(),
+            workspace_id: WorkspaceId::new("workspace-lifecycle"),
+            work_view_id: WorkViewId::new("work-life"),
             lifecycle: WorkViewLifecycleState::Discarded,
-            updated_by_device_id: "device-1".to_string(),
+            updated_by_device_id: DeviceId::new("device-1"),
         })
         .expect("discard update");
     assert!(
         control_plane
-            .list_work_views("workspace-lifecycle", false)
+            .list_work_views(&WorkspaceId::new("workspace-lifecycle"), false)
             .expect("default list")
             .is_empty()
     );
     assert_eq!(
         control_plane
-            .list_work_views("workspace-lifecycle", true)
+            .list_work_views(&WorkspaceId::new("workspace-lifecycle"), true)
             .expect("all list")
             .len(),
         1
     );
     control_plane
-        .restore_work_view("workspace-lifecycle", "work-life", "device-1")
+        .restore_work_view(
+            &WorkspaceId::new("workspace-lifecycle"),
+            &WorkViewId::new("work-life"),
+            &DeviceId::new("device-1"),
+        )
         .expect("restore work view");
 
     let event_kinds = control_plane
-        .list_events("workspace-lifecycle")
+        .list_events(&WorkspaceId::new("workspace-lifecycle"))
         .expect("events")
         .into_iter()
         .map(|event| event.kind)
@@ -1272,49 +1423,50 @@ fn trusted_workspace_rejects_untrusted_work_view_writes_and_cross_workspace_over
 
     let untrusted_create = control_plane
         .create_work_view(WorkViewCreate {
-            workspace_id: "workspace-work-a".to_string(),
-            work_view_id: "work-untrusted".to_string(),
-            project_id: "acme-web".to_string(),
+            workspace_id: WorkspaceId::new("workspace-work-a"),
+            work_view_id: WorkViewId::new("work-untrusted"),
+            project_id: ProjectId::new("acme-web"),
             name: "untrusted".to_string(),
             visible_path: ".work/acme-web/untrusted".to_string(),
-            base_snapshot_id: "empty".to_string(),
+            base_snapshot_id: SnapshotId::new("empty"),
             base_workspace_version: 0,
-            created_by_device_id: "device-2".to_string(),
+            expires_at: None,
+            retain_until: None,
+            created_by_device_id: DeviceId::new("device-2"),
         })
         .expect_err("untrusted device cannot create work");
-    assert!(matches!(
-        untrusted_create,
-        ControlPlaneError::Limited { .. }
-    ));
+    assert_device_not_trusted(untrusted_create);
 
     control_plane
         .create_work_view(WorkViewCreate {
-            workspace_id: "workspace-work-a".to_string(),
-            work_view_id: "work-trusted".to_string(),
-            project_id: "acme-web".to_string(),
+            workspace_id: WorkspaceId::new("workspace-work-a"),
+            work_view_id: WorkViewId::new("work-trusted"),
+            project_id: ProjectId::new("acme-web"),
             name: "trusted".to_string(),
             visible_path: ".work/acme-web/trusted".to_string(),
-            base_snapshot_id: "empty".to_string(),
+            base_snapshot_id: SnapshotId::new("empty"),
             base_workspace_version: 0,
-            created_by_device_id: "device-1".to_string(),
+            expires_at: None,
+            retain_until: None,
+            created_by_device_id: DeviceId::new("device-1"),
         })
         .expect("trusted device creates work");
 
     let untrusted_reader = control_plane.clone().with_local_device_id("device-2");
     let list_error = untrusted_reader
-        .list_work_views("workspace-work-a", true)
+        .list_work_views(&WorkspaceId::new("workspace-work-a"), true)
         .expect_err("untrusted device cannot list work views");
-    assert!(matches!(list_error, ControlPlaneError::Limited { .. }));
+    assert_device_not_trusted(list_error);
 
     let workspace_b_overlay =
         reserve_overlay_object(&control_plane, "workspace-work-b", "overlay-b", 22);
     let cross_workspace = control_plane
         .commit_work_view_overlay(WorkViewOverlayCommit {
-            workspace_id: "workspace-work-a".to_string(),
-            work_view_id: "work-trusted".to_string(),
+            workspace_id: WorkspaceId::new("workspace-work-a"),
+            work_view_id: WorkViewId::new("work-trusted"),
             expected_overlay_version: 0,
             overlay_object: workspace_b_overlay,
-            committed_by_device_id: "device-1".to_string(),
+            committed_by_device_id: DeviceId::new("device-1"),
         })
         .expect_err("overlay object reservation belongs to another workspace");
     assert!(matches!(cross_workspace, WorkViewUpdateError::Storage(_)));
@@ -1324,23 +1476,20 @@ fn trusted_workspace_rejects_untrusted_work_view_writes_and_cross_workspace_over
 fn compact_lease_create_update_and_events_omit_local_only_text() {
     let control_plane = FakeControlPlaneClient::default();
     control_plane.create_workspace("workspace-lease");
-    let output_object =
-        reserve_overlay_object(&control_plane, "workspace-lease", "lease-output", 30);
-
     let lease = control_plane
         .create_lease(LeaseCreate {
-            workspace_id: "workspace-lease".to_string(),
-            lease_id: "lease-1".to_string(),
-            project_id: "project-acme".to_string(),
-            device_id: "device-1".to_string(),
+            workspace_id: WorkspaceId::new("workspace-lease"),
+            lease_id: LeaseId::new("lease-1"),
+            project_id: ProjectId::new("project-acme"),
+            device_id: DeviceId::new("device-1"),
+            target_device_ref: None,
+            origin_device_ref: None,
             write_target_mode: LeaseWriteTargetMode::WorkView,
-            work_view_id: Some("work-lease-1".to_string()),
-            base_snapshot_id: "empty".to_string(),
-            execution_state: LeaseExecutionState::Active,
-            output_state: LeaseOutputState::Empty,
-            status_code: "active".to_string(),
-            output_object: None,
-            audit_object: None,
+            work_view_id: Some(WorkViewId::new("work-lease-1")),
+            base_snapshot_id: SnapshotId::new("empty"),
+            task_label: None,
+            session_state: LeaseSessionState::Open,
+            status_code: "open".to_string(),
             expires_at: ControlPlaneTimestamp { tick: 3_600 },
         })
         .expect("compact lease create");
@@ -1348,37 +1497,109 @@ fn compact_lease_create_update_and_events_omit_local_only_text() {
     assert_eq!(lease.project_id, "project-acme");
     assert_eq!(lease.write_target_mode, LeaseWriteTargetMode::WorkView);
     assert_eq!(lease.work_view_id.as_deref(), Some("work-lease-1"));
-    assert_eq!(lease.execution_state.as_str(), "active");
-    assert_eq!(lease.output_state.as_str(), "empty");
-    assert_eq!(lease.status_code, "active");
+    assert_eq!(lease.session_state.as_str(), "open");
+    assert_eq!(lease.status_code, "open");
 
     let updated = control_plane
         .update_lease(LeaseUpdate {
-            workspace_id: "workspace-lease".to_string(),
-            lease_id: "lease-1".to_string(),
+            workspace_id: WorkspaceId::new("workspace-lease"),
+            lease_id: LeaseId::new("lease-1"),
             expected_version: 0,
-            updated_by_device_id: "device-1".to_string(),
-            execution_state: None,
-            output_state: Some(LeaseOutputState::ReviewReady),
+            updated_by_device_id: DeviceId::new("device-1"),
+            session_state: None,
             status_code: Some("review-ready".to_string()),
-            output_object: Some(output_object.clone()),
-            audit_object: None,
-            event_kind: None,
+            event_kind: Some(CompactEventKind::LeaseUpdated),
         })
         .expect("compact lease update");
 
     assert_eq!(updated.version, 1);
-    assert_eq!(updated.output_state, LeaseOutputState::ReviewReady);
-    assert_eq!(updated.output_object, Some(output_object));
     let events = control_plane
-        .list_events("workspace-lease")
+        .list_events(&WorkspaceId::new("workspace-lease"))
         .expect("lease events");
     assert!(events.iter().any(|event| {
         event.kind == CompactEventKind::LeaseCreated && event.subject == "lease-1"
     }));
     assert!(events.iter().any(|event| {
-        event.kind == CompactEventKind::LeaseReviewReady && event.subject == "lease-1"
+        event.kind == CompactEventKind::LeaseUpdated && event.subject == "lease-1"
     }));
+}
+
+#[test]
+fn handoff_lease_contract_rejects_invalid_refs_and_forged_events() {
+    let control_plane = FakeControlPlaneClient::default();
+    control_plane.create_workspace("workspace-handoff-contract");
+    let mut handoff = lease_create_input(
+        "workspace-handoff-contract",
+        "lease-handoff-contract",
+        "device-origin",
+    );
+    handoff.target_device_ref = Some("device-target".to_string());
+    handoff.origin_device_ref = Some("device-origin".to_string());
+    handoff.write_target_mode = LeaseWriteTargetMode::WorkView;
+    handoff.work_view_id = Some(WorkViewId::new("work-handoff-contract"));
+    let missing_task = control_plane
+        .create_lease(handoff.clone())
+        .expect_err("handoff leases require task label");
+    assert!(matches!(
+        missing_task,
+        ControlPlaneError::Conflict { resource, reason }
+            if resource == "agent lease" && reason.contains("task label")
+    ));
+
+    let mut missing_origin = handoff.clone();
+    missing_origin.lease_id = LeaseId::new("lease-handoff-missing-origin");
+    missing_origin.task_label = Some("fix target bug".to_string());
+    missing_origin.origin_device_ref = None;
+    let partial_refs = control_plane
+        .create_lease(missing_origin)
+        .expect_err("handoff leases require both refs");
+    assert!(matches!(
+        partial_refs,
+        ControlPlaneError::Conflict { resource, reason }
+            if resource == "agent lease" && reason.contains("both target and origin device refs")
+    ));
+
+    let mut wrong_origin = handoff.clone();
+    wrong_origin.lease_id = LeaseId::new("lease-handoff-wrong-origin");
+    wrong_origin.task_label = Some("fix target bug".to_string());
+    wrong_origin.origin_device_ref = Some("device-other".to_string());
+    let origin_mismatch = control_plane
+        .create_lease(wrong_origin)
+        .expect_err("origin device ref must match creating device");
+    assert!(matches!(
+        origin_mismatch,
+        ControlPlaneError::Conflict { resource, reason }
+            if resource == "agent lease" && reason.contains("origin device ref")
+    ));
+
+    handoff.task_label = Some("fix target bug".to_string());
+    control_plane
+        .create_lease(handoff)
+        .expect("handoff lease with task label and matching refs");
+
+    let direct = control_plane
+        .create_lease(lease_create_input(
+            "workspace-handoff-contract",
+            "lease-direct-contract",
+            "device-origin",
+        ))
+        .expect("direct lease");
+    let forged_event = control_plane
+        .update_lease(LeaseUpdate {
+            workspace_id: WorkspaceId::new("workspace-handoff-contract"),
+            lease_id: direct.lease_id,
+            expected_version: direct.version,
+            updated_by_device_id: DeviceId::new("device-origin"),
+            session_state: None,
+            status_code: None,
+            event_kind: Some(CompactEventKind::DeviceApproved),
+        })
+        .expect_err("generic update cannot forge a non-lease event");
+    assert!(matches!(
+        forged_event,
+        ControlPlaneError::Conflict { resource, reason }
+            if resource == "agent lease" && reason.contains("event kind")
+    ));
 }
 
 #[test]
@@ -1394,7 +1615,7 @@ fn compact_lease_metadata_rejects_untrusted_devices_and_remains_visible_to_trust
             "device-2",
         ))
         .expect_err("untrusted device cannot create lease metadata");
-    assert!(matches!(untrusted, ControlPlaneError::Limited { .. }));
+    assert_device_not_trusted(untrusted);
 
     let lease = control_plane
         .create_lease(lease_create_input(
@@ -1407,9 +1628,9 @@ fn compact_lease_metadata_rejects_untrusted_devices_and_remains_visible_to_trust
 
     let untrusted_reader = control_plane.clone().with_local_device_id("device-2");
     let list_error = untrusted_reader
-        .list_leases("workspace-lease-trust")
+        .list_leases(&WorkspaceId::new("workspace-lease-trust"))
         .expect_err("untrusted device cannot list lease metadata");
-    assert!(matches!(list_error, ControlPlaneError::Limited { .. }));
+    assert_device_not_trusted(list_error);
 
     authorize_device(
         &control_plane,
@@ -1420,7 +1641,7 @@ fn compact_lease_metadata_rejects_untrusted_devices_and_remains_visible_to_trust
     let trusted_reader = control_plane.with_local_device_id("device-2");
     assert_eq!(
         trusted_reader
-            .list_leases("workspace-lease-trust")
+            .list_leases(&WorkspaceId::new("workspace-lease-trust"))
             .expect("trusted second device can see compact lease metadata"),
         vec![lease]
     );
@@ -1446,17 +1667,19 @@ fn revoked_devices_cannot_create_work_views_or_leases() {
 
     let work_error = control_plane
         .create_work_view(WorkViewCreate {
-            workspace_id: "workspace-revoked-work".to_string(),
-            work_view_id: "work-revoked".to_string(),
-            project_id: "acme-web".to_string(),
+            workspace_id: WorkspaceId::new("workspace-revoked-work"),
+            work_view_id: WorkViewId::new("work-revoked"),
+            project_id: ProjectId::new("acme-web"),
             name: "revoked".to_string(),
             visible_path: ".work/acme-web/revoked".to_string(),
-            base_snapshot_id: "empty".to_string(),
+            base_snapshot_id: SnapshotId::new("empty"),
             base_workspace_version: 0,
-            created_by_device_id: "device-2".to_string(),
+            expires_at: None,
+            retain_until: None,
+            created_by_device_id: DeviceId::new("device-2"),
         })
         .expect_err("revoked device cannot create work views");
-    assert!(matches!(work_error, ControlPlaneError::Limited { .. }));
+    assert_device_not_trusted(work_error);
 
     let lease_error = control_plane
         .create_lease(lease_create_input(
@@ -1465,13 +1688,13 @@ fn revoked_devices_cannot_create_work_views_or_leases() {
             "device-2",
         ))
         .expect_err("revoked device cannot create leases");
-    assert!(matches!(lease_error, ControlPlaneError::Limited { .. }));
+    assert_device_not_trusted(lease_error);
 
     let revoked_reader = control_plane.with_local_device_id("device-2");
     let list_error = revoked_reader
-        .list_leases("workspace-revoked-work")
+        .list_leases(&WorkspaceId::new("workspace-revoked-work"))
         .expect_err("revoked device cannot list leases");
-    assert!(matches!(list_error, ControlPlaneError::Limited { .. }));
+    assert_device_not_trusted(list_error);
 }
 
 #[test]
@@ -1481,7 +1704,7 @@ fn compact_lease_metadata_rejects_pathlike_or_uncommitted_pointer_fields() {
 
     let pathlike_project = control_plane
         .create_lease(LeaseCreate {
-            project_id: "Users/user/Code/acme".to_string(),
+            project_id: ProjectId::new("Users/user/Code/acme"),
             ..lease_create_input("workspace-lease-allowlist", "lease-bad-project", "device-1")
         })
         .expect_err("path-like project labels stay local-only");
@@ -1497,46 +1720,19 @@ fn compact_lease_metadata_rejects_pathlike_or_uncommitted_pointer_fields() {
         })
         .expect_err("raw review notes stay local-only");
     assert!(matches!(raw_status, ControlPlaneError::Conflict { .. }));
-
-    let pathlike_pointer = control_plane
-        .update_lease(LeaseUpdate {
-            workspace_id: "workspace-lease-allowlist".to_string(),
-            lease_id: "lease-missing".to_string(),
-            expected_version: 0,
-            updated_by_device_id: "device-1".to_string(),
-            execution_state: None,
-            output_state: Some(LeaseOutputState::Dirty),
-            status_code: Some("dirty".to_string()),
-            output_object: Some(ObjectPointer {
-                object_key: "packs_src_auth".to_string(),
-                content_id: "content".to_string(),
-                byte_len: 1,
-                hash: "b3_bad".to_string(),
-                key_epoch: 1,
-                kind: ObjectKind::AgentOverlay,
-                created_at: ControlPlaneTimestamp { tick: 1 },
-            }),
-            audit_object: None,
-            event_kind: Some(CompactEventKind::LeaseUpdated),
-        })
-        .expect_err("path-derived object pointers are rejected before lookup");
-    assert!(matches!(
-        pathlike_pointer,
-        ControlPlaneError::InvalidObjectKey { .. }
-    ));
 }
 
 #[path = "control_plane_contract/devices_recovery.rs"]
 mod devices_recovery;
 
-fn commit_snapshot_manifest(
+fn commit_snapshot_graph_fixture(
     control_plane: &FakeControlPlaneClient,
     workspace_id: &str,
     snapshot_id: &str,
     device_id: &str,
     manifest_content_id: &str,
     pack_content_id: &str,
-) -> Result<bowline_control_plane::ObjectManifestRecord, ControlPlaneError> {
+) -> Result<SnapshotGraphRecord, ControlPlaneError> {
     let manifest_upload = control_plane.create_upload_intent(
         UploadIntentRequest::new(workspace_id, ObjectKind::SnapshotManifest, 64)
             .with_content_id(manifest_content_id),
@@ -1546,29 +1742,29 @@ fn commit_snapshot_manifest(
             .with_content_id(pack_content_id),
     )?;
 
-    control_plane.commit_object_manifest(ObjectManifestCommit {
-        workspace_id: workspace_id.to_string(),
-        snapshot_id: snapshot_id.to_string(),
-        manifest_id: format!("manifest-{snapshot_id}"),
+    control_plane.commit_snapshot_graph(SnapshotGraphCommit {
+        workspace_id: WorkspaceId::new(workspace_id),
+        snapshot_id: SnapshotId::new(snapshot_id),
+        manifest_id: ManifestId::new(format!("manifest-{snapshot_id}")),
         manifest_object: ObjectPointer {
             object_key: manifest_upload.object_key,
-            content_id: manifest_content_id.to_string(),
+            content_id: ContentId::new(manifest_content_id),
             byte_len: 64,
             hash: format!("b3_{manifest_content_id}"),
             key_epoch: 1,
             kind: ObjectKind::SnapshotManifest,
             created_at: ControlPlaneTimestamp { tick: 10 },
         },
-        pack_objects: vec![ObjectPointer {
+        direct_objects: vec![ObjectPointer {
             object_key: pack_upload.object_key,
-            content_id: pack_content_id.to_string(),
+            content_id: ContentId::new(pack_content_id),
             byte_len: 256,
             hash: format!("b3_{pack_content_id}"),
             key_epoch: 1,
             kind: ObjectKind::SourcePack,
             created_at: ControlPlaneTimestamp { tick: 11 },
         }],
-        committed_by_device_id: device_id.to_string(),
+        committed_by_device_id: DeviceId::new(device_id),
     })
 }
 
@@ -1586,7 +1782,7 @@ fn reserve_overlay_object(
         .expect("overlay upload intent");
     ObjectPointer {
         object_key: upload.object_key,
-        content_id: content_id.to_string(),
+        content_id: ContentId::new(content_id),
         byte_len: 512,
         hash: format!("b3_{content_id}"),
         key_epoch: 1,
@@ -1615,8 +1811,8 @@ fn create_first_device(
 ) {
     control_plane
         .create_first_authorized_device(FirstAuthorizedDeviceInput {
-            workspace_id: workspace_id.to_string(),
-            device_id: device_id.to_string(),
+            workspace_id: WorkspaceId::new(workspace_id),
+            device_id: DeviceId::new(device_id),
             device_name: format!("{device_id}-name"),
             platform: "macos".to_string(),
             device_fingerprint: format!("fp_{device_id}"),
@@ -1634,11 +1830,12 @@ fn authorize_device(
     let request = control_plane
         .create_device_request(
             DeviceRequestInput::new(DeviceRequestInputDraft {
-                workspace_id: workspace_id.to_string(),
-                device_id: device_id.to_string(),
+                workspace_id: WorkspaceId::new(workspace_id),
+                device_id: DeviceId::new(device_id),
                 device_name: format!("{device_id}-name"),
                 device_public_key: format!("age1{device_id}"),
                 device_fingerprint: format!("fp_{device_id}"),
+                device_authorization_proof_verifier: device_verifier(device_id),
                 matching_code: "maple-river-4821".to_string(),
             })
             .with_device_proof_verifier(device_id),
@@ -1647,12 +1844,12 @@ fn authorize_device(
     control_plane
         .approve_device_request(DeviceApprovalInput {
             request_id: request.request_id.clone(),
-            approved_by_device_id: approver_device_id.to_string(),
+            approved_by_device_id: DeviceId::new(approver_device_id),
             approved_by_device_proof: device_proof(
                 workspace_id,
                 approver_device_id,
                 "approve-device-request",
-                &request.request_id,
+                &device_request_proof_subject(&request.request_id),
             ),
             encrypted_grant_ciphertext: "age-encrypted-workspace-key".to_string(),
             grant_acceptance_proof_verifier: grant_acceptance_proof_verifier(
@@ -1668,7 +1865,7 @@ fn authorize_device(
     control_plane
         .confirm_device_grant_accepted(GrantAcceptanceInput {
             request_id: request_id.clone(),
-            device_id: device_id.to_string(),
+            device_id: DeviceId::new(device_id),
             grant_acceptance_proof: grant_acceptance_proof(workspace_id, &request_id, device_id),
         })
         .expect("requester accepts grant");
@@ -1682,21 +1879,21 @@ fn revoke_device(
 ) {
     control_plane
         .revoke_device(DeviceRevocationInput {
-            workspace_id: workspace_id.to_string(),
-            device_id: revoked_device_id.to_string(),
-            revoked_by_device_id: revoker_device_id.to_string(),
+            workspace_id: WorkspaceId::new(workspace_id),
+            device_id: DeviceId::new(revoked_device_id),
+            revoked_by_device_id: DeviceId::new(revoker_device_id),
             revoked_by_device_proof: device_proof(
                 workspace_id,
                 revoker_device_id,
                 "revoke-device",
-                revoked_device_id,
+                &device_revocation_proof_subject(revoked_device_id),
             ),
             reason: "test revocation".to_string(),
         })
         .expect("trusted device revokes");
 }
 
-fn commit_one_pack_object(
+fn commit_one_direct_object(
     control_plane: &FakeControlPlaneClient,
     workspace_id: &str,
     snapshot_id: &str,
@@ -1718,16 +1915,16 @@ fn commit_one_pack_object(
 
     let manifest_object = ObjectPointer {
         object_key: manifest_upload.object_key,
-        content_id: format!("manifest-{content_id}"),
+        content_id: ContentId::new(format!("manifest-{content_id}")),
         byte_len: 64,
         hash: format!("b3_manifest_{content_id}"),
         key_epoch: 1,
         kind: ObjectKind::SnapshotManifest,
         created_at: ControlPlaneTimestamp { tick: 10 },
     };
-    let pack_object = ObjectPointer {
+    let direct_object = ObjectPointer {
         object_key: pack_upload.object_key,
-        content_id: content_id.to_string(),
+        content_id: ContentId::new(content_id),
         byte_len: 128,
         hash: format!("b3_pack_{content_id}"),
         key_epoch: 1,
@@ -1736,33 +1933,33 @@ fn commit_one_pack_object(
     };
 
     control_plane
-        .commit_object_manifest(ObjectManifestCommit {
-            workspace_id: workspace_id.to_string(),
-            snapshot_id: snapshot_id.to_string(),
-            manifest_id: manifest_id.to_string(),
+        .commit_snapshot_graph(SnapshotGraphCommit {
+            workspace_id: WorkspaceId::new(workspace_id),
+            snapshot_id: SnapshotId::new(snapshot_id),
+            manifest_id: ManifestId::new(manifest_id),
             manifest_object,
-            pack_objects: vec![pack_object.clone()],
-            committed_by_device_id: "device-1".to_string(),
+            direct_objects: vec![direct_object.clone()],
+            committed_by_device_id: DeviceId::new("device-1"),
         })
         .expect("manifest commit");
 
-    pack_object
+    direct_object
 }
 
 fn lease_create_input(workspace_id: &str, lease_id: &str, device_id: &str) -> LeaseCreate {
     LeaseCreate {
-        workspace_id: workspace_id.to_string(),
-        lease_id: lease_id.to_string(),
-        project_id: "project-acme".to_string(),
-        device_id: device_id.to_string(),
+        workspace_id: WorkspaceId::new(workspace_id),
+        lease_id: LeaseId::new(lease_id),
+        project_id: ProjectId::new("project-acme"),
+        device_id: DeviceId::new(device_id),
+        target_device_ref: None,
+        origin_device_ref: None,
         write_target_mode: LeaseWriteTargetMode::Direct,
         work_view_id: None,
-        base_snapshot_id: "empty".to_string(),
-        execution_state: LeaseExecutionState::Active,
-        output_state: LeaseOutputState::Empty,
-        status_code: "active".to_string(),
-        output_object: None,
-        audit_object: None,
+        base_snapshot_id: SnapshotId::new("empty"),
+        task_label: None,
+        session_state: LeaseSessionState::Open,
+        status_code: "open".to_string(),
         expires_at: ControlPlaneTimestamp { tick: 3_600 },
     }
 }

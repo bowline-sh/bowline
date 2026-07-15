@@ -1,4 +1,4 @@
-import type { StatusLevel } from "./status";
+import type { RepairCommand, StatusLevel } from "./status";
 import type { AgentCliCapability } from "./agent";
 import type { CommandOutputBase } from "./commands";
 
@@ -78,5 +78,5 @@ export type ResolveCommandOutput = CommandOutputBase<"resolve"> & {
     readonly level: StatusLevel;
     readonly summary: string;
   };
-  readonly nextActions: readonly ResolveAvailableAction[];
+  readonly nextActions: readonly RepairCommand[];
 };

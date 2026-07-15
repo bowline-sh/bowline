@@ -10,10 +10,15 @@ use bowline_core::{
         EventName, EventRedaction, EventSeverity, EventSubject, EventSubjectKind, WorkspaceEvent,
     },
     ids::EventId,
+    status::RepairCommand,
 };
-use bowline_local::metadata::{MetadataStore, SyncOperationRecord};
+use bowline_local::metadata::{
+    MetadataStore, SyncOperationKind, SyncOperationRecord, SyncOperationState, SyncResourceKey,
+};
+use bowline_local::sync::{
+    ConflictKind, ConflictRecord, ConflictState, transition_conflict_occurrence_state,
+};
 use serde::Serialize;
-use serde_json::Value;
 
 use crate::surface::style::{self, Presentation, Role};
 
@@ -85,7 +90,7 @@ pub struct ResolveCommandOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected_conflict_id: Option<String>,
     pub status: ResolveStatus,
-    pub next_actions: Vec<ResolveAvailableAction>,
+    pub next_actions: Vec<RepairCommand>,
     #[serde(skip)]
     pub command_failed: bool,
 }
@@ -94,6 +99,7 @@ pub struct ResolveCommandOutput {
 #[serde(rename_all = "camelCase")]
 pub struct ResolveConflict {
     pub id: String,
+    pub occurrence_version: u64,
     pub state: String,
     pub bundle_path: String,
     pub conflict_kind: String,
@@ -140,6 +146,7 @@ pub struct ResolveAvailableAction {
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    pub mutates: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

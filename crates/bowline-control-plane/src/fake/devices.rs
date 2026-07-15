@@ -1,5 +1,7 @@
 use super::*;
-use crate::DeviceControlPlaneClient;
+use crate::{
+    DeviceControlPlaneClient, device_request_proof_subject, device_revocation_proof_subject,
+};
 
 impl DeviceControlPlaneClient for FakeControlPlaneClient {
     fn create_bootstrap_session(
@@ -9,9 +11,15 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
         self.ensure_workspace(&input.workspace_id)?;
         let created_at = self.clock.now();
         Ok(BootstrapSession {
-            session_id: self.ids.next_id("bootstrap-session"),
+            session_id: bowline_core::ids::BootstrapSessionId::new(
+                self.ids.next_id("bootstrap-session"),
+            ),
             workspace_id: input.workspace_id,
             token: self.ids.next_id("bootstrap-token"),
+            lease_id: input.lease_id,
+            lease_handoff_digest: input.lease_handoff_digest,
+            runtime: input.runtime,
+            setup_receipts_digest: input.setup_receipts_digest,
             expires_at: ControlPlaneTimestamp {
                 tick: created_at.tick + input.expires_in_ticks,
             },
@@ -64,17 +72,22 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
 
         let requested_at = self.clock.now();
         let request = DeviceRequest {
-            request_id: self.ids.next_id("device-request"),
+            request_id: DeviceApprovalRequestId::new(self.ids.next_id("device-request")),
             workspace_id: input.workspace_id,
             device_id: input.device_id,
             device_name: input.device_name,
             platform: input.platform,
             device_public_key: input.device_public_key,
             device_fingerprint: input.device_fingerprint,
+            device_authorization_proof_verifier: input.device_authorization_proof_verifier.clone(),
             matching_code: input.matching_code,
             account_id: input.account_id,
             host: input.host,
+            lease_handoff_digest: input.lease_handoff_digest,
+            lease_id: input.lease_id,
             root: input.root,
+            runtime: input.runtime,
+            setup_receipts_digest: input.setup_receipts_digest,
             requested_at,
             expires_at: crate::ControlPlaneTimestamp {
                 tick: requested_at.tick + input.expires_in_ticks,
@@ -148,6 +161,9 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             device_fingerprint: input.device_fingerprint,
             authorized_at,
             authorized_by_device_id: None,
+            device_authorization_proof_verifier: Some(
+                input.device_authorization_proof_verifier.clone(),
+            ),
             revoked_at: None,
         };
         state.authorized_devices.insert(key.clone(), device.clone());
@@ -168,7 +184,7 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
 
     fn list_device_trust(
         &self,
-        workspace_id: &str,
+        workspace_id: &WorkspaceId,
     ) -> ControlPlaneResult<DeviceApprovalRequestList> {
         self.ensure_workspace(workspace_id)?;
         let state = self.state.lock().expect("fake control plane poisoned");
@@ -176,7 +192,7 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             .device_requests
             .values()
             .filter(|request| {
-                if request.workspace_id != workspace_id {
+                if &request.workspace_id != workspace_id {
                     return false;
                 }
                 match request.state {
@@ -196,15 +212,21 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
         let mut authorized_devices = state
             .authorized_devices
             .values()
-            .filter(|device| device.workspace_id == workspace_id && device.revoked_at.is_none())
+            .filter(|device| &device.workspace_id == workspace_id && device.revoked_at.is_none())
             .cloned()
             .collect::<Vec<_>>();
+        for device in &mut authorized_devices {
+            device.device_authorization_proof_verifier = state
+                .device_authorization_proof_verifiers
+                .get(&(device.workspace_id.clone(), device.device_id.clone()))
+                .cloned();
+        }
         authorized_devices.sort_by(|left, right| left.device_id.cmp(&right.device_id));
 
         let mut revoked_devices = state
             .revoked_devices
             .values()
-            .filter(|device| device.workspace_id == workspace_id)
+            .filter(|device| &device.workspace_id == workspace_id)
             .cloned()
             .collect::<Vec<_>>();
         revoked_devices.sort_by(|left, right| left.device_id.cmp(&right.device_id));
@@ -254,7 +276,7 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             &input.approved_by_device_id,
             &input.approved_by_device_proof,
             "approve-device-request",
-            &input.request_id,
+            &device_request_proof_subject(&input.request_id),
         )?;
         Self::ensure_not_revoked(&state, &request.workspace_id, &request.device_id)?;
 
@@ -296,7 +318,7 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             &input.denied_by_device_id,
             &input.denied_by_device_proof,
             "deny-device-request",
-            &input.request_id,
+            &device_request_proof_subject(&input.request_id),
         )?;
         let denied_at = self.clock.now();
         let request_mut = state
@@ -338,7 +360,7 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             &input.revoked_by_device_id,
             &input.revoked_by_device_proof,
             "revoke-device",
-            &input.device_id,
+            &device_revocation_proof_subject(&input.device_id),
         )?;
         let key = (input.workspace_id.clone(), input.device_id.clone());
         Self::ensure_revocation_keeps_trust_path(&state, &input.workspace_id, &input.device_id)?;
@@ -378,20 +400,20 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
 
     fn get_encrypted_device_grant(
         &self,
-        request_id: &str,
-        device_id: &str,
+        request_id: &DeviceApprovalRequestId,
+        device_id: &DeviceId,
     ) -> ControlPlaneResult<Option<DeviceApproval>> {
         let state = self.state.lock().expect("fake control plane poisoned");
         let Some(grant) = state.grants.get(request_id) else {
             return Ok(None);
         };
-        if grant.device_id != device_id {
+        if &grant.device_id != device_id {
             return Ok(None);
         }
         if grant.expires_at <= self.clock.peek() {
-            return Err(ControlPlaneError::Limited {
-                capability: "device-grant",
-                reason: "grant has expired",
+            return Err(ControlPlaneError::Rejected {
+                code: RejectionCode::InvalidRequest,
+                message: "grant has expired".to_string(),
             });
         }
         Ok(Some(grant.clone()))
@@ -409,15 +431,14 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
                 }
             })?;
             if grant.device_id != input.device_id {
-                return Err(ControlPlaneError::Limited {
-                    capability: "device-grant",
-                    reason: "grant can only be accepted by the requesting device",
-                });
+                return Err(device_not_trusted(
+                    "grant can only be accepted by the requesting device",
+                ));
             }
             if grant.expires_at <= self.clock.peek() {
-                return Err(ControlPlaneError::Limited {
-                    capability: "device-grant",
-                    reason: "grant has expired",
+                return Err(ControlPlaneError::Rejected {
+                    code: RejectionCode::InvalidRequest,
+                    message: "grant has expired".to_string(),
                 });
             }
             (grant.clone(), grant.accepted_at.is_none())
@@ -434,25 +455,22 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             let expected_acceptance_proof = state
                 .grant_acceptance_proof_verifiers
                 .get(&input.request_id)
-                .ok_or(ControlPlaneError::Limited {
-                    capability: "device-grant",
-                    reason: "grant acceptance proof is missing",
+                .ok_or_else(|| ControlPlaneError::Rejected {
+                    code: RejectionCode::InvalidRequest,
+                    message: "grant acceptance proof is missing".to_string(),
                 })?;
             if expected_acceptance_proof
                 != &grant_acceptance_proof_verifier(&input.grant_acceptance_proof)
             {
-                return Err(ControlPlaneError::Limited {
-                    capability: "device-grant",
-                    reason: "grant acceptance proof does not match",
-                });
+                return Err(device_not_trusted("grant acceptance proof does not match"));
             }
             let pending_verifier = state
                 .pending_device_proof_verifiers
                 .get(&input.request_id)
                 .cloned()
-                .ok_or(ControlPlaneError::Limited {
-                    capability: "device-trust",
-                    reason: "pending device proof is missing",
+                .ok_or_else(|| ControlPlaneError::Rejected {
+                    code: RejectionCode::InvalidRequest,
+                    message: "pending device proof is missing".to_string(),
                 })?;
             let accepted_at = self.clock.now();
             let grant_mut = state
@@ -493,10 +511,9 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
                 .authorized_devices
                 .contains_key(&(grant.workspace_id.clone(), grant.device_id.clone()))
         {
-            return Err(ControlPlaneError::Limited {
-                capability: "device-trust",
-                reason: "accepted grant no longer authorizes this device",
-            });
+            return Err(device_not_trusted(
+                "accepted grant no longer authorizes this device",
+            ));
         }
         Ok(grant)
     }

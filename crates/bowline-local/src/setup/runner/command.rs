@@ -1,41 +1,96 @@
 use super::*;
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SetupApprovalState {
+    Approved,
+    Required,
+    NotRequired,
+}
+
+impl SetupApprovalState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Required => "required",
+            Self::NotRequired => "not-required",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "approved" => Some(Self::Approved),
+            "required" => Some(Self::Required),
+            "not-required" => Some(Self::NotRequired),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct SetupCommandContext<'a> {
+    pub(super) store: &'a MetadataStore,
+    pub(super) workspace_id: &'a WorkspaceId,
+    pub(super) project_id: &'a ProjectId,
+    pub(super) project_path: &'a str,
+    pub(super) project_root: &'a Path,
+    pub(super) trigger: &'a str,
+    pub(super) db_path: &'a Path,
+    pub(super) now: &'a str,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct SetupShellCommand<'a> {
+    pub(super) command_text: &'a str,
+    pub(super) receipt_key: &'a str,
+    pub(super) recipe_hash: &'a str,
+    pub(super) approval_state: SetupApprovalState,
+    pub(super) package_manager: Option<&'a PackageManagerIdentity>,
+    pub(super) cwd: &'a Path,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct SetupApprovalReceipt<'a> {
+    pub(super) recipe_hash: &'a str,
+    pub(super) source: &'a str,
+}
+
+#[derive(Clone)]
+pub(super) struct SetupEventRecord<'a> {
+    pub(super) name: EventName,
+    pub(super) severity: EventSeverity,
+    pub(super) summary: &'a str,
+    pub(super) receipt_id: &'a str,
+}
+
 pub(super) fn run_shell_command(
-    store: &MetadataStore,
-    workspace_id: &WorkspaceId,
-    project_id: &ProjectId,
-    project_path: &str,
-    command_text: &str,
-    receipt_key: &str,
-    recipe_hash: &str,
-    approval_state: &str,
-    trigger: &str,
-    cwd: &Path,
-    db_path: &Path,
-    now: &str,
+    context: SetupCommandContext<'_>,
+    command: SetupShellCommand<'_>,
 ) -> Result<String, SetupRunError> {
+    let store = context.store;
     let env_scope_root = store
         .current_workspace_root()?
         .ok_or(SetupRunError::MissingRoot)
         .map(PathBuf::from)?;
-    let known_env_values = known_env_values(store, workspace_id, &env_scope_root, cwd)?;
-    let command_redacted = redact_setup_text_with_values(command_text, &known_env_values);
+    let known_env_values =
+        known_env_values(store, context.workspace_id, &env_scope_root, command.cwd)?;
+    let command_redacted = redact_setup_text_with_values(command.command_text, &known_env_values);
     let redacted_command_text = command_redacted.text.clone();
-    let receipt_id = setup_receipt_id(workspace_id, project_id, recipe_hash, receipt_key);
+    let receipt_id = setup_receipt_id(
+        context.workspace_id,
+        context.project_id,
+        command.recipe_hash,
+        command.receipt_key,
+    );
     append_setup_event(
-        store,
-        EventName::SetupStarted,
-        EventSeverity::Info,
-        "Setup command started; command text is redacted.",
-        workspace_id,
-        project_id,
-        project_path,
-        &receipt_id,
-        trigger,
-        now,
+        &context,
+        SetupEventRecord {
+            name: EventName::SetupStarted,
+            severity: EventSeverity::Info,
+            summary: "Setup command started; command text is redacted.",
+            receipt_id: &receipt_id,
+        },
     )?;
-    let output = run_bounded_shell_command(command_text, cwd)?;
+    let output = run_bounded_shell_command(command.command_text, command.cwd)?;
     let (redacted_output, redaction_rules) = if output.output_limit_exceeded {
         (
             "[redacted] setup output exceeded the local log limit and was discarded.\n".to_string(),
@@ -51,24 +106,46 @@ pub(super) fn run_shell_command(
     };
     let command_completed = output.status.success() && !output.output_limit_exceeded;
     let state = if command_completed {
-        "completed"
+        SetupReceiptState::Completed
     } else {
-        "failed"
+        SetupReceiptState::Failed
     };
-    let output_path = write_setup_log(db_path, &receipt_id, &redacted_output)?;
-    let identity =
-        collect_receipt_identity_inputs(cwd, "default", Some(recipe_hash.to_string()), None)?;
+    let output_path = write_setup_log(context.db_path, &receipt_id, &redacted_output)?;
+    let identity = collect_setup_identity(
+        command.cwd,
+        "default",
+        Some(command.recipe_hash.to_string()),
+        command.package_manager.cloned(),
+    )?;
+    let readiness = if command_completed {
+        SetupReadinessClassification {
+            state: SetupReadinessState::Runnable,
+            reason: "Setup command completed for the current setup identity.".to_string(),
+            remedy: None,
+        }
+    } else {
+        classify_setup_command_result(
+            command.command_text,
+            output.status.code(),
+            &redacted_output,
+            output.output_limit_exceeded,
+        )
+    };
+    debug_assert_eq!(
+        SetupApprovalState::from_str(command.approval_state.as_str()),
+        Some(command.approval_state)
+    );
 
     store.upsert_setup_receipt(&SetupReceiptRecord {
         id: receipt_id.clone(),
-        workspace_id: workspace_id.clone(),
-        project_id: Some(project_id.clone()),
+        workspace_id: context.workspace_id.clone(),
+        project_id: Some(context.project_id.clone()),
         command: redacted_command_text.clone(),
-        state: state.to_string(),
-        recipe_hash: recipe_hash.to_string(),
-        approval_state: approval_state.to_string(),
-        trigger: trigger.to_string(),
-        cwd: project_path.to_string(),
+        state: state.as_str().to_string(),
+        recipe_hash: command.recipe_hash.to_string(),
+        approval_state: command.approval_state.as_str().to_string(),
+        trigger: context.trigger.to_string(),
+        cwd: context.project_path.to_string(),
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
         env_profile: "default".to_string(),
@@ -78,43 +155,41 @@ pub(super) fn run_shell_command(
         } else if command_completed {
             "Setup command completed; output is redacted.".to_string()
         } else {
-            format!(
-                "Setup command failed with status {:?}; output is redacted.",
-                output.status.code()
-            )
+            readiness.reason.clone()
         },
+        setup_identity_hash: identity.hash,
+        readiness_state: readiness.state.as_str().to_string(),
+        readiness_reason: readiness.reason,
+        readiness_remedy: readiness.remedy.unwrap_or_default(),
         receipt_json: serde_json::to_string(&CommandReceipt {
             command: redacted_command_text,
-            identity,
+            identity: identity.inputs,
             redaction_rules,
         })?,
-        updated_at: now.to_string(),
+        updated_at: context.now.to_string(),
     })?;
     append_setup_event(
-        store,
-        if command_completed {
-            EventName::SetupCompleted
-        } else {
-            EventName::SetupBlocked
+        &context,
+        SetupEventRecord {
+            name: if command_completed {
+                EventName::SetupCompleted
+            } else {
+                EventName::SetupBlocked
+            },
+            severity: if command_completed {
+                EventSeverity::Info
+            } else {
+                EventSeverity::Attention
+            },
+            summary: if command_completed {
+                "Setup command completed; output is redacted."
+            } else if output.output_limit_exceeded {
+                "Setup command exceeded the output limit; output was discarded."
+            } else {
+                "Setup command failed; output is redacted."
+            },
+            receipt_id: &receipt_id,
         },
-        if command_completed {
-            EventSeverity::Info
-        } else {
-            EventSeverity::Attention
-        },
-        if command_completed {
-            "Setup command completed; output is redacted."
-        } else if output.output_limit_exceeded {
-            "Setup command exceeded the output limit; output was discarded."
-        } else {
-            "Setup command failed; output is redacted."
-        },
-        workspace_id,
-        project_id,
-        project_path,
-        &receipt_id,
-        trigger,
-        now,
     )?;
     Ok(receipt_id)
 }
@@ -127,81 +202,85 @@ pub(super) fn setup_recipe_metadata(path: &Path) -> Result<Option<fs::Metadata>,
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn record_setup_approval(
-    store: &MetadataStore,
-    workspace_id: &WorkspaceId,
-    project_id: &ProjectId,
-    project_path: &str,
-    recipe_hash: &str,
-    source: &str,
-    trigger: &str,
-    now: &str,
+    context: &SetupCommandContext<'_>,
+    approval: SetupApprovalReceipt<'_>,
 ) -> Result<String, SetupRunError> {
-    let receipt_id = setup_receipt_id(workspace_id, project_id, recipe_hash, "approval");
-    store.upsert_setup_receipt(&SetupReceiptRecord {
+    let receipt_id = setup_receipt_id(
+        context.workspace_id,
+        context.project_id,
+        approval.recipe_hash,
+        "approval",
+    );
+    debug_assert_eq!(
+        SetupApprovalState::from_str(SetupApprovalState::Approved.as_str()),
+        Some(SetupApprovalState::Approved)
+    );
+    context.store.upsert_setup_receipt(&SetupReceiptRecord {
         id: receipt_id.clone(),
-        workspace_id: workspace_id.clone(),
-        project_id: Some(project_id.clone()),
+        workspace_id: context.workspace_id.clone(),
+        project_id: Some(context.project_id.clone()),
         command: "setup approval granted".to_string(),
-        state: "approved".to_string(),
-        recipe_hash: recipe_hash.to_string(),
-        approval_state: "approved".to_string(),
-        trigger: trigger.to_string(),
-        cwd: project_path.to_string(),
+        state: SetupReceiptState::Approved.as_str().to_string(),
+        recipe_hash: approval.recipe_hash.to_string(),
+        approval_state: SetupApprovalState::Approved.as_str().to_string(),
+        trigger: context.trigger.to_string(),
+        cwd: context.project_path.to_string(),
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
         env_profile: "default".to_string(),
         output_path: None,
         redacted_summary: "Setup approval granted locally before execution.".to_string(),
+        setup_identity_hash: collect_setup_identity(
+            context.project_root,
+            "default",
+            Some(approval.recipe_hash.to_string()),
+            None,
+        )
+        .map(|identity| identity.hash)?,
+        readiness_state: SetupReadinessState::NeedsSetup.as_str().to_string(),
+        readiness_reason: "Setup approval was granted; setup commands still need to run."
+            .to_string(),
+        readiness_remedy: "Rerun setup for the hot project.".to_string(),
         receipt_json: serde_json::to_string(&ApprovalReceipt {
-            recipe_hash,
-            source,
-            trigger,
+            recipe_hash: approval.recipe_hash,
+            source: approval.source,
+            trigger: context.trigger,
         })?,
-        updated_at: now.to_string(),
+        updated_at: context.now.to_string(),
     })?;
     Ok(receipt_id)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn append_setup_event(
-    store: &MetadataStore,
-    name: EventName,
-    severity: EventSeverity,
-    summary: &str,
-    workspace_id: &WorkspaceId,
-    project_id: &ProjectId,
-    project_path: &str,
-    receipt_id: &str,
-    trigger: &str,
-    now: &str,
+    context: &SetupCommandContext<'_>,
+    record: SetupEventRecord<'_>,
 ) -> Result<(), SetupRunError> {
     let mut event = WorkspaceEvent::new(
-        EventId::new(setup_event_id(name, receipt_id, now)),
-        name,
-        now,
-        severity,
-        summary,
-        workspace_id.clone(),
+        EventId::new(setup_event_id(&record.name, record.receipt_id, context.now)),
+        record.name,
+        context.now,
+        record.severity,
+        record.summary,
+        context.workspace_id.clone(),
     );
-    event.project_id = Some(project_id.clone());
-    event.path = Some(project_path.to_string());
+    event.project_id = Some(context.project_id.clone());
+    event.path = Some(context.project_path.to_string());
     event.subject = Some(EventSubject {
         kind: EventSubjectKind::SetupReceipt,
-        id: receipt_id.to_string(),
-        path: Some(project_path.to_string()),
+        id: record.receipt_id.to_string(),
+        path: Some(context.project_path.to_string()),
     });
     event
         .payload
-        .insert("trigger".to_string(), trigger.to_string().into());
-    match store.append_event(event) {
+        .insert("trigger".to_string(), context.trigger.to_string().into());
+    match context.store.append_event(event) {
         Ok(_) | Err(LocalEventError::DuplicateEventId(_)) => Ok(()),
         Err(error) => Err(error.into()),
     }
 }
 
-pub(super) fn setup_event_id(name: EventName, receipt_id: &str, now: &str) -> String {
+pub(super) fn setup_event_id(name: &EventName, receipt_id: &str, now: &str) -> String {
     let input = format!("{name:?}:{receipt_id}:{now}");
     format!("evt_setup_{}", blake3::hash(input.as_bytes()).to_hex())
 }
@@ -216,7 +295,7 @@ pub(super) fn shell_command(command_text: &str) -> Command {
     #[cfg(not(windows))]
     {
         let mut command = Command::new("sh");
-        command.arg("-lc").arg(command_text);
+        command.arg("-c").arg(command_text);
         command
     }
 }
@@ -257,7 +336,9 @@ pub(super) fn run_bounded_shell_command(
     let mut killed_for_output_limit = false;
     let status = loop {
         if output_limit_exceeded.load(Ordering::Relaxed) && !killed_for_output_limit {
-            kill_setup_process_tree(&mut child, child_id);
+            if let Err(error) = kill_setup_process_tree(&mut child, child_id) {
+                tolerate_cleanup_error_if_readers_closed(error, &stdout_reader, &stderr_reader)?;
+            }
             killed_for_output_limit = true;
         }
         if let Some(status) = child.try_wait()? {
@@ -265,7 +346,9 @@ pub(super) fn run_bounded_shell_command(
         }
         thread::sleep(Duration::from_millis(20));
     };
-    terminate_setup_process_group(child_id);
+    if let Err(error) = terminate_setup_process_group(child_id) {
+        tolerate_cleanup_error_if_readers_closed(error, &stdout_reader, &stderr_reader)?;
+    }
 
     let stdout = join_reader(stdout_reader)?;
     let stderr = join_reader(stderr_reader)?;
@@ -287,23 +370,53 @@ pub(super) fn configure_setup_command(command: &mut Command) {
 #[cfg(not(unix))]
 pub(super) fn configure_setup_command(_command: &mut Command) {}
 
-pub(super) fn kill_setup_process_tree(child: &mut Child, child_id: u32) {
-    terminate_setup_process_group(child_id);
-    let _ = child.kill();
-}
-
 #[cfg(unix)]
-pub(super) fn terminate_setup_process_group(child_id: u32) {
-    let _ = Command::new("kill")
-        .arg("-KILL")
-        .arg(format!("-{child_id}"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+pub(super) fn kill_setup_process_tree(child: &mut Child, child_id: u32) -> io::Result<()> {
+    let group_result = terminate_setup_process_group(child_id);
+    let _ = child.kill();
+    group_result
 }
 
 #[cfg(not(unix))]
-pub(super) fn terminate_setup_process_group(_child_id: u32) {}
+pub(super) fn kill_setup_process_tree(child: &mut Child, _child_id: u32) -> io::Result<()> {
+    child.kill()
+}
+
+#[cfg(unix)]
+pub(super) fn terminate_setup_process_group(child_id: u32) -> io::Result<()> {
+    use rustix::{
+        io::Errno,
+        process::{Pid, Signal, kill_process_group},
+    };
+
+    let raw_pid = i32::try_from(child_id)
+        .map_err(|_| io::Error::other("setup process id exceeded the platform range"))?;
+    let pid =
+        Pid::from_raw(raw_pid).ok_or_else(|| io::Error::other("setup process id was zero"))?;
+    match kill_process_group(pid, Signal::KILL) {
+        Ok(()) | Err(Errno::SRCH) => Ok(()),
+        Err(error) => Err(io::Error::from_raw_os_error(error.raw_os_error())),
+    }
+}
+
+#[cfg(not(unix))]
+pub(super) fn terminate_setup_process_group(_child_id: u32) -> io::Result<()> {
+    Ok(())
+}
+
+fn tolerate_cleanup_error_if_readers_closed(
+    error: io::Error,
+    stdout_reader: &thread::JoinHandle<io::Result<Vec<u8>>>,
+    stderr_reader: &thread::JoinHandle<io::Result<Vec<u8>>>,
+) -> io::Result<()> {
+    for _ in 0..5 {
+        if stdout_reader.is_finished() && stderr_reader.is_finished() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    Err(error)
+}
 
 pub(super) fn spawn_bounded_reader<R>(
     reader: R,
@@ -348,9 +461,9 @@ pub(super) fn join_reader(handle: thread::JoinHandle<io::Result<Vec<u8>>>) -> io
         .map_err(|_| io::Error::other("setup output reader panicked"))?
 }
 
-pub(super) struct CapturedCommandOutput {
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    status: ExitStatus,
-    output_limit_exceeded: bool,
+pub(crate) struct CapturedCommandOutput {
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+    pub(crate) status: ExitStatus,
+    pub(crate) output_limit_exceeded: bool,
 }

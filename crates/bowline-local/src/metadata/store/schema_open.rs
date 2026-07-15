@@ -2,15 +2,21 @@ use super::common::*;
 use super::*;
 
 impl MetadataStore {
+    pub(crate) fn data_version(&self) -> Result<u64, MetadataError> {
+        self.connection
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .map_err(Into::into)
+    }
+
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, MetadataError> {
         let path = path.into();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        let connection = Connection::open(&path)?;
+        let mut connection = Connection::open(&path)?;
         configure_connection(&connection)?;
-        initialize_schema(&connection)?;
+        initialize_schema(&mut connection)?;
 
         Ok(Self { connection })
     }
@@ -97,6 +103,70 @@ impl MetadataStore {
         let result = f(&transaction)?;
         transaction.commit()?;
         Ok(result)
+    }
+
+    pub fn with_committed<T, E>(
+        &mut self,
+        f: impl FnOnce(&mut MetadataStore) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<MetadataError>,
+    {
+        if !self.connection.is_autocommit() {
+            return f(self);
+        }
+        self.connection
+            .execute("BEGIN IMMEDIATE", [])
+            .map_err(MetadataError::from)?;
+        match f(self) {
+            Ok(value) => {
+                if let Err(error) = self.connection.execute("COMMIT", []) {
+                    if let Err(rollback_error) = self.connection.execute("ROLLBACK", []) {
+                        eprintln!("bowline metadata transaction rollback failed: {rollback_error}");
+                    }
+                    return Err(MetadataError::from(error).into());
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                if let Err(rollback_error) = self.connection.execute("ROLLBACK", []) {
+                    eprintln!("bowline metadata transaction rollback failed: {rollback_error}");
+                }
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn in_immediate_transaction<T, E>(
+        &self,
+        f: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<MetadataError>,
+    {
+        if !self.connection.is_autocommit() {
+            return f();
+        }
+        self.connection
+            .execute("BEGIN IMMEDIATE", [])
+            .map_err(MetadataError::from)?;
+        match f() {
+            Ok(value) => {
+                if let Err(error) = self.connection.execute("COMMIT", []) {
+                    if let Err(rollback_error) = self.connection.execute("ROLLBACK", []) {
+                        eprintln!("bowline metadata transaction rollback failed: {rollback_error}");
+                    }
+                    return Err(MetadataError::from(error).into());
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                if let Err(rollback_error) = self.connection.execute("ROLLBACK", []) {
+                    eprintln!("bowline metadata transaction rollback failed: {rollback_error}");
+                }
+                Err(error)
+            }
+        }
     }
 
     pub(crate) fn connection(&self) -> &Connection {

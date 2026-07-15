@@ -6,7 +6,7 @@ use std::{
 use bowline_core::{
     events::{EventName, EventSeverity, EventSubject, EventSubjectKind, WorkspaceEvent},
     ids::{EventId, ProjectId, WorkViewId},
-    policy::{MaterializationMode, PathClassification},
+    policy::{AccessFlag, MaterializationMode, PathClassification},
     status::{StatusLevel, WorkspaceStatus},
     work_views::{
         WorkDiffChangeKind, WorkDiffEntry, WorkView, WorkViewLifecycle, WorkViewSyncState,
@@ -31,13 +31,13 @@ pub(super) fn project_has_pending_local_writes(
     let synced_at = store
         .workspace_sync_head(workspace_id)?
         .map(|head| head.observed_at);
-    for write in store.local_write_log(workspace_id)? {
-        if synced_at
-            .as_deref()
-            .is_some_and(|synced_at| write.created_at.as_str() <= synced_at)
-        {
-            continue;
-        }
+    for write in store.local_writes_for_project(
+        workspace_id,
+        project_id,
+        &project_path,
+        synced_at.as_deref(),
+        None,
+    )? {
         let Ok(relative_path) = store.workspace_relative_path(workspace_id, &write.path) else {
             if write.project_id.as_ref() == Some(project_id) {
                 return Ok(true);
@@ -161,10 +161,6 @@ pub(super) fn clean_accept_policy(
             classification: observed.classification,
             mode: observed.mode,
             access: observed.access,
-            matched_rule: observed.matched_rule,
-            rule_source: observed.rule_source,
-            risk: observed.risk,
-            summary: observed.summary,
         });
     }
     let policy = UserPolicy::load_for_path(workspace_root, workspace_path)?;
@@ -182,6 +178,14 @@ pub(super) fn clean_accept_policy(
     ))
 }
 
+pub(super) fn clean_accept_explicit_include(
+    workspace_root: &Path,
+    workspace_path: &str,
+) -> Result<bool, WorkViewError> {
+    Ok(UserPolicy::load_for_path(workspace_root, workspace_path)?
+        .explicitly_includes(workspace_path))
+}
+
 pub(super) fn is_clean_accept_policy_eligible(
     classification: PathClassification,
     mode: MaterializationMode,
@@ -190,7 +194,71 @@ pub(super) fn is_clean_accept_policy_eligible(
         (classification, mode),
         (PathClassification::WorkspaceSync, _)
             | (PathClassification::LargeFile, MaterializationMode::Lazy)
+            | (
+                PathClassification::ProjectEnv,
+                MaterializationMode::ProjectEnv | MaterializationMode::EncryptedSync
+            )
+            | (
+                PathClassification::SecretLooking,
+                MaterializationMode::EncryptedSync | MaterializationMode::ProjectEnv
+            )
     )
+}
+
+pub(super) fn is_work_view_materialization_eligible(
+    classification: PathClassification,
+    mode: MaterializationMode,
+    access: &[AccessFlag],
+) -> bool {
+    if access.contains(&AccessFlag::AgentHidden) {
+        return false;
+    }
+    matches!(
+        (classification, mode),
+        (PathClassification::WorkspaceSync, _)
+            | (PathClassification::LargeFile, MaterializationMode::Lazy)
+            | (
+                PathClassification::ProjectEnv,
+                MaterializationMode::ProjectEnv | MaterializationMode::EncryptedSync
+            )
+    )
+}
+
+pub(super) fn is_owner_only_work_view_policy(
+    classification: PathClassification,
+    mode: MaterializationMode,
+) -> bool {
+    matches!(
+        (classification, mode),
+        (
+            PathClassification::ProjectEnv | PathClassification::SecretLooking,
+            MaterializationMode::ProjectEnv | MaterializationMode::EncryptedSync
+        )
+    )
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+pub(super) fn apply_owner_only_work_view_permissions(
+    path: &Path,
+    owner_only: bool,
+) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if owner_only {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+#[cfg(test)]
+pub(super) fn apply_owner_only_work_view_permissions(
+    path: &Path,
+    owner_only: bool,
+) -> io::Result<()> {
+    let _ = (path, owner_only);
+    Ok(())
 }
 
 pub(super) fn is_ignored_clean_accept_policy(
@@ -212,72 +280,11 @@ pub(super) fn is_ignored_clean_accept_policy(
     )
 }
 
-pub(super) fn work_view_base_has_path(
-    store: &MetadataStore,
-    work_view: &WorkView,
-    relative: &Path,
-) -> Result<bool, WorkViewError> {
-    let relative_path = normalize_workspace_path(&relative.display().to_string());
-    Ok(store
-        .work_view_base_hash(&work_view.workspace_id, &work_view.id, &relative_path)?
-        .is_some())
-}
-
-pub(super) fn collect_work_view_base_files(
-    store: &MetadataStore,
-    work_view: &WorkView,
-) -> Result<Vec<(String, String)>, WorkViewError> {
-    let Some(main_root) = main_project_root(store, work_view)? else {
-        return Ok(Vec::new());
-    };
-    let mut files = Vec::new();
-    collect_base_file_hashes(&main_root, &main_root, &mut files)?;
-    files.sort_by(|left, right| left.0.cmp(&right.0));
-    Ok(files)
-}
-
-pub(super) fn collect_base_file_hashes(
-    root: &Path,
-    path: &Path,
-    files: &mut Vec<(String, String)>,
-) -> Result<(), WorkViewError> {
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let path = entry.path();
-        let relative = path
-            .strip_prefix(root)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if is_bowline_owned_namespace(relative) {
-            continue;
-        }
-        if is_secret_bearing_work_path(relative) || is_source_control_metadata_path(relative) {
-            continue;
-        }
-        let metadata = fs::symlink_metadata(&path)?;
-        if metadata.file_type().is_symlink() {
-            continue;
-        }
-        if metadata.is_dir() {
-            collect_base_file_hashes(root, &path, files)?;
-        } else if metadata.is_file() {
-            files.push((
-                normalize_workspace_path(&relative.display().to_string()),
-                file_content_hash(&path)?,
-            ));
-        }
-    }
-    Ok(())
-}
-
 pub(super) fn is_bowline_owned_namespace(relative: &Path) -> bool {
     matches!(
         relative.components().next(),
         Some(Component::Normal(name)) if name.to_str() == Some(".work")
     )
-}
-
-pub(super) fn file_content_hash(path: &Path) -> Result<String, WorkViewError> {
-    Ok(format!("b3_{}", blake3::hash(&fs::read(path)?).to_hex()))
 }
 
 pub(super) fn is_secret_bearing_work_path(path: &Path) -> bool {
@@ -387,19 +394,24 @@ pub(super) fn ensure_no_symlink_ancestors(
     Ok(())
 }
 
-pub(super) fn files_under(root: &Path) -> Result<Vec<PathBuf>, WorkViewError> {
+pub(super) fn files_under_with_checkpoint(
+    root: &Path,
+    checkpoint: &mut dyn FnMut() -> bool,
+) -> Result<Vec<PathBuf>, WorkViewError> {
     let mut files = Vec::new();
-    collect_files(root, root, &mut files)?;
+    collect_files_with_checkpoint(root, root, &mut files, checkpoint)?;
     files.sort();
     Ok(files)
 }
 
-pub(super) fn collect_files(
+fn collect_files_with_checkpoint(
     root: &Path,
     path: &Path,
     files: &mut Vec<PathBuf>,
+    checkpoint: &mut dyn FnMut() -> bool,
 ) -> Result<(), WorkViewError> {
     for entry in fs::read_dir(path)? {
+        cancellation_checkpoint(checkpoint)?;
         let entry = entry?;
         let path = entry.path();
         let relative = path
@@ -416,12 +428,25 @@ pub(super) fn collect_files(
             });
         }
         if metadata.is_dir() {
-            collect_files(root, &path, files)?;
+            collect_files_with_checkpoint(root, &path, files, checkpoint)?;
         } else if metadata.is_file() {
             files.push(path);
         }
     }
     Ok(())
+}
+
+pub(super) fn cancellation_checkpoint(
+    checkpoint: &mut dyn FnMut() -> bool,
+) -> Result<(), WorkViewError> {
+    if checkpoint() {
+        Ok(())
+    } else {
+        Err(WorkViewError::Io(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "work-view operation cancelled",
+        )))
+    }
 }
 
 pub(super) fn ensure_fresh_materialization_path(path: &Path) -> Result<(), WorkViewError> {
@@ -586,11 +611,11 @@ pub(super) fn append_work_event(
     generated_at: &str,
 ) {
     let mut event = WorkspaceEvent::new(
-        event_id(name, work_view.id.as_str(), generated_at),
-        name,
+        event_id(&name, work_view.id.as_str(), generated_at),
+        name.clone(),
         generated_at,
-        work_event_severity(name),
-        format!("Work view {} {}", work_view.name, event_verb(name)),
+        work_event_severity(&name),
+        format!("Work view {} {}", work_view.name, event_verb(&name)),
         work_view.workspace_id.clone(),
     );
     event.project_id = Some(work_view.project_id.clone());
@@ -604,7 +629,7 @@ pub(super) fn append_work_event(
         "name".to_string(),
         serde_json::Value::String(work_view.name.clone()),
     );
-    let _ = store.append_event(event);
+    append_event_or_log(store, event);
 }
 
 pub(super) fn append_workspace_event(
@@ -615,17 +640,27 @@ pub(super) fn append_workspace_event(
     summary: &str,
 ) {
     let event = WorkspaceEvent::new(
-        event_id(name, workspace_id.as_str(), generated_at),
+        event_id(&name, workspace_id.as_str(), generated_at),
         name,
         generated_at,
         EventSeverity::Info,
         summary,
         workspace_id.clone(),
     );
-    let _ = store.append_event(event);
+    append_event_or_log(store, event);
 }
 
-pub(super) fn event_id(name: EventName, subject: &str, generated_at: &str) -> EventId {
+fn append_event_or_log(store: &MetadataStore, event: WorkspaceEvent) -> bool {
+    let event_id = event.id.as_str().to_string();
+    let event_name = event.name.clone();
+    if let Err(error) = store.append_event(event) {
+        eprintln!("bowline work-view event append failed for {event_name:?} {event_id}: {error}");
+        return false;
+    }
+    true
+}
+
+pub(super) fn event_id(name: &EventName, subject: &str, generated_at: &str) -> EventId {
     let input = format!("{name:?}:{subject}:{generated_at}");
     EventId::new(format!(
         "evt_work_{}",
@@ -633,7 +668,7 @@ pub(super) fn event_id(name: EventName, subject: &str, generated_at: &str) -> Ev
     ))
 }
 
-pub(super) fn event_verb(name: EventName) -> &'static str {
+pub(super) fn event_verb(name: &EventName) -> &'static str {
     match name {
         EventName::WorkCreated => "created",
         EventName::WorkAccepted => "accepted",
@@ -643,9 +678,46 @@ pub(super) fn event_verb(name: EventName) -> &'static str {
     }
 }
 
-pub(super) fn work_event_severity(name: EventName) -> EventSeverity {
+pub(super) fn work_event_severity(name: &EventName) -> EventSeverity {
     match name {
         EventName::WorkReviewReady => EventSeverity::Attention,
         _ => EventSeverity::Info,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::TempWorkspace;
+    use bowline_core::ids::WorkspaceId;
+
+    #[test]
+    fn append_workspace_event_logs_duplicate_append_failure_without_panicking() {
+        let temp = TempWorkspace::new("work-view-event-append-log").expect("temp workspace");
+        let db_path = temp.root().join("state").join("local.sqlite3");
+        let workspace_id = WorkspaceId::new("ws_code");
+        let store = MetadataStore::open(&db_path).expect("metadata opens");
+        store
+            .insert_workspace(&workspace_id, "User Code", "2026-07-05T00:00:00Z")
+            .expect("workspace insert");
+
+        let event = WorkspaceEvent::new(
+            event_id(
+                &EventName::WorkCreated,
+                workspace_id.as_str(),
+                "2026-07-05T00:00:00Z",
+            ),
+            EventName::WorkCreated,
+            "2026-07-05T00:00:00Z",
+            EventSeverity::Info,
+            "Work view created",
+            workspace_id.clone(),
+        );
+        assert!(append_event_or_log(&store, event.clone()));
+        assert!(!append_event_or_log(&store, event));
+
+        let events = store.list_events(10).expect("events list");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].summary, "Work view created");
     }
 }

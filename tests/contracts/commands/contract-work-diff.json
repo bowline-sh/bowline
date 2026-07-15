@@ -1,0 +1,36 @@
+{
+  "contractVersion": 8,
+  "command": "contract",
+  "generatedAt": "2026-07-10T12:00:00Z",
+  "cliVersion": "0.1.1",
+  "protocol": "bowline.local",
+  "protocolVersion": 1,
+  "eventSchemaVersion": 3,
+  "package": "bowline",
+  "packageContractSource": "packages/contracts/src/index.ts",
+  "exitCodes": {
+    "success": 0,
+    "usageError": 2,
+    "retryableRuntimeError": 3,
+    "userActionRequired": 4,
+    "blockedOrDegradedBySafety": 5
+  },
+  "descriptor": {
+    "group": "Work",
+    "name": "work diff",
+    "summary": "Show the diff for a work view.",
+    "usage": "bowline work diff [target] [--path <glob>...] [--json]",
+    "positionals": [
+      {
+        "name": "target",
+        "required": false,
+        "repeatable": false
+      }
+    ],
+    "jsonOutputType": "WorkDiffCommandOutput",
+    "sideEffectLevel": "read",
+    "supportsJson": true,
+    "supportsDryRun": false,
+    "relatedCommands": ["work review"]
+  }
+}

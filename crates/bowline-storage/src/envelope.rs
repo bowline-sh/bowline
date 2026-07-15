@@ -1,16 +1,16 @@
 use std::{collections::HashSet, error::Error, fmt, io::Cursor};
 
 use chacha20poly1305::{
-    ChaCha20Poly1305, Key, KeyInit, Nonce,
+    Key, KeyInit, XChaCha20Poly1305, XNonce,
     aead::{Aead, Payload},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::ObjectKind;
 
-const ENVELOPE_MAGIC: &[u8; 8] = b"bowenv1\0";
-const ENVELOPE_VERSION: u16 = 1;
-const NONCE_LEN: usize = 12;
+const ENVELOPE_MAGIC: &[u8; 8] = b"bowenv2\0";
+const ENVELOPE_VERSION: u16 = 2;
+const NONCE_LEN: usize = 24;
 const HEADER_LEN: usize = ENVELOPE_MAGIC.len() + 2 + 4 + NONCE_LEN;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -135,10 +135,10 @@ fn seal_with_nonce(
     let compressed = zstd::stream::encode_all(Cursor::new(plaintext), 0)
         .map_err(|_| EnvelopeError::CompressionFailed)?;
     let associated_data = context.associated_data();
-    let cipher = ChaCha20Poly1305::new(&key.as_key());
+    let cipher = XChaCha20Poly1305::new(&key.as_key());
     let ciphertext = cipher
         .encrypt(
-            Nonce::from_slice(&nonce),
+            XNonce::from_slice(&nonce),
             Payload {
                 msg: &compressed,
                 aad: &associated_data,
@@ -161,7 +161,8 @@ pub fn open(
     key: StorageKey,
     context: &EnvelopeContext,
 ) -> Result<Vec<u8>, EnvelopeError> {
-    if envelope.len() < HEADER_LEN {
+    let fixed_header_len = ENVELOPE_MAGIC.len() + 2 + 4;
+    if envelope.len() < fixed_header_len {
         return Err(EnvelopeError::Truncated);
     }
     if &envelope[..ENVELOPE_MAGIC.len()] != ENVELOPE_MAGIC {
@@ -172,10 +173,6 @@ pub fn open(
         envelope[ENVELOPE_MAGIC.len()],
         envelope[ENVELOPE_MAGIC.len() + 1],
     ]);
-    if version != ENVELOPE_VERSION {
-        return Err(EnvelopeError::UnsupportedVersion(version));
-    }
-
     let epoch_offset = ENVELOPE_MAGIC.len() + 2;
     let key_epoch = u32::from_le_bytes([
         envelope[epoch_offset],
@@ -187,23 +184,36 @@ pub fn open(
         return Err(EnvelopeError::WrongContext);
     }
 
-    let nonce_offset = epoch_offset + 4;
-    let nonce = &envelope[nonce_offset..nonce_offset + NONCE_LEN];
-    let ciphertext = &envelope[HEADER_LEN..];
-    let associated_data = context.associated_data();
-    let cipher = ChaCha20Poly1305::new(&key.as_key());
-    let compressed = cipher
-        .decrypt(
-            Nonce::from_slice(nonce),
-            Payload {
-                msg: ciphertext,
-                aad: &associated_data,
-            },
-        )
-        .map_err(|_| EnvelopeError::VerificationFailed)?;
+    if version != ENVELOPE_VERSION {
+        return Err(EnvelopeError::UnsupportedVersion(version));
+    }
+    let compressed = open_v2_envelope(envelope, key, context)?;
 
     zstd::stream::decode_all(Cursor::new(compressed))
         .map_err(|_| EnvelopeError::DecompressionFailed)
+}
+
+fn open_v2_envelope(
+    envelope: &[u8],
+    key: StorageKey,
+    context: &EnvelopeContext,
+) -> Result<Vec<u8>, EnvelopeError> {
+    if envelope.len() < HEADER_LEN {
+        return Err(EnvelopeError::Truncated);
+    }
+    let nonce_offset = ENVELOPE_MAGIC.len() + 2 + 4;
+    let nonce = &envelope[nonce_offset..nonce_offset + NONCE_LEN];
+    let ciphertext = &envelope[HEADER_LEN..];
+    let cipher = XChaCha20Poly1305::new(&key.as_key());
+    cipher
+        .decrypt(
+            XNonce::from_slice(nonce),
+            Payload {
+                msg: ciphertext,
+                aad: &context.associated_data(),
+            },
+        )
+        .map_err(|_| EnvelopeError::VerificationFailed)
 }
 
 pub fn workspace_id_hash(value: &str) -> String {
@@ -302,6 +312,17 @@ mod tests {
             open(second.as_bytes(), key, &context).expect("second opens"),
             b"source bytes"
         );
+    }
+
+    #[test]
+    fn envelope_uses_xchacha_nonce_width() {
+        let key = StorageKey::deterministic(7);
+        let context = test_context("record-a");
+        let sealed = seal(b"source bytes", key, &context).expect("sealed");
+        let header_without_nonce_len = ENVELOPE_MAGIC.len() + 2 + 4;
+
+        assert!(sealed.as_bytes().len() > header_without_nonce_len + 24);
+        assert_eq!(NONCE_LEN, 24);
     }
 
     #[test]

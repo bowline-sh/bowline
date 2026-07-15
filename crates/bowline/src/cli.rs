@@ -1,39 +1,47 @@
 use super::*;
+use crate::workspace_root_selection::{WorkspaceRootSelection, WorkspaceRootSelectionError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Cli {
     pub(super) json: bool,
+    pub(super) quiet: bool,
     pub(super) socket: PathBuf,
     pub(super) dry_run: bool,
-    pub(super) idempotency_key: Option<String>,
     pub(super) command: Command,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ParsedInvocation {
+    pub(super) json: bool,
+    pub(super) human: bool,
+    pub(super) quiet: bool,
+    pub(super) socket: PathBuf,
+    pub(super) dry_run: bool,
+    pub(super) command: Result<Command, ParseError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Command {
     Help(Option<Vec<String>>),
     Version,
-    Contract,
+    Contract(ContractMode),
     Update(UpdateArgs),
     Login(login::LoginArgs),
     Logout,
     Approve(ApproveArgs),
+    ApproveMergePlugin(MergePluginApproveArgs),
     Deny(ApproveArgs),
     Revoke(RevokeArgs),
-    Init(InitArgs),
-    Prewarm(PrewarmArgs),
     Setup(SetupArgs),
     Status(StatusArgs),
-    Actions(ActionsArgs),
     Tui(TuiArgs),
-    Search(SearchArgs),
-    Symbols(SymbolsArgs),
-    Explain(ExplainArgs),
+    DebugClassify(DebugClassifyArgs),
     Devices(devices::DevicesArgs),
     Recovery(recovery::RecoveryArgs),
     Resolve(resolve::ResolveArgs),
     Events(EventsArgs),
-    Workon(work::WorkonArgs),
+    History(HistoryArgs),
+    WorkCreate(work::WorkCreateArgs),
     Work(work::WorkListArgs),
     WorkDiff(work::WorkSelectorArgs),
     Review(work::WorkSelectorArgs),
@@ -41,22 +49,36 @@ pub(super) enum Command {
     WorkDiscard(work::WorkSelectorArgs),
     WorkRestore(work::WorkSelectorArgs),
     WorkCleanup(work::WorkCleanupArgs),
+    ForgetLocal(ForgetLocalArgs),
+    Archive(ArchiveArgs),
+    Purge(PurgeArgs),
     AgentLeaseCreate(agent::AgentLeaseCreateArgs),
     AgentContext(agent::AgentLeaseSelectorArgs),
     AgentPrompt(agent::AgentLeaseSelectorArgs),
-    AgentPublish(agent::AgentLeaseSelectorArgs),
     AgentComplete(agent::AgentLeaseSelectorArgs),
-    AgentBudget(agent::AgentBudgetArgs),
+    AgentCancel(agent::AgentLeaseSelectorArgs),
+    AgentExtend(agent::AgentLeaseExtendArgs),
+    AgentMcpToken(agent::AgentMcpTokenArgs),
+    Mcp(McpArgs),
+    LeaseJoin(lease::LeaseJoinArgs),
     BootstrapSsh(bootstrap::BootstrapSshArgs),
-    DevCloudSpike(CloudSpikeArgs),
+    Handoff(HandoffArgs),
+    HandoffInstallBundle,
     Daemon(DaemonCommand),
     DiagnosticsCollect(WorkspaceSelection),
-    CommandUsageError(CommandUsageError),
-    UsageError {
-        command: CommandName,
-        message: String,
-    },
-    Unknown(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ContractMode {
+    Full,
+    Summary,
+    Topic(Vec<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct McpArgs {
+    pub(super) lease_id: Option<String>,
+    pub(super) token_file: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,12 +86,17 @@ pub(super) struct CommandUsageError {
     pub(super) command: CommandName,
     pub(super) code: &'static str,
     pub(super) message: String,
-    pub(super) next_actions: Vec<SafeAction>,
+    pub(super) next_actions: Vec<RepairCommand>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct InitArgs {
-    pub(super) root: String,
+pub(super) enum ParseError {
+    Command(CommandUsageError),
+    Usage {
+        command: CommandName,
+        message: String,
+    },
+    Unknown(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,21 +119,31 @@ pub(super) struct ApproveArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MergePluginApproveArgs {
+    pub(super) selection: WorkspaceSelection,
+    pub(super) id: String,
+    pub(super) version: String,
+    pub(super) digest: String,
+    pub(super) matcher_version: Option<String>,
+    pub(super) validator_version: Option<String>,
+    pub(super) yes: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RevokeArgs {
     pub(super) selection: WorkspaceSelection,
     pub(super) device_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct PrewarmArgs {
-    pub(super) project_path: String,
-    pub(super) approve_setup: bool,
+pub(super) struct SetupArgs {
+    pub(super) mode: SetupMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SetupArgs {
-    pub(super) project_path: Option<String>,
-    pub(super) yes: bool,
+pub(super) enum SetupMode {
+    Machine { root: Option<String> },
+    Project { project_path: String, yes: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,35 +154,14 @@ pub(super) struct StatusArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ActionsArgs {
-    pub(super) selection: WorkspaceSelection,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TuiArgs {
     pub(super) selection: WorkspaceSelection,
 }
 
+/// Hidden `bowline debug classify <path>` affordance. Not in public help or the
+/// command registry; prints only classification / mode / access.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SearchArgs {
-    pub(super) query: String,
-    pub(super) path: Option<String>,
-    pub(super) limit: usize,
-    pub(super) cursor: Option<usize>,
-    pub(super) path_prefix: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SymbolsArgs {
-    pub(super) query: String,
-    pub(super) path: Option<String>,
-    pub(super) limit: usize,
-    pub(super) cursor: Option<usize>,
-    pub(super) path_prefix: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ExplainArgs {
+pub(super) struct DebugClassifyArgs {
     pub(super) path: String,
 }
 
@@ -155,42 +171,38 @@ pub(super) struct EventsArgs {
     pub(super) limit: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct CloudSpikeArgs {
-    pub(super) provider: CloudSpikeProvider,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CloudSpikeProvider {
-    Fake,
-    Hosted,
+pub(super) enum OutputMode {
+    Human,
+    Json,
+    Quiet,
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct CloudSpikeFakeOutput<'a> {
-    pub(super) ok: bool,
-    pub(super) command: &'static str,
-    pub(super) provider: &'static str,
-    pub(super) workspace_id: &'a str,
-    pub(super) starting_version: u64,
-    pub(super) advanced_version: u64,
-    pub(super) pack_object_count: usize,
-    pub(super) source_file_count: usize,
-    pub(super) hydrated_cold_file_byte_len: usize,
-    pub(super) stale_ref_detected: bool,
-    pub(super) device_approval_harness_only: bool,
-    pub(super) event_count: usize,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct HistoryArgs {
+    pub(super) target_path: String,
+    pub(super) mode: HistoryArgMode,
+    pub(super) limit: u32,
+    pub(super) cursor: Option<usize>,
+    pub(super) since: Option<String>,
+    pub(super) until: Option<String>,
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct CloudSpikeSkipOutput {
-    pub(super) ok: bool,
-    pub(super) command: &'static str,
-    pub(super) provider: &'static str,
-    pub(super) skipped: bool,
-    pub(super) missing_env: Vec<String>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum HistoryArgMode {
+    Timeline,
+    Path,
+    Diff { from: String, to: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct HandoffArgs {
+    pub(super) target: String,
+    pub(super) agent: Option<HandoffAgent>,
+    pub(super) session: Option<String>,
+    pub(super) prompt: Option<String>,
+    pub(super) prompt_file: Option<String>,
+    pub(super) project: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,91 +224,166 @@ pub(super) enum DaemonCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Handshake {
     pub(super) daemon_version: String,
-    pub(super) sync_json: Option<String>,
+    pub(super) status_json: String,
 }
 
-pub(super) fn parse_args<I, S>(args: I) -> Cli
+pub(super) fn parse_args<I, S>(args: I) -> ParsedInvocation
 where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
-    let mut json = false;
-    let mut socket = PathBuf::from(DEFAULT_SOCKET);
-    let mut dry_run = false;
-    let mut idempotency_key = None;
-    let mut help_requested = false;
-    let mut version_requested = false;
-    let mut positionals = Vec::new();
-    let mut iter = args.into_iter().map(Into::into);
-
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--json" => json = true,
-            "--dry-run" => dry_run = true,
-            "--version"
-                if positionals
-                    .first()
-                    .is_some_and(|command| command == "update") =>
-            {
-                positionals.push(arg)
+    let args = args.into_iter().map(Into::into).collect::<Vec<String>>();
+    match crate::registry::resolve_definition(&args) {
+        Ok(resolved) => {
+            let definition = resolved.invocation;
+            let command = match resolved.target {
+                crate::registry::DefinitionTarget::Public(command) => {
+                    construct_command(command, &definition.values)
+                }
+                crate::registry::DefinitionTarget::DebugClassify => {
+                    parse_debug_classify_command(&definition.values)
+                }
+                crate::registry::DefinitionTarget::HandoffInstallBundle => {
+                    if definition.values.positionals().is_empty() {
+                        Ok(Command::HandoffInstallBundle)
+                    } else {
+                        usage_error(
+                            CommandName::Handoff,
+                            "internal handoff install-bundle takes no positional arguments",
+                        )
+                    }
+                }
             }
-            "--version" => version_requested = true,
-            "--idempotency-key" => match iter.next() {
-                Some(key) => idempotency_key = Some(key),
-                None => {
-                    return Cli {
-                        json,
-                        socket,
-                        dry_run,
-                        idempotency_key,
-                        command: usage_error(
-                            CommandName::Unknown,
-                            "missing value for --idempotency-key",
-                        ),
-                    };
-                }
-            },
-            "--socket" => match iter.next() {
-                Some(path) => socket = PathBuf::from(path),
-                None => {
-                    return Cli {
-                        json,
-                        socket,
-                        dry_run,
-                        idempotency_key,
-                        command: usage_error(CommandName::Unknown, "missing value for --socket"),
-                    };
-                }
-            },
-            "-h" | "--help" => help_requested = true,
-            _ => positionals.push(arg),
+            .and_then(|command| validate_quiet(command, definition.quiet));
+            ParsedInvocation {
+                json: definition.json,
+                human: definition.human,
+                quiet: definition.quiet,
+                socket: definition.socket,
+                dry_run: definition.dry_run,
+                command,
+            }
         }
-    }
-
-    let command = if version_requested && positionals.is_empty() {
-        Command::Version
-    } else if help_requested {
-        let topic = (!positionals.is_empty()).then_some(positionals);
-        Command::Help(topic)
-    } else {
-        parse_positionals(&positionals)
-    };
-    Cli {
-        json,
-        socket,
-        dry_run,
-        idempotency_key,
-        command,
+        Err(crate::registry::DefinitionFailure {
+            json,
+            human,
+            quiet,
+            error,
+        }) => ParsedInvocation {
+            json,
+            human,
+            quiet,
+            socket: default_socket_path(),
+            dry_run: false,
+            command: Err(error),
+        },
     }
 }
 
+fn validate_quiet(command: Command, quiet: bool) -> Result<Command, ParseError> {
+    if !quiet || command_supports_quiet(&command) {
+        return Ok(command);
+    }
+    usage_error(
+        command.name(),
+        "--quiet is only available for work, events, history list/path, and devices list",
+    )
+}
+
+fn command_supports_quiet(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::History(HistoryArgs {
+            mode: HistoryArgMode::Timeline | HistoryArgMode::Path,
+            ..
+        }) | Command::Work(_)
+            | Command::Events(_)
+            | Command::Devices(devices::DevicesArgs::List { .. })
+    )
+}
+
+impl Command {
+    pub(super) fn name(&self) -> CommandName {
+        match self {
+            Command::Help(_) => CommandName::Help,
+            Command::Version => CommandName::Version,
+            Command::Contract(_) => CommandName::Contract,
+            Command::Update(_) => CommandName::Update,
+            Command::Login(_) => CommandName::Login,
+            Command::Logout => CommandName::Logout,
+            Command::Approve(_) | Command::ApproveMergePlugin(_) => CommandName::Approve,
+            Command::Deny(_) => CommandName::Deny,
+            Command::Revoke(_) => CommandName::Revoke,
+            Command::Setup(_) => CommandName::Setup,
+            Command::Status(_) => CommandName::Status,
+            Command::Tui(_) => CommandName::Tui,
+            Command::DebugClassify(_) => CommandName::Unknown,
+            Command::Mcp(_) => CommandName::Mcp,
+            Command::Recovery(_) => CommandName::Recover,
+            Command::Resolve(_) => CommandName::Resolve,
+            Command::Work(_) => CommandName::Work,
+            Command::Events(_) => CommandName::Events,
+            Command::History(_) => CommandName::History,
+            Command::Devices(args) => args.command_name(),
+            Command::WorkCreate(_) => CommandName::WorkCreate,
+            Command::WorkDiff(_) => CommandName::Diff,
+            Command::Review(_) => CommandName::Review,
+            Command::WorkAccept(_) => CommandName::Accept,
+            Command::WorkDiscard(_) => CommandName::Discard,
+            Command::WorkRestore(_) => CommandName::Restore,
+            Command::WorkCleanup(_) => CommandName::Cleanup,
+            Command::ForgetLocal(_) => CommandName::ForgetLocal,
+            Command::Archive(_) => CommandName::Archive,
+            Command::Purge(_) => CommandName::Purge,
+            Command::AgentLeaseCreate(_) => CommandName::AgentStart,
+            Command::AgentContext(_) => CommandName::AgentContext,
+            Command::AgentPrompt(_) => CommandName::AgentPrompt,
+            Command::AgentComplete(_) => CommandName::AgentComplete,
+            Command::AgentCancel(_) => CommandName::AgentCancel,
+            Command::AgentExtend(_) => CommandName::AgentExtend,
+            Command::AgentMcpToken(_) => CommandName::AgentMcpToken,
+            Command::LeaseJoin(_) => CommandName::LeaseJoin,
+            Command::BootstrapSsh(_) => CommandName::Connect,
+            Command::Handoff(_) | Command::HandoffInstallBundle => CommandName::Handoff,
+            Command::Daemon(DaemonCommand::Start) => CommandName::DaemonStart,
+            Command::Daemon(DaemonCommand::Stop) => CommandName::DaemonStop,
+            Command::Daemon(DaemonCommand::Status) => CommandName::DaemonStatus,
+            Command::Daemon(DaemonCommand::Install) => CommandName::DaemonInstall,
+            Command::Daemon(DaemonCommand::Restart) => CommandName::DaemonRestart,
+            Command::Daemon(DaemonCommand::Uninstall) => CommandName::DaemonUninstall,
+            Command::DiagnosticsCollect(_) => CommandName::DiagnosticsCollect,
+        }
+    }
+}
+
+pub(super) fn default_socket_path() -> PathBuf {
+    default_control_socket_path().unwrap_or_else(|_| PathBuf::from(DEFAULT_SOCKET_FALLBACK))
+}
+
+mod args;
+mod connect;
+mod context;
+mod device_parse;
+mod lease_parse;
 mod parser;
-mod tail;
+mod prompt;
+mod recovery_parse;
+mod resolve_parse;
 mod work_agent;
 mod workspace;
 
+use args::*;
+use connect::*;
+pub(crate) use context::current_dir_string;
+use device_parse::*;
+use lease_parse::*;
 use parser::*;
-use tail::*;
-pub(crate) use tail::{command_name_token, confirm_return, current_dir_string};
+pub(crate) use prompt::confirm_return;
+use recovery_parse::*;
+use resolve_parse::*;
 use work_agent::*;
 use workspace::*;
+
+pub(crate) fn command_name_token(command: CommandName) -> &'static str {
+    command.token()
+}

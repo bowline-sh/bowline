@@ -1,10 +1,10 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 8,
   "command": "version",
   "generatedAt": "2026-06-29T12:00:00Z",
-  "cliVersion": "0.1.0",
+  "cliVersion": "0.1.1",
   "protocol": "bowline.local",
   "protocolVersion": 1,
-  "defaultSocket": "/tmp/bowline-daemon.sock",
+  "defaultSocket": "$HOME/.local/state/bowline/runtime/bowline-daemon.sock",
   "package": "bowline"
 }

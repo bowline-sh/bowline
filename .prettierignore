@@ -1,0 +1,6 @@
+apps/macos-menu-bar/.build/
+**/routeTree.gen.ts
+**/.source/
+packages/contracts/src/generated/
+packages/control-plane/convex/generated/wireValidators.ts
+packages/control-plane/convex-tests/generated-hosted-endpoints.contract.test.ts

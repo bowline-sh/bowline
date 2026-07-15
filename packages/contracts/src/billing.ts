@@ -1,19 +1,10 @@
-export const BILLING_PLAN_TIERS = ["free", "pro", "team"] as const;
-export type BillingPlanTier = (typeof BILLING_PLAN_TIERS)[number];
-
 export const BILLING_STORAGE_UNITS = "decimal-gb";
 
-export const FREE_STORAGE_BYTES = 5_000_000_000;
+export const FREE_STORAGE_BYTES = 10_000_000_000;
 export const PRO_STORAGE_BYTES = 250_000_000_000;
-export const FREE_AUTHORIZED_MACHINE_LIMIT = 2;
+export const FREE_AUTHORIZED_MACHINE_LIMIT = 3;
 
-export type BillingPlanLimits = {
-  readonly machineLimit: number | null;
-  readonly storageBytesLimit: number | null;
-  readonly tier: BillingPlanTier;
-};
-
-export const BILLING_PLAN_LIMITS = {
+export const billingPlanLimits = {
   free: {
     machineLimit: FREE_AUTHORIZED_MACHINE_LIMIT,
     storageBytesLimit: FREE_STORAGE_BYTES,
@@ -29,10 +20,13 @@ export const BILLING_PLAN_LIMITS = {
     storageBytesLimit: null,
     tier: "team",
   },
-} as const satisfies Record<BillingPlanTier, BillingPlanLimits>;
+} as const;
 
-export function billingPlanLimits(tier: BillingPlanTier): BillingPlanLimits {
-  return BILLING_PLAN_LIMITS[tier];
+export type BillingPlanTier = keyof typeof billingPlanLimits;
+export type BillingPlanLimits = (typeof billingPlanLimits)[BillingPlanTier];
+
+export function billingPlanLimitsFor(tier: BillingPlanTier): BillingPlanLimits {
+  return billingPlanLimits[tier];
 }
 
 export function totalStoredBytes(input: {

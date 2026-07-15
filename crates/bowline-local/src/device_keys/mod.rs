@@ -1,16 +1,27 @@
 use std::{error::Error, fmt, fs, io, path::PathBuf, str::FromStr};
 
 use age::secrecy::ExposeSecret;
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use bowline_core::{
     devices::{DeviceFingerprint, PublicDeviceKey},
-    ids::{AccountId, WorkspaceId},
+    ids::{AccountId, DeviceId, WorkspaceId},
 };
 use serde::{Deserialize, Serialize};
 
 const SERVICE: &str = "bowline";
 const DEVICE_IDENTITY_SECRET: &str = "device-identity-v1";
 const ACCOUNT_TOKENS_SECRET: &str = "account-tokens-v1";
+const DEVICE_PROOF_VERIFIERS_SECRET: &str = "device-proof-verifiers-v1";
 const SECRET_FILE_NAME: &str = "secrets.v1";
+mod replacement;
+#[cfg(test)]
+pub(crate) use replacement::transaction_entered;
+use replacement::{secret_temp_path, with_verifier_transaction};
+#[cfg(test)]
+use replacement::{set_transaction_hook, verifier_replacement_lock};
+
+#[cfg(test)]
+mod replacement_tests;
 
 pub trait DeviceKeyStore {
     fn load_or_create_device_identity(&self) -> Result<DeviceIdentity, DeviceKeyError>;
@@ -28,55 +39,135 @@ pub trait DeviceKeyStore {
         workspace_id: &WorkspaceId,
     ) -> Result<Option<WorkspaceKeyMaterial>, DeviceKeyError>;
 
+    fn store_device_proof_verifier(
+        &self,
+        verifier: DeviceProofVerifier,
+    ) -> Result<(), DeviceKeyError>;
+
+    fn load_device_proof_verifiers(&self) -> Result<Vec<DeviceProofVerifier>, DeviceKeyError>;
+
+    fn replace_device_proof_verifiers_for_workspace(
+        &self,
+        workspace_id: &WorkspaceId,
+        verifiers: Vec<DeviceProofVerifier>,
+    ) -> Result<(), DeviceKeyError>;
+
     fn mark_secret_unavailable(
         &self,
         reason: SecretUnavailableReason,
     ) -> Result<(), DeviceKeyError>;
 }
 
+pub fn default_device_key_store() -> Result<Box<dyn DeviceKeyStore>, DeviceKeyError> {
+    if let Some(path) = configured_secret_store_path() {
+        return Ok(Box::new(ServerLocalSecretStore::new(path)));
+    }
+    if keychain_secret_store_allowed() {
+        return Ok(Box::new(KeyringDeviceKeyStore::new("default")));
+    }
+    Ok(Box::new(ServerLocalSecretStore::new(
+        ServerLocalSecretStore::default_path()?,
+    )))
+}
+
+pub fn workspace_key_bytes(bytes: &[u8]) -> Result<[u8; 32], DeviceKeyError> {
+    bytes
+        .try_into()
+        .map_err(|_| DeviceKeyError::CorruptSecret("workspace key must be 32 bytes".to_string()))
+}
+
+fn configured_secret_store_path() -> Option<String> {
+    std::env::var("BOWLINE_SECRET_STORE_PATH")
+        .ok()
+        .filter(|path| !path.is_empty())
+}
+
+fn keychain_secret_store_allowed() -> bool {
+    std::env::var("BOWLINE_SECRET_STORE").as_deref() == Ok("keychain")
+        && matches!(
+            std::env::var("BOWLINE_ALLOW_KEYCHAIN_PROBE").as_deref(),
+            Ok("1") | Ok("true") | Ok("yes")
+        )
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct DeviceIdentity {
-    secret: String,
+    age_secret: String,
+    signing_seed: [u8; 32],
     pub public_key: PublicDeviceKey,
     pub fingerprint: DeviceFingerprint,
 }
 
 impl DeviceIdentity {
     pub fn generate() -> Self {
+        Self::try_generate().expect("device identity CSPRNG should be available")
+    }
+
+    pub fn try_generate() -> Result<Self, DeviceKeyError> {
         let identity = age::x25519::Identity::generate();
-        Self::from_age_identity(identity)
+        let mut signing_seed = [0_u8; 32];
+        getrandom::fill(&mut signing_seed)
+            .map_err(|error| DeviceKeyError::Unavailable(error.to_string()))?;
+        Ok(Self::from_age_identity(identity, signing_seed))
     }
 
     pub fn parse(secret: impl Into<String>) -> Result<Self, DeviceKeyError> {
         let secret = secret.into();
-        let identity = age::x25519::Identity::from_str(&secret)
+        let document = serde_json::from_str::<DeviceIdentitySecretDocument>(&secret)?;
+        let signing_seed = decode_signing_seed(&document.signing_seed)?;
+        Self::from_age_secret(document.age_secret, signing_seed)
+    }
+
+    pub fn persisted_secret(&self) -> Result<String, DeviceKeyError> {
+        serde_json::to_string(&DeviceIdentitySecretDocument {
+            age_secret: self.age_secret.clone(),
+            signing_seed: BASE64.encode(self.signing_seed),
+        })
+        .map_err(Into::into)
+    }
+
+    fn from_age_secret(age_secret: String, signing_seed: [u8; 32]) -> Result<Self, DeviceKeyError> {
+        let identity = age::x25519::Identity::from_str(&age_secret)
             .map_err(|error| DeviceKeyError::CorruptSecret(error.to_string()))?;
         let public_key = identity.to_public().to_string();
         Ok(Self {
             fingerprint: fingerprint_for_public_key(&public_key),
             public_key: PublicDeviceKey::new(public_key),
-            secret,
+            age_secret,
+            signing_seed,
         })
     }
 
     pub fn secret(&self) -> &str {
-        &self.secret
+        &self.age_secret
+    }
+
+    pub(crate) fn signing_seed(&self) -> &[u8; 32] {
+        &self.signing_seed
     }
 
     pub fn age_identity(&self) -> Result<age::x25519::Identity, DeviceKeyError> {
-        age::x25519::Identity::from_str(&self.secret)
+        age::x25519::Identity::from_str(&self.age_secret)
             .map_err(|error| DeviceKeyError::CorruptSecret(error.to_string()))
     }
 
-    fn from_age_identity(identity: age::x25519::Identity) -> Self {
-        let secret = identity.to_string().expose_secret().to_string();
+    fn from_age_identity(identity: age::x25519::Identity, signing_seed: [u8; 32]) -> Self {
+        let age_secret = identity.to_string().expose_secret().to_string();
         let public_key = identity.to_public().to_string();
         Self {
             fingerprint: fingerprint_for_public_key(&public_key),
             public_key: PublicDeviceKey::new(public_key),
-            secret,
+            age_secret,
+            signing_seed,
         }
     }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceIdentitySecretDocument {
+    age_secret: String,
+    signing_seed: String,
 }
 
 impl fmt::Debug for DeviceIdentity {
@@ -85,7 +176,25 @@ impl fmt::Debug for DeviceIdentity {
             .debug_struct("DeviceIdentity")
             .field("public_key", &self.public_key)
             .field("fingerprint", &self.fingerprint)
-            .field("secret", &"[redacted]")
+            .field("age_secret", &"[redacted]")
+            .field("signing_seed", &"[redacted]")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSessionCredentials {
+    pub session_id: String,
+    pub revocation_token: String,
+}
+
+impl fmt::Debug for AccountSessionCredentials {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AccountSessionCredentials")
+            .field("session_id", &"[redacted]")
+            .field("revocation_token", &"[redacted]")
             .finish()
     }
 }
@@ -97,8 +206,8 @@ pub struct AccountTokens {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_session: Option<AccountSessionCredentials>,
 }
 
 impl fmt::Debug for AccountTokens {
@@ -110,8 +219,8 @@ impl fmt::Debug for AccountTokens {
             .field("refresh_token", &"[redacted]")
             .field("expires_at", &self.expires_at)
             .field(
-                "account_session_id",
-                &self.account_session_id.as_ref().map(|_| "[redacted]"),
+                "account_session",
+                &self.account_session.as_ref().map(|_| "[redacted]"),
             )
             .finish()
     }
@@ -145,6 +254,25 @@ impl fmt::Debug for WorkspaceKeyMaterial {
             .field("workspace_id", &self.workspace_id)
             .field("key_epoch", &self.key_epoch)
             .field("key_bytes", &"[redacted]")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceProofVerifier {
+    pub workspace_id: WorkspaceId,
+    pub device_id: DeviceId,
+    pub proof_verifier: String,
+}
+
+impl fmt::Debug for DeviceProofVerifier {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeviceProofVerifier")
+            .field("workspace_id", &self.workspace_id)
+            .field("device_id", &self.device_id)
+            .field("proof_verifier", &"[redacted]")
             .finish()
     }
 }
@@ -226,8 +354,11 @@ impl DeviceKeyStore for KeyringDeviceKeyStore {
             return DeviceIdentity::parse(secret);
         }
 
-        let identity = DeviceIdentity::generate();
-        self.set_bytes(DEVICE_IDENTITY_SECRET, identity.secret().as_bytes())?;
+        let identity = DeviceIdentity::try_generate()?;
+        self.set_bytes(
+            DEVICE_IDENTITY_SECRET,
+            identity.persisted_secret()?.as_bytes(),
+        )?;
         Ok(identity)
     }
 
@@ -259,6 +390,60 @@ impl DeviceKeyStore for KeyringDeviceKeyStore {
         self.get_bytes(&workspace_key_secret_name(workspace_id))?
             .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
             .transpose()
+    }
+
+    fn store_device_proof_verifier(
+        &self,
+        verifier: DeviceProofVerifier,
+    ) -> Result<(), DeviceKeyError> {
+        with_verifier_transaction(
+            format!(
+                "keyring:{}",
+                self.secret_name(DEVICE_PROOF_VERIFIERS_SECRET)
+            ),
+            || {
+                let mut verifiers = self.load_device_proof_verifiers()?;
+                upsert_device_proof_verifier(&mut verifiers, verifier);
+                self.set_bytes(
+                    DEVICE_PROOF_VERIFIERS_SECRET,
+                    &serde_json::to_vec(&verifiers)?,
+                )
+            },
+        )
+    }
+
+    fn load_device_proof_verifiers(&self) -> Result<Vec<DeviceProofVerifier>, DeviceKeyError> {
+        self.get_bytes(DEVICE_PROOF_VERIFIERS_SECRET)?
+            .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
+
+    fn replace_device_proof_verifiers_for_workspace(
+        &self,
+        workspace_id: &WorkspaceId,
+        verifiers: Vec<DeviceProofVerifier>,
+    ) -> Result<(), DeviceKeyError> {
+        with_verifier_transaction(
+            format!(
+                "keyring:{}",
+                self.secret_name(DEVICE_PROOF_VERIFIERS_SECRET)
+            ),
+            || {
+                let mut persisted = self.load_device_proof_verifiers()?;
+                persisted.retain(|verifier| &verifier.workspace_id != workspace_id);
+                persisted.extend(verifiers);
+                persisted.sort_by(|left, right| {
+                    left.workspace_id
+                        .cmp(&right.workspace_id)
+                        .then_with(|| left.device_id.cmp(&right.device_id))
+                });
+                self.set_bytes(
+                    DEVICE_PROOF_VERIFIERS_SECRET,
+                    &serde_json::to_vec(&persisted)?,
+                )
+            },
+        )
     }
 
     fn mark_secret_unavailable(
@@ -296,8 +481,8 @@ impl DeviceKeyStore for ServerLocalSecretStore {
         if let Some(secret) = document.device_identity.as_ref() {
             return DeviceIdentity::parse(secret.clone());
         }
-        let identity = DeviceIdentity::generate();
-        document.device_identity = Some(identity.secret().to_string());
+        let identity = DeviceIdentity::try_generate()?;
+        document.device_identity = Some(identity.persisted_secret()?);
         self.write_document(&document)?;
         Ok(identity)
     }
@@ -341,6 +526,41 @@ impl DeviceKeyStore for ServerLocalSecretStore {
             .find(|key| &key.workspace_id == workspace_id))
     }
 
+    fn store_device_proof_verifier(
+        &self,
+        verifier: DeviceProofVerifier,
+    ) -> Result<(), DeviceKeyError> {
+        with_verifier_transaction(format!("file:{}", self.path.display()), || {
+            let mut document = self.read_document()?;
+            upsert_device_proof_verifier(&mut document.device_proof_verifiers, verifier);
+            self.write_document(&document)
+        })
+    }
+
+    fn load_device_proof_verifiers(&self) -> Result<Vec<DeviceProofVerifier>, DeviceKeyError> {
+        Ok(self.read_document()?.device_proof_verifiers)
+    }
+
+    fn replace_device_proof_verifiers_for_workspace(
+        &self,
+        workspace_id: &WorkspaceId,
+        verifiers: Vec<DeviceProofVerifier>,
+    ) -> Result<(), DeviceKeyError> {
+        with_verifier_transaction(format!("file:{}", self.path.display()), || {
+            let mut document = self.read_document()?;
+            document
+                .device_proof_verifiers
+                .retain(|verifier| &verifier.workspace_id != workspace_id);
+            document.device_proof_verifiers.extend(verifiers);
+            document.device_proof_verifiers.sort_by(|left, right| {
+                left.workspace_id
+                    .cmp(&right.workspace_id)
+                    .then_with(|| left.device_id.cmp(&right.device_id))
+            });
+            self.write_document(&document)
+        })
+    }
+
     fn mark_secret_unavailable(
         &self,
         reason: SecretUnavailableReason,
@@ -366,7 +586,7 @@ impl ServerLocalSecretStore {
             set_private_directory_permissions(parent)?;
         }
         let bytes = serde_json::to_vec_pretty(document)?;
-        let temp_path = self.path.with_extension("tmp");
+        let temp_path = secret_temp_path(&self.path);
         fs::write(&temp_path, bytes)?;
         set_private_file_permissions(&temp_path)?;
         fs::rename(&temp_path, &self.path)?;
@@ -381,6 +601,8 @@ struct SecretDocument {
     device_identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     account_tokens: Option<AccountTokens>,
+    #[serde(default)]
+    device_proof_verifiers: Vec<DeviceProofVerifier>,
     workspace_keys: Vec<WorkspaceKeyMaterial>,
     unavailable_reason: Option<SecretUnavailableReason>,
 }
@@ -394,6 +616,7 @@ impl fmt::Debug for SecretDocument {
                 &self.device_identity.as_ref().map(|_| "[redacted]"),
             )
             .field("account_tokens", &self.account_tokens)
+            .field("device_proof_verifiers", &"[redacted]")
             .field("workspace_keys", &self.workspace_keys)
             .field("unavailable_reason", &self.unavailable_reason)
             .finish()
@@ -439,9 +662,27 @@ fn workspace_key_secret_name(workspace_id: &WorkspaceId) -> String {
     format!("workspace-key-v1:{}", workspace_id.as_str())
 }
 
+fn upsert_device_proof_verifier(
+    verifiers: &mut Vec<DeviceProofVerifier>,
+    verifier: DeviceProofVerifier,
+) {
+    verifiers.retain(|existing| {
+        existing.workspace_id != verifier.workspace_id || existing.device_id != verifier.device_id
+    });
+    verifiers.push(verifier);
+}
+
 fn fingerprint_for_public_key(public_key: &str) -> DeviceFingerprint {
     let hash = blake3::hash(public_key.as_bytes());
     DeviceFingerprint::new(format!("fp_{}", &hash.to_hex()[..16]))
+}
+
+fn decode_signing_seed(value: &str) -> Result<[u8; 32], DeviceKeyError> {
+    BASE64
+        .decode(value)
+        .map_err(|error| DeviceKeyError::CorruptSecret(error.to_string()))?
+        .try_into()
+        .map_err(|_| DeviceKeyError::CorruptSecret("signing seed must be 32 bytes".to_string()))
 }
 
 #[cfg(unix)]
@@ -471,10 +712,10 @@ fn set_private_file_permissions(_path: &std::path::Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountTokens, DeviceIdentity, DeviceKeyStore, ServerLocalSecretStore,
+        AccountTokens, DeviceIdentity, DeviceKeyStore, DeviceProofVerifier, ServerLocalSecretStore,
         WorkspaceKeyMaterial, keyring_secret_result_to_bytes,
     };
-    use bowline_core::ids::WorkspaceId;
+    use bowline_core::ids::{DeviceId, WorkspaceId};
 
     #[test]
     fn generated_device_identity_has_public_fingerprint() {
@@ -504,12 +745,16 @@ mod tests {
             access_token: "access-secret".to_string(),
             refresh_token: "refresh-secret".to_string(),
             expires_at: "later".to_string(),
-            account_session_id: Some("bowline_session_secret".to_string()),
+            account_session: Some(super::AccountSessionCredentials {
+                session_id: "bowline_session_secret".to_string(),
+                revocation_token: "bowline_revoke_secret".to_string(),
+            }),
         };
 
         assert!(!format!("{tokens:?}").contains("access-secret"));
         assert!(!format!("{tokens:?}").contains("refresh-secret"));
         assert!(!format!("{tokens:?}").contains("bowline_session_secret"));
+        assert!(!format!("{tokens:?}").contains("bowline_revoke_secret"));
         assert!(format!("{tokens:?}").contains("[redacted]"));
     }
 
@@ -541,7 +786,7 @@ mod tests {
                 access_token: "access-secret".to_string(),
                 refresh_token: "refresh-secret".to_string(),
                 expires_at: "2026-06-24T12:00:00Z".to_string(),
-                account_session_id: None,
+                account_session: None,
             })
             .expect("server-local write");
 
@@ -580,7 +825,10 @@ mod tests {
                 access_token: "access-secret".to_string(),
                 refresh_token: "refresh-secret".to_string(),
                 expires_at: "2026-06-24T12:00:00Z".to_string(),
-                account_session_id: Some("session-secret".to_string()),
+                account_session: Some(super::AccountSessionCredentials {
+                    session_id: "session-secret".to_string(),
+                    revocation_token: "revoke-secret".to_string(),
+                }),
             })
             .expect("account tokens");
         store
@@ -590,6 +838,13 @@ mod tests {
                 key_bytes: vec![9; 32],
             })
             .expect("workspace key");
+        store
+            .store_device_proof_verifier(DeviceProofVerifier {
+                workspace_id: workspace_id.clone(),
+                device_id: DeviceId::new("device-1"),
+                proof_verifier: "dapv_device_1".to_string(),
+            })
+            .expect("device proof verifier");
 
         assert!(store.clear_account_tokens().expect("clear tokens"));
         assert!(!store.clear_account_tokens().expect("idempotent clear"));
@@ -608,6 +863,15 @@ mod tests {
                 .expect("workspace key remains")
                 .key_epoch,
             7
+        );
+        assert_eq!(
+            store
+                .load_device_proof_verifiers()
+                .expect("device proof verifier load")
+                .first()
+                .expect("device proof verifier remains")
+                .proof_verifier,
+            "dapv_device_1"
         );
 
         let _ = std::fs::remove_dir_all(root);

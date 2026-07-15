@@ -1,0 +1,6 @@
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-unwrap-in-tests = true
+# Ratchet: lower this as god functions are decomposed. Never raise it.
+too-many-lines-threshold = 250
+max-fn-params-bools = 2

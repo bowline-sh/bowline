@@ -1,3 +1,5 @@
+use bowline_core::ids::{DeviceId, EventId, SnapshotId, WorkspaceId};
+
 use super::*;
 
 pub fn command_error_output(
@@ -27,9 +29,7 @@ pub fn command_error_output(
 
 /// Map a fully composed [`StatusCommandOutput`] into the redacted snapshot the
 /// daemon publishes to the control plane. Counts, state enums, and timestamps
-/// are preserved; every `path` is reduced to a workspace-relative form, and
-/// anything that still looks like an absolute filesystem path or an env file is
-/// dropped so secrets and local layout never leave the device.
+/// are preserved; filesystem paths and secrets never leave the device.
 ///
 /// `syncState`/`watcherState`/`networkState` reflect whatever component states
 /// `compose_status` observed; the daemon may overwrite them with its live
@@ -45,7 +45,7 @@ pub fn redacted_status_snapshot(
             .event_watermarks
             .last_event_id
             .as_ref()
-            .map(|id| id.as_str().to_string()),
+            .map(|id| EventId::new(id.as_str())),
         last_scan_at: output.event_watermarks.last_scan_at.clone(),
         sync_state: output
             .event_watermarks
@@ -69,16 +69,10 @@ pub fn redacted_status_snapshot(
             claimed: queue.claimed,
             waiting_retry: queue.waiting_retry,
             blocked_offline: queue.blocked_offline,
+            reconciliation_required: queue.reconciliation_required,
             attention: queue.attention,
             completed: queue.completed,
         });
-
-    let index = output.index.as_ref().map(|index| StatusIndexSnapshot {
-        state: index_state_label(index.state).to_string(),
-        file_count: index.file_count,
-        path_count: index.path_count,
-        summary: redact_status_text(&index.summary, workspace_root),
-    });
 
     let workspace_summary = output.workspace_summary.as_ref().map(|summary| {
         let observed = summary.observed.as_ref();
@@ -95,11 +89,8 @@ pub fn redacted_status_snapshot(
         .map(|item| StatusItemSnapshot {
             kind: status_item_kind_label(item.kind),
             summary: redact_status_text(&item.summary, workspace_root),
-            path: item
-                .path
-                .as_deref()
-                .and_then(|path| redact_workspace_path(path, workspace_root)),
-            event_name: item.event_name.map(event_name_label),
+            path: None,
+            event_name: item.event_name.as_ref().map(event_name_label),
         })
         .collect();
 
@@ -108,11 +99,12 @@ pub fn redacted_status_snapshot(
         .iter()
         .map(|limit| StatusLimitSnapshot {
             capability: limit.capability.clone(),
+            support_capability: limit
+                .support_capability
+                .map(support_capability_label)
+                .map(str::to_string),
             unavailable_because: redact_status_text(&limit.unavailable_because, workspace_root),
-            path: limit
-                .path
-                .as_deref()
-                .and_then(|path| redact_workspace_path(path, workspace_root)),
+            path: None,
             still_works: limit
                 .still_works
                 .iter()
@@ -121,24 +113,110 @@ pub fn redacted_status_snapshot(
         })
         .collect();
 
+    let summary = output.status_summary.clone();
+    let hosted_facts = summary
+        .facts
+        .iter()
+        .filter(|fact| {
+            status_fact_policy(fact.kind.as_str()).hosted_allowed
+                && fact.scope != StatusFactScope::Path
+        })
+        .cloned()
+        .map(|mut fact| {
+            fact.parameters.clear();
+            if fact
+                .action
+                .as_ref()
+                .is_some_and(|action| action.kind == "approve-device-local")
+            {
+                fact.action = None;
+            }
+            fact
+        })
+        .collect::<Vec<_>>();
+    let hosted_summary = reduce_status_facts(
+        hosted_facts
+            .iter()
+            .filter(|fact| {
+                fact.scope == StatusFactScope::Workspace
+                    || status_fact_policy(fact.kind.as_str()).workspace_affecting
+            })
+            .cloned(),
+        summary.snapshot_version,
+        summary.observed_at.clone(),
+    );
+
     WorkspaceStatusSnapshot {
-        snapshot_id: status_snapshot_id(output.workspace_id.as_str(), &output.generated_at),
-        workspace_id: output.workspace_id.as_str().to_string(),
-        status_level: status_level_label(output.status.level).to_string(),
+        snapshot_id: SnapshotId::new(status_snapshot_id(
+            output.workspace_id.as_str(),
+            &output.generated_at,
+        )),
+        workspace_id: WorkspaceId::new(output.workspace_id.as_str()),
+        availability: status_availability_label(hosted_summary.availability).to_string(),
+        attention: status_attention_label(hosted_summary.attention).to_string(),
+        primary_fact_id: hosted_summary
+            .primary_fact_id
+            .as_ref()
+            .map(|id| id.as_str().to_string()),
+        facts: hosted_facts,
+        freshness: status_snapshot_freshness_label(hosted_summary.freshness).to_string(),
+        schema_hash: bowline_core::wire::WIRE_SCHEMA_HASH.to_string(),
+        snapshot_version: hosted_summary.snapshot_version,
+        producer_version: env!("CARGO_PKG_VERSION").to_string(),
+        observed_at: hosted_summary.observed_at,
         attention_items: output
             .status
             .attention_items
             .iter()
             .map(|text| redact_status_text(text, workspace_root))
             .collect(),
-        generated_at: output.generated_at.clone(),
         event_watermarks,
         sync_queue,
-        index,
         workspace_summary,
         items,
         limits,
-        published_by_device_id: device_id.to_string(),
+        published_by_device_id: DeviceId::new(device_id),
+    }
+}
+
+fn status_availability_label(value: StatusAvailability) -> &'static str {
+    match value {
+        StatusAvailability::Ready => "ready",
+        StatusAvailability::Degraded => "degraded",
+        StatusAvailability::Unavailable => "unavailable",
+    }
+}
+
+fn status_attention_label(value: StatusAttention) -> &'static str {
+    match value {
+        StatusAttention::None => "none",
+        StatusAttention::Recommended => "recommended",
+        StatusAttention::Required => "required",
+    }
+}
+
+fn status_snapshot_freshness_label(value: StatusSnapshotFreshness) -> &'static str {
+    match value {
+        StatusSnapshotFreshness::Fresh => "fresh",
+        StatusSnapshotFreshness::Stale => "stale",
+        StatusSnapshotFreshness::Unknown => "unknown",
+    }
+}
+
+fn support_capability_label(
+    support_capability: bowline_core::status::ControlPlaneSupportCapability,
+) -> &'static str {
+    match support_capability {
+        bowline_core::status::ControlPlaneSupportCapability::DeviceApproval => "device-approval",
+        bowline_core::status::ControlPlaneSupportCapability::ProjectScopedWorkspaceRefCas => {
+            "project-scoped-workspace-ref-cas"
+        }
+        bowline_core::status::ControlPlaneSupportCapability::WorkView => "work-view",
+        bowline_core::status::ControlPlaneSupportCapability::AgentLease => "agent-lease",
+        bowline_core::status::ControlPlaneSupportCapability::EncryptedObjectStore => {
+            "encrypted-object-store"
+        }
+        bowline_core::status::ControlPlaneSupportCapability::Recovery => "recovery",
     }
 }
 
@@ -164,15 +242,6 @@ fn network_state_label(state: NetworkState) -> &'static str {
         NetworkState::Online => "online",
         NetworkState::Degraded => "degraded",
         NetworkState::Offline => "offline",
-    }
-}
-
-fn index_state_label(state: IndexState) -> &'static str {
-    match state {
-        IndexState::Ready => "ready",
-        IndexState::Stale => "stale",
-        IndexState::Rebuilding => "rebuilding",
-        IndexState::Degraded => "degraded",
     }
 }
 
@@ -243,7 +312,8 @@ fn status_token_needs_redaction(token: &str, workspace_root: Option<&str>) -> bo
     if token.is_empty() {
         return false;
     }
-    if !(token.contains('/') || token.contains('\\') || token.contains(".env")) {
+    if !(token.contains('/') || token.contains('\\') || token.to_ascii_lowercase().contains(".env"))
+    {
         return false;
     }
     redact_workspace_path(token, workspace_root).is_none()
@@ -266,5 +336,5 @@ fn has_windows_drive_prefix(path: &str) -> bool {
 
 fn path_basename_is_env(path: &str) -> bool {
     let basename = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    basename == ".env" || basename.starts_with(".env.")
+    crate::policy::is_project_env_name(basename)
 }

@@ -2,39 +2,20 @@ use super::*;
 
 pub(super) fn mark_bundle_state(
     bundle: &Path,
-    state: &str,
+    conflict: &ResolveConflict,
+    state: ConflictState,
     generated_at: &str,
 ) -> Result<(), ResolveError> {
-    let manifest_path = bundle.join("manifest.json");
-    let mut manifest: Value = serde_json::from_str(&fs::read_to_string(&manifest_path)?)
-        .map_err(|error| ResolveError::Io(io::Error::new(io::ErrorKind::InvalidData, error)))?;
-    let object = manifest
-        .as_object_mut()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "manifest must be object"))?;
-    object.insert("state".to_string(), Value::String(state.to_string()));
-    object.insert(
-        format!("{state}At"),
-        Value::String(generated_at.to_string()),
-    );
-    let temp = manifest_path.with_extension("json.tmp");
-    match fs::remove_file(&temp) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(ResolveError::Io(error)),
-    }
-    let bytes = serde_json::to_vec_pretty(&manifest)
-        .map_err(|error| ResolveError::Io(io::Error::new(io::ErrorKind::InvalidData, error)))?;
-    {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-    }
-    fs::rename(temp, manifest_path)?;
-    Ok(())
+    transition_conflict_occurrence_state(
+        bundle,
+        &conflict.id,
+        conflict.occurrence_version,
+        state,
+        generated_at,
+    )
+    .map_err(|error| ResolveError::Io(io::Error::other(error)))?
+    .then_some(())
+    .ok_or_else(|| ResolveError::ConflictNotFound(conflict.id.clone()))
 }
 
 pub(super) fn build_prompt(conflict: &ResolveConflict) -> ResolvePrompt {
@@ -153,43 +134,4 @@ pub(super) fn build_diff(conflict: &ResolveConflict) -> ResolveDiff {
         affected_files: conflict.affected_files.clone(),
         text,
     }
-}
-
-pub(super) fn string_field(value: &Value, keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .find_map(|key| value.get(*key).and_then(Value::as_str))
-        .map(ToString::to_string)
-}
-
-pub(super) fn string_array_field(value: &Value, keys: &[&str]) -> Vec<String> {
-    keys.iter()
-        .find_map(|key| value.get(*key).and_then(Value::as_array))
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToString::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-pub(super) fn u32_field(value: &Value, keys: &[&str]) -> Option<u32> {
-    keys.iter()
-        .find_map(|key| value.get(*key))
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-}
-
-pub(super) fn bool_field(value: &Value, keys: &[&str]) -> bool {
-    keys.iter()
-        .find_map(|key| value.get(*key).and_then(Value::as_bool))
-        .unwrap_or(false)
-}
-
-pub(super) fn fallback_conflict_id(path: &Path) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("conflict")
-        .to_string()
 }

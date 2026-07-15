@@ -34,7 +34,8 @@ fn fresh_empty_runner_imports_remote_head_without_overwriting_it() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:08:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
     assert!(matches!(
@@ -42,7 +43,7 @@ fn fresh_empty_runner_imports_remote_head_without_overwriting_it() {
         SyncTickOutcome::Uploaded(_)
     ));
     let uploaded_ref = control_plane
-        .get_workspace_ref("ws_code")
+        .get_workspace_ref(&bowline_core::ids::WorkspaceId::new("ws_code"))
         .expect("workspace ref")
         .expect("workspace exists");
     let before_import_metrics = byte_store.metrics();
@@ -60,19 +61,6 @@ fn fresh_empty_runner_imports_remote_head_without_overwriting_it() {
                 "2026-06-24T12:08:30Z",
             )
             .expect("initialized root");
-        initialized_metadata
-            .enqueue_hydration(&HydrationQueueRecord {
-                id: "hydrate-main".to_string(),
-                workspace_id: WorkspaceId::new("ws_code"),
-                project_id: None,
-                path: "app/src/main.ts".to_string(),
-                content_id: None,
-                priority: "hot-project-prefetch".to_string(),
-                state: "queued".to_string(),
-                cause: "hot-project-prefetch".to_string(),
-                updated_at: "2026-06-24T12:08:30Z".to_string(),
-            })
-            .expect("queued hydration");
     }
 
     let fresh_runner = SyncRunner::new(
@@ -87,7 +75,8 @@ fn fresh_empty_runner_imports_remote_head_without_overwriting_it() {
             storage_key,
             key_epoch: 2,
             generated_at: "2026-06-24T12:09:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
 
@@ -95,7 +84,7 @@ fn fresh_empty_runner_imports_remote_head_without_overwriting_it() {
 
     assert!(matches!(outcome, SyncTickOutcome::Imported(_)));
     let after_ref = control_plane
-        .get_workspace_ref("ws_code")
+        .get_workspace_ref(&bowline_core::ids::WorkspaceId::new("ws_code"))
         .expect("workspace ref")
         .expect("workspace exists");
     assert_eq!(
@@ -118,18 +107,46 @@ fn fresh_empty_runner_imports_remote_head_without_overwriting_it() {
         "fresh import should materialize canonical source bytes into the real root"
     );
     let after_import_metrics = byte_store.metrics();
-    assert_eq!(
-        after_import_metrics.full_read_count - before_import_metrics.full_read_count,
-        2,
-        "fresh import should full-read the encrypted manifest and source pack"
+    let metadata_reads =
+        after_import_metrics.full_read_count - before_import_metrics.full_read_count;
+    assert!(
+        (2..=32).contains(&metadata_reads),
+        "fresh import should read one root plus a bounded metadata graph, got {metadata_reads}"
     );
     assert_eq!(
         after_import_metrics.range_read_count - before_import_metrics.range_read_count,
-        0,
-        "fresh import should hydrate from the prefetched source pack instead of per-file range reads"
+        3,
+        "each required file should hydrate through its claimed task range"
     );
     let metadata = MetadataStore::open(fresh_state.root().join("local.sqlite3"))
         .expect("fresh import metadata");
+    let retained_snapshot = metadata
+        .snapshot(
+            &WorkspaceId::new("ws_code"),
+            &bowline_core::ids::SnapshotId::new(uploaded_ref.snapshot_id.clone()),
+        )
+        .expect("retained snapshot lookup")
+        .expect("imported retained snapshot");
+    assert_eq!(retained_snapshot.id.as_str(), uploaded_ref.snapshot_id);
+    let history = bowline_local::history::compose_history(bowline_local::history::HistoryOptions {
+        db_path: Some(fresh_state.root().join("local.sqlite3")),
+        target_path: fresh.root().join("app").display().to_string(),
+        mode: bowline_local::history::HistoryMode::Timeline,
+        generated_at: "2026-06-24T12:09:01Z".to_string(),
+        limit: 10,
+        cursor: None,
+        since: None,
+        until: None,
+    })
+    .expect("fresh-device history");
+    assert_eq!(
+        history
+            .restore_points
+            .iter()
+            .map(|point| point.snapshot_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![uploaded_ref.snapshot_id.as_str()]
+    );
     let pack_records = metadata
         .pack_records(&WorkspaceId::new("ws_code"))
         .expect("pack records");
@@ -144,7 +161,10 @@ fn fresh_empty_runner_imports_remote_head_without_overwriting_it() {
     );
     assert_eq!(
         metadata
-            .projected_node_by_path(&WorkspaceId::new("ws_code"), "app/src/main.ts")
+            .current_namespace_entry(
+                &WorkspaceId::new("ws_code"),
+                &WorkspaceRelativePath::new("app/src/main.ts"),
+            )
             .expect("projected node lookup")
             .expect("projected node")
             .hydration_state,
@@ -152,22 +172,16 @@ fn fresh_empty_runner_imports_remote_head_without_overwriting_it() {
     );
     assert_eq!(
         metadata
-            .projected_node_by_path(&WorkspaceId::new("ws_code"), "app/package.json")
+            .current_namespace_entry(
+                &WorkspaceId::new("ws_code"),
+                &WorkspaceRelativePath::new("app/package.json"),
+            )
             .expect("package projected node lookup")
             .expect("package projected node")
             .hydration_state,
         HydrationState::Local,
         "materialized files are real local files, not cold placeholders"
     );
-    assert!(
-        metadata
-            .hydration_queue(&WorkspaceId::new("ws_code"))
-            .expect("hydration queue")
-            .iter()
-            .any(|record| record.path == "app/src/main.ts" && record.state == "completed"),
-        "remote import should settle queued hot-project hydration after writing real bytes"
-    );
-
     source
         .write_project_file("app", "src/remote.ts", b"export const remote = 2;\n")
         .expect("remote update");
@@ -221,51 +235,57 @@ fn fresh_empty_runner_imports_remote_head_without_overwriting_it() {
 
     fs::remove_file(fresh.root().join("app").join("package.json")).expect("remove package file");
     let deletion_outcome = fresh_runner.tick().expect("package deletion tick");
-    let (deleted_ref, deleted_object_manifest) = match deletion_outcome {
+    let deleted_ref = match deletion_outcome {
         SyncTickOutcome::Uploaded(upload) => match *upload {
-            bowline_local::sync::UploadOutcome::Advanced {
-                workspace_ref,
-                object_manifest,
-            } => (workspace_ref, object_manifest),
+            bowline_local::sync::UploadOutcome::Advanced { workspace_ref, .. } => workspace_ref,
             bowline_local::sync::UploadOutcome::Stale { .. } => {
                 panic!("package deletion should advance")
             }
         },
         other => panic!("expected package deletion upload, got {other:?}"),
     };
-    assert_eq!(
-        deleted_object_manifest.pack_objects.len(),
-        1,
-        "uploads that preserve cold locators must retain their source pack pointers"
-    );
     let after_package_delete = import_snapshot_by_id(
         &WorkspaceId::new("ws_code"),
         &bowline_core::ids::SnapshotId::new(deleted_ref.snapshot_id),
         &control_plane,
         &byte_store,
         storage_key,
-        1,
+        MetadataIdentityKey::derive(&WorkspaceId::new("ws_code"), [13; 32]),
     )
     .expect("import after package delete");
+    let manifest_pack_ids = snapshot_entries(&after_package_delete.snapshot)
+        .iter()
+        .filter_map(|entry| entry.content_layout.as_ref())
+        .flat_map(ContentLayout::segments)
+        .map(|segment| bowline_core::ids::ContentId::new(segment.pack_id.as_str()))
+        .collect::<BTreeSet<_>>();
+    let retained_pack_ids = after_package_delete
+        .pack_pointers
+        .iter()
+        .map(|pointer| pointer.content_id.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        retained_pack_ids, manifest_pack_ids,
+        "uploads that preserve cold locators must retain every source pack pointer"
+    );
     assert!(
-        !after_package_delete
-            .manifest
-            .entries
+        !snapshot_entries(&after_package_delete.snapshot)
             .iter()
             .any(|entry| entry.path == "app/package.json"),
         "deleting a bootstrap-materialized file must sync as a deletion"
     );
     assert!(
         metadata
-            .projected_node_by_path(&WorkspaceId::new("ws_code"), "app/package.json")
+            .current_namespace_entry(
+                &WorkspaceId::new("ws_code"),
+                &WorkspaceRelativePath::new("app/package.json"),
+            )
             .expect("deleted package projected node lookup")
             .is_none(),
         "accepted local deletions should remove projected-node metadata"
     );
     assert!(
-        after_package_delete
-            .manifest
-            .entries
+        snapshot_entries(&after_package_delete.snapshot)
             .iter()
             .any(|entry| entry.path == "app/src/main.ts"),
         "cold source files must still be preserved while real local deletions sync"
@@ -290,13 +310,11 @@ fn fresh_empty_runner_imports_remote_head_without_overwriting_it() {
         &control_plane,
         &byte_store,
         storage_key,
-        1,
+        MetadataIdentityKey::derive(&WorkspaceId::new("ws_code"), [13; 32]),
     )
     .expect("import after edit");
     assert!(
-        edited_snapshot
-            .manifest
-            .entries
+        snapshot_entries(&edited_snapshot.snapshot)
             .iter()
             .any(|entry| entry.path == "app/src/main.ts"),
         "local edits to formerly cold files should sync as real files"
@@ -317,20 +335,21 @@ fn fresh_empty_runner_imports_remote_head_without_overwriting_it() {
         &control_plane,
         &byte_store,
         storage_key,
-        1,
+        MetadataIdentityKey::derive(&WorkspaceId::new("ws_code"), [13; 32]),
     )
     .expect("import after source delete");
     assert!(
-        !deleted_cold_snapshot
-            .manifest
-            .entries
+        !snapshot_entries(&deleted_cold_snapshot.snapshot)
             .iter()
             .any(|entry| entry.path == "app/src/main.ts"),
         "deleting a materialized source file must sync as a deletion"
     );
     assert!(
         metadata
-            .projected_node_by_path(&WorkspaceId::new("ws_code"), "app/src/main.ts")
+            .current_namespace_entry(
+                &WorkspaceId::new("ws_code"),
+                &WorkspaceRelativePath::new("app/src/main.ts"),
+            )
             .expect("deleted source projected node lookup")
             .is_none(),
         "accepted deletion of a materialized source file should remove projected-node metadata"
@@ -360,21 +379,17 @@ fn fresh_empty_runner_imports_remote_head_without_overwriting_it() {
         &control_plane,
         &byte_store,
         storage_key,
-        1,
+        MetadataIdentityKey::derive(&WorkspaceId::new("ws_code"), [13; 32]),
     )
     .expect("import after directory replacement");
     assert!(
-        replaced_dir_snapshot
-            .manifest
-            .entries
+        snapshot_entries(&replaced_dir_snapshot.snapshot)
             .iter()
             .any(|entry| entry.path == "app" && entry.kind == NamespaceEntryKind::File),
         "local file replacement should be represented as the path itself"
     );
     assert!(
-        !replaced_dir_snapshot
-            .manifest
-            .entries
+        !snapshot_entries(&replaced_dir_snapshot.snapshot)
             .iter()
             .any(|entry| entry.path.starts_with("app/")),
         "preserved cold descendants must not survive under a local file replacement"
@@ -382,7 +397,7 @@ fn fresh_empty_runner_imports_remote_head_without_overwriting_it() {
 }
 
 #[test]
-fn fresh_import_keeps_large_lazy_files_cold_without_pack_prefetch() {
+fn fresh_import_materializes_large_lazy_files_as_background_priority() {
     let source = TempWorkspace::new("phase7-lazy-source").expect("source workspace");
     let source_state = TempWorkspace::new("phase7-lazy-source-state").expect("source state");
     let fresh = TempWorkspace::new("phase7-lazy-fresh").expect("fresh workspace");
@@ -412,7 +427,8 @@ fn fresh_import_keeps_large_lazy_files_cold_without_pack_prefetch() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:08:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
     assert!(matches!(
@@ -433,7 +449,8 @@ fn fresh_import_keeps_large_lazy_files_cold_without_pack_prefetch() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:09:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
 
@@ -447,37 +464,72 @@ fn fresh_import_keeps_large_lazy_files_cold_without_pack_prefetch() {
         br#"{"name":"app"}"#,
         "ordinary source/config files still materialize into the real directory"
     );
-    assert!(
-        !fresh.root().join("app/assets/video.bin").exists(),
-        "large lazy files should stay locator-backed instead of materializing during import"
+    assert_eq!(
+        fs::read(fresh.root().join("app/assets/video.bin")).expect("large file materialized"),
+        large_bytes,
+        "lazy is a scheduling priority, not permission to leave an ordinary path absent"
     );
     let after_import_metrics = byte_store.metrics();
-    assert_eq!(
-        after_import_metrics.full_read_count - before_import_metrics.full_read_count,
-        1,
-        "fresh import should full-read only the encrypted manifest when a pack also contains cold lazy records"
+    let metadata_reads =
+        after_import_metrics.full_read_count - before_import_metrics.full_read_count;
+    assert!(
+        (2..=32).contains(&metadata_reads),
+        "fresh import should read one root plus a bounded metadata graph, got {metadata_reads}"
     );
     assert_eq!(
         after_import_metrics.range_read_count - before_import_metrics.range_read_count,
-        1,
-        "fresh import should range-read only the eager source record from a mixed pack"
+        2,
+        "priority-ordered tasks should range-hydrate the package and large file independently"
     );
 
     let metadata =
         MetadataStore::open(fresh_state.root().join("local.sqlite3")).expect("fresh metadata");
     let large_node = metadata
-        .projected_node_by_path(&WorkspaceId::new("ws_code"), "app/assets/video.bin")
+        .current_namespace_entry(
+            &WorkspaceId::new("ws_code"),
+            &WorkspaceRelativePath::new("app/assets/video.bin"),
+        )
         .expect("large projected node lookup")
         .expect("large projected node");
-    assert_eq!(large_node.hydration_state, HydrationState::Cold);
+    assert_eq!(large_node.hydration_state, HydrationState::Local);
     let locators = metadata
         .content_locators(&WorkspaceId::new("ws_code"))
         .expect("content locators");
+    let workspace_ref = control_plane
+        .get_workspace_ref(&WorkspaceId::new("ws_code"))
+        .expect("workspace ref")
+        .expect("workspace exists");
+    let imported = import_snapshot_by_id(
+        &WorkspaceId::new("ws_code"),
+        &workspace_ref.snapshot_id,
+        &control_plane,
+        &byte_store,
+        storage_key,
+        MetadataIdentityKey::derive(&WorkspaceId::new("ws_code"), [45; 32]),
+    )
+    .expect("import current snapshot manifest");
+    let imported_entries = snapshot_entries(&imported.snapshot);
+    let large_layout = imported_entries
+        .iter()
+        .find(|entry| entry.path == "app/assets/video.bin")
+        .and_then(|entry| entry.content_layout.as_ref())
+        .expect("large file segmented layout");
     assert!(
-        locators
+        large_layout.segments().iter().all(|segment| {
+            locators
+                .iter()
+                .any(|locator| locator.content_id.as_str() == segment.segment_id.as_str())
+        }),
+        "materialized large files retain every authenticated segment locator for repair and replay"
+    );
+    assert_eq!(
+        large_layout
+            .segments()
             .iter()
-            .any(|locator| large_node.content_id.as_ref() == Some(&locator.content_id)),
-        "cold large file should keep a persisted locator for later active-read hydration"
+            .map(|segment| segment.plaintext_length)
+            .sum::<u64>(),
+        large_bytes.len() as u64,
+        "authenticated segment locators cover the complete logical file"
     );
 }
 
@@ -490,6 +542,9 @@ fn fresh_non_empty_runner_merges_with_remote_head_without_overwriting_it() {
     source
         .write_project_file("app", "remote.ts", b"export const remote = true;\n")
         .expect("remote file");
+    source
+        .write_project_file("app", "remote-copy.ts", b"export const remote = true;\n")
+        .expect("duplicate remote file");
     fresh
         .write_project_file("app", "local.ts", b"export const local = true;\n")
         .expect("local file");
@@ -511,7 +566,8 @@ fn fresh_non_empty_runner_merges_with_remote_head_without_overwriting_it() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:10:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
     assert!(matches!(
@@ -519,7 +575,7 @@ fn fresh_non_empty_runner_merges_with_remote_head_without_overwriting_it() {
         SyncTickOutcome::Uploaded(_)
     ));
     let uploaded_ref = control_plane
-        .get_workspace_ref("ws_code")
+        .get_workspace_ref(&bowline_core::ids::WorkspaceId::new("ws_code"))
         .expect("workspace ref")
         .expect("workspace exists");
 
@@ -535,7 +591,8 @@ fn fresh_non_empty_runner_merges_with_remote_head_without_overwriting_it() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:11:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
 
@@ -558,23 +615,34 @@ fn fresh_non_empty_runner_merges_with_remote_head_without_overwriting_it() {
         &control_plane,
         &byte_store,
         storage_key,
-        1,
+        MetadataIdentityKey::derive(&WorkspaceId::new("ws_code"), [14; 32]),
     )
     .expect("import merged");
     assert!(
-        imported
-            .manifest
-            .entries
+        snapshot_entries(&imported.snapshot)
             .iter()
             .any(|entry| entry.path == "app/remote.ts")
     );
     assert!(
-        imported
-            .manifest
-            .entries
+        snapshot_entries(&imported.snapshot)
+            .iter()
+            .any(|entry| entry.path == "app/remote-copy.ts")
+    );
+    assert!(
+        snapshot_entries(&imported.snapshot)
             .iter()
             .any(|entry| entry.path == "app/local.ts")
     );
+    let import_preparations = fresh_state.root().join("preparations/import");
+    if import_preparations.exists() {
+        assert_eq!(
+            fs::read_dir(import_preparations)
+                .expect("import preparation directory")
+                .count(),
+            0,
+            "stale merge imports must release transient staged files"
+        );
+    }
 }
 
 #[test]
@@ -621,6 +689,7 @@ fn opaque_git_state_uploads_and_imports_as_encrypted_workspace_bytes() {
         .write_project_file("app", "package.json", br#"{"name":"app"}"#)
         .expect("package");
     let git = workspace.create_git_repo("app").expect("git repo");
+    fs::write(git.join("index"), b"opaque index bytes").expect("git index");
     fs::write(git.join("refs").join("heads").join("main"), b"abc123\n").expect("branch ref");
     fs::write(git.join("packed-refs"), b"dddd refs/tags/v1\n").expect("packed refs");
     fs::write(git.join("refs").join("stash"), b"stash123\n").expect("stash ref");
@@ -678,17 +747,19 @@ fn opaque_git_state_uploads_and_imports_as_encrypted_workspace_bytes() {
     detector
         .assert_unchanged()
         .expect("sync should not mutate git");
-    assert!(candidate.snapshot.manifest.entries.iter().any(|entry| {
+    let candidate_entries = snapshot_entries(&candidate.snapshot);
+    assert!(candidate_entries.iter().any(|entry| {
         entry.path == "app/.git/refs/heads/main" && entry.mode == MaterializationMode::EncryptedSync
     }));
-    assert!(candidate.snapshot.manifest.entries.iter().any(|entry| {
+    assert!(candidate_entries.iter().any(|entry| {
         entry.path == "app/.git/objects/ab/cdef" && entry.mode == MaterializationMode::EncryptedSync
     }));
-    assert!(candidate.snapshot.manifest.entries.iter().any(|entry| {
+    assert!(candidate_entries.iter().any(|entry| {
         entry.path == "app/.git/objects/pack/pack-main-001.pack"
             && entry.mode == MaterializationMode::EncryptedSync
     }));
     for path in [
+        "app/.git/index",
         "app/.git/packed-refs",
         "app/.git/refs/stash",
         "app/.git/hooks/pre-commit",
@@ -696,20 +767,14 @@ fn opaque_git_state_uploads_and_imports_as_encrypted_workspace_bytes() {
         "app/.git/lfs/objects/aa/bb/oid",
     ] {
         assert!(
-            candidate
-                .snapshot
-                .manifest
-                .entries
+            snapshot_entries(&candidate.snapshot)
                 .iter()
                 .any(|entry| entry.path == path && entry.mode == MaterializationMode::EncryptedSync),
             "{path} should sync as opaque Git state"
         );
     }
     assert!(
-        !candidate
-            .snapshot
-            .manifest
-            .entries
+        !snapshot_entries(&candidate.snapshot)
             .iter()
             .any(|entry| entry.path == "app/.git/objects/pack/tmp_pack_001"),
         "bounded Git transients must stay local-only and out of workspace head"
@@ -718,22 +783,18 @@ fn opaque_git_state_uploads_and_imports_as_encrypted_workspace_bytes() {
     let outcome =
         upload_snapshot_candidate(&candidate, &control_plane, &byte_store, storage_key, 1)
             .expect("upload");
-    let object_manifest = match outcome {
-        bowline_local::sync::UploadOutcome::Advanced {
-            object_manifest, ..
-        } => object_manifest,
+    let snapshot_root = match outcome {
+        bowline_local::sync::UploadOutcome::Advanced { snapshot_root, .. } => snapshot_root,
         bowline_local::sync::UploadOutcome::Stale { .. } => {
             panic!("first writer should advance")
         }
     };
     assert_eq!(
-        object_manifest.pack_objects.len(),
-        1,
-        ".git entries should pack with ordinary workspace bytes, not one remote object per Git file"
+        snapshot_root.extra_root_logical_ids.len(),
+        0,
+        "the namespace root owns Git metadata reachability without snapshot-wide pack arrays"
     );
-    for pointer in
-        std::iter::once(&object_manifest.manifest_object).chain(object_manifest.pack_objects.iter())
-    {
+    for pointer in std::iter::once(&snapshot_root.manifest_object) {
         for forbidden in [".git", "refs", "heads", "main", "pack-main"] {
             assert!(
                 !pointer.object_key.contains(forbidden),
@@ -744,23 +805,27 @@ fn opaque_git_state_uploads_and_imports_as_encrypted_workspace_bytes() {
 
     let imported = import_snapshot_by_id(
         &workspace_id,
-        &candidate.snapshot.manifest.snapshot_id,
+        &candidate.snapshot.manifest().snapshot_id,
         &control_plane,
         &byte_store,
         storage_key,
-        1,
+        MetadataIdentityKey::derive(&workspace_id, content_key),
     )
     .expect("import");
-    let pack_entry = imported
-        .manifest
-        .entries
+    let imported_entries = snapshot_entries(&imported.snapshot);
+    let pack_entry = imported_entries
         .iter()
         .find(|entry| entry.path == "app/.git/objects/pack/pack-main-001.pack")
         .expect("imported pack entry");
-    let locator = pack_entry.locator.as_ref().expect("packed locator");
-    let pack_id = locator.pack_id.as_ref().expect("pack id");
+    let segment = pack_entry
+        .content_layout
+        .as_ref()
+        .and_then(|layout| layout.segments().first())
+        .expect("packed segment");
+    let locator = content_locator_for_segment(segment);
+    let pack_id = &segment.pack_id;
     let pack_object = imported
-        .pack_objects
+        .pack_pointers
         .iter()
         .find(|pointer| pointer.content_id == pack_id.as_str())
         .expect("pack object pointer");
@@ -772,8 +837,9 @@ fn opaque_git_state_uploads_and_imports_as_encrypted_workspace_bytes() {
             RangeHydrationRequest {
                 object_key: &object_key,
                 workspace_id: &workspace_id,
-                locator,
+                locator: &locator,
                 content_key,
+                content_verification: bowline_storage::ContentVerification::AuthenticatedSegment,
                 key: storage_key,
                 key_epoch: 1,
             },
@@ -811,7 +877,8 @@ fn opaque_git_state_uploads_and_imports_as_encrypted_workspace_bytes() {
             storage_key,
             key_epoch: 2,
             generated_at: "2026-06-26T12:01:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
 
@@ -821,6 +888,10 @@ fn opaque_git_state_uploads_and_imports_as_encrypted_workspace_bytes() {
             SyncTickOutcome::Imported(_)
         ),
         "fresh devices should import opaque Git continuity into the real directory"
+    );
+    assert_eq!(
+        fs::read(fresh.root().join("app/.git/index")).expect("git index materialized"),
+        b"opaque index bytes"
     );
     assert_eq!(
         fs::read(fresh.root().join("app/.git/refs/heads/main")).expect("branch materialized"),
@@ -870,7 +941,10 @@ fn opaque_git_state_uploads_and_imports_as_encrypted_workspace_bytes() {
         .expect("fresh import metadata");
     assert_eq!(
         fresh_metadata
-            .projected_node_by_path(&workspace_id, "app/.git/objects/pack/pack-main-001.pack")
+            .current_namespace_entry(
+                &workspace_id,
+                &WorkspaceRelativePath::new("app/.git/objects/pack/pack-main-001.pack"),
+            )
             .expect("projected node lookup")
             .expect("git pack projected node")
             .hydration_state,
@@ -891,22 +965,6 @@ fn opaque_git_state_uploads_and_imports_as_encrypted_workspace_bytes() {
                 .contains("Remote snapshot materialization completed")
             && event.payload.get("cause").and_then(|value| value.as_str()) == Some("remote-import")
     }));
-    let status = compose_status(StatusOptions {
-        db_path: Some(fresh_state.root().join("local.sqlite3")),
-        requested_path: None,
-        workspace_scope: true,
-        generated_at: "2026-06-26T12:01:01Z".to_string(),
-    })
-    .expect("status composes");
-    assert!(
-        status.hydration_progress.iter().any(|progress| {
-            progress.cause == "remote-import"
-                && progress.bytes_done > 0
-                && progress.bytes_remaining == 0
-        }),
-        "hydration progress: {:#?}; events: {events:#?}",
-        status.hydration_progress
-    );
 }
 
 #[test]
@@ -916,10 +974,10 @@ fn missing_remote_materialization_records_blocked_hydration_event() {
     let base_ref = control_plane.create_workspace("ws_code");
     control_plane
         .compare_and_swap_workspace_ref(
-            workspace_id.as_str(),
+            &workspace_id,
             base_ref.version,
-            "snap_missing_manifest",
-            "device-a",
+            &bowline_core::ids::SnapshotId::new("snap_missing_manifest"),
+            &bowline_core::ids::DeviceId::new("device-a"),
         )
         .expect("advance fake remote ref");
     let root = TempWorkspace::new("phase7-missing-remote-root").expect("root");
@@ -938,12 +996,16 @@ fn missing_remote_materialization_records_blocked_hydration_event() {
             storage_key: StorageKey::deterministic(31),
             key_epoch: 1,
             generated_at: "2026-06-26T12:02:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
 
-    let error = runner.tick().expect_err("missing manifest blocks import");
-    assert!(error.to_string().contains("snapshot manifest"));
+    let error = runner.tick().expect_err("missing root blocks import");
+    assert!(matches!(
+        error,
+        SyncRunnerError::Download(DownloadError::SnapshotManifestMissing(_))
+    ));
 
     let metadata = MetadataStore::open(state.root().join("local.sqlite3")).expect("metadata opens");
     let events = metadata.list_events(20).expect("events");
@@ -957,7 +1019,7 @@ fn missing_remote_materialization_records_blocked_hydration_event() {
                     .payload
                     .get("reason")
                     .and_then(|value| value.as_str())
-                    .is_some_and(|reason| reason.contains("snapshot manifest"))
+                    .is_some_and(|reason| reason.contains("snapshot root"))
         }),
         "events: {events:#?}"
     );
@@ -973,11 +1035,11 @@ fn divergent_git_files_create_opaque_conflicts_instead_of_text_merges() {
         b"[core]\n\trepositoryformatversion = 0\n",
     );
     let local_ref = bowline_control_plane::WorkspaceRef {
-        workspace_id: workspace_id.as_str().to_string(),
+        workspace_id: bowline_core::ids::WorkspaceId::new(workspace_id.as_str()),
         version: 1,
-        snapshot_id: "snap_git_base".to_string(),
+        snapshot_id: bowline_core::ids::SnapshotId::new("snap_git_base"),
         updated_at: bowline_control_plane::ControlPlaneTimestamp { tick: 1 },
-        updated_by_device_id: Some("device-a".to_string()),
+        updated_by_device_id: Some(bowline_core::ids::DeviceId::new("device-a")),
     };
     let local_candidate = coalesced_candidate_from_snapshot(
         &workspace_id,
@@ -997,11 +1059,11 @@ fn divergent_git_files_create_opaque_conflicts_instead_of_text_merges() {
         b"[core]\n\trepositoryformatversion = 0\n[branch \"remote\"]\n",
     );
     let remote_ref = bowline_control_plane::WorkspaceRef {
-        workspace_id: workspace_id.as_str().to_string(),
+        workspace_id: bowline_core::ids::WorkspaceId::new(workspace_id.as_str()),
         version: 2,
-        snapshot_id: remote.manifest.snapshot_id.as_str().to_string(),
+        snapshot_id: bowline_core::ids::SnapshotId::new(remote.manifest().snapshot_id.as_str()),
         updated_at: bowline_control_plane::ControlPlaneTimestamp { tick: 2 },
-        updated_by_device_id: Some("device-b".to_string()),
+        updated_by_device_id: Some(bowline_core::ids::DeviceId::new("device-b")),
     };
 
     let outcome = merge_snapshots(
@@ -1017,7 +1079,7 @@ fn divergent_git_files_create_opaque_conflicts_instead_of_text_merges() {
     match outcome {
         MergeOutcome::Clean(candidate) => panic!(
             "opaque Git state must not text-merge into {:?}",
-            candidate.snapshot.manifest.entries
+            snapshot_entries(&candidate.snapshot)
         ),
         MergeOutcome::Conflicted(conflicts) => {
             assert_eq!(conflicts.len(), 1);

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, hash_map::DefaultHasher},
+    collections::{BTreeMap, hash_map::DefaultHasher},
     error::Error,
     fmt, fs,
     hash::{Hash, Hasher},
@@ -8,18 +8,17 @@ use std::{
 };
 
 use bowline_core::{
-    commands::{CONTRACT_VERSION, CommandName, InitCommandOutput, RootChoiceState},
+    commands::{RootChoiceState, RootInitOutput},
     events::{EventName, EventSeverity, EventSubject, EventSubjectKind, WorkspaceEvent},
     ids::{EventId, ProjectId, WorkspaceId},
-    status::SafeAction,
-    workspace_graph::{HydrationState, NamespaceEntryKind},
+    status::RepairCommand,
 };
 
 use crate::{
     env::{EnvImportError, import_env_records_from_scan},
     events::LocalEventError,
     metadata::{
-        MetadataError, MetadataStore, ObservedLocalPath, ProjectedNodeRecord, default_database_path,
+        MetadataError, MetadataStore, ObservedLocalPath, ProjectUpsert, default_database_path,
     },
     scanner::{ScanError, ScanReport, scan_workspace},
 };
@@ -32,6 +31,14 @@ pub struct InitOptions {
     pub generated_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootSelection {
+    pub root: PathBuf,
+    pub display_root: String,
+    pub root_choice: RootChoiceState,
+    pub created_root: bool,
+}
+
 #[derive(Debug)]
 pub enum LocalInitError {
     Io(io::Error),
@@ -42,22 +49,16 @@ pub enum LocalInitError {
     AmbiguousDefaultRoot(Vec<PathBuf>),
 }
 
-pub fn initialize_root(options: InitOptions) -> Result<InitCommandOutput, LocalInitError> {
+pub fn initialize_root(options: InitOptions) -> Result<RootInitOutput, LocalInitError> {
     initialize_root_with_workspace(options, selected_workspace_id())
 }
 
 pub fn initialize_root_with_workspace(
     options: InitOptions,
     workspace_id: WorkspaceId,
-) -> Result<InitCommandOutput, LocalInitError> {
-    let root = choose_root(options.requested_root.as_deref())?;
-    let created_root = ensure_root_exists(&root)?;
-    let root_choice = match (options.requested_root.is_some(), created_root) {
-        (true, false) => RootChoiceState::ExplicitExisting,
-        (true, true) => RootChoiceState::ExplicitCreated,
-        (false, true) => RootChoiceState::DefaultSelected,
-        (false, false) => RootChoiceState::DefaultSelected,
-    };
+) -> Result<RootInitOutput, LocalInitError> {
+    let selection = select_or_create_root(options.requested_root.as_deref())?;
+    let root = selection.root;
 
     let report = scan_workspace(&root)?;
     let db_path = options
@@ -75,16 +76,14 @@ pub fn initialize_root_with_workspace(
     )?;
     append_observed_event(&store, &workspace_id, &root, &report, &options.generated_at)?;
 
-    Ok(InitCommandOutput {
-        contract_version: CONTRACT_VERSION,
-        command: CommandName::Init,
+    Ok(RootInitOutput {
         generated_at: options.generated_at,
         workspace_id,
-        root: display_path(&root),
-        root_choice,
+        root: selection.display_root.clone(),
+        root_choice: selection.root_choice,
         observed_only: true,
         changed_workspace_files: false,
-        created_root,
+        created_root: selection.created_root,
         scan_summary: report.summary,
         non_actions: vec![
             "Did not move, rewrite, or delete project files.".to_string(),
@@ -93,13 +92,32 @@ pub fn initialize_root_with_workspace(
             "Did not print environment variable values or upload env bytes during init."
                 .to_string(),
         ],
-        next_actions: vec![SafeAction {
-            label: "Inspect observed workspace".to_string(),
-            command: Some(format!(
+        next_actions: vec![RepairCommand::inspect(
+            "Inspect observed workspace".to_string(),
+            Some(format!(
                 "bowline status --root {}",
                 shell_word(&display_path(&root))
             )),
-        }],
+        )],
+    })
+}
+
+pub fn select_or_create_root(
+    requested_root: Option<&str>,
+) -> Result<RootSelection, LocalInitError> {
+    let root = choose_root(requested_root)?;
+    let created_root = ensure_root_exists(&root)?;
+    let root_choice = match (requested_root.is_some(), created_root) {
+        (true, false) => RootChoiceState::ExplicitExisting,
+        (true, true) => RootChoiceState::ExplicitCreated,
+        (false, true) => RootChoiceState::DefaultSelected,
+        (false, false) => RootChoiceState::DefaultSelected,
+    };
+    Ok(RootSelection {
+        display_root: display_path(&root),
+        root,
+        root_choice,
+        created_root,
     })
 }
 
@@ -221,7 +239,11 @@ fn persist_scan(
     let projects = report
         .projects
         .iter()
-        .map(|project| (project.id.clone(), project.path.clone()))
+        .map(|project| ProjectUpsert {
+            id: project.id.clone(),
+            path: project.path.clone(),
+            git_observer_state: project.observer_state,
+        })
         .collect::<Vec<_>>();
     store.replace_projects(workspace_id, &root_id, &projects, now)?;
     let paths = report
@@ -233,17 +255,11 @@ fn persist_scan(
             classification: path.policy.classification,
             mode: path.policy.mode,
             access: path.policy.access.clone(),
-            matched_rule: path.policy.matched_rule.clone(),
-            rule_source: path.policy.rule_source.clone(),
-            risk: path.policy.risk.clone(),
-            summary: path.policy.summary.clone(),
         })
         .collect::<Vec<_>>();
     store.replace_observed_paths(workspace_id, &paths, now)?;
-    persist_projected_nodes(store, workspace_id, &report, now)?;
     store.set_observed_summary(workspace_id, &report.summary, now)?;
-    let env_import =
-        import_env_records_from_scan(store, workspace_id, root, &report, [0_u8; 32], now)?;
+    let env_import = import_env_records_from_scan(store, workspace_id, root, &report, None, now)?;
     if env_import.imported_record_count > 0 {
         append_env_imported_event(store, workspace_id, &env_import, now)?;
     }
@@ -296,54 +312,6 @@ fn id_component(value: &str) -> String {
         output = output.replace("__", "_");
     }
     output.trim_matches('_').to_string()
-}
-
-fn persist_projected_nodes(
-    store: &MetadataStore,
-    workspace_id: &WorkspaceId,
-    report: &ScanReport,
-    now: &str,
-) -> Result<(), LocalInitError> {
-    let retained_paths = report
-        .paths
-        .iter()
-        .map(|path| path.path.clone())
-        .collect::<BTreeSet<_>>();
-    store.delete_unlisted_workspace_projected_nodes(workspace_id, &retained_paths)?;
-    for path in &report.paths {
-        store.upsert_projected_node(&ProjectedNodeRecord {
-            workspace_id: workspace_id.clone(),
-            node_id: format!("node:{}", path.path),
-            project_id: path.project_id.clone(),
-            parent_node_id: parent_path(&path.path).map(|parent| format!("node:{parent}")),
-            path: path.path.clone(),
-            kind: projected_kind(path),
-            content_id: None,
-            hydration_state: if path.is_dir {
-                HydrationState::StructureOnly
-            } else {
-                HydrationState::Local
-            },
-            updated_at: now.to_string(),
-        })?;
-    }
-    Ok(())
-}
-
-fn projected_kind(path: &crate::scanner::PathObservation) -> NamespaceEntryKind {
-    if path.is_dir {
-        NamespaceEntryKind::Directory
-    } else if path.is_symlink {
-        NamespaceEntryKind::Symlink
-    } else {
-        NamespaceEntryKind::File
-    }
-}
-
-fn parent_path(path: &str) -> Option<String> {
-    path.rsplit_once('/')
-        .map(|(parent, _)| parent.to_string())
-        .filter(|parent| !parent.is_empty())
 }
 
 fn append_env_imported_event(
@@ -474,34 +442,18 @@ fn shell_word(value: &str) -> String {
         if rest.is_empty() {
             return "~/".to_string();
         }
-        if shell_safe_word(rest) {
-            return format!("~/{rest}");
-        }
-        return format!("~/{}", shell_quote(rest));
+        return format!("~/{}", bowline_core::shell::quote_word(rest));
     }
-    if shell_safe_word(value) {
-        return value.to_string();
-    }
-    shell_quote(value)
-}
-
-fn shell_safe_word(value: &str) -> bool {
-    !value.is_empty()
-        && value.chars().all(|ch| {
-            ch.is_ascii_alphanumeric()
-                || matches!(ch, '/' | '.' | '_' | '-' | ':' | '=' | '+' | '@' | '%')
-        })
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r#"'"'"'"#))
+    bowline_core::shell::quote_word(value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{InitOptions, initialize_root, initialize_root_with_workspace};
     use crate::metadata::MetadataStore;
-    use bowline_core::{ids::WorkspaceId, workspace_graph::HydrationState};
+    use bowline_core::{
+        ids::WorkspaceId, policy::PathClassification, workspace_graph::WorkspaceRelativePath,
+    };
 
     #[test]
     fn init_existing_root_observes_without_mutating_workspace_files() {
@@ -543,11 +495,22 @@ mod tests {
         assert!(output.scan_summary.workspace_sync_path_count >= 2);
 
         let store = MetadataStore::open(db_path).expect("metadata");
-        let node = store
-            .projected_node_by_path(&WorkspaceId::new("ws_code"), "apps/web/src/index.ts")
+        let workspace_id = WorkspaceId::new("ws_code");
+        let observed = store
+            .observed_path(&workspace_id, "apps/web/src/index.ts")
             .expect("query")
-            .expect("projected node");
-        assert_eq!(node.hydration_state, HydrationState::Local);
+            .expect("observed path");
+        assert_eq!(observed.classification, PathClassification::WorkspaceSync);
+        assert!(
+            store
+                .current_namespace_entry(
+                    &workspace_id,
+                    &WorkspaceRelativePath::new("apps/web/src/index.ts"),
+                )
+                .expect("current namespace query")
+                .is_none(),
+            "an observation-only init must not manufacture committed namespace authority"
+        );
     }
 
     #[test]

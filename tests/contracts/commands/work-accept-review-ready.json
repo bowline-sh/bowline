@@ -1,6 +1,6 @@
 {
-  "contractVersion": 3,
-  "command": "accept",
+  "contractVersion": 8,
+  "command": "work accept",
   "generatedAt": "2026-06-25T12:00:04Z",
   "action": "review-ready",
   "workView": {
@@ -35,9 +35,8 @@
   "nextActions": [
     {
       "label": "Inspect work-view diff",
-      "command": "bowline review auth-fix",
-      "effectCategory": "inspect",
-      "targetKind": "work-view"
+      "command": "bowline work review auth-fix",
+      "mutates": false
     }
   ]
 }

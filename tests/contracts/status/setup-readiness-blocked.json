@@ -1,0 +1,52 @@
+{
+  "contractVersion": 8,
+  "command": "status",
+  "generatedAt": "2026-07-03T12:00:00Z",
+  "statusSummary": { "availability": "unavailable", "attention": "required", "facts": [], "snapshotVersion": 1, "observedAt": "2026-07-03T12:00:00Z", "freshness": "fresh" },
+  "workspaceId": "ws_code",
+  "projectId": "proj_acme_web",
+  "scope": "project",
+  "requestedPath": "apps/web",
+  "resolvedWorkspaceRoot": "~/Code",
+  "workspaceSummary": {
+    "totalProjects": 1
+  },
+  "setupReadiness": {
+    "state": "blocked",
+    "reason": "Required setup executable `pnpm` is not available.",
+    "remedy": "Install `pnpm` on this machine, then rerun setup for the hot project.",
+    "identityHash": "setupid_0123456789abcdef",
+    "latestReceiptId": "setup_missing_pnpm",
+    "latestReceiptState": "failed",
+    "updatedAt": "2026-07-03T11:59:55Z"
+  },
+  "freshness": "unknown",
+  "status": {
+    "level": "attention",
+    "attentionItems": [
+      "Setup for apps/web needs attention: failed."
+    ]
+  },
+  "items": [
+    {
+      "kind": "setup",
+      "summary": "Setup failed via setup; Required setup executable `pnpm` is not available.",
+      "subject": {
+        "kind": "setup-receipt",
+        "id": "setup_missing_pnpm",
+        "path": "apps/web"
+      },
+      "path": "apps/web",
+      "projectId": "proj_acme_web"
+    }
+  ],
+  "limits": [],
+  "eventWatermarks": {},
+  "nextActions": [
+    {
+      "label": "Inspect recent events",
+      "command": "bowline status --root ~/Code --watch",
+      "mutates": false
+    }
+  ]
+}

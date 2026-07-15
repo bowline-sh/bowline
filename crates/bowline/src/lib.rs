@@ -1,28 +1,34 @@
 #![deny(unsafe_code)]
 
+use std::any::Any;
 use std::ffi::OsString;
-use std::io::{self, IsTerminal, Read, Write};
-use std::os::unix::net::UnixStream;
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, ExitCode, Stdio};
+use std::process::{Command as ProcessCommand, ExitCode};
 use std::time::{Duration, Instant};
-use std::{env, thread};
+use std::{env, panic, thread};
 
 mod agent;
 mod agent_adapters;
 mod bootstrap;
 mod cli;
+mod command_error_classification;
 mod daemon;
-mod dev_spike;
+mod debug;
 mod device_commands;
 mod devices;
 mod dispatch;
 mod errors;
+mod handoff_commands;
+mod handoff_trust;
 mod idempotency;
 mod io_helpers;
+mod lease;
+mod lifecycle;
 mod login;
 mod login_init;
 mod logout;
+mod mcp;
 mod recovery;
 mod registry;
 mod render;
@@ -35,84 +41,113 @@ mod update;
 mod wire;
 mod work;
 mod work_agent_commands;
+mod workspace_root_selection;
 
 #[cfg(test)]
+mod handoff_commands_tests;
+#[cfg(test)]
 mod lib_daemon_tests;
+#[cfg(test)]
+mod lib_handoff_parse_tests;
 #[cfg(test)]
 mod lib_parse_tests;
 
 use bowline_core::commands::{
     BoundedOutputControls, CONTRACT_VERSION, CliCommandDescriptor, CliCommandExample,
-    CliCommandGroup, CliCommandOption, CommandError, CommandErrorOutput, CommandErrorStatus,
-    CommandName, CommandRecoverability, ContractCommandOutput, ContractFixtureDescriptor,
+    CliCommandGroup, CliCommandOption, CliCommandPositional, CliCommandSummary, CommandError,
+    CommandErrorOutput, CommandErrorStatus, CommandExitCode, CommandName, CommandRecoverability,
+    ContractCommandOutput, ContractFixtureDescriptor, ContractSummaryCommandOutput,
     DaemonCommandOutput, DaemonProcessOutput, DaemonServiceOutput, DaemonServiceState,
     DaemonStatusOutput, DiagnosticsCollectCommandOutput, DryRunCommandOutput, DryRunStatus,
-    EventsCommandOutput, HelpCommandOutput, PrewarmCommandOutcome, PrewarmCommandOutput,
-    PrewarmCommandState, StatusCommandOutput, UpdateCommandOutput, VersionCommandOutput,
-    WatchFrame,
+    EventsCommandOutput, HandoffAgent, HelpCommandOutput, ScopedContractCommandOutput,
+    SetupCommandOutput, SetupProjectOutcome, SetupProjectOutput, SetupProjectState,
+    StatusCommandOutput, UpdateCommandOutput, VersionCommandOutput, WatchFrame,
 };
+use bowline_core::devices::{AccountLoginState, AccountLoginStatus};
+use bowline_core::events::EVENT_SCHEMA_VERSION;
 use bowline_core::ids::{DeviceApprovalRequestId, DeviceId, WorkspaceId};
 use bowline_core::status::{
-    SafeAction, StatusItem, StatusItemKind, StatusLevel, StatusSubject, StatusSubjectKind,
+    DeviceApprovalAffordance, RepairCommand, StatusFact, StatusFactScope, StatusItem,
+    StatusItemKind, StatusSubject, StatusSubjectKind, reduce_status_facts, status_fact_policy,
 };
 use bowline_local::{
     bootstrap::process::{ProcessRunner, SystemProcessRunner},
-    explain::ExplainOptions,
     init::{InitOptions, LocalInitError},
     linux_service::{self, LinuxServiceConfig, LinuxServiceOptions},
     macos_service::{self, MacosServiceConfig, MacosServiceOptions},
-    metadata::{CommandIdempotencyRecord, MetadataStore, default_database_path},
-    setup::{PrewarmOptions, SetupRunError, prewarm_project, redact::redact_setup_text},
+    metadata::{MetadataStore, default_control_socket_path, default_database_path},
+    setup::{ProjectSetupOptions, ProjectSetupState, redact::redact_setup_text, run_project_setup},
     status::{EventsOptions, StatusOptions},
 };
 use cli::*;
-use dev_spike::{
-    run_fake_cloud_spike, run_hosted_cloud_spike_from_env, skip_hosted_cloud_spike_from_env,
-};
 use dispatch::run;
 use registry::{print_contract, print_help, print_version};
-const PROTOCOL: &str = "bowline.local";
-const PROTOCOL_VERSION: u32 = 1;
-const DEFAULT_SOCKET: &str = "/tmp/bowline-daemon.sock";
+const PROTOCOL: &str = bowline_daemon_rpc::DAEMON_RPC_PROTOCOL;
+const PROTOCOL_VERSION: u32 = bowline_daemon_rpc::DAEMON_RPC_PROTOCOL_VERSION as u32;
+const DEFAULT_SOCKET_FALLBACK: &str = ".bowline/runtime/bowline-daemon.sock";
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
-const EVENT_SCHEMA_VERSION: u16 = 1;
 const PACKAGE_CONTRACT_SOURCE: &str = "packages/contracts/src/index.ts";
 const DAEMON_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const ENV_METADATA_DB: &str = "BOWLINE_METADATA_DB";
 const ENV_GENERATED_AT: &str = "BOWLINE_GENERATED_AT";
-const EXIT_USAGE: u8 = 2;
-const EXIT_RUNTIME: u8 = 1;
-const DEFAULT_EXPLORATION_LIMIT: usize = 20;
-const MAX_EXPLORATION_LIMIT: usize = 100;
-const MAX_EXPLORATION_CURSOR_OFFSET: usize = 10_000;
-const DEFAULT_AGENT_HYDRATE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
-
+const EXIT_USAGE: CommandExitCode = CommandExitCode::UsageError;
+const EXIT_RUNTIME: CommandExitCode = CommandExitCode::RetryableRuntimeError;
 pub fn main() -> ExitCode {
     install_panic_hook();
-    let cli = parse_args(env::args().skip(1));
-    run(cli)
+    match panic::catch_unwind(|| {
+        let cli = parse_args(env::args().skip(1));
+        run(cli)
+    }) {
+        Ok(code) => code,
+        Err(payload) if is_broken_pipe_panic(payload.as_ref()) => ExitCode::SUCCESS,
+        Err(payload) => panic::resume_unwind(payload),
+    }
 }
 
 fn install_panic_hook() {
-    std::panic::set_hook(Box::new(|_| {
+    std::panic::set_hook(Box::new(|info| {
+        if is_broken_pipe_panic(info.payload()) {
+            return;
+        }
         eprintln!(
             "bowline hit an internal error. Run `bowline status --root <path>` and inspect daemon logs; environment values were not printed."
         );
     }));
 }
 
-fn usage_error(command: CommandName, message: impl Into<String>) -> Command {
-    Command::UsageError {
+fn is_broken_pipe_panic(payload: &(dyn Any + Send)) -> bool {
+    payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .is_some_and(|message| message.contains("Broken pipe"))
+}
+
+fn usage_error(command: CommandName, message: impl Into<String>) -> Result<Command, ParseError> {
+    Err(ParseError::Usage {
         command,
         message: message.into(),
-    }
+    })
 }
 
 fn selected_workspace_path(selection: WorkspaceSelection) -> Option<String> {
     let root = resolve_explicit_path(selection.root);
     match selection.project {
         Some(project) if !project.is_empty() => {
-            if project == "~" || project.starts_with("~/") || Path::new(&project).is_absolute() {
+            if project == "." || project.starts_with("./") {
+                current_path_within_root(&root, Some(&project)).or_else(|| {
+                    let resolved = resolve_explicit_path(project);
+                    Some(
+                        std::fs::canonicalize(&resolved)
+                            .unwrap_or_else(|_| PathBuf::from(&resolved))
+                            .display()
+                            .to_string(),
+                    )
+                })
+            } else if project == "~"
+                || project.starts_with("~/")
+                || Path::new(&project).is_absolute()
+            {
                 Some(resolve_explicit_path(project))
             } else {
                 Some(format!(
@@ -122,14 +157,32 @@ fn selected_workspace_path(selection: WorkspaceSelection) -> Option<String> {
                 ))
             }
         }
-        _ => Some(root),
+        _ => current_path_within_root(&root, None).or(Some(root)),
     }
 }
 
+fn current_path_within_root(root: &str, project: Option<&str>) -> Option<String> {
+    let root_path = service::expand_home_path(root);
+    let comparable_root = std::fs::canonicalize(&root_path).unwrap_or_else(|_| root_path.clone());
+    let cwd = env::current_dir().ok()?;
+    let candidate = project
+        .map(|path| cwd.join(path))
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+        .unwrap_or(cwd);
+    let relative = candidate.strip_prefix(&comparable_root).ok()?;
+    if relative.as_os_str().is_empty() {
+        return None;
+    }
+    Some(root_path.join(relative).display().to_string())
+}
+
 use daemon::*;
+use debug::*;
 use device_commands::*;
 use errors::*;
+use handoff_commands::*;
 use io_helpers::*;
+use lifecycle::*;
 use login_init::*;
 use render::*;
 use service::*;

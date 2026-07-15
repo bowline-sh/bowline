@@ -63,6 +63,7 @@ impl fmt::Debug for EnvProviderRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvRecordRestriction {
     Inherited,
+    MachineLocal,
     Restricted {
         allowed_device_ids: Vec<DeviceId>,
         lease_only: bool,
@@ -107,6 +108,7 @@ pub enum EnvProviderDenialReason {
     WrongProfile,
     WrongReadScope,
     Restricted,
+    MachineLocal,
     Revoked,
     Stale,
 }
@@ -168,6 +170,7 @@ fn denial_reason(
     }
     match &record.restriction {
         EnvRecordRestriction::Inherited => None,
+        EnvRecordRestriction::MachineLocal => Some(EnvProviderDenialReason::MachineLocal),
         EnvRecordRestriction::Revoked => Some(EnvProviderDenialReason::Revoked),
         EnvRecordRestriction::Restricted {
             allowed_device_ids,

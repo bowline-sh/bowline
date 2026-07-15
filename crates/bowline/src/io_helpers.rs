@@ -12,15 +12,26 @@ pub(super) fn generated_at() -> String {
     })
 }
 
-pub(super) fn requested_path(explicit: Option<String>) -> Option<String> {
-    explicit.map(resolve_explicit_path).or_else(|| {
-        env::current_dir()
-            .ok()
-            .map(|path| path.display().to_string())
-    })
+pub(super) fn resolve_explicit_path(path: String) -> String {
+    match env::current_dir() {
+        Ok(cwd) => resolve_path_from(&cwd, path),
+        Err(_) => path,
+    }
 }
 
-pub(super) fn resolve_explicit_path(path: String) -> String {
+pub(super) fn resolve_project_path(path: String) -> String {
+    if path == "~" || path.starts_with("~/") || Path::new(&path).is_absolute() {
+        return path;
+    }
+    if path == "." || path.starts_with("./") {
+        return resolve_explicit_path(path);
+    }
+    runtime::active_workspace_root()
+        .map(|root| PathBuf::from(root).join(&path).display().to_string())
+        .unwrap_or_else(|| resolve_explicit_path(path))
+}
+
+pub(super) fn resolve_path_from(cwd: &Path, path: String) -> String {
     if path == "~" || path.starts_with("~/") {
         return path;
     }
@@ -30,9 +41,7 @@ pub(super) fn resolve_explicit_path(path: String) -> String {
         return path;
     }
 
-    env::current_dir()
-        .map(|cwd| cwd.join(path_buf).display().to_string())
-        .unwrap_or(path)
+    cwd.join(path_buf).display().to_string()
 }
 
 pub(super) fn abbreviate_status_requested_path(output: &mut StatusCommandOutput) {
@@ -72,27 +81,16 @@ pub(super) fn shell_word(value: &str) -> String {
         if rest.is_empty() {
             return "~/".to_string();
         }
-        if shell_safe_word(rest) {
-            return format!("~/{rest}");
-        }
-        return format!("~/{}", shell_quote(rest));
+        return format!("~/{}", bowline_core::shell::quote_word(rest));
     }
-    if shell_safe_word(value) {
-        return value.to_string();
-    }
-    shell_quote(value)
+    bowline_core::shell::quote_word(value)
 }
 
-fn shell_safe_word(value: &str) -> bool {
-    !value.is_empty()
-        && value.chars().all(|ch| {
-            ch.is_ascii_alphanumeric()
-                || matches!(ch, '/' | '.' | '_' | '-' | ':' | '=' | '+' | '@' | '%')
-        })
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r#"'"'"'"#))
+pub(super) fn root_flag(resolved_root: Option<&str>) -> String {
+    match resolved_root {
+        Some(root) => format!(" --root {}", shell_word(root)),
+        None => String::new(),
+    }
 }
 
 pub(super) fn print_json(value: &impl serde::Serialize) {
@@ -154,7 +152,7 @@ pub(super) fn run_confirmed_tui_command(command_line: &str, socket: &Path) -> Ex
     };
     match status.code() {
         Some(0) => ExitCode::SUCCESS,
-        Some(code) => ExitCode::from(code.try_into().unwrap_or(EXIT_RUNTIME)),
+        Some(code) => ExitCode::from(code.try_into().unwrap_or_else(|_| EXIT_RUNTIME.code())),
         None => ExitCode::from(EXIT_RUNTIME),
     }
 }

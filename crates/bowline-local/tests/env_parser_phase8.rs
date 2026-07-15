@@ -1,14 +1,7 @@
-use std::fs;
-
 use bowline_core::ids::{DeviceId, LeaseId, ProjectId};
-use bowline_local::{
-    env::{
-        EnvLineKind, EnvProviderRecord, EnvProviderRequest, EnvReadScope, EnvRecordFreshness,
-        EnvRecordRestriction, EnvValueUpdate, QuoteStyle, SecretBytes, materialize_env_text,
-        parse_env_text, resolve_env_provider_request, write_owner_only_env_file,
-        write_owner_only_env_file_under_root,
-    },
-    workspace::TempWorkspace,
+use bowline_local::env::{
+    EnvLineKind, EnvProviderRecord, EnvProviderRequest, EnvReadScope, EnvRecordFreshness,
+    EnvRecordRestriction, QuoteStyle, SecretBytes, parse_env_text, resolve_env_provider_request,
 };
 
 #[test]
@@ -62,31 +55,6 @@ fn parser_preserves_env_layout_and_occurrences_without_debug_leaks() {
 }
 
 #[test]
-fn materializer_updates_known_values_and_preserves_unrelated_text() {
-    let parsed = parse_env_text(
-        "app/.env.local",
-        "local",
-        b"# keep\nexport API_KEY=\"old\" # keep quote\nAPI_KEY=old2\nOPAQUE LINE\n",
-    );
-
-    let rendered = materialize_env_text(
-        &parsed,
-        &[EnvValueUpdate {
-            source_path: "app/.env.local".to_string(),
-            key: "API_KEY".to_string(),
-            occurrence_index: 0,
-            value: SecretBytes::from("new-secret"),
-        }],
-    );
-
-    assert_eq!(
-        rendered,
-        b"# keep\nexport API_KEY=\"new-secret\" # keep quote\nAPI_KEY=old2\nOPAQUE LINE\n"
-    );
-    assert!(!String::from_utf8_lossy(&rendered).contains("<<<<<<<"));
-}
-
-#[test]
 fn parser_preserves_escaped_double_quotes_in_values() {
     let parsed = parse_env_text(
         "app/.env.local",
@@ -102,86 +70,6 @@ fn parser_preserves_escaped_double_quotes_in_values() {
     assert_eq!(value.key, "QUOTED");
     assert_eq!(value.quote_style, QuoteStyle::Double);
     assert_eq!(value.value.as_bytes(), br#"old \"secret\""#);
-
-    let rendered = materialize_env_text(
-        &parsed,
-        &[EnvValueUpdate {
-            source_path: "app/.env.local".to_string(),
-            key: "QUOTED".to_string(),
-            occurrence_index: 0,
-            value: SecretBytes::from("new"),
-        }],
-    );
-    assert_eq!(
-        rendered,
-        br#"QUOTED="new" # keep
-"#
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn owner_only_writer_uses_private_file_mode() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let workspace = TempWorkspace::new("env-owner-only").expect("workspace");
-    let path = workspace.root().join("app/.env.local");
-
-    write_owner_only_env_file(&path, b"SECRET=value\n").expect("write");
-
-    assert_eq!(
-        fs::metadata(path).expect("metadata").permissions().mode() & 0o777,
-        0o600
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn owner_only_writer_replaces_stale_temp_symlink_without_following_it() {
-    use std::os::unix::{fs::PermissionsExt, fs::symlink};
-
-    let workspace = TempWorkspace::new("env-owner-only-temp").expect("workspace");
-    let outside = TempWorkspace::new("env-owner-only-outside").expect("outside");
-    let path = workspace.root().join("app/.env.local");
-    fs::create_dir_all(path.parent().expect("parent")).expect("parent");
-    let outside_target = outside.root().join("target");
-    fs::write(&outside_target, b"outside").expect("outside");
-    symlink(&outside_target, path.with_extension("bowline-env-tmp")).expect("temp symlink");
-
-    write_owner_only_env_file(&path, b"SECRET=value\n").expect("write");
-
-    assert_eq!(
-        fs::read(outside_target).expect("outside unchanged"),
-        b"outside"
-    );
-    assert_eq!(fs::read(&path).expect("env bytes"), b"SECRET=value\n");
-    assert_eq!(
-        fs::metadata(path).expect("metadata").permissions().mode() & 0o777,
-        0o600
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn owner_only_writer_rejects_symlinked_parent_directory() {
-    use std::os::unix::fs::symlink;
-
-    let workspace = TempWorkspace::new("env-owner-only-parent").expect("workspace");
-    let outside = TempWorkspace::new("env-owner-only-parent-outside").expect("outside");
-    fs::create_dir_all(workspace.root().join("app")).expect("app");
-    symlink(outside.root(), workspace.root().join("app/secrets")).expect("parent symlink");
-
-    let result = write_owner_only_env_file_under_root(
-        workspace.root(),
-        std::path::Path::new("app/secrets/.env.local"),
-        b"SECRET=x\n",
-    );
-
-    assert!(result.is_err());
-    assert!(
-        !outside.root().join(".env.local").exists(),
-        "env writer must not follow symlinked parents outside the workspace"
-    );
 }
 
 #[test]
@@ -215,6 +103,14 @@ fn provider_returns_last_effective_values_and_redacted_denials() {
                 allowed_device_ids: vec![DeviceId::new("device-b")],
                 lease_only: false,
             },
+        ),
+        record(
+            &project_id,
+            "app/.env",
+            "LOCAL_SOCKET",
+            0,
+            "/tmp/app.sock",
+            EnvRecordRestriction::MachineLocal,
         ),
         record(
             &project_id,
@@ -269,7 +165,12 @@ fn provider_returns_last_effective_values_and_redacted_denials() {
     assert!(!response.values.contains_key("ADMIN_TOKEN"));
     assert!(!response.values.contains_key("OVERRIDDEN_TOKEN"));
     assert!(!response.values.contains_key("STALE_TOKEN"));
-    assert_eq!(response.denials.len(), 4);
+    assert!(!response.values.contains_key("LOCAL_SOCKET"));
+    assert_eq!(response.denials.len(), 5);
+    assert!(response.denials.iter().any(|denial| {
+        denial.key == "LOCAL_SOCKET"
+            && denial.reason == bowline_local::env::EnvProviderDenialReason::MachineLocal
+    }));
 
     let debug = format!("{response:?}");
     assert!(!debug.contains("last-secret"));

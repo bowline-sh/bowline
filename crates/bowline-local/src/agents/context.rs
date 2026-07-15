@@ -5,7 +5,6 @@ pub fn agent_context(
 ) -> Result<AgentContextCommandOutput, AgentError> {
     let store = MetadataStore::open(resolve_db_path(options.db_path)?)?;
     let lease = load_lease(&store, &options.lease_id, &options.generated_at)?;
-    reconcile_materialized_hydration_queue(&store, &lease.workspace_id, &options.generated_at)?;
     let context = context_for_lease(&store, &lease);
     Ok(AgentContextCommandOutput {
         contract_version: CONTRACT_VERSION,
@@ -22,7 +21,6 @@ pub fn agent_prompt(
 ) -> Result<AgentPromptCommandOutput, AgentError> {
     let store = MetadataStore::open(resolve_db_path(options.db_path)?)?;
     let lease = load_lease(&store, &options.lease_id, &options.generated_at)?;
-    reconcile_materialized_hydration_queue(&store, &lease.workspace_id, &options.generated_at)?;
     let context = context_for_lease(&store, &lease);
     let allowed_tools = capabilities_for_lease(&lease)
         .into_iter()
@@ -34,15 +32,15 @@ pub fn agent_prompt(
         AgentWriteTargetMode::WorkView => "Work view",
     };
     let target_path = lease_write_target_path(&lease).to_string();
+    let freshness_note = prompt_freshness_note(&context);
     let review_instructions = if lease.write_target_mode == AgentWriteTargetMode::WorkView {
         format!(
-            "When output is ready, run these from the work view:\n1. `bowline agent publish --lease {}`\n2. `bowline agent complete --lease {}`\n\nPublish for review instead of applying changes to the main workspace yourself.",
-            lease.id.as_str(),
+            "Your edits stay inside this lease's work view and sync automatically. When the task is finished, run `bowline agent complete --lease {}`. A human reviews and accepts the work view with `bowline work review` / `bowline work accept`; do not apply changes to the main workspace yourself.",
             lease.id.as_str()
         )
     } else {
         format!(
-            "When output is ready, run `bowline agent complete --lease {}` from the project. Your normal filesystem edits are synced by bowline; do not use Git remotes, commits, branches, staging, or pushes as bowline's sync path.",
+            "Your normal filesystem edits are synced by bowline automatically. When the task is finished, run `bowline agent complete --lease {}`. Do not use Git remotes, commits, branches, staging, or pushes as bowline's sync path.",
             lease.id.as_str()
         )
     };
@@ -51,14 +49,15 @@ pub fn agent_prompt(
         recipe_version: 1,
         redaction: AgentPromptRedaction::Applied,
         text: format!(
-            "You are helping inside a bowline agent task.\n\nTask: {}\n{}: {}\n\nWork only inside this lease target. Do not commit, push, branch, stage files, or mutate source-control refs on bowline's behalf.\n\n{}",
-            lease.task, target_label, target_path, review_instructions
+            "You are helping inside a bowline agent task.\n\nTask: {}\n{}: {}\n{}Work only inside this lease target. Do not commit, push, branch, stage files, or mutate source-control refs on bowline's behalf.\n\n{}",
+            lease.task, target_label, target_path, freshness_note, review_instructions
         ),
         allowed_tools,
-        output_target: lease.output_target.clone(),
         adapter_capabilities: Vec::new(),
         instructions: context.instructions.clone(),
     };
+    // Agent-output next_actions are emitted empty here; 067 owns converting the
+    // surviving readiness/truncation signals and removing these fields.
     Ok(AgentPromptCommandOutput {
         contract_version: CONTRACT_VERSION,
         command: CommandName::AgentPrompt,
@@ -68,10 +67,7 @@ pub fn agent_prompt(
         lease,
         prompt,
         status: context.status.clone(),
-        next_actions: vec![SafeAction {
-            label: "Open the lease target".to_string(),
-            command: Some(format!("cd {}", shell_word(&target_path))),
-        }],
+        next_actions: Vec::new(),
     })
 }
 
@@ -83,11 +79,31 @@ pub(super) fn context_for_lease(store: &MetadataStore, lease: &AgentLease) -> Ag
         .filter(|receipt| receipt.project_id.as_ref() == Some(&lease.project_id))
         .map(|receipt| receipt.id)
         .collect();
-    let attention = attention_for_lease(lease);
+    let stale_bases =
+        crate::status::snapshot_stale_bases(store, &lease.workspace_id, Some(&lease.project_id))
+            .unwrap_or_else(|_| {
+                vec![StaleBaseStatus::snapshot(
+                    FreshnessVerdict::Unknown,
+                    "Project freshness could not be read from local metadata.",
+                    Some(lease.project_id.clone()),
+                    None,
+                    Some(lease.base_snapshot_id.clone()),
+                    None,
+                    Some("bowline status --watch".to_string()),
+                )]
+            });
+    let freshness = crate::status::freshness_for_stale_bases(&stale_bases);
+    let mut attention = attention_for_lease(lease);
+    attention.extend(freshness_attention_items(lease, &stale_bases));
     let status = status_for_attention(&attention);
-    let readiness = readiness_for_lease(lease, &attention, setup_receipts.len());
+    let readiness = readiness_for_lease(
+        lease,
+        &attention,
+        setup_receipts.len(),
+        freshness,
+        &stale_bases,
+    );
     let target_path = lease_write_target_path(lease).to_string();
-    let target_label = lease_target_label(lease);
     AgentContextV1 {
         workspace_id: lease.workspace_id.clone(),
         project_id: lease.project_id.clone(),
@@ -98,49 +114,17 @@ pub(super) fn context_for_lease(store: &MetadataStore, lease: &AgentLease) -> Ag
         work_view_path: target_path.clone(),
         attention,
         capabilities: capabilities_for_lease(lease),
-        index: crate::indexed::build_project_index(
-            None,
-            Some(target_path.clone()),
-            &lease.updated_at,
-        )
-        .ok()
-        .map(|project| project.index_status),
-        hydration_budget: lease_budget_status(
-            store,
-            &lease.workspace_id,
-            &lease.project_id,
-            &lease.id,
-            lease.hydrate_budget_bytes,
-        )
-        .ok(),
+        freshness,
+        stale_bases,
         setup_receipts,
-        env: lease.env_profile.clone(),
-        scopes: lease.scopes.clone(),
         readiness,
         start_work: AgentStartWork {
             cwd: target_path.clone(),
             context_command: format!("bowline agent context --lease {}", lease.id.as_str()),
             prompt_command: format!("bowline agent prompt --lease {}", lease.id.as_str()),
-            safe_next_actions: vec![
-                SafeAction {
-                    label: format!("Open {target_label}"),
-                    command: Some(format!("cd {}", shell_word(&target_path))),
-                },
-                SafeAction {
-                    label: "Read agent context".to_string(),
-                    command: Some(format!(
-                        "bowline agent context --lease {}",
-                        lease.id.as_str()
-                    )),
-                },
-                SafeAction {
-                    label: "Render agent prompt".to_string(),
-                    command: Some(format!(
-                        "bowline agent prompt --lease {}",
-                        lease.id.as_str()
-                    )),
-                },
-            ],
+            // Agent-output safe_next_actions are emitted empty (067 handshake); the
+            // cwd/context_command/prompt_command above carry the same navigation.
+            safe_next_actions: Vec::new(),
         },
         adapter_capabilities: Vec::new(),
         instructions: lease_instructions(lease),
@@ -151,30 +135,17 @@ pub(super) fn readiness_for_lease(
     lease: &AgentLease,
     attention: &[StatusItem],
     setup_receipt_count: usize,
+    freshness: FreshnessVerdict,
+    stale_bases: &[StaleBaseStatus],
 ) -> AgentProjectReadiness {
-    let lease_state = if lease.execution_state == AgentLeaseExecutionState::Active {
+    let lease_state = if lease.session_state == AgentSessionState::Open {
         AgentReadinessState::Ready
     } else {
         AgentReadinessState::Blocked
     };
-    let output_state = match lease.output_state {
-        AgentLeaseOutputState::Empty | AgentLeaseOutputState::Dirty => AgentReadinessState::Ready,
-        AgentLeaseOutputState::ReviewReady | AgentLeaseOutputState::Retained => {
-            AgentReadinessState::Attention
-        }
-        AgentLeaseOutputState::Conflicted => AgentReadinessState::Blocked,
-        AgentLeaseOutputState::Accepted | AgentLeaseOutputState::Discarded => {
-            AgentReadinessState::Limited
-        }
-    };
-    let state = if attention.is_empty()
-        && lease_state == AgentReadinessState::Ready
-        && output_state == AgentReadinessState::Ready
-    {
+    let state = if attention.is_empty() && lease_state == AgentReadinessState::Ready {
         AgentReadinessState::Ready
-    } else if lease_state == AgentReadinessState::Blocked
-        || output_state == AgentReadinessState::Blocked
-    {
+    } else if lease_state == AgentReadinessState::Blocked {
         AgentReadinessState::Blocked
     } else {
         AgentReadinessState::Attention
@@ -191,67 +162,58 @@ pub(super) fn readiness_for_lease(
         }
         AgentWriteTargetMode::WorkView => "Agent writes are isolated to the lease work view.",
     };
-    AgentProjectReadiness {
-        state,
-        signals: vec![
-            AgentReadinessSignal {
-                name: "lease".to_string(),
-                state: lease_state,
-                summary: lease.status_summary.clone(),
-                next_action: if lease_state == AgentReadinessState::Ready {
-                    None
-                } else {
-                    Some(SafeAction {
-                        label: "Inspect lease context".to_string(),
-                        command: Some(format!(
-                            "bowline agent context --lease {}",
-                            lease.id.as_str()
-                        )),
-                    })
-                },
-            },
-            AgentReadinessSignal {
-                name: target_name.to_string(),
-                state: AgentReadinessState::Ready,
-                summary: target_summary.to_string(),
-                next_action: Some(SafeAction {
-                    label: format!("Open {}", lease_target_label(lease)),
-                    command: Some(format!("cd {}", shell_word(target_path))),
-                }),
-            },
-            AgentReadinessSignal {
-                name: "setup-receipts".to_string(),
-                state: AgentReadinessState::Ready,
-                summary: if setup_receipt_count == 0 {
-                    "No setup receipts are required or recorded for this lease.".to_string()
-                } else {
-                    format!("{setup_receipt_count} setup receipt(s) are visible to this lease.")
-                },
-                next_action: Some(SafeAction {
-                    label: "Inspect setup receipts".to_string(),
-                    command: Some(format!(
+    let mut signals = vec![
+        AgentReadinessSignal {
+            name: "lease".to_string(),
+            state: lease_state,
+            summary: lease.status_summary.clone(),
+            next_action: if lease_state == AgentReadinessState::Ready {
+                None
+            } else {
+                Some(RepairCommand::inspect(
+                    "Inspect lease context".to_string(),
+                    Some(format!(
                         "bowline agent context --lease {}",
                         lease.id.as_str()
                     )),
-                }),
+                ))
             },
-            AgentReadinessSignal {
-                name: "output".to_string(),
-                state: output_state,
-                summary: format!("Agent output state is {:?}.", lease.output_state),
-                next_action: if output_state == AgentReadinessState::Ready
-                    || lease.write_target_mode == AgentWriteTargetMode::Direct
-                {
-                    None
-                } else {
-                    Some(SafeAction {
-                        label: "Inspect work view diff".to_string(),
-                        command: Some(format!("bowline review {}", lease.work_view_id.as_str())),
-                    })
-                },
-            },
-        ],
+        },
+        AgentReadinessSignal {
+            name: target_name.to_string(),
+            state: AgentReadinessState::Ready,
+            summary: target_summary.to_string(),
+            next_action: Some(RepairCommand::inspect(
+                format!("Open {}", lease_target_label(lease)),
+                Some(format!("cd {}", shell_word(target_path))),
+            )),
+        },
+    ];
+    if freshness.needs_attention() {
+        signals.push(AgentReadinessSignal {
+            name: "freshness".to_string(),
+            state: AgentReadinessState::Attention,
+            summary: freshness_summary(stale_bases),
+            next_action: freshness_next_action(stale_bases),
+        });
     }
+    signals.extend([AgentReadinessSignal {
+        name: "setup-receipts".to_string(),
+        state: AgentReadinessState::Ready,
+        summary: if setup_receipt_count == 0 {
+            "No setup receipts are required or recorded for this lease.".to_string()
+        } else {
+            format!("{setup_receipt_count} setup receipt(s) are visible to this lease.")
+        },
+        next_action: Some(RepairCommand::inspect(
+            "Inspect setup receipts".to_string(),
+            Some(format!(
+                "bowline agent context --lease {}",
+                lease.id.as_str()
+            )),
+        )),
+    }]);
+    AgentProjectReadiness { state, signals }
 }
 
 pub(super) fn lease_write_target_path(lease: &AgentLease) -> &str {
@@ -268,9 +230,29 @@ pub(super) fn lease_target_label(lease: &AgentLease) -> &'static str {
 pub(super) fn lease_instructions(lease: &AgentLease) -> Vec<String> {
     let mut instructions = vec![
         "Work only inside the lease target.".to_string(),
-        "Use primitive bowline tools for inspection, bounded reads, writes, review, and completion.".to_string(),
         "Do not commit, push, branch, stage files, or mutate source-control refs on bowline's behalf.".to_string(),
     ];
+    match lease.session_state {
+        AgentSessionState::Open | AgentSessionState::Provisional => instructions.insert(
+            1,
+            format!(
+                "Mark the session finished with `bowline agent complete --lease {}`.",
+                lease.id.as_str()
+            ),
+        ),
+        AgentSessionState::Cancelled => {
+            instructions.insert(
+                1,
+                "This session is cancelled; do not continue editing.".to_string(),
+            );
+        }
+        AgentSessionState::Completed => {
+            instructions.insert(
+                1,
+                "This session is complete; no completion action remains.".to_string(),
+            );
+        }
+    }
     match lease.write_target_mode {
         AgentWriteTargetMode::Direct => instructions
             .push("Direct lease edits go through normal bowline real-directory sync.".to_string()),
@@ -282,136 +264,120 @@ pub(super) fn lease_instructions(lease: &AgentLease) -> Vec<String> {
     instructions
 }
 
+fn freshness_attention_items(
+    lease: &AgentLease,
+    stale_bases: &[StaleBaseStatus],
+) -> Vec<StatusItem> {
+    stale_bases
+        .iter()
+        .filter(|status| status.verdict.needs_attention())
+        .map(|status| StatusItem {
+            kind: StatusItemKind::Source,
+            summary: status.summary.clone(),
+            subject: status.project_id.as_ref().map(|project_id| StatusSubject {
+                kind: StatusSubjectKind::Project,
+                id: project_id.as_str().to_string(),
+                path: status.project_path.clone(),
+            }),
+            path: status.project_path.clone(),
+            classification: None,
+            mode: None,
+            access: Vec::new(),
+            event_id: None,
+            event_name: Some(EventName::SourceStale),
+            device_id: Some(lease.device_id.clone()),
+            lease_id: Some(lease.id.clone()),
+            project_id: status
+                .project_id
+                .clone()
+                .or_else(|| Some(lease.project_id.clone())),
+            snapshot_id: status
+                .base_snapshot_id
+                .clone()
+                .or_else(|| Some(lease.base_snapshot_id.clone())),
+            policy_version: Some(PolicyVersion::new(DEFAULT_POLICY_VERSION)),
+            env_record_id: None,
+        })
+        .collect()
+}
+
+fn freshness_summary(stale_bases: &[StaleBaseStatus]) -> String {
+    stale_bases
+        .iter()
+        .find(|status| status.verdict.needs_attention())
+        .map(|status| status.summary.clone())
+        .unwrap_or_else(|| "Project freshness is current.".to_string())
+}
+
+fn freshness_next_action(stale_bases: &[StaleBaseStatus]) -> Option<RepairCommand> {
+    stale_bases.iter().find_map(|status| {
+        status.remedy_command.as_ref().map(|command| {
+            RepairCommand::inspect("Inspect freshness".to_string(), Some(command.clone()))
+        })
+    })
+}
+
+fn prompt_freshness_note(context: &AgentContextV1) -> String {
+    if !context.freshness.needs_attention() {
+        return "\n".to_string();
+    }
+    let summary = context
+        .stale_bases
+        .iter()
+        .find(|status| status.verdict.needs_attention())
+        .map(|status| status.summary.as_str())
+        .unwrap_or("Project freshness needs attention.");
+    let remedy = context.stale_bases.iter().find_map(|status| {
+        status
+            .remedy_command
+            .as_ref()
+            .map(|command| format!(" Run `{command}` before relying on this base."))
+    });
+    format!(
+        "\nFreshness: {}. {}{}\n\n",
+        freshness_label(context.freshness),
+        summary,
+        remedy.unwrap_or_default()
+    )
+}
+
+fn freshness_label(freshness: FreshnessVerdict) -> &'static str {
+    match freshness {
+        FreshnessVerdict::Current => "current",
+        FreshnessVerdict::Behind => "behind",
+        FreshnessVerdict::Diverged => "diverged",
+        FreshnessVerdict::Unknown => "unknown",
+    }
+}
+
 pub(super) fn capabilities() -> Vec<AgentCapability> {
-    let degraded = degraded_bounds();
     [
         (
             AgentToolName::WorkspaceStatus,
             AgentToolCategory::Inspection,
             AgentCapabilityState::Available,
-            None,
         ),
         (
             AgentToolName::ListCapabilities,
             AgentToolCategory::Inspection,
             AgentCapabilityState::Available,
-            None,
         ),
         (
             AgentToolName::ResolvePath,
             AgentToolCategory::Inspection,
             AgentCapabilityState::Available,
-            None,
-        ),
-        (
-            AgentToolName::ExplainPathPolicy,
-            AgentToolCategory::Inspection,
-            AgentCapabilityState::Available,
-            None,
-        ),
-        (
-            AgentToolName::ListAttentionItems,
-            AgentToolCategory::Inspection,
-            AgentCapabilityState::Available,
-            None,
-        ),
-        (
-            AgentToolName::ListTreeAtSnapshot,
-            AgentToolCategory::Exploration,
-            AgentCapabilityState::Available,
-            Some(degraded.clone()),
-        ),
-        (
-            AgentToolName::ReadFileAtSnapshot,
-            AgentToolCategory::Exploration,
-            AgentCapabilityState::Available,
-            Some(degraded.clone()),
-        ),
-        (
-            AgentToolName::SearchWorkspace,
-            AgentToolCategory::Exploration,
-            AgentCapabilityState::Available,
-            None,
-        ),
-        (
-            AgentToolName::SymbolLookup,
-            AgentToolCategory::Exploration,
-            AgentCapabilityState::Available,
-            None,
-        ),
-        (
-            AgentToolName::RequestHydration,
-            AgentToolCategory::Hydration,
-            AgentCapabilityState::Available,
-            None,
-        ),
-        (
-            AgentToolName::GetHydrationStatus,
-            AgentToolCategory::Hydration,
-            AgentCapabilityState::Available,
-            None,
-        ),
-        (
-            AgentToolName::WriteOverlayFile,
-            AgentToolCategory::Write,
-            AgentCapabilityState::Available,
-            None,
         ),
         (
             AgentToolName::ListOverlayChanges,
-            AgentToolCategory::Write,
+            AgentToolCategory::Inspection,
             AgentCapabilityState::Available,
-            None,
-        ),
-        (
-            AgentToolName::DiffSnapshots,
-            AgentToolCategory::Write,
-            AgentCapabilityState::Available,
-            None,
-        ),
-        (
-            AgentToolName::RunCommandWithReceipt,
-            AgentToolCategory::Execution,
-            AgentCapabilityState::Available,
-            None,
-        ),
-        (
-            AgentToolName::InspectSetupReceipts,
-            AgentToolCategory::Execution,
-            AgentCapabilityState::Available,
-            None,
-        ),
-        (
-            AgentToolName::ProposePolicyChange,
-            AgentToolCategory::Review,
-            AgentCapabilityState::Available,
-            None,
-        ),
-        (
-            AgentToolName::RequestHumanDecision,
-            AgentToolCategory::Review,
-            AgentCapabilityState::Available,
-            None,
-        ),
-        (
-            AgentToolName::PublishOverlayForReview,
-            AgentToolCategory::Review,
-            AgentCapabilityState::Available,
-            None,
-        ),
-        (
-            AgentToolName::CompleteTask,
-            AgentToolCategory::Review,
-            AgentCapabilityState::Available,
-            None,
         ),
     ]
     .into_iter()
-    .map(|(name, category, state, bounds)| AgentCapability {
+    .map(|(name, category, state)| AgentCapability {
         name,
         category,
         state,
-        bounds,
     })
     .collect()
 }
@@ -420,42 +386,12 @@ pub(super) fn capabilities_for_lease(lease: &AgentLease) -> Vec<AgentCapability>
     capabilities()
         .into_iter()
         .filter(|capability| {
+            // The work-view handoff reader is only meaningful for work-view
+            // leases; direct-write leases have no overlay to hand off.
             lease.write_target_mode == AgentWriteTargetMode::WorkView
-                || !matches!(
-                    capability.name,
-                    AgentToolName::PublishOverlayForReview
-                        | AgentToolName::ListOverlayChanges
-                        | AgentToolName::DiffSnapshots
-                )
+                || !matches!(capability.name, AgentToolName::ListOverlayChanges)
         })
         .collect()
-}
-
-pub(super) fn default_scopes(path: &str) -> AgentLeaseScopes {
-    let scope = AgentLeaseScope {
-        roots: vec![path.to_string()],
-        classifications: Vec::new(),
-        max_bytes_per_read: Some(MAX_READ_BYTES),
-        max_files_per_request: Some(MAX_TREE_FILES),
-        max_depth: Some(MAX_TREE_DEPTH),
-    };
-    AgentLeaseScopes {
-        read: scope.clone(),
-        write: scope,
-    }
-}
-
-pub(super) fn default_env_profile(write_target_mode: AgentWriteTargetMode) -> AgentEnvProfile {
-    AgentEnvProfile {
-        name: "default".to_string(),
-        materialization: match write_target_mode {
-            AgentWriteTargetMode::Direct => AgentEnvMaterialization::ProjectPath,
-            AgentWriteTargetMode::WorkView => AgentEnvMaterialization::LeaseWorkView,
-        },
-        available_keys: Vec::new(),
-        restrictions: Vec::new(),
-        grant_ids: Vec::new(),
-    }
 }
 
 pub(super) fn shell_word(value: &str) -> String {
@@ -466,70 +402,13 @@ pub(super) fn shell_word(value: &str) -> String {
         if rest.is_empty() {
             return "~/".to_string();
         }
-        if shell_safe_word(rest) {
-            return format!("~/{rest}");
-        }
-        return format!("~/{}", shell_quote(rest));
+        return format!("~/{}", bowline_core::shell::quote_word(rest));
     }
-    if shell_safe_word(value) {
-        return value.to_string();
-    }
-    shell_quote(value)
+    bowline_core::shell::quote_word(value)
 }
 
-fn shell_safe_word(value: &str) -> bool {
-    !value.is_empty()
-        && value.chars().all(|ch| {
-            ch.is_ascii_alphanumeric()
-                || matches!(ch, '/' | '.' | '_' | '-' | ':' | '=' | '+' | '@' | '%')
-        })
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r#"'"'"'"#))
-}
-
-pub(super) fn attention_for_lease(lease: &AgentLease) -> Vec<StatusItem> {
-    let Some((summary, event_name)) = lease_attention_summary(lease) else {
-        return Vec::new();
-    };
-    vec![StatusItem {
-        kind: StatusItemKind::Lease,
-        summary: summary.to_string(),
-        subject: Some(StatusSubject {
-            kind: StatusSubjectKind::Lease,
-            id: lease.id.as_str().to_string(),
-            path: Some(lease_write_target_path(lease).to_string()),
-        }),
-        path: Some(lease_write_target_path(lease).to_string()),
-        classification: None,
-        mode: None,
-        access: Vec::new(),
-        event_id: None,
-        event_name: Some(event_name),
-        device_id: Some(lease.device_id.clone()),
-        lease_id: Some(lease.id.clone()),
-        project_id: Some(lease.project_id.clone()),
-        snapshot_id: Some(lease.base_snapshot_id.clone()),
-        policy_version: Some(PolicyVersion::new(DEFAULT_POLICY_VERSION)),
-        env_record_id: None,
-    }]
-}
-
-pub(super) fn lease_attention_summary(lease: &AgentLease) -> Option<(&'static str, EventName)> {
-    if lease.output_state == AgentLeaseOutputState::ReviewReady {
-        return Some((
-            "Agent output is ready for review.",
-            EventName::LeaseReviewReady,
-        ));
-    }
-    if lease.output_state == AgentLeaseOutputState::Conflicted {
-        return Some(("Agent output has conflicts.", EventName::LeaseBlocked));
-    }
-    if lease.execution_state == AgentLeaseExecutionState::Blocked {
-        return Some(("Agent lease is blocked.", EventName::LeaseBlocked));
-    }
-    None
+pub(super) fn attention_for_lease(_lease: &AgentLease) -> Vec<StatusItem> {
+    Vec::new()
 }
 
 pub(super) fn status_for_attention(attention: &[StatusItem]) -> WorkspaceStatus {

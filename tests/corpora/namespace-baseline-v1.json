@@ -1,0 +1,20 @@
+{
+  "generatorVersion": 1,
+  "seed": "0x5eed112a",
+  "entryCounts": [10000, 100000, 1000000],
+  "shapes": ["shallow-wide", "deep-tree", "mixed-repository"],
+  "deepTreeDepth": 16,
+  "segmentCounts": [1, 64, 1024],
+  "measurementMaximumSegments": 1024,
+  "productionMaximumSegments": null,
+  "scenarios": [
+    "no-op",
+    "root-file-edit",
+    "deep-file-edit",
+    "one-percent-churn",
+    "rename",
+    "subtree-deletion"
+  ],
+  "retainedHistoryDepths": [10, 100, 1000],
+  "subtreeDeletionPercent": 1
+}

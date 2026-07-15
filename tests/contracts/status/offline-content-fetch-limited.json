@@ -1,0 +1,64 @@
+{
+  "contractVersion": 8,
+  "command": "status",
+  "generatedAt": "2026-07-07T12:00:00Z",
+  "statusSummary": { "availability": "degraded", "attention": "none", "facts": [], "snapshotVersion": 1, "observedAt": "2026-07-07T12:00:00Z", "freshness": "fresh" },
+  "workspaceId": "ws_offline_contract",
+  "projectId": "proj_offline_contract",
+  "scope": "project",
+  "requestedPath": "project/src/main.rs",
+  "resolvedWorkspaceRoot": "~/Code",
+  "workspaceSummary": {
+    "totalProjects": 1
+  },
+  "status": {
+    "level": "limited",
+    "attentionItems": [
+      "project/src/main.rs cannot fetch content while offline."
+    ]
+  },
+  "items": [
+    {
+      "kind": "network",
+      "summary": "Network is offline; local cached state remains available.",
+      "subject": {
+        "kind": "workspace",
+        "id": "ws_offline_contract"
+      },
+      "eventName": "network.offline"
+    },
+    {
+      "kind": "materialization",
+      "summary": "project/src/main.rs is queued, but bytes cannot be fetched while offline.",
+      "path": "project/src/main.rs",
+      "classification": "workspace-sync",
+      "mode": "workspace-sync",
+      "access": ["human-readable", "agent-readable"],
+      "eventName": "hydration.blocked"
+    }
+  ],
+  "limits": [
+    {
+      "capability": "content-fetch",
+      "unavailableBecause": "cannot fetch content while offline",
+      "stillWorks": ["ready local files", "local edits", "status"],
+      "path": "project/src/main.rs"
+    }
+  ],
+  "eventWatermarks": {
+    "lastScanAt": "2026-07-07T11:59:58Z",
+    "lastEventId": "evt_offline_content_fetch_001",
+    "eventLagMs": 2000,
+    "syncState": "degraded",
+    "watcherState": "ready",
+    "networkState": "offline"
+  },
+  "nextActions": [
+    {
+      "label": "Retry when online",
+      "command": "bowline status --root ~/Code/project/src/main.rs",
+      "mutates": false
+    }
+  ],
+  "freshness": "unknown"
+}

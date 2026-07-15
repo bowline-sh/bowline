@@ -118,20 +118,31 @@ pub(super) fn next_actions(
     project_or_path: &str,
     conflicts: &[ResolveConflict],
     available_agents: &[AvailableAgent],
-) -> Vec<ResolveAvailableAction> {
+) -> Vec<RepairCommand> {
     if conflicts.is_empty() {
         let root = status_root_for_project_or_path(project_or_path);
-        return vec![ResolveAvailableAction {
-            label: "Check workspace status".to_string(),
-            command: Some(format!(
+        return vec![RepairCommand::inspect(
+            "Check workspace status".to_string(),
+            Some(format!(
                 "bowline status --root {} --project {}",
                 shell_word(root),
                 shell_word(project_or_path)
             )),
-        }];
+        )];
     }
 
     available_actions(project_or_path, conflicts, available_agents)
+        .into_iter()
+        .map(resolve_action_to_safe_action)
+        .collect()
+}
+
+fn resolve_action_to_safe_action(action: ResolveAvailableAction) -> RepairCommand {
+    if action.mutates {
+        RepairCommand::mutating(action.label, action.command)
+    } else {
+        RepairCommand::inspect(action.label, action.command)
+    }
 }
 
 pub(super) fn available_actions(
@@ -141,51 +152,76 @@ pub(super) fn available_actions(
 ) -> Vec<ResolveAvailableAction> {
     let mut actions = Vec::new();
     if !conflicts.is_empty() {
-        actions.push(ResolveAvailableAction {
-            label: "Print repair prompt".to_string(),
-            command: Some(format!(
-                "bowline resolve {} --copy-prompt",
-                shell_word(project_or_path)
-            )),
-        });
-        for agent in available_agents {
+        if let Some(shared_root) = homogeneous_conflict_root(project_or_path, conflicts) {
             actions.push(ResolveAvailableAction {
-                label: format!("Prepare {} repair prompt", agent.name.as_str()),
+                label: "Print repair prompt".to_string(),
                 command: Some(format!(
-                    "bowline resolve {} --agent {}",
-                    shell_word(project_or_path),
-                    agent.name.as_str()
+                    "bowline resolve {} --copy-prompt",
+                    shell_word(shared_root)
                 )),
+                mutates: false,
             });
+            for agent in available_agents {
+                actions.push(ResolveAvailableAction {
+                    label: format!("Prepare {} repair prompt", agent.name.as_str()),
+                    command: Some(format!(
+                        "bowline resolve {} --agent {}",
+                        shell_word(shared_root),
+                        agent.name.as_str()
+                    )),
+                    mutates: false,
+                });
+            }
         }
         for conflict in conflicts {
+            let conflict_root = conflict
+                .workspace_root
+                .as_deref()
+                .unwrap_or(project_or_path);
             actions.push(ResolveAvailableAction {
                 label: format!("Open diff {}", conflict.id),
                 command: Some(format!(
                     "bowline resolve {} --diff {}",
-                    shell_word(project_or_path),
+                    shell_word(conflict_root),
                     shell_word(&conflict.id)
                 )),
+                mutates: false,
             });
             actions.push(ResolveAvailableAction {
                 label: format!("Accept {}", conflict.id),
                 command: Some(format!(
                     "bowline resolve {} --accept {}",
-                    shell_word(project_or_path),
+                    shell_word(conflict_root),
                     shell_word(&conflict.id)
                 )),
+                mutates: true,
             });
             actions.push(ResolveAvailableAction {
                 label: format!("Reject {}", conflict.id),
                 command: Some(format!(
                     "bowline resolve {} --reject {}",
-                    shell_word(project_or_path),
+                    shell_word(conflict_root),
                     shell_word(&conflict.id)
                 )),
+                mutates: true,
             });
         }
     }
     actions
+}
+
+fn homogeneous_conflict_root<'a>(
+    fallback: &'a str,
+    conflicts: &'a [ResolveConflict],
+) -> Option<&'a str> {
+    let first = conflicts
+        .first()
+        .and_then(|conflict| conflict.workspace_root.as_deref())
+        .unwrap_or(fallback);
+    conflicts
+        .iter()
+        .all(|conflict| conflict.workspace_root.as_deref().unwrap_or(fallback) == first)
+        .then_some(first)
 }
 
 fn status_root_for_project_or_path(project_or_path: &str) -> &str {
@@ -240,6 +276,7 @@ mod tests {
             relative[0].command.as_deref(),
             Some("bowline status --root . --project apps/web")
         );
+        assert!(!relative[0].mutates);
 
         let home_relative = next_actions("~/Code Projects/apps/web", &[], &[]);
         assert_eq!(

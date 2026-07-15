@@ -41,7 +41,7 @@ where
     S: Into<String>,
 {
     let mut json = false;
-    let mut socket = PathBuf::from(DEFAULT_SOCKET);
+    let mut socket = default_socket_path();
     let mut once = false;
     let mut sync_root = None;
     let mut sync_state_root = None;
@@ -209,6 +209,10 @@ where
     }
 }
 
+pub(super) fn default_socket_path() -> PathBuf {
+    default_control_socket_path().unwrap_or_else(|_| PathBuf::from(DEFAULT_SOCKET_FALLBACK))
+}
+
 pub(super) fn continuous_sync_options(
     root: Option<PathBuf>,
     state_root: Option<PathBuf>,
@@ -223,7 +227,8 @@ pub(super) fn continuous_sync_options(
             state_root: state_root?,
             workspace_id,
             device_id,
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
         interval,
         max_ticks,
@@ -287,7 +292,8 @@ pub(super) fn parse_sync_once_command(args: &[String]) -> Command {
         state_root,
         workspace_id,
         device_id,
-        sync_operation_id: None,
+        sync_claim: None,
+        scan_scope: Default::default(),
     })
 }
 
@@ -297,23 +303,32 @@ pub(super) fn run(cli: Cli) -> ExitCode {
             print_help(cli.json);
             ExitCode::SUCCESS
         }
-        Command::Serve { once } => match serve(
-            &cli.socket,
-            once,
-            DaemonRuntime {
-                sync: cli.continuous_sync.map(ContinuousSyncRuntime::new),
-                notify_approvals: cli.notify_approvals,
-                notification_dedupe: NotificationDedupe::default(),
-                next_notification_poll: Instant::now(),
-            },
-        ) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                print_runtime_error("serve", &error, cli.json);
-                ExitCode::from(EXIT_FAILURE)
+        Command::Serve { once } => {
+            if let Some(sync) = &cli.continuous_sync {
+                load_persisted_daemon_env(&sync.args.state_root);
             }
-        },
-        Command::SyncOnce(args) => print_sync_once(args, cli.json),
+            match serve(
+                &cli.socket,
+                once,
+                DaemonRuntime {
+                    sync: cli.continuous_sync.map(ContinuousSyncRuntime::new),
+                    notify_approvals: cli.notify_approvals,
+                    notification_dedupe: Arc::new(Mutex::new(NotificationDedupe::default())),
+                    next_notification_poll: Instant::now(),
+                    pending_notification_status: None,
+                },
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    print_runtime_error("serve", &error, cli.json);
+                    ExitCode::from(EXIT_FAILURE)
+                }
+            }
+        }
+        Command::SyncOnce(args) => {
+            load_persisted_daemon_env(&args.state_root);
+            print_sync_once(args, cli.json)
+        }
         Command::Stop => print_stop(&cli.socket, cli.json),
         Command::Status => {
             print_status(&cli.socket, cli.json);
@@ -350,18 +365,26 @@ pub(super) fn print_sync_once(args: SyncOnceArgs, json: bool) -> ExitCode {
     match run_sync_once(args) {
         Ok(summary) => {
             if json {
+                let scan_json = serde_json::to_string(&summary.scan).unwrap_or_else(|_| {
+                    "{\"mode\":\"full\",\"fullReason\":\"cli-requested\",\"filesHashed\":0,\"statHits\":0,\"futureMtimePaths\":0,\"divergenceCount\":0,\"rehashReasons\":[]}".to_string()
+                });
                 println!(
-                    "{{\"ok\":true,\"command\":\"sync-once\",\"workspaceId\":{},\"snapshotId\":{},\"version\":{},\"objectManifestId\":{},\"manifestObjectKey\":{},\"packObjectCount\":{},\"packObjectKeys\":{},\"stale\":{},\"merged\":{},\"conflictCount\":{}}}",
+                    "{{\"ok\":true,\"command\":\"sync-once\",\"workspaceId\":{},\"snapshotId\":{},\"version\":{},\"snapshotRootManifestId\":{},\"manifestObjectKey\":{},\"namespaceRootId\":{},\"stale\":{},\"merged\":{},\"conflictCount\":{},\"scan\":{}}}",
                     json_string(&summary.workspace_id),
                     json_string(&summary.snapshot_id),
                     summary.version,
-                    json_string(&summary.object_manifest_id),
-                    json_string(&summary.manifest_object_key),
-                    summary.pack_object_keys.len(),
-                    json_string_array(&summary.pack_object_keys),
-                    summary.stale,
-                    summary.merged,
+                    json_string(summary.snapshot_root_manifest_id_label()),
+                    json_string(summary.manifest_object_key_label()),
+                    json_string(
+                        summary
+                            .namespace_root_id
+                            .as_deref()
+                            .unwrap_or("not-applicable")
+                    ),
+                    summary.stale(),
+                    summary.merged(),
                     summary.conflict_count,
+                    scan_json,
                 );
             } else {
                 println!(
@@ -369,9 +392,9 @@ pub(super) fn print_sync_once(args: SyncOnceArgs, json: bool) -> ExitCode {
                     summary.workspace_id,
                     summary.snapshot_id,
                     summary.version,
-                    summary.object_manifest_id,
-                    summary.stale,
-                    summary.merged,
+                    summary.snapshot_root_manifest_id_label(),
+                    summary.stale(),
+                    summary.merged(),
                     summary.conflict_count
                 );
             }
@@ -391,23 +414,28 @@ pub(super) fn print_sync_once(args: SyncOnceArgs, json: bool) -> ExitCode {
     }
 }
 pub(super) fn print_status(socket: &Path, json: bool) {
-    match handshake(socket) {
-        Ok(handshake) => {
-            let sync_json = handshake
-                .sync_json
-                .as_ref()
-                .map(|sync| format!(",\"sync\":{sync}"))
-                .unwrap_or_default();
+    match status_snapshot(socket) {
+        Ok(status) => {
             if json {
                 println!(
-                    "{{\"ok\":true,\"command\":\"status\",\"daemon\":{{\"state\":\"running\",\"socket\":{},\"protocol\":\"{PROTOCOL}\",\"version\":{PROTOCOL_VERSION},\"daemonVersion\":{}}}{sync_json}}}",
-                    json_string(&socket.display().to_string()),
-                    json_string(&handshake.daemon_version)
+                    "{}",
+                    daemon_json(&serde_json::json!({
+                        "ok": true,
+                        "command": "status",
+                        "daemon": {
+                            "state": "running",
+                            "socket": socket.display().to_string(),
+                            "protocol": PROTOCOL,
+                            "version": PROTOCOL_VERSION,
+                            "daemonVersion": status.daemon_version,
+                        },
+                        "snapshot": status.snapshot,
+                    }))
                 );
             } else {
                 println!(
                     "bowline-daemon: running ({PROTOCOL} v{PROTOCOL_VERSION}, daemon {})",
-                    handshake.daemon_version
+                    status.daemon_version
                 );
             }
         }

@@ -1,5 +1,5 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 8,
   "command": "agent prompt",
   "generatedAt": "2026-06-25T12:15:00Z",
   "workspaceId": "ws_code",
@@ -9,6 +9,7 @@
     "workspaceId": "ws_code",
     "projectId": "proj_acme_web",
     "deviceId": "dev_mac",
+    "dispatchState": "none",
     "writeTargetMode": "work-view",
     "writeTargetPath": "~/Code/.work/acme/web/lease_auth_callback",
     "workViewId": "work_auth_callback",
@@ -16,57 +17,8 @@
     "task": "Fix auth callback handling",
     "base": "latest-workspace",
     "baseSnapshotId": "snap_workspace_123",
-    "executionState": "completed",
-    "outputState": "retained",
-    "scopes": {
-      "read": {
-        "roots": ["."],
-        "classifications": ["workspace-sync", "project-env"],
-        "maxBytesPerRead": 65536,
-        "maxFilesPerRequest": 200,
-        "maxDepth": 8
-      },
-      "write": {
-        "roots": ["src", "tests"],
-        "classifications": ["workspace-sync"],
-        "maxBytesPerRead": 65536,
-        "maxFilesPerRequest": 50,
-        "maxDepth": 6
-      }
-    },
-    "hydrateBudgetBytes": 524288000,
-    "envProfile": {
-      "name": "default",
-      "materialization": "lease-work-view",
-      "availableKeys": ["DATABASE_URL", "PUBLIC_APP_URL"],
-      "restrictions": [
-        {
-          "kind": "blocked-secret",
-          "key": "STRIPE_SECRET_KEY",
-          "reason": "secret values stay local and are not included in prompts"
-        }
-      ],
-      "grantIds": ["env_grant_default"]
-    },
-    "envRestrictions": [
-      {
-        "kind": "blocked-secret",
-        "key": "STRIPE_SECRET_KEY",
-        "reason": "secret values stay local and are not included in prompts"
-      }
-    ],
-    "outputTarget": {
-      "kind": "work-view",
-      "workViewId": "work_auth_callback",
-      "path": "~/Code/.work/acme/web/lease_auth_callback"
-    },
-    "audit": {
-      "localEventId": "evt_lease_completed_001",
-      "localReceiptId": "receipt_complete_001",
-      "encryptedObjectPointer": "obj_lease_compact_001"
-    },
-    "cleanupState": "scrubbed",
-    "statusSummary": "Lease completed; non-secret output is retained for review.",
+    "sessionState": "completed",
+    "statusSummary": "Lease completed and is ready for review.",
     "expiresAt": "2026-06-25T18:00:00Z",
     "createdAt": "2026-06-25T12:00:00Z",
     "updatedAt": "2026-06-25T12:15:00Z"
@@ -80,18 +32,8 @@
       "workspace_status",
       "list_capabilities",
       "resolve_path",
-      "read_file_at_snapshot",
-      "write_overlay_file",
-      "list_overlay_changes",
-      "diff_snapshots",
-      "publish_overlay_for_review",
-      "complete_task"
+      "list_overlay_changes"
     ],
-    "outputTarget": {
-      "kind": "work-view",
-      "workViewId": "work_auth_callback",
-      "path": "~/Code/.work/acme/web/lease_auth_callback"
-    },
     "adapterCapabilities": [
       {
         "name": "codex",
@@ -138,9 +80,8 @@
   "nextActions": [
     {
       "label": "Review retained output",
-      "command": "bowline review lease_auth_callback",
-      "effectCategory": "inspect",
-      "targetKind": "work-view"
+      "command": "bowline work review lease_auth_callback",
+      "mutates": false
     }
   ]
 }

@@ -1,9 +1,17 @@
 use std::{
+    collections::BTreeSet,
     fs, io,
     path::{Component, Path, PathBuf},
 };
 
-use bowline_core::policy::{AccessFlag, MaterializationMode, PathClassification};
+use bowline_core::{
+    git_paths::is_git_derivable_volatile_path,
+    git_worktree_link::worktree_link_file,
+    policy::{AccessFlag, MaterializationMode, PathClassification},
+    workspace_graph::NamespaceEntryKind,
+};
+
+use crate::glob::glob_matches;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserPolicy {
@@ -22,21 +30,39 @@ pub struct PathPolicyDecision {
     pub classification: PathClassification,
     pub mode: MaterializationMode,
     pub access: Vec<AccessFlag>,
-    pub matched_rule: String,
-    pub rule_source: String,
-    pub risk: String,
-    pub summary: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct IgnoreRule {
     base: String,
     pattern: String,
+    directory_only: bool,
+    anchored_to_base: bool,
     include: bool,
     source: String,
 }
 
 const LARGE_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The workspace-root policy marker whose contents govern deep include/exclude
+/// classification for the whole tree. The single source of truth for the marker
+/// filename; `read_ignore_rules` and the daemon dirty-scope guard both route
+/// through it rather than repeating the literal.
+pub const POLICY_MARKER_FILENAME: &str = ".bowlineignore";
+
+/// Whether a root-level entry's leaf name is a policy input that governs deep
+/// include/exclude classification.
+///
+/// A root-shallow scan reuses preserved deep head entries verbatim, so an edit,
+/// deletion, or rename-away of such a file would leave the deep classification
+/// stale. Callers must force a full rescan instead of a shallow/scoped pass when
+/// this returns true. `.bowlineignore` is currently the only root policy input:
+/// the loader (`read_ignore_rules`) reads no other root-level policy file, and
+/// built-in classification keys off each path's own name, not sibling root
+/// files.
+pub fn is_root_policy_affecting_path(leaf: &str) -> bool {
+    leaf == POLICY_MARKER_FILENAME
+}
 
 impl UserPolicy {
     pub fn empty() -> Self {
@@ -45,7 +71,19 @@ impl UserPolicy {
 
     pub fn load(root: &Path) -> io::Result<Self> {
         let mut rules = Vec::new();
-        collect_ignore_rules(root, root, &mut rules)?;
+        collect_ignore_rules(root, root, &mut rules, &|_| true)?;
+        Ok(Self { rules })
+    }
+
+    /// Load only the workspace root's policy inputs, without walking the tree.
+    ///
+    /// Root-shallow ticks must not restat `~/Code` for policy discovery, so this
+    /// reads the root `.bowlineignore` alone. Deeper `.bowlineignore` files under
+    /// dirty roots are picked up by scoped loads ([`Self::load_for_path`]) or a
+    /// full [`Self::load`].
+    pub fn load_root_only(root: &Path) -> io::Result<Self> {
+        let mut rules = Vec::new();
+        read_ignore_rules(root, root, &mut rules)?;
         Ok(Self { rules })
     }
 
@@ -70,17 +108,47 @@ impl UserPolicy {
         Ok(Self { rules })
     }
 
+    /// Load policy for a scoped subtree scan without walking the whole tree.
+    ///
+    /// A `DirtySubtrees` tick only rescans `dirty_roots`, so it must not restat
+    /// all of `~/Code` for `.bowlineignore` discovery (the O(workspace) traversal
+    /// Plan 06 set out to eliminate). This runs the same pre-order DFS as
+    /// [`Self::load`] but prunes recursion to directories that lead to or lie
+    /// inside a dirty root, so the resulting rule vector is byte-identical in
+    /// ordering to a full load restricted to those subtrees — critical because
+    /// `match_rule` is last-match-wins and a reordered ancestor rule would flip a
+    /// deeper `!`-negation. An empty root means whole-workspace scope, so fall
+    /// back to full discovery.
+    pub fn load_scoped(root: &Path, dirty_roots: &BTreeSet<String>) -> io::Result<Self> {
+        if dirty_roots.iter().any(|dirty| dirty.is_empty()) {
+            return Self::load(root);
+        }
+        let mut rules = Vec::new();
+        collect_ignore_rules(root, root, &mut rules, &|relative| {
+            dir_leads_to_or_under_dirty(relative, dirty_roots)
+        })?;
+        Ok(Self { rules })
+    }
+
     pub fn has_include_below(&self, relative_path: &str) -> bool {
         let relative_path = normalize_relative_path(relative_path);
         self.rules.iter().any(|rule| {
             if !rule.include {
                 return false;
             }
+            if !rule.anchored_to_base {
+                // Slash-free includes match at any depth below their policy
+                // file, so every excluded directory may contain a later include.
+                return true;
+            }
             let pattern = full_rule_pattern(rule);
             pattern == relative_path || pattern.starts_with(&format!("{relative_path}/"))
         })
     }
-
+    pub fn explicitly_includes(&self, relative_path: &str) -> bool {
+        self.match_rule(&normalize_relative_path(relative_path))
+            .is_some_and(|rule| rule.include)
+    }
     fn match_rule(&self, relative_path: &str) -> Option<&IgnoreRule> {
         self.rules
             .iter()
@@ -98,29 +166,24 @@ pub fn classify_path(facts: &PathFacts, policy: &UserPolicy) -> PathPolicyDecisi
     };
 
     if rule.include {
-        return include_decision(base, rule);
+        return base;
     }
 
     if preserves_safety_classification(base.classification) {
-        return PathPolicyDecision {
-            rule_source: rule.source.clone(),
-            matched_rule: format!("{}; safety override kept", rule.pattern),
-            ..base
-        };
+        return base;
     }
 
     PathPolicyDecision {
         classification: PathClassification::LocalOnly,
         mode: MaterializationMode::Ignore,
         access: vec![AccessFlag::HumanReadable],
-        matched_rule: rule.pattern.clone(),
-        rule_source: rule.source.clone(),
-        risk: "low".to_string(),
-        summary: "Ignored by .bowlineignore; bowline will leave this path local.".to_string(),
     }
 }
-
-pub fn explain_path_without_policy(path: impl Into<String>) -> PathPolicyDecision {
+/// Classify a path using only the built-in rules (no `.bowlineignore` policy).
+/// Test-only helper for synthesizing scan observations without touching a
+/// filesystem-backed `UserPolicy`.
+#[cfg(test)]
+pub(crate) fn classify_path_with_builtin_policy(path: impl Into<String>) -> PathPolicyDecision {
     let path = path.into();
     classify_path(
         &PathFacts {
@@ -132,7 +195,7 @@ pub fn explain_path_without_policy(path: impl Into<String>) -> PathPolicyDecisio
     )
 }
 
-fn classify_builtin(path: &str, _is_dir: bool, byte_len: Option<u64>) -> PathPolicyDecision {
+fn classify_builtin(path: &str, is_dir: bool, byte_len: Option<u64>) -> PathPolicyDecision {
     let parts = path
         .split('/')
         .filter(|part| !part.is_empty())
@@ -144,11 +207,11 @@ fn classify_builtin(path: &str, _is_dir: bool, byte_len: Option<u64>) -> PathPol
             PathClassification::LocalOnly,
             MaterializationMode::LocalOnly,
             vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
-            "bowline-materialization-temp",
-            "built-in",
-            "low",
-            "bowline materialization temp files are local-only crash-recovery state.",
         );
+    }
+
+    if is_portable_git_worktree_link_policy_path(path, is_dir) {
+        return git_opaque_state_decision();
     }
 
     if is_git_transient_path(&parts) {
@@ -156,23 +219,11 @@ fn classify_builtin(path: &str, _is_dir: bool, byte_len: Option<u64>) -> PathPol
             PathClassification::LocalOnly,
             MaterializationMode::LocalOnly,
             vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
-            "git-transient",
-            "built-in",
-            "low",
-            "Git transient state is local-only; bowline will not sync lock/temp files.",
         );
     }
 
     if parts.contains(&".git") {
-        return decision(
-            PathClassification::WorkspaceSync,
-            MaterializationMode::EncryptedSync,
-            vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
-            "git-opaque-state",
-            "built-in",
-            "medium",
-            "Git state is treated as opaque encrypted workspace bytes; Git does not drive sync.",
-        );
+        return git_opaque_state_decision();
     }
 
     if parts.contains(&".work") {
@@ -180,34 +231,6 @@ fn classify_builtin(path: &str, _is_dir: bool, byte_len: Option<u64>) -> PathPol
             PathClassification::LocalOnly,
             MaterializationMode::LocalOnly,
             vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
-            "work-view-namespace",
-            "built-in",
-            "low",
-            "Work-view resolver paths are bowline local overlay views, not canonical workspace source.",
-        );
-    }
-
-    if is_env_name(name) {
-        return decision(
-            PathClassification::ProjectEnv,
-            MaterializationMode::ProjectEnv,
-            vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
-            "project-env-file",
-            "built-in",
-            "medium",
-            "Project environment file will sync as project env metadata; values are not printed.",
-        );
-    }
-
-    if is_secret_name(name) {
-        return decision(
-            PathClassification::SecretLooking,
-            MaterializationMode::EncryptedSync,
-            vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
-            "secret-looking-name",
-            "built-in",
-            "high",
-            "Secret-looking file will sync only as encrypted content and stays hidden from agents.",
         );
     }
 
@@ -216,10 +239,6 @@ fn classify_builtin(path: &str, _is_dir: bool, byte_len: Option<u64>) -> PathPol
             PathClassification::Dependency,
             MaterializationMode::LocalRegenerate,
             vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
-            "dependency-directory",
-            "built-in",
-            "low",
-            "Dependency output is local-regenerate by default.",
         );
     }
 
@@ -228,10 +247,22 @@ fn classify_builtin(path: &str, _is_dir: bool, byte_len: Option<u64>) -> PathPol
             generated_classification(&parts),
             generated_mode(&parts),
             vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
-            "generated-or-cache-directory",
-            "built-in",
-            "low",
-            "Generated/cache output is not part of the canonical workspace sync set.",
+        );
+    }
+
+    if is_project_env_name(name) {
+        return decision(
+            PathClassification::ProjectEnv,
+            MaterializationMode::ProjectEnv,
+            vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
+        );
+    }
+
+    if is_secret_name(name) {
+        return decision(
+            PathClassification::SecretLooking,
+            MaterializationMode::EncryptedSync,
+            vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
         );
     }
 
@@ -240,10 +271,6 @@ fn classify_builtin(path: &str, _is_dir: bool, byte_len: Option<u64>) -> PathPol
             PathClassification::LargeFile,
             MaterializationMode::Lazy,
             vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
-            "large-file-threshold",
-            "built-in",
-            "low",
-            "Large file will be lazy-hydrated instead of eagerly materialized.",
         );
     }
 
@@ -251,10 +278,6 @@ fn classify_builtin(path: &str, _is_dir: bool, byte_len: Option<u64>) -> PathPol
         PathClassification::WorkspaceSync,
         MaterializationMode::WorkspaceSync,
         vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
-        "default-workspace-sync",
-        "built-in",
-        "low",
-        "Source-like workspace path syncs by default.",
     )
 }
 
@@ -262,43 +285,11 @@ fn decision(
     classification: PathClassification,
     mode: MaterializationMode,
     access: Vec<AccessFlag>,
-    matched_rule: &str,
-    rule_source: &str,
-    risk: &str,
-    summary: &str,
 ) -> PathPolicyDecision {
     PathPolicyDecision {
         classification,
         mode,
         access,
-        matched_rule: matched_rule.to_string(),
-        rule_source: rule_source.to_string(),
-        risk: risk.to_string(),
-        summary: summary.to_string(),
-    }
-}
-
-fn include_decision(base: PathPolicyDecision, rule: &IgnoreRule) -> PathPolicyDecision {
-    if matches!(
-        base.classification,
-        PathClassification::Generated | PathClassification::Dependency | PathClassification::Cache
-    ) {
-        return PathPolicyDecision {
-            classification: PathClassification::WorkspaceSync,
-            mode: MaterializationMode::WorkspaceSync,
-            access: vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
-            matched_rule: format!("!{}", rule.pattern),
-            rule_source: rule.source.clone(),
-            risk: "low".to_string(),
-            summary: "Included by .bowlineignore; bowline will sync this path as workspace state."
-                .to_string(),
-        };
-    }
-
-    PathPolicyDecision {
-        rule_source: rule.source.clone(),
-        matched_rule: format!("!{}", rule.pattern),
-        ..base
     }
 }
 
@@ -306,10 +297,11 @@ fn collect_ignore_rules(
     root: &Path,
     directory: &Path,
     rules: &mut Vec<IgnoreRule>,
+    should_descend: &dyn Fn(&str) -> bool,
 ) -> io::Result<()> {
     read_ignore_rules(root, directory, rules)?;
 
-    for entry in fs::read_dir(directory)? {
+    for entry in crate::fs_access::read_dir(directory)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
         if !file_type.is_dir() {
@@ -320,14 +312,33 @@ fn collect_ignore_rules(
         if name == ".git" || is_dependency_name(&name) || is_generated_name(&name) {
             continue;
         }
-        collect_ignore_rules(root, &entry.path(), rules)?;
+        let child = entry.path();
+        // `should_descend` prunes the recursion for scoped loads. Pre-order DFS
+        // means a parent's rules are always appended before a child's, which
+        // `match_rule` relies on (last match wins); gating recursion — never
+        // reordering — preserves that invariant for the pruned subset.
+        if should_descend(&relative_to_root(root, &child)) {
+            collect_ignore_rules(root, &child, rules, should_descend)?;
+        }
     }
 
     Ok(())
 }
 
+/// Whether a scoped policy load should descend into `relative`: true when it is
+/// an ancestor of a dirty root (needed to reach it), equal to one, or inside one
+/// (needed for the dirty subtree's own nested `.bowlineignore` files). Anything
+/// else is off the dirty frontier and pruned so the walk stays bounded.
+fn dir_leads_to_or_under_dirty(relative: &str, dirty_roots: &BTreeSet<String>) -> bool {
+    dirty_roots.iter().any(|dirty| {
+        dirty == relative
+            || dirty.starts_with(&format!("{relative}/"))
+            || relative.starts_with(&format!("{dirty}/"))
+    })
+}
+
 fn read_ignore_rules(root: &Path, directory: &Path, rules: &mut Vec<IgnoreRule>) -> io::Result<()> {
-    let ignore_path = directory.join(".bowlineignore");
+    let ignore_path = directory.join(POLICY_MARKER_FILENAME);
     let contents = match fs::read_to_string(&ignore_path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -336,9 +347,9 @@ fn read_ignore_rules(root: &Path, directory: &Path, rules: &mut Vec<IgnoreRule>)
 
     let base = relative_to_root(root, directory);
     let source = if base.is_empty() {
-        ".bowlineignore".to_string()
+        POLICY_MARKER_FILENAME.to_string()
     } else {
-        format!("{base}/.bowlineignore")
+        format!("{base}/{POLICY_MARKER_FILENAME}")
     };
     for line in contents.lines() {
         let raw = line.trim();
@@ -350,9 +361,15 @@ fn read_ignore_rules(root: &Path, directory: &Path, rules: &mut Vec<IgnoreRule>)
             .map(|pattern| (true, pattern.trim()))
             .unwrap_or((false, raw));
         if !pattern.is_empty() {
+            let directory_only = pattern.ends_with('/');
+            let leading_slash = pattern.starts_with('/');
+            let normalized_pattern = normalize_relative_path(pattern);
+            let anchored_to_base = leading_slash || normalized_pattern.contains('/');
             rules.push(IgnoreRule {
                 base: base.clone(),
-                pattern: normalize_relative_path(pattern),
+                pattern: normalized_pattern,
+                directory_only,
+                anchored_to_base,
                 include,
                 source: source.clone(),
             });
@@ -386,7 +403,7 @@ fn rule_matches(rule: &IgnoreRule, relative_path: &str) -> bool {
         };
         rest.to_string()
     };
-    pattern_matches(&rule.pattern, &target)
+    pattern_matches(rule, &target)
 }
 
 fn full_rule_pattern(rule: &IgnoreRule) -> String {
@@ -401,45 +418,36 @@ fn full_rule_pattern(rule: &IgnoreRule) -> String {
     }
 }
 
-fn pattern_matches(pattern: &str, target: &str) -> bool {
-    let directory_only = pattern.ends_with('/');
-    let pattern = pattern.trim_matches('/');
+fn pattern_matches(rule: &IgnoreRule, target: &str) -> bool {
+    let pattern = rule.pattern.trim_matches('/');
     if pattern.is_empty() {
         return false;
     }
 
+    matching_patterns(pattern, rule.directory_only, rule.anchored_to_base)
+        .iter()
+        .any(|candidate| glob_matches(candidate, target))
+}
+
+fn matching_patterns(pattern: &str, directory_only: bool, anchored_to_base: bool) -> Vec<String> {
+    if anchored_to_base {
+        if directory_only {
+            return vec![pattern.to_string(), format!("{pattern}/**")];
+        }
+        return vec![pattern.to_string()];
+    }
+
     if directory_only {
-        return target == pattern || target.starts_with(&format!("{pattern}/"));
+        return vec![
+            pattern.to_string(),
+            format!("{pattern}/**"),
+            format!("**/{pattern}"),
+            format!("**/{pattern}/**"),
+        ];
     }
 
-    if !pattern.contains('*') {
-        return target == pattern || target.starts_with(&format!("{pattern}/"));
-    }
-
-    wildcard_matches(pattern, target)
+    vec![pattern.to_string(), format!("**/{pattern}")]
 }
-
-fn wildcard_matches(pattern: &str, target: &str) -> bool {
-    let mut rest = target;
-    let mut anchored_start = true;
-    for part in pattern.split('*') {
-        if part.is_empty() {
-            anchored_start = false;
-            continue;
-        }
-        let Some(index) = rest.find(part) else {
-            return false;
-        };
-        if anchored_start && index != 0 {
-            return false;
-        }
-        rest = &rest[index + part.len()..];
-        anchored_start = false;
-    }
-
-    pattern.ends_with('*') || rest.is_empty()
-}
-
 fn normalize_relative_path(path: &str) -> String {
     let mut normalized = PathBuf::from(path)
         .components()
@@ -458,15 +466,26 @@ fn preserves_safety_classification(classification: PathClassification) -> bool {
         PathClassification::ProjectEnv
             | PathClassification::SecretLooking
             | PathClassification::Blocked
+            | PathClassification::Dependency
+            | PathClassification::Generated
+            | PathClassification::Cache
     )
 }
 
 fn is_git_transient_path(parts: &[&str]) -> bool {
-    if !parts.contains(&".git") {
-        return false;
-    }
-    let path = parts.join("/");
-    path.ends_with(".lock") || path.ends_with("/gc.log") || path.contains("/objects/pack/tmp_")
+    is_git_derivable_volatile_path(&parts.join("/"))
+}
+
+fn is_portable_git_worktree_link_policy_path(path: &str, is_dir: bool) -> bool {
+    !is_dir && worktree_link_file(path, NamespaceEntryKind::File).is_some()
+}
+
+fn git_opaque_state_decision() -> PathPolicyDecision {
+    decision(
+        PathClassification::WorkspaceSync,
+        MaterializationMode::EncryptedSync,
+        vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
+    )
 }
 
 fn is_materialization_temp_path(parts: &[&str]) -> bool {
@@ -475,8 +494,9 @@ fn is_materialization_temp_path(parts: &[&str]) -> bool {
         .any(|part| part.starts_with(".bowline-materialize-") && part.ends_with(".tmp"))
 }
 
-fn is_env_name(name: &str) -> bool {
-    name == ".env" || name.starts_with(".env.") || name.ends_with(".env")
+pub(crate) fn is_project_env_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == ".env" || lower.starts_with(".env.") || lower.ends_with(".env")
 }
 
 fn is_secret_name(name: &str) -> bool {
@@ -548,7 +568,25 @@ fn generated_mode(parts: &[&str]) -> MaterializationMode {
 
 #[cfg(test)]
 mod tests {
-    use super::{PathFacts, UserPolicy, classify_path};
+    use super::{
+        POLICY_MARKER_FILENAME, PathFacts, UserPolicy, classify_path, is_root_policy_affecting_path,
+    };
+
+    #[test]
+    fn only_bowlineignore_is_a_root_policy_affecting_path() {
+        // The loader reads no root-level policy file other than the marker, so
+        // the predicate must accept exactly `.bowlineignore` and reject any
+        // other root leaf (including manifests and other dotfiles).
+        assert_eq!(POLICY_MARKER_FILENAME, ".bowlineignore");
+        assert!(is_root_policy_affecting_path(".bowlineignore"));
+        assert!(!is_root_policy_affecting_path("README.md"));
+        assert!(!is_root_policy_affecting_path("package.json"));
+        assert!(!is_root_policy_affecting_path("Cargo.toml"));
+        assert!(!is_root_policy_affecting_path(".gitignore"));
+        assert!(!is_root_policy_affecting_path(".env"));
+        // Only the bare root leaf matters; a nested path is not a *root* input.
+        assert!(!is_root_policy_affecting_path("src/.bowlineignore"));
+    }
 
     #[test]
     fn classifies_source_as_workspace_sync() {
@@ -561,7 +599,10 @@ mod tests {
             &UserPolicy::empty(),
         );
 
-        assert_eq!(decision.matched_rule, "default-workspace-sync");
+        assert_eq!(
+            serde_json::to_value(decision.classification).unwrap(),
+            "workspace-sync"
+        );
         assert_eq!(
             serde_json::to_value(decision.mode).unwrap(),
             "workspace-sync"
@@ -585,11 +626,14 @@ mod tests {
         );
 
         assert_eq!(serde_json::to_value(decision.mode).unwrap(), "project-env");
-        assert!(decision.matched_rule.contains("safety override"));
+        assert_eq!(
+            serde_json::to_value(decision.classification).unwrap(),
+            "project-env"
+        );
     }
 
     #[test]
-    fn bowlineignore_include_restores_generated_dependency_and_cache_paths() {
+    fn local_regenerate_paths_cannot_be_restored_by_user_policy() {
         let temp = crate::workspace::TempWorkspace::new("policy-include").expect("temp workspace");
         temp.write_file(
             ".bowlineignore",
@@ -610,24 +654,186 @@ mod tests {
 
             assert_eq!(
                 serde_json::to_value(decision.classification).unwrap(),
-                "workspace-sync"
+                if path.starts_with("node_modules") {
+                    "dependency"
+                } else if path.starts_with(".cache") {
+                    "cache"
+                } else {
+                    "generated"
+                }
             );
             assert_eq!(
                 serde_json::to_value(decision.mode).unwrap(),
-                "workspace-sync"
+                if path.starts_with(".cache") {
+                    "local-cache"
+                } else {
+                    "local-regenerate"
+                }
             );
-            assert!(decision.matched_rule.starts_with('!'));
         }
     }
 
     #[test]
-    fn bowlineignore_include_does_not_restore_git_transients_or_secrets() {
-        let temp =
-            crate::workspace::TempWorkspace::new("policy-include-safety").expect("temp workspace");
-        temp.write_file(".bowlineignore", b"!.git/index.lock\n!id_rsa\n")
+    fn env_names_are_case_insensitive_but_local_regenerate_ancestry_wins() {
+        let policy = UserPolicy::empty();
+
+        for path in [".ENV", ".Env.Local", "production.ENV"] {
+            assert_eq!(classification(path, &policy), "project-env", "{path}");
+        }
+        for path in [
+            "node_modules/pkg/.env",
+            "target/debug/.ENV.Local",
+            "dist/service.env",
+            ".cache/tool/.Env",
+        ] {
+            assert_ne!(classification(path, &policy), "project-env", "{path}");
+        }
+    }
+
+    #[test]
+    fn matching_follows_gitignore_semantics() {
+        let temp = crate::workspace::TempWorkspace::new("policy-gitignore").expect("workspace");
+        temp.write_file(
+            ".bowlineignore",
+            b"secret.txt\n*.log\nbuild/\nsrc/gen.rs\n?.rs\n*.js\n!kept.js\nlast.txt\n!last.txt\n!scoped.txt\nscoped/exclude\n",
+        )
+        .expect("ignore file");
+        let policy = UserPolicy::load(temp.root()).expect("policy loads");
+
+        // row 1: bare pattern matches at any depth.
+        assert_eq!(classification("secret.txt", &policy), "local-only");
+        assert_eq!(classification("sub/secret.txt", &policy), "local-only");
+        assert_eq!(classification("a/b/secret.txt", &policy), "local-only");
+        assert_eq!(classification("secret.txt.bak", &policy), "workspace-sync");
+
+        // row 2: slash-free `*` matches at any depth but never crosses `/`.
+        assert_eq!(classification("x.log", &policy), "local-only");
+        assert_eq!(classification("deep/y.log", &policy), "local-only");
+        assert_eq!(classification("x.log/keep", &policy), "workspace-sync");
+        assert_eq!(classification("a.logs", &policy), "workspace-sync");
+
+        // row 3: slash-free trailing-slash directories match at any depth.
+        assert_eq!(classification("build", &policy), "generated");
+        assert_eq!(classification("build/x", &policy), "generated");
+        assert_eq!(classification("sub/build", &policy), "generated");
+        assert_eq!(classification("sub/build/x/y", &policy), "generated");
+        assert_eq!(classification("rebuild", &policy), "workspace-sync");
+
+        // row 4: slash-containing patterns are anchored to the policy file.
+        assert_eq!(classification("src/gen.rs", &policy), "local-only");
+        assert_eq!(classification("a/src/gen.rs", &policy), "workspace-sync");
+        assert_eq!(classification("src/sub/gen.rs", &policy), "workspace-sync");
+
+        // row 5: anchored `*` stays within one segment.
+        let map_temp =
+            crate::workspace::TempWorkspace::new("policy-anchored-wildcard").expect("workspace");
+        map_temp
+            .write_file(".bowlineignore", b"build/*.map\n")
+            .expect("ignore file");
+        let map_policy = UserPolicy::load(map_temp.root()).expect("policy loads");
+        assert_eq!(classification("build/a.map", &map_policy), "generated");
+        assert!(map_policy.match_rule("build/sub/a.map").is_none());
+
+        // row 9: `?` matches exactly one non-slash character.
+        assert_eq!(classification("a.rs", &policy), "local-only");
+        assert_eq!(classification("ab.rs", &policy), "workspace-sync");
+        assert_eq!(classification("a/.rs", &policy), "workspace-sync");
+
+        // row 10: include rules use the same any-depth matching semantics.
+        assert_eq!(classification("a/b/kept.js", &policy), "workspace-sync");
+
+        // Precedence remains last-match-wins.
+        assert_eq!(classification("last.txt", &policy), "workspace-sync");
+
+        let dirty = std::collections::BTreeSet::from(["scoped".to_string()]);
+        let scoped = UserPolicy::load_scoped(temp.root(), &dirty).expect("scoped policy");
+        assert_eq!(
+            classification("scoped/scoped.txt", &scoped),
+            "workspace-sync"
+        );
+    }
+
+    #[test]
+    fn double_star_recurses() {
+        let temp = crate::workspace::TempWorkspace::new("policy-double-star").expect("workspace");
+        temp.write_file(".bowlineignore", b"**/*.min.js\nsrc/**/gen.rs\nlogs/**\n")
             .expect("ignore file");
         let policy = UserPolicy::load(temp.root()).expect("policy loads");
 
+        // row 6: leading `**/` matches at any depth.
+        assert_eq!(classification("a.min.js", &policy), "local-only");
+        assert_eq!(classification("x/y/a.min.js", &policy), "local-only");
+        assert_eq!(classification("a.min.jsx", &policy), "workspace-sync");
+
+        // row 7: interior `/**/` matches zero or more segments.
+        assert_eq!(classification("src/gen.rs", &policy), "local-only");
+        assert_eq!(classification("src/a/b/gen.rs", &policy), "local-only");
+        assert_eq!(classification("lib/gen.rs", &policy), "workspace-sync");
+
+        // row 8: trailing `/**` matches contents under the anchored directory.
+        assert_eq!(classification("logs/a", &policy), "local-only");
+        assert_eq!(classification("logs/a/b", &policy), "local-only");
+        assert_eq!(classification("logs", &policy), "workspace-sync");
+        assert_eq!(classification("x/logs/a", &policy), "workspace-sync");
+    }
+
+    #[test]
+    fn load_scoped_matches_full_load_for_sibling_dirty_roots_with_deep_negation() {
+        // Regression: two sibling dirty roots sharing an ancestor `.bowlineignore`
+        // must not duplicate the ancestor's rules after a deeper `!`-negation.
+        // `match_rule` is last-match-wins, so a duplicated ancestor exclude landing
+        // after the deep re-include would flip `a/b/secret.log` to local-only and
+        // silently stop syncing it (Everything Syncs violation). `load_scoped` must
+        // classify identically to a full `load`.
+        let temp =
+            crate::workspace::TempWorkspace::new("policy-scoped-siblings").expect("workspace");
+        temp.write_file("a/.bowlineignore", b"*.log\n")
+            .expect("ancestor policy");
+        temp.write_file("a/b/.bowlineignore", b"!secret.log\n")
+            .expect("deep negation");
+        temp.write_file("a/b/secret.log", b"keep me\n")
+            .expect("re-included file");
+        temp.write_file("a/c/other.rs", b"fn x() {}\n")
+            .expect("sibling file");
+
+        let full = UserPolicy::load(temp.root()).expect("full policy");
+        let dirty = std::collections::BTreeSet::from(["a/b".to_string(), "a/c".to_string()]);
+        let scoped = UserPolicy::load_scoped(temp.root(), &dirty).expect("scoped policy");
+
+        let facts = PathFacts {
+            relative_path: "a/b/secret.log".to_string(),
+            is_dir: false,
+            byte_len: Some(8),
+        };
+        let full_class = serde_json::to_value(classify_path(&facts, &full).classification).unwrap();
+        let scoped_class =
+            serde_json::to_value(classify_path(&facts, &scoped).classification).unwrap();
+        assert_eq!(
+            scoped_class, full_class,
+            "scoped policy load diverged from full load for a re-included file"
+        );
+        assert_eq!(scoped_class, "workspace-sync");
+    }
+
+    #[test]
+    fn bowlineignore_include_keeps_git_index_opaque_but_not_locks_or_secrets() {
+        let temp =
+            crate::workspace::TempWorkspace::new("policy-include-safety").expect("temp workspace");
+        temp.write_file(
+            ".bowlineignore",
+            b"!.git/index\n!.git/index.lock\n!id_rsa\n",
+        )
+        .expect("ignore file");
+        let policy = UserPolicy::load(temp.root()).expect("policy loads");
+
+        let index = classify_path(
+            &PathFacts {
+                relative_path: ".git/index".to_string(),
+                is_dir: false,
+                byte_len: Some(1),
+            },
+            &policy,
+        );
         let lock = classify_path(
             &PathFacts {
                 relative_path: ".git/index.lock".to_string(),
@@ -645,6 +851,11 @@ mod tests {
             &policy,
         );
 
+        assert_eq!(
+            serde_json::to_value(index.classification).unwrap(),
+            "workspace-sync"
+        );
+        assert_eq!(serde_json::to_value(index.mode).unwrap(), "encrypted-sync");
         assert_eq!(serde_json::to_value(lock.mode).unwrap(), "local-only");
         assert_eq!(
             serde_json::to_value(secret.classification).unwrap(),
@@ -664,7 +875,26 @@ mod tests {
             &UserPolicy::empty(),
         );
 
-        assert_eq!(decision.matched_rule, "bowline-materialization-temp");
+        assert_eq!(
+            serde_json::to_value(decision.classification).unwrap(),
+            "local-only"
+        );
         assert_eq!(serde_json::to_value(decision.mode).unwrap(), "local-only");
+    }
+
+    fn classification(path: &str, policy: &UserPolicy) -> String {
+        serde_json::to_value(classify_path(&facts(path), policy).classification)
+            .expect("classification serializes")
+            .as_str()
+            .expect("classification is string")
+            .to_string()
+    }
+
+    fn facts(path: &str) -> PathFacts {
+        PathFacts {
+            relative_path: path.to_string(),
+            is_dir: false,
+            byte_len: Some(12),
+        }
     }
 }

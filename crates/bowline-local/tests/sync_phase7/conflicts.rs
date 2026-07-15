@@ -1,5 +1,4 @@
 use super::*;
-
 #[test]
 fn runner_masks_unresolved_conflict_paths_from_next_upload() {
     let workspace = TempWorkspace::new("phase7-conflict-mask-workspace").expect("workspace");
@@ -12,7 +11,11 @@ fn runner_masks_unresolved_conflict_paths_from_next_upload() {
         .expect("local unresolved");
     create_conflict_bundle(
         state.root(),
-        ConflictRecord::same_path("app/config.toml"),
+        canonical_conflict_occurrence(
+            ConflictRecord::same_path("app/config.toml"),
+            "empty",
+            "empty",
+        ),
         &[ConflictFile {
             relative_path: "app/config.toml".to_string(),
             base: Some(b"value = \"base\"\n".to_vec()),
@@ -39,7 +42,8 @@ fn runner_masks_unresolved_conflict_paths_from_next_upload() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:07:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
 
@@ -61,21 +65,17 @@ fn runner_masks_unresolved_conflict_paths_from_next_upload() {
         &control_plane,
         &byte_store,
         storage_key,
-        1,
+        MetadataIdentityKey::derive(&WorkspaceId::new("ws_code"), [12; 32]),
     )
     .expect("import");
 
     assert!(
-        imported
-            .manifest
-            .entries
+        snapshot_entries(&imported.snapshot)
             .iter()
             .any(|entry| entry.path == "app/package.json")
     );
     assert!(
-        imported
-            .manifest
-            .entries
+        snapshot_entries(&imported.snapshot)
             .iter()
             .all(|entry| entry.path != "app/config.toml"),
         "unresolved conflict path must not be re-uploaded before accept/reject"
@@ -151,20 +151,24 @@ fn runner_syncs_later_non_overlapping_edits_inside_unresolved_conflict_file() {
 
     let bundle = create_conflict_bundle(
         state.root(),
-        ConflictRecord::same_path_span(
-            "app/config.toml",
-            ConflictSpan {
-                path: "app/config.toml".to_string(),
-                base_start_line: 1,
-                base_end_line: 1,
-                local_start_line: 1,
-                local_end_line: 1,
-                remote_start_line: 1,
-                remote_end_line: 1,
-                base_context_hash: None,
-                local_context_hash: None,
-                remote_context_hash: None,
-            },
+        canonical_conflict_occurrence(
+            ConflictRecord::same_path_span(
+                "app/config.toml",
+                ConflictSpan {
+                    path: "app/config.toml".to_string(),
+                    base_start_line: 1,
+                    base_end_line: 1,
+                    local_start_line: 1,
+                    local_end_line: 1,
+                    remote_start_line: 1,
+                    remote_end_line: 1,
+                    base_context_hash: None,
+                    local_context_hash: None,
+                    remote_context_hash: None,
+                },
+            ),
+            base_ref.snapshot_id.as_str(),
+            remote_ref.snapshot_id.as_str(),
         ),
         &[ConflictFile {
             relative_path: "app/config.toml".to_string(),
@@ -187,7 +191,8 @@ fn runner_syncs_later_non_overlapping_edits_inside_unresolved_conflict_file() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:09:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
 
@@ -209,20 +214,24 @@ fn runner_syncs_later_non_overlapping_edits_inside_unresolved_conflict_file() {
         &control_plane,
         &byte_store,
         storage_key,
-        1,
+        MetadataIdentityKey::derive(&workspace_id, content_key),
     )
     .expect("import");
 
-    let entry = imported
-        .manifest
-        .entries
+    let imported_entries = snapshot_entries(&imported.snapshot);
+    let entry = imported_entries
         .iter()
         .find(|entry| entry.path == "app/config.toml")
         .expect("continued config entry");
-    let locator = entry.locator.as_ref().expect("continued config locator");
-    let pack_id = locator.pack_id.as_ref().expect("continued config pack id");
+    let segment = entry
+        .content_layout
+        .as_ref()
+        .and_then(|layout| layout.segments().first())
+        .expect("continued config segment");
+    let locator = content_locator_for_segment(segment);
+    let pack_id = &segment.pack_id;
     let pack_object = imported
-        .pack_objects
+        .pack_pointers
         .iter()
         .find(|pointer| pointer.content_id == pack_id.as_str())
         .expect("continued config pack object");
@@ -233,8 +242,9 @@ fn runner_syncs_later_non_overlapping_edits_inside_unresolved_conflict_file() {
             RangeHydrationRequest {
                 object_key: &ObjectKey::new(pack_object.object_key.clone()).expect("object key"),
                 workspace_id: &workspace_id,
-                locator,
+                locator: &locator,
                 content_key,
+                content_verification: bowline_storage::ContentVerification::AuthenticatedSegment,
                 key: storage_key,
                 key_epoch: 1,
             },
@@ -246,9 +256,7 @@ fn runner_syncs_later_non_overlapping_edits_inside_unresolved_conflict_file() {
         "safe later edit should sync while the unresolved line stays on the remote side"
     );
     assert!(
-        imported
-            .manifest
-            .entries
+        snapshot_entries(&imported.snapshot)
             .iter()
             .any(|entry| entry.path == "app/src/generated_199.ts"),
         "many-file trees must keep syncing around an unresolved conflict span"
@@ -272,7 +280,11 @@ fn runner_does_not_mask_rejected_conflict_paths_after_resolution() {
         .expect("local unresolved");
     let bundle = create_conflict_bundle(
         state.root(),
-        ConflictRecord::same_path("app/config.toml"),
+        canonical_conflict_occurrence(
+            ConflictRecord::same_path("app/config.toml"),
+            "empty",
+            "empty",
+        ),
         &[ConflictFile {
             relative_path: "app/config.toml".to_string(),
             base: Some(b"value = \"base\"\n".to_vec()),
@@ -308,7 +320,8 @@ fn runner_does_not_mask_rejected_conflict_paths_after_resolution() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:07:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
 
@@ -330,21 +343,17 @@ fn runner_does_not_mask_rejected_conflict_paths_after_resolution() {
         &control_plane,
         &byte_store,
         storage_key,
-        1,
+        MetadataIdentityKey::derive(&WorkspaceId::new("ws_code"), [16; 32]),
     )
     .expect("import");
 
     assert!(
-        imported
-            .manifest
-            .entries
+        snapshot_entries(&imported.snapshot)
             .iter()
             .any(|entry| entry.path == "app/package.json")
     );
     assert!(
-        imported
-            .manifest
-            .entries
+        snapshot_entries(&imported.snapshot)
             .iter()
             .any(|entry| entry.path == "app/config.toml"),
         "rejected conflicts should not silently suppress future uploads after resolve applies a concrete view"
@@ -379,7 +388,8 @@ fn runner_idles_after_recording_unresolved_conflict() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:12:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
     assert!(matches!(
@@ -399,7 +409,8 @@ fn runner_idles_after_recording_unresolved_conflict() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:13:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
     assert!(matches!(
@@ -422,12 +433,28 @@ fn runner_idles_after_recording_unresolved_conflict() {
 
     let conflict = peer_runner.tick().expect("conflict tick");
     assert!(matches!(conflict, SyncTickOutcome::Conflicted(_)));
+    assert_eq!(
+        drive_pending_conflict_occurrences(
+            peer_state.root(),
+            &WorkspaceId::new("ws_code"),
+            &control_plane,
+            "2026-06-24T12:13:01Z",
+        )
+        .expect("durable conflict occurrence worker"),
+        1
+    );
     let listed_conflicts = control_plane
-        .list_workspace_conflicts("ws_code", "device-b")
+        .list_workspace_conflicts(
+            &bowline_core::ids::WorkspaceId::new("ws_code"),
+            &bowline_core::ids::DeviceId::new("device-b"),
+        )
         .expect("published conflict metadata");
     assert_eq!(listed_conflicts.len(), 1);
     assert_eq!(listed_conflicts[0].paths, vec!["app/config.toml"]);
-    assert_eq!(listed_conflicts[0].state, "unresolved");
+    assert_eq!(
+        listed_conflicts[0].state,
+        bowline_control_plane::ConflictOccurrenceState::Unresolved
+    );
     assert_eq!(
         fs::read(peer.root().join("app").join("remote.ts")).expect("remote-only file"),
         b"export const remote = true;\n",
@@ -437,7 +464,7 @@ fn runner_idles_after_recording_unresolved_conflict() {
 
     assert_eq!(second, SyncTickOutcome::NoChanges);
     let current_ref = control_plane
-        .get_workspace_ref("ws_code")
+        .get_workspace_ref(&bowline_core::ids::WorkspaceId::new("ws_code"))
         .expect("workspace ref")
         .expect("workspace exists");
     let imported = import_snapshot_by_id(
@@ -446,13 +473,11 @@ fn runner_idles_after_recording_unresolved_conflict() {
         &control_plane,
         &byte_store,
         storage_key,
-        1,
+        MetadataIdentityKey::derive(&WorkspaceId::new("ws_code"), [15; 32]),
     )
     .expect("import current head");
     assert!(
-        imported
-            .manifest
-            .entries
+        snapshot_entries(&imported.snapshot)
             .iter()
             .any(|entry| entry.path == "app/remote.ts"),
         "the conflicted peer must not delete non-conflicting remote files on the next tick"
@@ -494,7 +519,8 @@ fn unresolved_conflict_metadata_publish_retries_existing_bundle_after_failure() 
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:20:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
     assert!(matches!(
@@ -514,7 +540,8 @@ fn unresolved_conflict_metadata_publish_retries_existing_bundle_after_failure() 
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:21:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
     assert!(matches!(
@@ -532,29 +559,57 @@ fn unresolved_conflict_metadata_publish_retries_existing_bundle_after_failure() 
     peer.write_project_file("app", "config.toml", b"value = \"local\"\n")
         .expect("local edit");
 
-    let first_error = peer_runner
+    let first_outcome = peer_runner
         .tick()
-        .expect_err("first conflict metadata publish fails");
-    assert!(
-        first_error
-            .to_string()
-            .contains("injected conflict metadata publish failure")
-    );
+        .expect("conflicted tick commits before failed post-commit publish");
+    assert!(matches!(first_outcome, SyncTickOutcome::Conflicted(_)));
+    let publish_error = drive_pending_conflict_occurrences(
+        peer_state.root(),
+        &WorkspaceId::new("ws_code"),
+        &control_plane,
+        "2026-06-24T12:21:01Z",
+    )
+    .expect_err("first durable conflict publish fails");
+    assert!(publish_error.contains("injected conflict metadata publish failure"));
     assert_eq!(
         control_plane
-            .list_workspace_conflicts("ws_code", "device-b")
+            .list_workspace_conflicts(
+                &bowline_core::ids::WorkspaceId::new("ws_code"),
+                &bowline_core::ids::DeviceId::new("device-b")
+            )
             .expect("no published conflicts yet")
             .len(),
         0
     );
-
     assert_eq!(
-        peer_runner.tick().expect("retry publishes existing bundle"),
-        SyncTickOutcome::NoChanges
+        MetadataStore::open(peer_state.root().join(DEFAULT_DATABASE_FILE))
+            .expect("store")
+            .sync_operations(&WorkspaceId::new("ws_code"))
+            .expect("operations")
+            .into_iter()
+            .filter(|operation| {
+                operation.kind == SyncOperationKind::ConflictOccurrenceReconcile
+                    && operation.state == SyncOperationState::WaitingRetry
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        drive_pending_conflict_occurrences(
+            peer_state.root(),
+            &WorkspaceId::new("ws_code"),
+            &control_plane,
+            "2026-06-24T12:21:02Z",
+        )
+        .expect("retry durable conflict publish"),
+        1
     );
     assert_eq!(
         control_plane
-            .list_workspace_conflicts("ws_code", "device-b")
+            .list_workspace_conflicts(
+                &bowline_core::ids::WorkspaceId::new("ws_code"),
+                &bowline_core::ids::DeviceId::new("device-b")
+            )
             .expect("published conflict metadata after retry")
             .len(),
         1
@@ -562,7 +617,13 @@ fn unresolved_conflict_metadata_publish_retries_existing_bundle_after_failure() 
     let entries = fs::read_dir(peer_state.root().join("conflicts"))
         .expect("conflicts dir")
         .collect::<Result<Vec<_>, _>>()
-        .expect("conflicts");
+        .expect("conflicts")
+        .into_iter()
+        .filter(|entry| {
+            entry.file_type().expect("conflict entry type").is_dir()
+                && entry.path().join("manifest.json").is_file()
+        })
+        .collect::<Vec<_>>();
     assert_eq!(entries.len(), 1);
     let manifest: serde_json::Value = serde_json::from_slice(
         &fs::read(entries[0].path().join("manifest.json")).expect("manifest"),
@@ -603,7 +664,8 @@ fn accepted_conflict_resolution_advances_ref_and_imports_on_peer() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:14:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
     assert!(matches!(
@@ -623,7 +685,8 @@ fn accepted_conflict_resolution_advances_ref_and_imports_on_peer() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:15:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
     assert!(matches!(
@@ -645,8 +708,21 @@ fn accepted_conflict_resolution_advances_ref_and_imports_on_peer() {
         SyncTickOutcome::Conflicted(_)
     ));
     assert_eq!(
+        drive_pending_conflict_occurrences(
+            peer_state.root(),
+            &WorkspaceId::new("ws_code"),
+            &control_plane,
+            "2026-06-24T12:15:01Z",
+        )
+        .expect("publish conflict occurrence"),
+        1
+    );
+    assert_eq!(
         control_plane
-            .list_workspace_conflicts("ws_code", "device-b")
+            .list_workspace_conflicts(
+                &bowline_core::ids::WorkspaceId::new("ws_code"),
+                &bowline_core::ids::DeviceId::new("device-b")
+            )
             .expect("published conflict metadata")
             .len(),
         1
@@ -661,14 +737,27 @@ fn accepted_conflict_resolution_advances_ref_and_imports_on_peer() {
         SyncTickOutcome::Uploaded(_)
     ));
     assert_eq!(
+        drive_pending_conflict_occurrences(
+            peer_state.root(),
+            &WorkspaceId::new("ws_code"),
+            &control_plane,
+            "2026-06-24T12:15:02Z",
+        )
+        .expect("publish accepted conflict resolution"),
+        1
+    );
+    assert_eq!(
         control_plane
-            .list_workspace_conflicts("ws_code", "device-b")
+            .list_workspace_conflicts(
+                &bowline_core::ids::WorkspaceId::new("ws_code"),
+                &bowline_core::ids::DeviceId::new("device-b")
+            )
             .expect("resolved conflict metadata")
             .len(),
         0
     );
     let resolved_event_count = control_plane
-        .list_events("ws_code")
+        .list_events(&bowline_core::ids::WorkspaceId::new("ws_code"))
         .expect("events")
         .iter()
         .filter(|event| event.kind == bowline_control_plane::CompactEventKind::ConflictResolved)
@@ -679,7 +768,7 @@ fn accepted_conflict_resolution_advances_ref_and_imports_on_peer() {
     );
     assert_eq!(
         control_plane
-            .list_events("ws_code")
+            .list_events(&bowline_core::ids::WorkspaceId::new("ws_code"))
             .expect("events")
             .iter()
             .filter(|event| event.kind == bowline_control_plane::CompactEventKind::ConflictResolved)
@@ -699,7 +788,7 @@ fn accepted_conflict_resolution_advances_ref_and_imports_on_peer() {
     );
 
     let current_ref = control_plane
-        .get_workspace_ref("ws_code")
+        .get_workspace_ref(&bowline_core::ids::WorkspaceId::new("ws_code"))
         .expect("workspace ref")
         .expect("workspace exists");
     let imported = import_snapshot_by_id(
@@ -708,14 +797,12 @@ fn accepted_conflict_resolution_advances_ref_and_imports_on_peer() {
         &control_plane,
         &byte_store,
         storage_key,
-        1,
+        MetadataIdentityKey::derive(&WorkspaceId::new("ws_code"), [17; 32]),
     )
     .expect("import current head");
     assert_eq!(current_ref.version, 3);
     assert!(
-        imported
-            .manifest
-            .entries
+        snapshot_entries(&imported.snapshot)
             .iter()
             .any(|entry| entry.path == "app/config.toml"),
         "accepted resolution must remain in the workspace head"
@@ -751,7 +838,8 @@ fn rejected_conflict_resolution_adopts_remote_head_without_new_ref() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:16:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
     assert!(matches!(
@@ -771,7 +859,8 @@ fn rejected_conflict_resolution_adopts_remote_head_without_new_ref() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-24T12:17:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
     assert!(matches!(
@@ -792,6 +881,16 @@ fn rejected_conflict_resolution_adopts_remote_head_without_new_ref() {
         peer_runner.tick().expect("peer conflict"),
         SyncTickOutcome::Conflicted(_)
     ));
+    assert_eq!(
+        drive_pending_conflict_occurrences(
+            peer_state.root(),
+            &WorkspaceId::new("ws_code"),
+            &control_plane,
+            "2026-06-24T12:17:01Z",
+        )
+        .expect("publish conflict occurrence"),
+        1
+    );
 
     peer.write_project_file("app", "config.toml", b"value = \"remote\"\n")
         .expect("rejected resolution adopts remote bytes");
@@ -801,8 +900,18 @@ fn rejected_conflict_resolution_adopts_remote_head_without_new_ref() {
         peer_runner.tick().expect("peer rejected resolution tick"),
         SyncTickOutcome::NoChanges
     );
+    assert_eq!(
+        drive_pending_conflict_occurrences(
+            peer_state.root(),
+            &WorkspaceId::new("ws_code"),
+            &control_plane,
+            "2026-06-24T12:17:02Z",
+        )
+        .expect("publish rejected conflict resolution"),
+        1
+    );
     let current_ref = control_plane
-        .get_workspace_ref("ws_code")
+        .get_workspace_ref(&bowline_core::ids::WorkspaceId::new("ws_code"))
         .expect("workspace ref")
         .expect("workspace exists");
     assert_eq!(

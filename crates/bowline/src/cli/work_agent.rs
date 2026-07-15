@@ -1,405 +1,274 @@
 use super::*;
 
-pub(super) fn parse_devices_command(args: &[String]) -> Command {
-    let mut index = 0_usize;
-    let mut subcommand = "list";
-    if args.first().is_some_and(|value| !value.starts_with("--")) {
-        subcommand = args[0].as_str();
-        index = 1;
+pub(super) fn parse_events_command(
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    if let Some(unexpected) = values.positionals().first() {
+        return unexpected_argument(CommandName::Events, "events", unexpected);
     }
-
-    let mut selection = ParsedSelection::default();
-    let mut request_id = None;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--root" => {
-                let Some(value) = args.get(index + 1) else {
-                    return missing_value(CommandName::Devices, "devices", "--root");
-                };
-                selection.root = Some(value.clone());
-                index += 2;
+    let limit = match values.option("--limit") {
+        Some(raw_limit) => match raw_limit.parse::<u32>() {
+            Ok(parsed) if (1..=bowline_local::status::MAX_EVENTS_LIMIT).contains(&parsed) => parsed,
+            _ => {
+                return usage_error(
+                    CommandName::Events,
+                    format!(
+                        "expected --limit between 1 and {}",
+                        bowline_local::status::MAX_EVENTS_LIMIT
+                    ),
+                );
             }
-            "--project" => {
-                let Some(value) = args.get(index + 1) else {
-                    return missing_value(CommandName::Devices, "devices", "--project");
-                };
-                selection.project = Some(value.clone());
-                index += 2;
-            }
-            "--request" => {
-                let Some(value) = args.get(index + 1) else {
-                    return missing_value(CommandName::Devices, "devices", "--request");
-                };
-                request_id = Some(value.clone());
-                index += 2;
-            }
-            flag if flag.starts_with("--") => {
-                return unknown_option(CommandName::Devices, "devices", flag);
-            }
-            value => return unexpected_argument(CommandName::Devices, "devices", value),
-        }
-    }
-
-    let Some(selection) = selection.finish(CommandName::Devices, "devices") else {
-        return missing_root(CommandName::Devices, "devices");
-    };
-
-    match subcommand {
-        "list" => Command::Devices(devices::DevicesArgs::List { selection }),
-        "request" => Command::Devices(devices::DevicesArgs::Request { selection }),
-        "accept" => match request_id {
-            Some(request_id) => Command::Devices(devices::DevicesArgs::Accept {
-                selection,
-                request_id,
-            }),
-            None => command_usage_error(
-                CommandName::Devices,
-                "usage_error",
-                "bowline devices accept requires --request <id>".to_string(),
-                devices_usage_actions(),
-            ),
         },
-        "approve" | "deny" | "revoke" => command_usage_error(
-            CommandName::Devices,
-            "usage_error",
-            format!("bowline devices {subcommand} is not a public command; use top-level `{subcommand}`"),
-            devices_usage_actions(),
-        ),
-        _ => command_usage_error(
-            CommandName::Devices,
-            "usage_error",
-            "expected `bowline devices --root <path>`, `bowline devices request --root <path>`, or `bowline devices accept --root <path> --request <id>`"
-                .to_string(),
-            devices_usage_actions(),
-        ),
-    }
-}
-
-pub(super) fn parse_recovery_command(args: &[String]) -> Command {
-    match args {
-        [] => Command::Recovery(recovery::RecoveryArgs::Status),
-        [subcommand] if subcommand == "status" => Command::Recovery(recovery::RecoveryArgs::Status),
-        [subcommand] if subcommand == "create" => Command::Recovery(recovery::RecoveryArgs::Create),
-        [subcommand, envelope_id] if subcommand == "verify" => {
-            Command::Recovery(recovery::RecoveryArgs::Verify {
-                envelope_id: envelope_id.to_string(),
-            })
-        }
-        [subcommand, _, words @ ..] if subcommand == "verify" && !words.is_empty() => {
-            command_usage_error(
-                CommandName::Recover,
-                "usage_error",
-                "Recovery Key words must be provided on stdin, not argv".to_string(),
-                recovery_usage_actions(),
-            )
-        }
-        [subcommand] if subcommand == "rotate" => Command::Recovery(recovery::RecoveryArgs::Rotate),
-        [subcommand, envelope_id] if subcommand == "revoke" => {
-            Command::Recovery(recovery::RecoveryArgs::Revoke {
-                envelope_id: envelope_id.to_string(),
-            })
-        }
-        [subcommand, envelope_id] if subcommand == "use" => {
-            Command::Recovery(recovery::RecoveryArgs::Use {
-                envelope_id: envelope_id.to_string(),
-            })
-        }
-        [subcommand, _, words @ ..] if subcommand == "use" && !words.is_empty() => {
-            command_usage_error(
-                CommandName::Recover,
-                "usage_error",
-                "Recovery Key words must be provided on stdin, not argv".to_string(),
-                recovery_usage_actions(),
-            )
-        }
-        [flag, ..] if flag.starts_with("--") => command_usage_error(
-            CommandName::Recover,
-            "usage_error",
-            format!("unknown bowline recover option `{flag}`"),
-            recovery_usage_actions(),
-        ),
-        _ => command_usage_error(
-            CommandName::Recover,
-            "usage_error",
-            "expected `bowline recover [status|create|verify <envelope-id>|rotate|revoke <envelope-id>|use <envelope-id>]`; Recovery Key words are read from stdin".to_string(),
-            recovery_usage_actions(),
-        ),
-    }
-}
-
-pub(super) fn parse_events_command(args: &[String]) -> Command {
-    let mut limit = 50;
-    let mut selection = ParsedSelection::default();
-    let mut index = 0_usize;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--root" => {
-                let Some(value) = args.get(index + 1) else {
-                    return missing_value(CommandName::Events, "events", "--root");
-                };
-                selection.root = Some(value.clone());
-                index += 2;
-            }
-            "--project" => {
-                let Some(value) = args.get(index + 1) else {
-                    return missing_value(CommandName::Events, "events", "--project");
-                };
-                selection.project = Some(value.clone());
-                index += 2;
-            }
-            "--limit" => {
-                let Some(raw_limit) = args.get(index + 1) else {
-                    return usage_error(CommandName::Events, "missing value for --limit");
-                };
-                match raw_limit.parse::<u32>() {
-                    Ok(parsed)
-                        if (1..=bowline_local::status::MAX_EVENTS_LIMIT).contains(&parsed) =>
-                    {
-                        limit = parsed;
-                    }
-                    _ => {
-                        return usage_error(
-                            CommandName::Events,
-                            format!(
-                                "expected --limit between 1 and {}",
-                                bowline_local::status::MAX_EVENTS_LIMIT
-                            ),
-                        );
-                    }
-                }
-                index += 2;
-            }
-            flag if flag.starts_with("--") => {
-                return unknown_option(CommandName::Events, "events", flag);
-            }
-            value => return unexpected_argument(CommandName::Events, "events", value),
-        }
-    }
-    let Some(selection) = selection.finish(CommandName::Events, "events") else {
-        return missing_root(CommandName::Events, "events");
+        None => 50,
+    };
+    let selection = ParsedSelection {
+        root: values.option("--root").map(str::to_string),
+        project: values.option("--project").map(str::to_string),
+    };
+    let selection = match selection.finish(CommandName::Events, "events") {
+        Ok(selection) => selection,
+        Err(error) => return Err(*error),
     };
 
-    Command::Events(EventsArgs { selection, limit })
+    Ok(Command::Events(EventsArgs { selection, limit }))
 }
 
-pub(super) fn parse_workon_command(args: &[String]) -> Command {
-    match args {
-        [project_path, name] => Command::Workon(work::WorkonArgs {
+pub(super) fn parse_history_command(
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    let limit = match values.option("--limit") {
+        Some(raw_limit) => match raw_limit.parse::<u32>() {
+            Ok(parsed) if (1..=bowline_local::history::MAX_HISTORY_LIMIT).contains(&parsed) => {
+                parsed
+            }
+            _ => {
+                return usage_error(
+                    CommandName::History,
+                    format!(
+                        "expected --limit between 1 and {}",
+                        bowline_local::history::MAX_HISTORY_LIMIT
+                    ),
+                );
+            }
+        },
+        None => bowline_local::history::DEFAULT_HISTORY_LIMIT,
+    };
+    let page_cursor = match values.option("--cursor") {
+        Some(raw_cursor) => match raw_cursor.parse::<usize>() {
+            Ok(parsed) => Some(parsed),
+            Err(_) => return usage_error(CommandName::History, "expected numeric --cursor"),
+        },
+        None => None,
+    };
+    let since = values.option("--since").map(str::to_string);
+    let until = values.option("--until").map(str::to_string);
+    let from = values.option("--from").map(str::to_string);
+    let to = values.option("--to").map(str::to_string);
+    let has_diff_bounds = from.is_some() || to.is_some();
+
+    let (target_path, mode) = match values.positionals() {
+        [subcommand, target] if subcommand == "path" => (target.clone(), HistoryArgMode::Path),
+        [subcommand, target] if subcommand == "diff" => {
+            let (Some(from), Some(to)) = (from, to) else {
+                return usage_error(
+                    CommandName::History,
+                    "bowline history diff requires --from <snapshot> --to <snapshot>",
+                );
+            };
+            (target.clone(), HistoryArgMode::Diff { from, to })
+        }
+        [target] => (target.clone(), HistoryArgMode::Timeline),
+        [] => (current_dir_string(), HistoryArgMode::Timeline),
+        _ => {
+            return usage_error(
+                CommandName::History,
+                "bowline history accepts [path], `path <path>`, or `diff <project> --from <snapshot> --to <snapshot>`",
+            );
+        }
+    };
+    if !matches!(mode, HistoryArgMode::Diff { .. }) && has_diff_bounds {
+        return usage_error(
+            CommandName::History,
+            "--from and --to are only valid with `bowline history diff`",
+        );
+    }
+
+    Ok(Command::History(HistoryArgs {
+        target_path,
+        mode,
+        limit,
+        cursor: page_cursor,
+        since,
+        until,
+    }))
+}
+
+pub(super) fn parse_work_create_command(
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    let from = values.option("--from").map(str::to_string);
+    match values.positionals() {
+        [project_path, name] => Ok(Command::WorkCreate(work::WorkCreateArgs {
             project_path: project_path.to_string(),
             name: name.to_string(),
-        }),
-        [name] => Command::Workon(work::WorkonArgs {
+            from,
+        })),
+        [name] => Ok(Command::WorkCreate(work::WorkCreateArgs {
             project_path: current_dir_string(),
             name: name.to_string(),
-        }),
-        [flag, ..] if flag.starts_with("--") => command_usage_error(
-            CommandName::Workon,
-            "usage_error",
-            format!("unknown bowline workon option `{flag}`"),
-            work_usage_actions(),
-        ),
+            from,
+        })),
         [] => command_usage_error(
-            CommandName::Workon,
+            CommandName::WorkCreate,
             "usage_error",
-            "bowline workon requires a name".to_string(),
+            "bowline work create requires a name".to_string(),
             work_usage_actions(),
         ),
         _ => command_usage_error(
-            CommandName::Workon,
+            CommandName::WorkCreate,
             "usage_error",
-            "bowline workon accepts [project-path] <name>".to_string(),
+            "bowline work create accepts [project-path] <name> [--from <restore-point>]"
+                .to_string(),
             work_usage_actions(),
         ),
     }
 }
 
-pub(super) fn parse_review_command(args: &[String]) -> Command {
-    match args {
-        [] => Command::Review(work::WorkSelectorArgs {
-            selector: current_dir_string(),
-        }),
-        [target] => Command::Review(work::WorkSelectorArgs {
-            selector: target.to_string(),
-        }),
-        [flag, ..] if flag.starts_with("--") => command_usage_error(
-            CommandName::Review,
-            "usage_error",
-            format!("unknown bowline review option `{flag}`"),
-            work_usage_actions(),
-        ),
-        _ => command_usage_error(
-            CommandName::Review,
-            "usage_error",
-            "bowline review accepts at most one target".to_string(),
-            work_usage_actions(),
-        ),
-    }
+pub(super) fn parse_review_command(
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    parse_work_selector_args(
+        CommandName::Review,
+        values,
+        WorkSelectorParseMode {
+            allow_paths: true,
+            default_to_cwd: false,
+        },
+    )
+    .map(Command::Review)
 }
 
-pub(super) fn parse_work_command(args: &[String]) -> Command {
-    let mut include_hidden = false;
-    for arg in args {
-        match arg.as_str() {
-            "--all" => include_hidden = true,
-            flag if flag.starts_with("--") => {
-                return command_usage_error(
-                    CommandName::Work,
-                    "usage_error",
-                    format!("unknown bowline work option `{flag}`"),
-                    work_usage_actions(),
-                );
-            }
-            value => {
-                return command_usage_error(
-                    CommandName::Work,
-                    "usage_error",
-                    format!("unexpected bowline work argument `{value}`"),
-                    work_usage_actions(),
-                );
-            }
-        }
+pub(super) fn parse_work_command(
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    if let Some(unexpected) = values.positionals().first() {
+        return command_usage_error(
+            CommandName::Work,
+            "usage_error",
+            format!("unexpected bowline work list argument `{unexpected}`"),
+            work_usage_actions(),
+        );
     }
 
-    Command::Work(work::WorkListArgs { include_hidden })
+    Ok(Command::Work(work::WorkListArgs {
+        include_hidden: values.flag("--all"),
+    }))
 }
 
 pub(super) fn parse_work_selector_command(
     command: CommandName,
-    args: &[String],
-    missing_message: &'static str,
-) -> Command {
-    match args {
-        [selector] => {
-            let args = work::WorkSelectorArgs {
-                selector: selector.to_string(),
-            };
-            match command {
-                CommandName::Diff => Command::WorkDiff(args),
-                CommandName::Accept => Command::WorkAccept(args),
-                CommandName::Discard => Command::WorkDiscard(args),
-                CommandName::Restore => Command::WorkRestore(args),
-                _ => unreachable!("unsupported work selector command"),
-            }
-        }
-        [flag, ..] if flag.starts_with("--") => command_usage_error(
-            command,
-            "usage_error",
-            format!(
-                "unknown bowline {} option `{flag}`",
-                command_name_token(command)
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    let allow_paths = matches!(command, CommandName::Diff | CommandName::Accept);
+    match parse_work_selector_args(
+        command,
+        values,
+        WorkSelectorParseMode {
+            allow_paths,
+            default_to_cwd: matches!(command, CommandName::Diff),
+        },
+    ) {
+        Ok(args) => match command {
+            CommandName::Diff => Ok(Command::WorkDiff(args)),
+            CommandName::Accept => Ok(Command::WorkAccept(args)),
+            CommandName::Discard => Ok(Command::WorkDiscard(args)),
+            CommandName::Restore => Ok(Command::WorkRestore(args)),
+            _ => command_usage_error(
+                command,
+                "usage_error",
+                "unsupported work selector command".to_string(),
+                work_usage_actions(),
             ),
-            work_usage_actions(),
-        ),
-        [] if matches!(
-            command,
-            CommandName::Accept | CommandName::Discard | CommandName::Restore
-        ) =>
-        {
-            let args = work::WorkSelectorArgs {
-                selector: current_dir_string(),
-            };
-            match command {
-                CommandName::Accept => Command::WorkAccept(args),
-                CommandName::Discard => Command::WorkDiscard(args),
-                CommandName::Restore => Command::WorkRestore(args),
-                _ => unreachable!("unsupported work selector command"),
-            }
-        }
-        [] => command_usage_error(
-            command,
-            "usage_error",
-            missing_message.to_string(),
-            work_usage_actions(),
-        ),
-        _ => command_usage_error(
-            command,
-            "usage_error",
-            "work-view selector commands accept exactly one id or name".to_string(),
-            work_usage_actions(),
-        ),
+        },
+        Err(error) => Err(error),
     }
 }
 
-pub(super) fn parse_agent_lease_create_command(args: &[String]) -> Command {
-    let mut project_path = None;
-    let mut task = None;
-    let mut base = agent::parse_base("latest-workspace").expect("default base is valid");
-    let mut hydrate_budget_bytes = DEFAULT_AGENT_HYDRATE_BUDGET_BYTES;
-    let mut work_view = false;
-    let mut index = 0_usize;
+#[derive(Clone, Copy)]
+struct WorkSelectorParseMode {
+    allow_paths: bool,
+    default_to_cwd: bool,
+}
 
-    while index < args.len() {
-        match args[index].as_str() {
-            "--work-view" => {
-                work_view = true;
-                index += 1;
-            }
-            "--task" => {
-                let Some(value) = args.get(index + 1) else {
-                    return usage_error(CommandName::AgentStart, "missing value for --task");
-                };
-                task = Some(value.to_string());
-                index += 2;
-            }
-            "--base" => {
-                let Some(value) = args.get(index + 1) else {
-                    return usage_error(CommandName::AgentStart, "missing value for --base");
-                };
-                let Some(parsed) = agent::parse_base(value) else {
-                    return command_usage_error(
-                        CommandName::AgentStart,
-                        "usage_error",
-                        "expected --base latest-workspace or --base latest:main".to_string(),
-                        agent_usage_actions(),
-                    );
-                };
-                base = parsed;
-                index += 2;
-            }
-            "--hydrate-budget" => {
-                let Some(value) = args.get(index + 1) else {
-                    return usage_error(
-                        CommandName::AgentStart,
-                        "missing value for --hydrate-budget",
-                    );
-                };
-                let Some(parsed) = parse_byte_budget(value) else {
-                    return command_usage_error(
-                        CommandName::AgentStart,
-                        "usage_error",
-                        "expected --hydrate-budget as bytes, KiB, MiB, or GiB".to_string(),
-                        agent_usage_actions(),
-                    );
-                };
-                hydrate_budget_bytes = parsed;
-                index += 2;
-            }
-            flag if flag.starts_with("--") => {
-                return command_usage_error(
-                    CommandName::AgentStart,
-                    "usage_error",
-                    format!("unknown bowline agent start option `{flag}`"),
-                    agent_usage_actions(),
-                );
-            }
-            value if project_path.is_none() => {
-                project_path = Some(value.to_string());
-                index += 1;
-            }
-            value => {
-                return command_usage_error(
-                    CommandName::AgentStart,
-                    "usage_error",
-                    format!("unexpected bowline agent start argument `{value}`"),
-                    agent_usage_actions(),
-                );
-            }
-        }
+fn parse_work_selector_args(
+    command: CommandName,
+    values: &crate::registry::ParsedValues,
+    mode: WorkSelectorParseMode,
+) -> Result<work::WorkSelectorArgs, ParseError> {
+    let paths = values
+        .options("--path")
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if !mode.allow_paths && !paths.is_empty() {
+        return Err(parse_error(command_usage_error(
+            command,
+            "usage_error",
+            format!("bowline {} does not accept --path", command.token()),
+            work_usage_actions(),
+        )));
     }
+    let selector = match values.positionals() {
+        [selector] => selector.clone(),
+        [_, ..] => {
+            return Err(parse_error(command_usage_error(
+                command,
+                "usage_error",
+                "work-view selector commands accept exactly one id or name".to_string(),
+                work_usage_actions(),
+            )));
+        }
+        [] if mode.default_to_cwd => current_dir_string(),
+        [] => String::new(),
+    };
+    if selector.is_empty() {
+        return Err(parse_error(command_usage_error(
+            command,
+            "usage_error",
+            "missing selector".to_string(),
+            work_usage_actions(),
+        )));
+    }
+    Ok(work::WorkSelectorArgs { selector, paths })
+}
 
-    let project_path = project_path.unwrap_or_else(current_dir_string);
-    let Some(task) = task else {
+pub(super) fn parse_agent_lease_create_command(
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    let mut base = agent::parse_base("latest-workspace").expect("default base is valid");
+    if let Some(raw_base) = values.option("--base") {
+        let Some(parsed) = agent::parse_base(raw_base) else {
+            return command_usage_error(
+                CommandName::AgentStart,
+                "usage_error",
+                "expected --base latest-workspace or --base latest:main".to_string(),
+                agent_usage_actions(),
+            );
+        };
+        base = parsed;
+    }
+    let project_path = match values.positionals() {
+        [] => current_dir_string(),
+        [project_path] => project_path.clone(),
+        [_, unexpected, ..] => {
+            return command_usage_error(
+                CommandName::AgentStart,
+                "usage_error",
+                format!("unexpected bowline agent start argument `{unexpected}`"),
+                agent_usage_actions(),
+            );
+        }
+    };
+    let Some(task) = values.option("--task").map(str::to_string) else {
         return command_usage_error(
             CommandName::AgentStart,
             "usage_error",
@@ -407,141 +276,189 @@ pub(super) fn parse_agent_lease_create_command(args: &[String]) -> Command {
             agent_usage_actions(),
         );
     };
+    let on_device = nonempty_agent_option(values, "--on")?;
+    let remote_runtime = nonempty_agent_option(values, "--remote")?;
+    let remote_root = nonempty_agent_option(values, "--remote-root")?;
+    if on_device.is_some() && remote_runtime.is_some() {
+        return command_usage_error(
+            CommandName::AgentStart,
+            "usage_error",
+            "bowline agent start accepts either --on or --remote, not both".to_string(),
+            agent_usage_actions(),
+        );
+    }
 
-    Command::AgentLeaseCreate(agent::AgentLeaseCreateArgs {
+    Ok(Command::AgentLeaseCreate(agent::AgentLeaseCreateArgs {
         project_path,
         task,
         base,
-        hydrate_budget_bytes,
-        work_view,
-    })
+        work_view: values.flag("--work-view") || on_device.is_some() || remote_runtime.is_some(),
+        force_stale: values.flag("--force-stale"),
+        on_device,
+        remote_runtime,
+        remote_root,
+    }))
 }
 
-pub(super) fn parse_agent_start_command(args: &[String]) -> Command {
-    parse_agent_lease_create_command(args)
-}
-
-pub(super) fn parse_agent_selector_command(command: CommandName, args: &[String]) -> Command {
-    let mut lease_id = None;
-    let mut index = 0_usize;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--lease" => {
-                let Some(value) = args.get(index + 1) else {
-                    return usage_error(command, "missing value for --lease");
-                };
-                lease_id = Some(value.to_string());
-                index += 2;
-            }
-            flag if flag.starts_with("--") => {
-                return command_usage_error(
-                    command,
-                    "usage_error",
-                    format!(
-                        "unknown bowline {} option `{flag}`",
-                        command_name_token(command)
-                    ),
-                    agent_usage_actions(),
-                );
-            }
-            value => {
-                return command_usage_error(
-                    command,
-                    "usage_error",
-                    format!(
-                        "unexpected bowline {} argument `{value}`",
-                        command_name_token(command)
-                    ),
-                    agent_usage_actions(),
-                );
-            }
-        }
+fn nonempty_agent_option(
+    values: &crate::registry::ParsedValues,
+    name: &str,
+) -> Result<Option<String>, ParseError> {
+    match values.option(name) {
+        Some(value) if value.trim().is_empty() => Err(ParseError::Usage {
+            command: CommandName::AgentStart,
+            message: format!("{name} cannot be empty"),
+        }),
+        Some(value) => Ok(Some(value.to_string())),
+        None => Ok(None),
     }
-    let Some(lease_id) = lease_id else {
+}
+
+pub(super) fn parse_agent_start_command(
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    parse_agent_lease_create_command(values)
+}
+
+pub(super) fn parse_agent_selector_command(
+    command: CommandName,
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    if let Some(unexpected) = values.positionals().first() {
         return command_usage_error(
             command,
             "usage_error",
             format!(
-                "bowline {} requires --lease <id>",
-                command_name_token(command)
+                "unexpected bowline {} argument `{unexpected}`",
+                command.token()
             ),
+            agent_usage_actions(),
+        );
+    }
+    let Some(lease_id) = values.option("--lease").map(str::to_string) else {
+        return command_usage_error(
+            command,
+            "usage_error",
+            format!("bowline {} requires --lease <id>", command.token()),
             agent_usage_actions(),
         );
     };
     let args = agent::AgentLeaseSelectorArgs { lease_id };
     match command {
-        CommandName::AgentContext => Command::AgentContext(args),
-        CommandName::AgentPrompt => Command::AgentPrompt(args),
-        CommandName::AgentPublish => Command::AgentPublish(args),
-        CommandName::AgentComplete => Command::AgentComplete(args),
-        _ => unreachable!("unsupported agent selector command"),
+        CommandName::AgentContext => Ok(Command::AgentContext(args)),
+        CommandName::AgentPrompt => Ok(Command::AgentPrompt(args)),
+        CommandName::AgentComplete => Ok(Command::AgentComplete(args)),
+        CommandName::AgentCancel => Ok(Command::AgentCancel(args)),
+        _ => command_usage_error(
+            command,
+            "usage_error",
+            "unsupported agent selector command".to_string(),
+            agent_usage_actions(),
+        ),
     }
 }
 
-pub(super) fn parse_agent_budget_command(args: &[String]) -> Command {
-    let mut lease_id = None;
-    let mut add_bytes = None;
-    let mut index = 0_usize;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--lease" => {
-                let Some(value) = args.get(index + 1) else {
-                    return usage_error(CommandName::AgentBudget, "missing value for --lease");
-                };
-                lease_id = Some(value.to_string());
-                index += 2;
-            }
-            "--add" => {
-                let Some(value) = args.get(index + 1) else {
-                    return usage_error(CommandName::AgentBudget, "missing value for --add");
-                };
-                let Some(parsed) = parse_byte_budget(value) else {
-                    return command_usage_error(
-                        CommandName::AgentBudget,
-                        "usage_error",
-                        "expected --add as bytes, KiB, MiB, or GiB".to_string(),
-                        agent_usage_actions(),
-                    );
-                };
-                add_bytes = Some(parsed);
-                index += 2;
-            }
-            flag if flag.starts_with("--") => {
-                return command_usage_error(
-                    CommandName::AgentBudget,
-                    "usage_error",
-                    format!("unknown bowline agent budget option `{flag}`"),
-                    agent_usage_actions(),
-                );
-            }
-            value => {
-                return command_usage_error(
-                    CommandName::AgentBudget,
-                    "usage_error",
-                    format!("unexpected bowline agent budget argument `{value}`"),
-                    agent_usage_actions(),
-                );
-            }
-        }
+pub(super) fn parse_agent_extend_command(
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    if let Some(unexpected) = values.positionals().first() {
+        return unexpected_argument(CommandName::AgentExtend, "agent extend", unexpected);
     }
-    let Some(lease_id) = lease_id else {
-        return command_usage_error(
-            CommandName::AgentBudget,
-            "usage_error",
-            "bowline agent budget requires --lease <id>".to_string(),
-            agent_usage_actions(),
+    let Some(lease_id) = values.option("--lease").map(str::to_string) else {
+        return usage_error(
+            CommandName::AgentExtend,
+            "bowline agent extend requires --lease <id>",
         );
     };
-    let Some(add_bytes) = add_bytes else {
-        return command_usage_error(
-            CommandName::AgentBudget,
-            "usage_error",
-            "bowline agent budget requires --add <bytes>".to_string(),
-            agent_usage_actions(),
+    let Some(raw_hours) = values.option("--hours") else {
+        return usage_error(
+            CommandName::AgentExtend,
+            "bowline agent extend requires --hours <1..168>",
         );
     };
-    Command::AgentBudget(agent::AgentBudgetArgs {
+    let Some(hours) = raw_hours.parse::<u16>().ok().filter(|value| {
+        (1..=bowline_local::agents::MAX_AGENT_LEASE_EXTENSION_HOURS).contains(value)
+    }) else {
+        return usage_error(
+            CommandName::AgentExtend,
+            format!(
+                "expected --hours between 1 and {}",
+                bowline_local::agents::MAX_AGENT_LEASE_EXTENSION_HOURS
+            ),
+        );
+    };
+    Ok(Command::AgentExtend(agent::AgentLeaseExtendArgs {
         lease_id,
-        add_bytes,
-    })
+        hours,
+    }))
+}
+
+pub(super) fn parse_agent_mcp_token_command(
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    if let Some(unexpected) = values.positionals().first() {
+        return command_usage_error(
+            CommandName::AgentMcpToken,
+            "usage_error",
+            format!("unexpected bowline agent mcp-token argument `{unexpected}`"),
+            agent_usage_actions(),
+        );
+    }
+    let Some(lease_id) = values.option("--lease").map(str::to_string) else {
+        return command_usage_error(
+            CommandName::AgentMcpToken,
+            "usage_error",
+            "bowline agent mcp-token requires --lease <id>".to_string(),
+            agent_usage_actions(),
+        );
+    };
+    // The MCP bridge exposes only read-only tools, so every token carries the
+    // single Read scope (packet 065, Decision 2). No --grant selection remains.
+    Ok(Command::AgentMcpToken(agent::AgentMcpTokenArgs {
+        lease_id,
+        grants: vec![bowline_core::commands::AgentMcpGrant::Read],
+    }))
+}
+
+pub(super) fn parse_cleanup_command(
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    if let Some(unexpected) = values.positionals().first() {
+        return command_usage_error(
+            CommandName::Cleanup,
+            "usage_error",
+            format!("unexpected bowline work cleanup argument `{unexpected}`"),
+            work_usage_actions(),
+        );
+    }
+
+    Ok(Command::WorkCleanup(work::WorkCleanupArgs {
+        apply: values.flag("--apply"),
+    }))
+}
+
+pub(super) fn work_usage_actions() -> Vec<RepairCommand> {
+    vec![
+        RepairCommand::mutating(
+            "Start a work view".to_string(),
+            Some("bowline work create <name>".to_string()),
+        ),
+        RepairCommand::inspect(
+            "Review work".to_string(),
+            Some("bowline work review <target>".to_string()),
+        ),
+    ]
+}
+
+pub(super) fn agent_usage_actions() -> Vec<RepairCommand> {
+    vec![
+        RepairCommand::mutating(
+            "Start agent work".to_string(),
+            Some("bowline agent start <project> --task <task> --base latest-workspace".to_string()),
+        ),
+        RepairCommand::inspect(
+            "Inspect an agent work".to_string(),
+            Some("bowline agent context --lease <id>".to_string()),
+        ),
+    ]
 }

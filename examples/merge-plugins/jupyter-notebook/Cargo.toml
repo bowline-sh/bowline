@@ -1,0 +1,13 @@
+[package]
+name = "bowline-jupyter-notebook-merge-plugin"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dev-dependencies]
+bowline-merge-plugin-testkit = { path = "../testkit" }
+
+[workspace]

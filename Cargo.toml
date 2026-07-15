@@ -5,13 +5,25 @@ members = [
   "crates/bowline-control-plane",
   "crates/bowline-core",
   "crates/bowline-daemon",
-  "crates/bowline-index",
+  "crates/bowline-daemon-rpc",
   "crates/bowline-local",
   "crates/bowline-storage",
+  "crates/bowline-testkit",
 ]
 
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.88"
-version = "0.1.0"
+version = "0.1.1"
+
+# Quality gates. Test code is exempted from unwrap/expect/panic via clippy.toml
+# (allow-*-in-tests). Thresholds in clippy.toml are ratchets: they only go down.
+[workspace.lints.clippy]
+dbg_macro = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+fn_params_excessive_bools = "warn"
+too_many_lines = "warn"

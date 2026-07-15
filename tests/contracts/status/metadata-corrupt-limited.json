@@ -1,7 +1,8 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 8,
   "command": "status",
   "generatedAt": "2026-06-23T12:00:00Z",
+  "statusSummary": { "availability": "unavailable", "attention": "required", "facts": [], "snapshotVersion": 1, "observedAt": "2026-06-23T12:00:00Z", "freshness": "fresh" },
   "workspaceId": "ws_local_limited",
   "scope": "workspace",
   "requestedPath": "~/Code",
@@ -42,8 +43,8 @@
   "nextActions": [
     {
       "label": "Check local metadata",
-      "effectCategory": "inspect",
-      "targetKind": "unknown"
+      "mutates": false
     }
-  ]
+  ],
+  "freshness": "unknown"
 }

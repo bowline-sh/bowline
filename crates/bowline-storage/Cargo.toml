@@ -16,3 +16,6 @@ zstd = "0.13"
 
 [lib]
 path = "src/lib.rs"
+
+[lints]
+workspace = true

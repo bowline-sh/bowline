@@ -5,10 +5,11 @@ fn accept_rejects_symlinked_work_view_entries() {
     let (temp, db_path) = seeded_store("phase9-accept-symlink");
     let project_path = temp.root().join("Code/apps/web");
     fs::create_dir_all(&project_path).expect("project");
-    create_work_view(WorkonOptions {
+    create_work_view(WorkCreateOptions {
         db_path: Some(db_path.clone()),
         project_path: project_path.display().to_string(),
         name: "symlink-file".to_string(),
+        base_snapshot_selector: None,
         owner_device_id: None,
         generated_at: now(),
     })
@@ -21,6 +22,7 @@ fn accept_rejects_symlinked_work_view_entries() {
     let error = accept_work_view(WorkSelectorOptions {
         db_path: Some(db_path),
         selector: "symlink-file".to_string(),
+        paths: Vec::new(),
         generated_at: now(),
     })
     .expect_err("symlink should be rejected");
@@ -34,10 +36,11 @@ fn accept_rejects_symlinked_work_view_root() {
     let (temp, db_path) = seeded_store("phase9-accept-root-symlink");
     let project_path = temp.root().join("Code/apps/web");
     fs::create_dir_all(&project_path).expect("project");
-    create_work_view(WorkonOptions {
+    create_work_view(WorkCreateOptions {
         db_path: Some(db_path.clone()),
         project_path: project_path.display().to_string(),
         name: "root-link".to_string(),
+        base_snapshot_selector: None,
         owner_device_id: None,
         generated_at: now(),
     })
@@ -52,6 +55,7 @@ fn accept_rejects_symlinked_work_view_root() {
     let error = accept_work_view(WorkSelectorOptions {
         db_path: Some(db_path),
         selector: "root-link".to_string(),
+        paths: Vec::new(),
         generated_at: now(),
     })
     .expect_err("symlinked work root should fail");
@@ -65,10 +69,11 @@ fn cleanup_rejects_tampered_materialization_outside_work_namespace() {
     let (temp, db_path) = seeded_store("phase9-cleanup-tamper");
     let project_path = temp.root().join("Code/apps/web");
     fs::create_dir_all(&project_path).expect("project");
-    create_work_view(WorkonOptions {
+    create_work_view(WorkCreateOptions {
         db_path: Some(db_path.clone()),
         project_path: project_path.display().to_string(),
         name: "tampered".to_string(),
+        base_snapshot_selector: None,
         owner_device_id: None,
         generated_at: now(),
     })
@@ -107,10 +112,11 @@ fn cleanup_rejects_parent_component_materialization_escape() {
     let (temp, db_path) = seeded_store("phase9-cleanup-parent-traversal");
     let project_path = temp.root().join("Code/apps/web");
     fs::create_dir_all(project_path.join("keep")).expect("project keep dir");
-    create_work_view(WorkonOptions {
+    create_work_view(WorkCreateOptions {
         db_path: Some(db_path.clone()),
         project_path: project_path.display().to_string(),
         name: "traversal".to_string(),
+        base_snapshot_selector: None,
         owner_device_id: None,
         generated_at: now(),
     })
@@ -151,10 +157,11 @@ fn cleanup_rejects_symlinked_work_namespace_root() {
     let (temp, db_path) = seeded_store("phase9-cleanup-namespace-symlink");
     let project_path = temp.root().join("Code/apps/web");
     fs::create_dir_all(&project_path).expect("project");
-    create_work_view(WorkonOptions {
+    create_work_view(WorkCreateOptions {
         db_path: Some(db_path.clone()),
         project_path: project_path.display().to_string(),
         name: "symlink-namespace".to_string(),
+        base_snapshot_selector: None,
         owner_device_id: None,
         generated_at: now(),
     })
@@ -162,6 +169,7 @@ fn cleanup_rejects_symlinked_work_namespace_root() {
     discard_work_view(WorkSelectorOptions {
         db_path: Some(db_path.clone()),
         selector: "symlink-namespace".to_string(),
+        paths: Vec::new(),
         generated_at: now(),
     })
     .expect("discard");

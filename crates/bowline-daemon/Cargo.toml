@@ -6,15 +6,29 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+blake3 = "1.8"
 bowline-control-plane = { path = "../bowline-control-plane", features = ["hosted-convex"] }
 bowline-core = { path = "../bowline-core" }
+bowline-daemon-rpc = { path = "../bowline-daemon-rpc" }
 bowline-local = { path = "../bowline-local" }
 bowline-storage = { path = "../bowline-storage" }
+crossbeam-channel = "0.5.15"
 notify = "8.2.0"
+rustix = { version = "1.1.4", features = ["process"] }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 time = { version = "0.3", features = ["formatting"] }
 uds = "0.4"
 
+[dev-dependencies]
+bowline-testkit = { path = "../bowline-testkit" }
+
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "bowline-daemon"
 path = "src/main.rs"
+
+[lints]
+workspace = true

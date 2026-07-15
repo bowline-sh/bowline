@@ -25,7 +25,10 @@ impl MetadataStore {
             )
             .optional()?;
 
-        let sync_state = self.component_state("sync")?;
+        let mut sync_state = self.component_state("sync")?;
+        if self.has_degraded_post_commit_sync()? {
+            sync_state = Some(ComponentState::Degraded);
+        }
         let watcher_state = self.component_state("watcher")?;
         let network_state = match self
             .component_state_raw("network")?
@@ -46,6 +49,22 @@ impl MetadataStore {
             watcher_state,
             network_state,
         })
+    }
+
+    pub fn has_degraded_post_commit_sync(&self) -> Result<bool, MetadataError> {
+        Ok(PostCommitSyncComponent::ALL
+            .iter()
+            .map(|component| self.post_commit_component_state(*component))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .any(|state| state == Some(ComponentState::Degraded)))
+    }
+
+    pub fn post_commit_component_state(
+        &self,
+        component: PostCommitSyncComponent,
+    ) -> Result<Option<ComponentState>, MetadataError> {
+        self.component_state(component.as_str())
     }
 
     fn component_state(&self, component: &str) -> Result<Option<ComponentState>, MetadataError> {

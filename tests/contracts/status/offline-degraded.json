@@ -1,0 +1,70 @@
+{
+  "contractVersion": 8,
+  "command": "status",
+  "generatedAt": "2026-07-07T12:00:00Z",
+  "statusSummary": { "availability": "degraded", "attention": "none", "facts": [], "snapshotVersion": 1, "observedAt": "2026-07-07T12:00:00Z", "freshness": "fresh" },
+  "workspaceId": "ws_offline_contract",
+  "scope": "workspace",
+  "requestedPath": "~/Code",
+  "resolvedWorkspaceRoot": "~/Code",
+  "workspaceSummary": {
+    "totalProjects": 1
+  },
+  "syncQueue": {
+    "queued": 1,
+    "claimed": 0,
+    "waitingRetry": 0,
+    "blockedOffline": 1,
+    "reconciliationRequired": 0,
+    "attention": 0,
+    "completed": 0
+  },
+  "status": {
+    "level": "limited",
+    "attentionItems": [
+      "Network is offline; local cached state remains available."
+    ]
+  },
+  "items": [
+    {
+      "kind": "network",
+      "summary": "Network is offline; local cached state remains available.",
+      "subject": {
+        "kind": "workspace",
+        "id": "ws_offline_contract"
+      },
+      "eventName": "network.offline"
+    },
+    {
+      "kind": "materialization",
+      "summary": "Sync queue: 1 queued, 0 running, 0 waiting retry, 1 offline, 0 attention.",
+      "subject": {
+        "kind": "workspace",
+        "id": "ws_offline_contract"
+      }
+    }
+  ],
+  "limits": [
+    {
+      "capability": "content-fetch",
+      "unavailableBecause": "cannot fetch content while offline",
+      "stillWorks": ["hydrated local files", "local edits", "status"]
+    }
+  ],
+  "eventWatermarks": {
+    "lastScanAt": "2026-07-07T11:59:58Z",
+    "lastEventId": "evt_offline_degraded_001",
+    "eventLagMs": 2000,
+    "syncState": "degraded",
+    "watcherState": "ready",
+    "networkState": "offline"
+  },
+  "nextActions": [
+    {
+      "label": "Inspect locally",
+      "command": "bowline status --root ~/Code",
+      "mutates": false
+    }
+  ],
+  "freshness": "unknown"
+}

@@ -129,24 +129,37 @@ pub(super) fn remote_device_name(host: &str) -> String {
 }
 
 pub(super) fn remote_bootstrap_secret_env() -> Vec<(String, String)> {
-    let account_session_id = runtime::key_store().ok().and_then(|store| {
-        let _ =
-            runtime::ensure_durable_account_session(&*store, Some(&runtime::active_workspace_id()));
-        runtime::account_session_id(&*store)
-    });
+    let account_session = runtime::environment_account_session_revocation()
+        .ok()
+        .flatten()
+        .or_else(|| {
+            runtime::key_store().ok().and_then(|store| {
+                let _ = runtime::ensure_durable_account_session(
+                    &*store,
+                    Some(&runtime::active_workspace_id()),
+                );
+                runtime::stored_account_session_revocation(&*store)
+                    .ok()
+                    .flatten()
+            })
+        });
     let control_plane_token = env::var("BOWLINE_CONTROL_PLANE_TOKEN")
         .ok()
         .filter(|value| !value.is_empty());
-    remote_bootstrap_secret_env_from(account_session_id, control_plane_token)
+    remote_bootstrap_secret_env_from(account_session, control_plane_token)
 }
 
 pub(super) fn remote_bootstrap_secret_env_from(
-    account_session_id: Option<String>,
+    account_session: Option<runtime::AccountSessionRevocation>,
     control_plane_token: Option<String>,
 ) -> Vec<(String, String)> {
     let mut values = Vec::new();
-    if let Some(session_id) = account_session_id {
-        values.push(("BOWLINE_ACCOUNT_SESSION_ID".to_string(), session_id));
+    if let Some(session) = account_session {
+        values.push(("BOWLINE_ACCOUNT_SESSION_ID".to_string(), session.session_id));
+        values.push((
+            "BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN".to_string(),
+            session.revocation_token,
+        ));
     }
     if let Some(token) = control_plane_token {
         values.push(("BOWLINE_CONTROL_PLANE_TOKEN".to_string(), token));
@@ -171,7 +184,7 @@ pub(super) fn verify_remote_device_trust(
     remote_request: &DeviceApprovalRequest,
 ) -> Result<DeviceRecord, String> {
     let trust = control_plane
-        .list_device_trust(remote_request.workspace_id.as_str())
+        .list_device_trust(&remote_request.workspace_id)
         .map_err(|error| format!("Could not verify remote device trust: {error}"))?;
     let Some(device) = trust.authorized_devices.into_iter().find(|device| {
         device.device_id == remote_request.requester_device_id.as_str()
@@ -207,6 +220,15 @@ pub(super) fn remote_daemon_is_running(stdout: &str) -> bool {
             .pointer("/daemon/state")
             .and_then(|state| state.as_str())
             == Some("running")
+    })
+}
+
+pub(super) fn remote_daemon_is_stopped(stdout: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(stdout).is_ok_and(|value| {
+        value
+            .pointer("/daemon/state")
+            .and_then(|state| state.as_str())
+            == Some("stopped")
     })
 }
 

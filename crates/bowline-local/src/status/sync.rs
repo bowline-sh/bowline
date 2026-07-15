@@ -11,151 +11,6 @@ pub(super) fn empty_watermarks() -> EventWatermarks {
     }
 }
 
-pub(super) fn durable_index_status(
-    store: &MetadataStore,
-    workspace_id: &WorkspaceId,
-    project_id: Option<&ProjectId>,
-) -> Result<Option<IndexStatus>, MetadataError> {
-    let (count, ready_count, source_watermark, indexed_watermark, updated_at): (
-        i64,
-        i64,
-        i64,
-        i64,
-        Option<String>,
-    ) = store.connection().query_row(
-        "SELECT COUNT(*),
-                COALESCE(SUM(CASE WHEN state = 'ready' THEN 1 ELSE 0 END), 0),
-                COALESCE(MAX(source_watermark), 0),
-                COALESCE(MAX(indexed_watermark), 0),
-                MAX(updated_at)
-         FROM index_work
-         WHERE workspace_id = ?1 AND (?2 IS NULL OR project_id = ?2)",
-        rusqlite::params![workspace_id.as_str(), project_id.map(|id| id.as_str())],
-        |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-            ))
-        },
-    )?;
-    if count == 0 {
-        return Ok(None);
-    }
-    let state = if ready_count == count && indexed_watermark >= source_watermark {
-        IndexState::Ready
-    } else if indexed_watermark < source_watermark {
-        IndexState::Stale
-    } else {
-        IndexState::Degraded
-    };
-    Ok(Some(IndexStatus {
-        state,
-        source: IndexSource::Local,
-        indexed_at: (state == IndexState::Ready)
-            .then(|| updated_at.clone())
-            .flatten(),
-        updated_at,
-        snapshot_id: None,
-        index_pack_object_key: None,
-        path_count: 0,
-        file_count: 0,
-        indexed_bytes: 0,
-        pending_path_count: Some((count - ready_count).max(0) as u64),
-        degraded_reason: (state != IndexState::Ready).then_some(IndexDegradedReason::Missing),
-        summary: if state == IndexState::Ready {
-            "Index metadata is current.".to_string()
-        } else {
-            "Index metadata has pending or stale work.".to_string()
-        },
-        next_action: None,
-    }))
-}
-
-pub(super) fn apply_index_status(
-    index: Option<&IndexStatus>,
-    items: &mut Vec<StatusItem>,
-    limits: &mut Vec<LimitedCapability>,
-    attention_items: &mut Vec<String>,
-    level: &mut StatusLevel,
-) {
-    let Some(index) = index else {
-        return;
-    };
-    match index.state {
-        IndexState::Ready => {}
-        IndexState::Stale | IndexState::Rebuilding => {
-            // Catch-up work heals itself; surface it as information, not a
-            // problem the user must act on.
-            let mut item = base_status_item(StatusItemKind::Index, &index.summary);
-            item.subject = Some(StatusSubject {
-                kind: StatusSubjectKind::Index,
-                id: "index-local".to_string(),
-                path: None,
-            });
-            item.event_name = Some(EventName::IndexDegraded);
-            items.push(item);
-        }
-        IndexState::Degraded => {
-            *level = StatusLevel::Limited;
-            attention_items.push("Index is degraded.".to_string());
-            limits.push(LimitedCapability {
-                capability: "index".to_string(),
-                unavailable_because: index.summary.clone(),
-                still_works: vec![
-                    "status".to_string(),
-                    "local file access".to_string(),
-                    "bounded hydration".to_string(),
-                ],
-                path: None,
-            });
-            let mut item = base_status_item(StatusItemKind::Index, &index.summary);
-            item.subject = Some(StatusSubject {
-                kind: StatusSubjectKind::Index,
-                id: "index-local".to_string(),
-                path: None,
-            });
-            item.event_name = Some(EventName::IndexDegraded);
-            items.push(item);
-        }
-    }
-}
-
-pub(super) fn durable_hydration_budget_status(
-    store: &MetadataStore,
-    workspace_id: &WorkspaceId,
-    project_id: Option<&ProjectId>,
-) -> Result<Option<HydrationBudgetStatus>, MetadataError> {
-    let active_leases = store
-        .agent_leases(workspace_id)?
-        .into_iter()
-        .filter(|lease| match project_id {
-            Some(project_id) => lease.project_id.as_str() == project_id.as_str(),
-            None => true,
-        })
-        .filter(|lease| {
-            matches!(
-                lease.execution_state,
-                AgentLeaseExecutionState::Active | AgentLeaseExecutionState::Blocked
-            )
-        })
-        .collect::<Vec<_>>();
-
-    match active_leases.as_slice() {
-        [lease] => lease_budget_status(
-            store,
-            workspace_id,
-            &lease.project_id,
-            &lease.id,
-            lease.hydrate_budget_bytes,
-        )
-        .map(Some),
-        _ => Ok(None),
-    }
-}
-
 pub(super) fn metadata_item(summary: &str, event_name: Option<EventName>) -> StatusItem {
     let mut item = base_status_item(StatusItemKind::Metadata, summary);
     item.subject = Some(StatusSubject {
@@ -169,19 +24,29 @@ pub(super) fn metadata_item(summary: &str, event_name: Option<EventName>) -> Sta
 
 pub(super) fn apply_watermark_status(
     watermarks: &EventWatermarks,
-    items: &mut Vec<StatusItem>,
-    limits: &mut Vec<LimitedCapability>,
-    attention_items: &mut Vec<String>,
-    level: &mut StatusLevel,
+    requested_limited_path: Option<&str>,
+    acc: &mut StatusAccumulator,
 ) {
     if matches!(
         watermarks.sync_state,
         Some(ComponentState::Degraded | ComponentState::Unavailable)
     ) {
-        *level = StatusLevel::Limited;
-        attention_items.push("Sync is degraded.".to_string());
-        limits.push(LimitedCapability {
+        let kind = if watermarks.sync_state == Some(ComponentState::Unavailable) {
+            "sync.component_unavailable"
+        } else {
+            "sync.component_degraded"
+        };
+        acc.observe_fact(
+            kind,
+            "sync-component",
+            "sync-component",
+            StatusFactScope::Workspace,
+            None,
+        );
+        acc.attention_items.push("Sync is degraded.".to_string());
+        acc.limits.push(LimitedCapability {
             capability: "sync".to_string(),
+            support_capability: None,
             unavailable_because: "sync degraded".to_string(),
             still_works: vec![
                 "local files".to_string(),
@@ -190,7 +55,7 @@ pub(super) fn apply_watermark_status(
             ],
             path: None,
         });
-        items.push(component_item(
+        acc.items.push(component_item(
             StatusItemKind::Materialization,
             "Sync is degraded; local files and status still work.",
             EventName::SyncDegraded,
@@ -201,10 +66,17 @@ pub(super) fn apply_watermark_status(
         watermarks.watcher_state,
         Some(ComponentState::Degraded | ComponentState::Unavailable)
     ) {
-        *level = StatusLevel::Limited;
-        attention_items.push("Native file watching is degraded.".to_string());
-        limits.push(LimitedCapability {
+        let kind = if watermarks.watcher_state == Some(ComponentState::Unavailable) {
+            "watcher.unavailable"
+        } else {
+            "watcher.degraded"
+        };
+        acc.observe_fact(kind, "watcher", "watcher", StatusFactScope::Workspace, None);
+        acc.attention_items
+            .push("Native file watching is degraded.".to_string());
+        acc.limits.push(LimitedCapability {
             capability: "watch".to_string(),
+            support_capability: None,
             unavailable_because: "native watcher unavailable".to_string(),
             still_works: vec![
                 "manual status".to_string(),
@@ -212,37 +84,49 @@ pub(super) fn apply_watermark_status(
             ],
             path: None,
         });
-        items.push(component_item(
+        acc.items.push(component_item(
             StatusItemKind::Watcher,
             "The watcher is degraded, so bowline is using reconciliation.",
             EventName::WatcherDegraded,
         ));
     }
 
-    if matches!(
-        watermarks.network_state,
-        Some(NetworkState::Offline | NetworkState::Degraded)
-    ) {
-        *level = StatusLevel::Limited;
-        let unavailable_because = if matches!(watermarks.network_state, Some(NetworkState::Offline))
-        {
-            "network offline"
+    if let Some(network_state @ (NetworkState::Offline | NetworkState::Degraded)) =
+        watermarks.network_state
+    {
+        let kind = if network_state == NetworkState::Offline {
+            "network.offline"
         } else {
-            "network degraded"
+            "network.degraded"
         };
-        attention_items.push("Network is unavailable.".to_string());
-        limits.push(LimitedCapability {
-            capability: "hydrate".to_string(),
+        acc.observe_fact(kind, "network", "network", StatusFactScope::Device, None);
+        let (unavailable_because, item_summary) = match network_state {
+            NetworkState::Offline => (
+                "cannot fetch content while offline",
+                "Network is offline; local cached state remains available.",
+            ),
+            NetworkState::Degraded => (
+                "content fetch is degraded",
+                "Network is degraded; local cached state remains available.",
+            ),
+            NetworkState::Online => unreachable!("network state is matched above"),
+        };
+        acc.attention_items
+            .push("Network is unavailable.".to_string());
+        acc.limits.push(LimitedCapability {
+            capability: "content-fetch".to_string(),
+            support_capability: None,
             unavailable_because: unavailable_because.to_string(),
             still_works: vec![
                 "project structure".to_string(),
                 "local cached reads".to_string(),
+                "offline edits to hydrated files".to_string(),
             ],
-            path: None,
+            path: requested_limited_path.map(str::to_string),
         });
-        items.push(component_item(
+        acc.items.push(component_item(
             StatusItemKind::Network,
-            "Network is offline; local cached state remains available.",
+            item_summary,
             EventName::NetworkOffline,
         ));
     }
@@ -251,15 +135,13 @@ pub(super) fn apply_watermark_status(
 pub(super) fn apply_sync_operation_status(
     workspace_id: &WorkspaceId,
     counts: &SyncOperationCounts,
-    items: &mut Vec<StatusItem>,
-    limits: &mut Vec<LimitedCapability>,
-    attention_items: &mut Vec<String>,
-    level: &mut StatusLevel,
+    acc: &mut StatusAccumulator,
 ) {
     let pending = counts.queued
         + counts.claimed
         + counts.waiting_retry
         + counts.blocked_offline
+        + counts.reconciliation_required
         + counts.attention;
     if pending == 0 {
         return;
@@ -272,31 +154,62 @@ pub(super) fn apply_sync_operation_status(
         id: workspace_id.as_str().to_string(),
         path: None,
     });
-    items.push(item);
+    acc.items.push(item);
+    acc.observe_fact(
+        "sync.queue_pending",
+        "sync-queue-pending",
+        "sync-queue",
+        StatusFactScope::Workspace,
+        Some(workspace_id.as_str()),
+    );
 
-    if counts.attention > 0 {
-        *level = StatusLevel::Attention;
-        attention_items.push("Sync queue needs attention.".to_string());
-        limits.push(LimitedCapability {
+    if counts.reconciliation_required > 0 || counts.attention > 0 {
+        acc.observe_fact(
+            "sync.queue_blocked",
+            "sync-queue-blocked",
+            "sync-queue-blocked",
+            StatusFactScope::Workspace,
+            Some(workspace_id.as_str()),
+        );
+        acc.attention_items
+            .push("Sync queue needs attention.".to_string());
+        acc.limits.push(LimitedCapability {
             capability: "sync".to_string(),
+            support_capability: None,
             unavailable_because: "sync queue needs attention".to_string(),
             still_works: vec!["local files".to_string(), "status".to_string()],
             path: None,
         });
     } else if counts.blocked_offline > 0 {
-        *level = StatusLevel::Limited;
-        attention_items.push("Sync queue is waiting for offline recovery.".to_string());
-        limits.push(LimitedCapability {
+        acc.observe_fact(
+            "sync.offline_waiting",
+            "sync-queue-offline",
+            "sync-queue-offline",
+            StatusFactScope::Workspace,
+            Some(workspace_id.as_str()),
+        );
+        acc.attention_items
+            .push("Sync queue is waiting for offline recovery.".to_string());
+        acc.limits.push(LimitedCapability {
             capability: "sync".to_string(),
+            support_capability: None,
             unavailable_because: "sync queue is waiting for offline recovery".to_string(),
             still_works: sync_queue_wait_still_works(),
             path: None,
         });
     } else if counts.waiting_retry > 0 {
-        *level = StatusLevel::Limited;
-        attention_items.push("Sync queue is waiting for retry.".to_string());
-        limits.push(LimitedCapability {
+        acc.observe_fact(
+            "sync.retry_waiting",
+            "sync-queue-retry",
+            "sync-queue-retry",
+            StatusFactScope::Workspace,
+            Some(workspace_id.as_str()),
+        );
+        acc.attention_items
+            .push("Sync queue is waiting for retry.".to_string());
+        acc.limits.push(LimitedCapability {
             capability: "sync".to_string(),
+            support_capability: None,
             unavailable_because: "sync queue is waiting for retry".to_string(),
             still_works: sync_queue_wait_still_works(),
             path: None,
@@ -310,35 +223,250 @@ pub(super) fn sync_queue_status(counts: &SyncOperationCounts) -> Option<SyncQueu
         claimed: counts.claimed,
         waiting_retry: counts.waiting_retry,
         blocked_offline: counts.blocked_offline,
+        reconciliation_required: counts.reconciliation_required,
         attention: counts.attention,
         completed: counts.completed,
     };
     status.has_pending_work().then_some(status)
 }
 
+const STALE_BASE_REMEDY_COMMAND: &str = "bowline status --watch";
+
+pub(crate) fn snapshot_stale_bases(
+    store: &MetadataStore,
+    workspace_id: &WorkspaceId,
+    project_id: Option<&ProjectId>,
+) -> Result<Vec<StaleBaseStatus>, MetadataError> {
+    let projects = match project_id {
+        Some(project_id) => store
+            .project_by_id(workspace_id, project_id)?
+            .into_iter()
+            .collect::<Vec<_>>(),
+        None => store.projects(workspace_id)?,
+    };
+    let agent_leases = store.agent_leases(workspace_id)?;
+    let active_work_views = store.work_views(workspace_id, true, None)?;
+    snapshot_stale_bases_from_inputs(
+        store,
+        workspace_id,
+        &projects,
+        &agent_leases,
+        &active_work_views,
+        project_id,
+    )
+}
+
+pub(crate) fn snapshot_stale_bases_from_inputs(
+    store: &MetadataStore,
+    workspace_id: &WorkspaceId,
+    projects: &[ProjectRecord],
+    agent_leases: &[AgentLeaseRecord],
+    active_work_views: &[WorkViewRecord],
+    project_id: Option<&ProjectId>,
+) -> Result<Vec<StaleBaseStatus>, MetadataError> {
+    let latest_snapshot_ids = store.project_latest_snapshot_ids(workspace_id)?;
+    let mut stale_bases = Vec::new();
+    for project in projects {
+        if let Some(project_id) = project_id
+            && &project.id != project_id
+        {
+            continue;
+        }
+        let latest_snapshot_id = latest_snapshot_ids.get(&project.id).cloned();
+        let Some(latest_snapshot_id) = latest_snapshot_id else {
+            if project_id.is_some() {
+                stale_bases.push(StaleBaseStatus::snapshot(
+                    FreshnessVerdict::Unknown,
+                    format!(
+                        "{} has no local project snapshot yet; freshness cannot be proven.",
+                        project.path
+                    ),
+                    Some(project.id.clone()),
+                    Some(project.path.clone()),
+                    None,
+                    None,
+                    Some(STALE_BASE_REMEDY_COMMAND.to_string()),
+                ));
+            }
+            continue;
+        };
+
+        let project_stale_count = stale_bases.len();
+        for lease in agent_leases {
+            if lease.project_id != project.id
+                || !matches!(
+                    lease.session_state,
+                    AgentSessionState::Open | AgentSessionState::Provisional
+                )
+                || lease.base_snapshot_id == latest_snapshot_id
+            {
+                continue;
+            }
+            stale_bases.push(StaleBaseStatus::snapshot(
+                FreshnessVerdict::Behind,
+                format!(
+                    "Agent lease {} is based on an older snapshot for {}.",
+                    lease.id.as_str(),
+                    project.path
+                ),
+                Some(project.id.clone()),
+                Some(project.path.clone()),
+                Some(lease.base_snapshot_id.clone()),
+                Some(latest_snapshot_id.clone()),
+                Some(STALE_BASE_REMEDY_COMMAND.to_string()),
+            ));
+        }
+
+        for view in active_work_views {
+            if view.project_id != project.id
+                || !matches!(
+                    view.lifecycle,
+                    WorkViewLifecycle::Active | WorkViewLifecycle::ReviewReady
+                )
+                || view.base_snapshot_id == latest_snapshot_id
+            {
+                continue;
+            }
+            stale_bases.push(StaleBaseStatus::snapshot(
+                FreshnessVerdict::Behind,
+                format!(
+                    "Work view {} is based on an older snapshot for {}.",
+                    view.name, project.path
+                ),
+                Some(project.id.clone()),
+                Some(project.path.clone()),
+                Some(view.base_snapshot_id.clone()),
+                Some(latest_snapshot_id.clone()),
+                Some(STALE_BASE_REMEDY_COMMAND.to_string()),
+            ));
+        }
+
+        if project_id.is_some() && stale_bases.len() == project_stale_count {
+            let (verdict, summary, remedy) = match project.git_observer_state {
+                GitObserverState::Ok => (
+                    FreshnessVerdict::Current,
+                    format!("Git observation for {} is current.", project.path),
+                    None,
+                ),
+                GitObserverState::Partial => (
+                    FreshnessVerdict::Unknown,
+                    format!(
+                        "Git observation for {} is partial; freshness cannot be proven.",
+                        project.path
+                    ),
+                    Some(STALE_BASE_REMEDY_COMMAND.to_string()),
+                ),
+                GitObserverState::Unavailable => (
+                    FreshnessVerdict::Unknown,
+                    format!(
+                        "Git observation for {} is unavailable; freshness cannot be proven.",
+                        project.path
+                    ),
+                    Some(STALE_BASE_REMEDY_COMMAND.to_string()),
+                ),
+            };
+            stale_bases.push(StaleBaseStatus::git(
+                verdict,
+                summary,
+                Some(project.id.clone()),
+                Some(project.path.clone()),
+                remedy,
+            ));
+        }
+    }
+    Ok(stale_bases)
+}
+
+pub(crate) fn freshness_for_stale_bases(stale_bases: &[StaleBaseStatus]) -> FreshnessVerdict {
+    bowline_core::status::freshness_verdict_for(stale_bases)
+}
+
+pub(super) fn apply_stale_base_status(
+    stale_bases: &[StaleBaseStatus],
+    acc: &mut StatusAccumulator,
+) {
+    for stale_base in stale_bases {
+        if !stale_base.verdict.needs_attention() {
+            continue;
+        }
+        let kind = if stale_base.verdict == FreshnessVerdict::Unknown {
+            "observation.freshness_unknown"
+        } else if stale_base.verdict == FreshnessVerdict::Diverged {
+            "snapshot.base_diverged"
+        } else {
+            "snapshot.base_behind"
+        };
+        acc.observe_fact(
+            kind,
+            format!(
+                "stale-base:{}",
+                stale_base
+                    .project_id
+                    .as_ref()
+                    .map_or("workspace", ProjectId::as_str)
+            ),
+            format!(
+                "stale-base:{}",
+                stale_base
+                    .project_id
+                    .as_ref()
+                    .map_or("workspace", ProjectId::as_str)
+            ),
+            StatusFactScope::Project,
+            stale_base.project_id.as_ref().map(ProjectId::as_str),
+        );
+        acc.attention_items.push(stale_base.summary.clone());
+        let mut item = base_status_item(StatusItemKind::Source, &stale_base.summary);
+        item.subject = stale_base
+            .project_id
+            .as_ref()
+            .map(|project_id| StatusSubject {
+                kind: StatusSubjectKind::Project,
+                id: project_id.as_str().to_string(),
+                path: stale_base.project_path.clone(),
+            });
+        item.path = stale_base.project_path.clone();
+        item.project_id = stale_base.project_id.clone();
+        item.snapshot_id = stale_base.base_snapshot_id.clone();
+        item.event_name = Some(EventName::SourceStale);
+        acc.items.push(item);
+        if let Some(command) = stale_base.remedy_command.as_ref()
+            && !acc
+                .next_actions
+                .iter()
+                .any(|action| action.command.as_deref() == Some(command.as_str()))
+        {
+            acc.next_actions.push(RepairCommand::inspect(
+                "Inspect freshness".to_string(),
+                Some(command.clone()),
+            ));
+        }
+    }
+}
+
 pub(super) fn apply_unresolved_conflict_status(
     paths: &BTreeSet<String>,
     workspace_id: &WorkspaceId,
-    items: &mut Vec<StatusItem>,
-    limits: &mut Vec<LimitedCapability>,
-    attention_items: &mut Vec<String>,
-    next_actions: &mut Vec<SafeAction>,
-    level: &mut StatusLevel,
+    workspace_root: &str,
+    acc: &mut StatusAccumulator,
 ) -> Result<(), LocalStatusError> {
     if paths.is_empty() {
         return Ok(());
     }
 
-    *level = StatusLevel::Attention;
-    let summary = if paths.len() == 1 {
-        format!(
-            "1 unresolved conflict needs attention: {}.",
-            paths.iter().next().expect("path exists")
-        )
+    acc.observe_fact(
+        "sync.conflict_unresolved",
+        "unresolved-conflicts",
+        "unresolved-conflicts",
+        StatusFactScope::Workspace,
+        Some(workspace_id.as_str()),
+    );
+    let summary = if let Some(path) = paths.iter().next().filter(|_| paths.len() == 1) {
+        format!("1 unresolved conflict needs attention: {path}.")
     } else {
         format!("{} unresolved conflicts need attention.", paths.len())
     };
-    attention_items.push(summary.clone());
+    acc.attention_items.push(summary.clone());
 
     let mut item = base_status_item(StatusItemKind::Conflict, &summary);
     item.subject = Some(StatusSubject {
@@ -348,10 +476,11 @@ pub(super) fn apply_unresolved_conflict_status(
     });
     item.path = paths.iter().next().cloned();
     item.event_name = Some(EventName::ConflictBundleCreated);
-    items.push(item);
+    acc.items.push(item);
 
-    limits.push(LimitedCapability {
+    acc.limits.push(LimitedCapability {
         capability: "sync".to_string(),
+        support_capability: None,
         unavailable_because: "unresolved conflict".to_string(),
         still_works: vec![
             "local files".to_string(),
@@ -360,7 +489,8 @@ pub(super) fn apply_unresolved_conflict_status(
         ],
         path: None,
     });
-    next_actions.push(conflict_resolution_action());
+    acc.next_actions
+        .push(conflict_resolution_action(workspace_root));
     Ok(())
 }
 
@@ -390,7 +520,7 @@ pub(super) fn recent_sync_device_id(
         .iter()
         .find(|event| {
             matches!(
-                event.name,
+                &event.name,
                 EventName::SyncStarted
                     | EventName::SyncCompleted
                     | EventName::SyncLimited
@@ -411,63 +541,12 @@ pub(super) fn sync_queue_wait_still_works() -> Vec<String> {
 
 pub(super) fn sync_operation_summary(counts: &SyncOperationCounts) -> String {
     format!(
-        "Sync queue: {} queued, {} running, {} waiting retry, {} offline, {} attention.",
+        "Sync queue: {} queued, {} running, {} waiting retry, {} offline, {} reconciling, {} attention.",
         counts.queued,
         counts.claimed,
         counts.waiting_retry,
         counts.blocked_offline,
+        counts.reconciliation_required,
         counts.attention
     )
-}
-
-pub(super) fn hydration_progress_from_events(
-    events: &[bowline_core::events::WorkspaceEvent],
-) -> Vec<HydrationProgress> {
-    let Some(event) = events
-        .iter()
-        .find(|event| event.name == EventName::HydrationCompleted)
-        .or_else(|| {
-            events
-                .iter()
-                .find(|event| event.name == EventName::HydrationBlocked)
-        })
-        .or_else(|| {
-            events
-                .iter()
-                .find(|event| event.name == EventName::HydrationStarted)
-        })
-    else {
-        return Vec::new();
-    };
-    let bytes = payload_u64(event, "bytes");
-    let (bytes_done, bytes_remaining) = match event.name {
-        EventName::HydrationCompleted => (bytes, 0),
-        _ => (0, bytes),
-    };
-    let cause = payload_str(event, "cause").unwrap_or_else(|| event_name_label(event.name));
-    vec![HydrationProgress {
-        project_id: event.project_id.clone(),
-        bytes_done,
-        bytes_remaining,
-        cause,
-    }]
-}
-
-pub(super) fn payload_u64(event: &bowline_core::events::WorkspaceEvent, key: &str) -> u64 {
-    event
-        .payload
-        .get(key)
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0)
-}
-
-pub(super) fn payload_str(
-    event: &bowline_core::events::WorkspaceEvent,
-    key: &str,
-) -> Option<String> {
-    event
-        .payload
-        .get(key)
-        .and_then(|value| value.as_str())
-        .map(ToOwned::to_owned)
 }

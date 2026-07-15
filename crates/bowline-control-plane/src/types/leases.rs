@@ -1,67 +1,45 @@
-use crate::{CompactEventKind, ControlPlaneTimestamp, ObjectPointer};
+use bowline_core::ids::{DeviceId, LeaseId, ProjectId, SnapshotId, WorkViewId, WorkspaceId};
 
+use crate::{CompactEventKind, ControlPlaneTimestamp};
+
+// Slim cross-device handoff / session record. The supervisor dispatch/output
+// states were removed with the agent-supervisor stack: a handoff lease is simply
+// one whose `target_device_ref` names a trusted host that materializes the
+// workspace on arrival. `status_code` carries the non-supervisor handoff marker
+// (e.g. "pending" then "handoff-materialized").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lease {
-    pub lease_id: String,
-    pub workspace_id: String,
-    pub project_id: String,
-    pub device_id: String,
+    pub lease_id: LeaseId,
+    pub workspace_id: WorkspaceId,
+    pub project_id: ProjectId,
+    pub device_id: DeviceId,
+    pub target_device_ref: Option<String>,
+    pub origin_device_ref: Option<String>,
     pub write_target_mode: LeaseWriteTargetMode,
-    pub work_view_id: Option<String>,
-    pub base_snapshot_id: String,
+    pub work_view_id: Option<WorkViewId>,
+    pub base_snapshot_id: SnapshotId,
+    pub task_label: Option<String>,
     pub version: u64,
-    pub execution_state: LeaseExecutionState,
-    pub output_state: LeaseOutputState,
+    pub session_state: LeaseSessionState,
     pub status_code: String,
-    pub output_object: Option<ObjectPointer>,
-    pub audit_object: Option<ObjectPointer>,
     pub created_at: ControlPlaneTimestamp,
     pub updated_at: ControlPlaneTimestamp,
     pub expires_at: ControlPlaneTimestamp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LeaseExecutionState {
-    Active,
-    Blocked,
+pub enum LeaseSessionState {
+    Provisional,
+    Open,
     Completed,
-    Expired,
-    Revoked,
 }
 
-impl LeaseExecutionState {
+impl LeaseSessionState {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Active => "active",
-            Self::Blocked => "blocked",
+            Self::Provisional => "provisional",
+            Self::Open => "open",
             Self::Completed => "completed",
-            Self::Expired => "expired",
-            Self::Revoked => "revoked",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LeaseOutputState {
-    Empty,
-    Dirty,
-    ReviewReady,
-    Accepted,
-    Discarded,
-    Conflicted,
-    Retained,
-}
-
-impl LeaseOutputState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Empty => "empty",
-            Self::Dirty => "dirty",
-            Self::ReviewReady => "review-ready",
-            Self::Accepted => "accepted",
-            Self::Discarded => "discarded",
-            Self::Conflicted => "conflicted",
-            Self::Retained => "retained",
         }
     }
 }
@@ -83,31 +61,28 @@ impl LeaseWriteTargetMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseCreate {
-    pub workspace_id: String,
-    pub lease_id: String,
-    pub project_id: String,
-    pub device_id: String,
+    pub workspace_id: WorkspaceId,
+    pub lease_id: LeaseId,
+    pub project_id: ProjectId,
+    pub device_id: DeviceId,
+    pub target_device_ref: Option<String>,
+    pub origin_device_ref: Option<String>,
     pub write_target_mode: LeaseWriteTargetMode,
-    pub work_view_id: Option<String>,
-    pub base_snapshot_id: String,
-    pub execution_state: LeaseExecutionState,
-    pub output_state: LeaseOutputState,
+    pub work_view_id: Option<WorkViewId>,
+    pub base_snapshot_id: SnapshotId,
+    pub task_label: Option<String>,
+    pub session_state: LeaseSessionState,
     pub status_code: String,
-    pub output_object: Option<ObjectPointer>,
-    pub audit_object: Option<ObjectPointer>,
     pub expires_at: ControlPlaneTimestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseUpdate {
-    pub workspace_id: String,
-    pub lease_id: String,
+    pub workspace_id: WorkspaceId,
+    pub lease_id: LeaseId,
     pub expected_version: u64,
-    pub updated_by_device_id: String,
-    pub execution_state: Option<LeaseExecutionState>,
-    pub output_state: Option<LeaseOutputState>,
+    pub updated_by_device_id: DeviceId,
+    pub session_state: Option<LeaseSessionState>,
     pub status_code: Option<String>,
-    pub output_object: Option<ObjectPointer>,
-    pub audit_object: Option<ObjectPointer>,
     pub event_kind: Option<CompactEventKind>,
 }

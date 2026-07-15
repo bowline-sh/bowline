@@ -7,75 +7,32 @@ import type {
   RevokedDevice,
 } from "./devices";
 import type { WorkspaceEvent } from "./events";
-import type { CONTRACT_VERSION, EventId, ProjectId, WorkspaceId } from "./ids";
+import type { StatusSummary } from "./generated/wire-contracts";
 import type {
-  AccessFlag,
-  MaterializationMode,
-  PathClassification,
-} from "./policy";
+  CONTRACT_VERSION,
+  DeviceId,
+  EventId,
+  ProjectId,
+  SnapshotId,
+  WorkspaceId,
+} from "./ids";
 import type {
+  DeviceApprovalAffordance,
   EventWatermarks,
-  HydrationBudgetStatus,
-  HydrationProgress,
-  IndexStatus,
+  FreshnessVerdict,
   LimitedCapability,
-  ObservedWorkspaceSummary,
-  SafeAction,
+  ProjectSetupReadiness,
+  RepairCommand,
+  StaleBaseStatus,
   StatusItem,
   StatusScope,
   SyncQueueStatus,
   WorkspaceStatus,
   WorkspaceSummary,
 } from "./status";
+import type { CommandName } from "./command-names";
 
-export const COMMAND_NAMES = [
-  "help",
-  "version",
-  "contract",
-  "update",
-  "unknown",
-  "login",
-  "logout",
-  "approve",
-  "deny",
-  "revoke",
-  "recover",
-  "init",
-  "setup",
-  "prewarm",
-  "status",
-  "search",
-  "symbols",
-  "explain",
-  "devices",
-  "events",
-  "actions",
-  "tui",
-  "resolve",
-  "workon",
-  "work",
-  "diff",
-  "review",
-  "accept",
-  "discard",
-  "restore",
-  "cleanup",
-  "agent start",
-  "agent context",
-  "agent prompt",
-  "agent publish",
-  "agent complete",
-  "agent budget",
-  "daemon start",
-  "daemon stop",
-  "daemon status",
-  "daemon install",
-  "daemon restart",
-  "daemon uninstall",
-  "diagnostics collect",
-  "connect",
-] as const;
-export type CommandName = (typeof COMMAND_NAMES)[number];
+export { COMMAND_NAMES, type CommandName } from "./command-names";
 
 type CommandErrorName = CommandName;
 
@@ -95,6 +52,12 @@ export type CliCommandOption = {
   readonly repeatable: boolean;
 };
 
+export type CliCommandPositional = {
+  readonly name: string;
+  readonly required: boolean;
+  readonly repeatable: boolean;
+};
+
 export type CliCommandExample = {
   readonly command: string;
   readonly summary: string;
@@ -110,16 +73,15 @@ export type BoundedOutputControls = {
 export type CliCommandDescriptor = {
   readonly group: string;
   readonly name: string;
-  readonly aliases?: readonly string[];
   readonly summary: string;
   readonly usage: string;
+  readonly positionals: readonly CliCommandPositional[];
   readonly options?: readonly CliCommandOption[];
   readonly examples?: readonly CliCommandExample[];
   readonly jsonOutputType: string;
   readonly sideEffectLevel: string;
   readonly supportsJson: boolean;
   readonly supportsDryRun: boolean;
-  readonly supportsIdempotencyKey: boolean;
   readonly boundedOutput?: BoundedOutputControls;
   readonly relatedCommands?: readonly string[];
 };
@@ -157,16 +119,130 @@ export type ContractFixtureDescriptor = {
   readonly outputType: string;
 };
 
-export type ContractCommandOutput = CommandOutputBase<"contract"> & {
+export type ContractExitCodes = {
+  readonly success: 0;
+  readonly usageError: 2;
+  readonly retryableRuntimeError: 3;
+  readonly userActionRequired: 4;
+  readonly blockedOrDegradedBySafety: 5;
+};
+
+export type ContractCommandEnvelope = CommandOutputBase<"contract"> & {
   readonly cliVersion: string;
   readonly protocol: string;
   readonly protocolVersion: number;
   readonly eventSchemaVersion: number;
   readonly package: string;
   readonly packageContractSource: string;
+  readonly exitCodes: ContractExitCodes;
+};
+
+export type ContractCommandOutput = ContractCommandEnvelope & {
   readonly commandOutputTypes: readonly string[];
   readonly commands: readonly CliCommandDescriptor[];
   readonly fixtures: readonly ContractFixtureDescriptor[];
+};
+
+export type ScopedContractCommandOutput = ContractCommandEnvelope & {
+  readonly descriptor: CliCommandDescriptor;
+};
+
+export type CliCommandSummary = Pick<
+  CliCommandDescriptor,
+  | "name"
+  | "group"
+  | "summary"
+  | "sideEffectLevel"
+  | "supportsJson"
+  | "supportsDryRun"
+>;
+
+export type ContractSummaryCommandOutput = ContractCommandEnvelope & {
+  readonly commands: readonly CliCommandSummary[];
+};
+
+export const HANDOFF_AGENTS = ["codex", "claude"] as const;
+export type HandoffAgent = (typeof HANDOFF_AGENTS)[number];
+export const HANDOFF_OUTCOMES = [
+  "dry_run",
+  "confirmation_required",
+  "receipt",
+  "error",
+] as const;
+export type HandoffOutcome = (typeof HANDOFF_OUTCOMES)[number];
+export const HANDOFF_SESSION_MODES = [
+  "resume_existing",
+  "fresh_prompt",
+] as const;
+export type HandoffSessionMode = (typeof HANDOFF_SESSION_MODES)[number];
+
+export type HandoffCandidate = {
+  readonly agent: HandoffAgent;
+  readonly sessionId: string;
+  readonly sourcePath: string;
+  readonly projectPath?: string;
+  readonly modifiedAtUnixSeconds: number;
+  readonly selected: boolean;
+  readonly skippedReason?: string;
+};
+
+export type HandoffTransferPlan = {
+  readonly encrypted: boolean;
+  readonly durableCloudStorage: boolean;
+  readonly installsByteExactSessionFiles: boolean;
+  readonly remoteInstallerCommand: string;
+};
+
+export type HandoffPlan = {
+  readonly target: string;
+  readonly agent: HandoffAgent;
+  readonly sessionMode: HandoffSessionMode;
+  readonly projectPath: string;
+  readonly remoteProjectPath: string;
+  readonly tmuxSession: string;
+  readonly launchCommand: string;
+  readonly transfer: HandoffTransferPlan;
+};
+
+export type HandoffReceipt = {
+  readonly agent: HandoffAgent;
+  readonly target: string;
+  readonly remoteProjectPath: string;
+  readonly tmuxSession: string;
+  readonly attachCommand: string;
+  readonly monitoring: boolean;
+  readonly workspaceLock: boolean;
+  readonly sameSessionConcurrencyRisk: boolean;
+  readonly sessionMode: HandoffSessionMode;
+  readonly agentRuntimeVerified: boolean;
+  readonly note: string;
+};
+
+export type HandoffInstallReceipt = {
+  readonly agent: HandoffAgent;
+  readonly sessionMode: HandoffSessionMode;
+  readonly sessionId?: string;
+  readonly installedFiles: readonly string[];
+  readonly promptFile?: string;
+  readonly remoteProjectPath: string;
+};
+
+export type HandoffError = {
+  readonly code: string;
+  readonly message: string;
+  readonly recoverability: string;
+};
+
+export type HandoffCommandOutput = CommandOutputBase<"handoff"> & {
+  readonly outcome: HandoffOutcome;
+  readonly target: string;
+  readonly projectPath: string;
+  readonly candidates: readonly HandoffCandidate[];
+  readonly selected?: HandoffCandidate;
+  readonly plan?: HandoffPlan;
+  readonly receipt?: HandoffReceipt;
+  readonly error?: HandoffError;
+  readonly nextActions: readonly RepairCommand[];
 };
 
 export type DryRunCommandOutput = CommandOutputBase<CommandName> & {
@@ -177,17 +253,53 @@ export type DryRunCommandOutput = CommandOutputBase<CommandName> & {
   readonly wouldChange: readonly string[];
   readonly warnings?: readonly string[];
   readonly applyCommand: string;
-  readonly nextActions: readonly SafeAction[];
+  readonly nextActions: readonly RepairCommand[];
+};
+
+export type NamespaceLifecycleAction =
+  | "forget-local"
+  | "archive"
+  | "restore"
+  | "purge-pending"
+  | "purge-cancel";
+
+export type NamespaceLifecyclePreview = {
+  readonly paths: readonly string[];
+  readonly byteTotal: number;
+  readonly packCount: number;
+  readonly graceDays?: number;
+  readonly purgeAfter?: string;
+};
+
+export type NamespaceLifecycleCommandOutput = CommandOutputBase<
+  "forget-local" | "archive" | "purge"
+> & {
+  readonly workspaceId: WorkspaceId;
+  readonly projectId: ProjectId;
+  readonly projectPath: string;
+  readonly action: NamespaceLifecycleAction;
+  readonly preview: NamespaceLifecyclePreview;
+  readonly changed: boolean;
+  readonly nextActions: readonly RepairCommand[];
 };
 
 export type DaemonProcessOutput = {
   readonly state: string;
   readonly socket: string;
+  readonly syncState?: DaemonSyncState;
+  readonly unavailableBecause?: string;
   readonly protocol?: string;
   readonly version?: number;
   readonly daemonVersion?: string;
   readonly pid?: number;
 };
+
+export const DAEMON_SYNC_STATES = [
+  "limited",
+  "degraded",
+  "unclassified",
+] as const;
+export type DaemonSyncState = (typeof DAEMON_SYNC_STATES)[number];
 
 export type DaemonServiceState = {
   readonly state: string;
@@ -223,12 +335,12 @@ export type DiagnosticsCollectCommandOutput =
 export type LoginCommandOutput = CommandOutputBase<"login"> & {
   readonly account: AccountLoginState;
   readonly localDevice?: DeviceRecord;
-  readonly nextActions: readonly SafeAction[];
+  readonly nextActions: readonly RepairCommand[];
 };
 
 export type LogoutCommandOutput = CommandOutputBase<"logout"> & {
   readonly signedOut: boolean;
-  readonly nextActions: readonly SafeAction[];
+  readonly nextActions: readonly RepairCommand[];
 };
 
 export type StatusCommandOutput = CommandOutputBase<"status"> & {
@@ -236,15 +348,19 @@ export type StatusCommandOutput = CommandOutputBase<"status"> & {
   readonly requestedPath?: string;
   readonly resolvedWorkspaceRoot?: string;
   readonly workspaceSummary?: WorkspaceSummary;
-  readonly index?: IndexStatus;
-  readonly hydrationBudget?: HydrationBudgetStatus;
-  readonly hydrationProgress?: readonly HydrationProgress[];
+  readonly setupReadiness?: ProjectSetupReadiness;
   readonly syncQueue?: SyncQueueStatus;
+  readonly freshness: FreshnessVerdict;
+  readonly staleBases?: readonly StaleBaseStatus[];
   readonly status: WorkspaceStatus;
+  readonly statusSummary: StatusSummary;
   readonly items: readonly StatusItem[];
   readonly limits: readonly LimitedCapability[];
   readonly eventWatermarks: EventWatermarks;
-  readonly nextActions: readonly SafeAction[];
+  readonly nextActions: readonly RepairCommand[];
+  // Sensitive local trust material; present only on trusted local status
+  // surfaces and omitted from hosted/persisted payloads.
+  readonly deviceApprovals?: readonly DeviceApprovalAffordance[];
 };
 
 export type RootChoiceState =
@@ -253,56 +369,125 @@ export type RootChoiceState =
   | "default-selected"
   | "ambiguous";
 
-export type InitCommandOutput = CommandOutputBase<"login" | "init"> & {
-  readonly workspaceId: WorkspaceId;
-  readonly root: string;
-  readonly rootChoice: RootChoiceState;
-  readonly observedOnly: boolean;
-  readonly changedWorkspaceFiles: boolean;
-  readonly createdRoot: boolean;
-  readonly scanSummary: ObservedWorkspaceSummary;
-  readonly nonActions: readonly string[];
-  readonly nextActions: readonly SafeAction[];
-};
+export type SetupProjectState = "hot" | "setup-blocked" | "no-setup-needed";
 
-export type PrewarmCommandState = "hot" | "setup-blocked" | "no-setup-needed";
-
-export type PrewarmCommandOutcome = {
+export type SetupProjectOutcome = {
   readonly workspaceId: WorkspaceId;
   readonly projectId: ProjectId;
   readonly projectPath: string;
-  readonly state: PrewarmCommandState;
+  readonly state: SetupProjectState;
   readonly receiptIds: readonly string[];
   readonly redactedSummary: string;
 };
 
-export type PrewarmCommandOutput = CommandOutputBase<"setup" | "prewarm"> & {
-  readonly outcome: PrewarmCommandOutcome;
+export type SetupProjectOutput = CommandOutputBase<"setup"> & {
+  readonly outcome: SetupProjectOutcome;
 };
 
-export type ExplainCommandOutput = CommandOutputBase<"explain"> & {
-  readonly path: string;
-  readonly classification: PathClassification;
-  readonly mode: MaterializationMode;
-  readonly access: readonly AccessFlag[];
-  readonly matchedRule: string;
-  readonly ruleSource: string;
-  readonly risk: string;
-  readonly observedState: string;
-  readonly advisoryNotes?: readonly string[];
-  readonly summary: string;
-  readonly nextActions: readonly SafeAction[];
+export type SetupCommandOutput = CommandOutputBase<"setup"> & {
+  readonly workspaceId: WorkspaceId;
+  readonly root: string;
+  readonly rootChoice: RootChoiceState;
+  readonly login: AccountLoginState;
+  readonly nextActions: readonly RepairCommand[];
+  readonly connectedHost?: string;
 };
 
-export type ActionsCommandOutput = CommandOutputBase<"actions"> & {
-  readonly scope?: StatusScope;
-  readonly status: WorkspaceStatus;
-  readonly actions: readonly SafeAction[];
-  readonly nonActions: readonly string[];
+export type HistoryScopeKind = "project" | "path";
+
+export type HistoryScope = {
+  readonly kind: HistoryScopeKind;
+  readonly root: string;
+  readonly projectPath: string;
+  readonly projectId: ProjectId;
+  readonly path?: string;
+};
+
+export type HistoryCause =
+  | "sync"
+  | "accept"
+  | "conflict-resolution"
+  | "restore"
+  | "lifecycle"
+  | "unknown";
+
+export type HistoryActorKind = "human" | "agent" | "daemon" | "control-plane";
+
+export type HistoryActor = {
+  readonly kind: HistoryActorKind;
+  readonly displayName?: string;
+  readonly deviceId?: DeviceId;
+};
+
+export type HistoryChangeSummary = {
+  readonly filesChanged: number;
+  readonly filesAdded: number;
+  readonly filesModified: number;
+  readonly filesDeleted: number;
+  readonly filesRenamed: number;
+  readonly binaryOrLargeFilesChanged: number;
+  readonly envKeysChanged: number;
+  readonly pathsSample: readonly string[];
+};
+
+export type RestorePoint = {
+  readonly id: string;
+  readonly snapshotId: SnapshotId;
+  readonly baseSnapshotId?: SnapshotId;
+  readonly occurredAt: string;
+  readonly label: string;
+  readonly cause: HistoryCause;
+  readonly actor?: HistoryActor;
+  readonly summary: HistoryChangeSummary;
+  readonly eventIds: readonly EventId[];
+};
+
+export type PathHistoryOperation =
+  | "create"
+  | "modify"
+  | "delete"
+  | "rename"
+  | "policy"
+  | "unknown";
+
+export type PathHistoryEntry = {
+  readonly restorePointId: string;
+  readonly snapshotId: SnapshotId;
+  readonly occurredAt: string;
+  readonly operation: PathHistoryOperation;
+  readonly sourcePath?: string;
+  readonly actor?: HistoryActor;
+  readonly causationId?: EventId;
+  readonly eventIds: readonly EventId[];
+};
+
+export type HistoryEndpoint = {
+  readonly restorePointId?: string;
+  readonly snapshotId: SnapshotId;
+};
+
+export type HistoryCommandOutput = CommandOutputBase<"history"> & {
+  readonly workspaceId: WorkspaceId;
+  readonly projectId: ProjectId;
+  readonly scope: HistoryScope;
+  readonly restorePoints: readonly RestorePoint[];
+  readonly pathEntries: readonly PathHistoryEntry[];
+  readonly from?: HistoryEndpoint;
+  readonly to?: HistoryEndpoint;
+  readonly diffSummary?: HistoryChangeSummary;
+  readonly nextCursor?: string;
+  readonly truncated: boolean;
+  readonly nextActions: readonly RepairCommand[];
 };
 
 export type DevicesCommandOutput = CommandOutputBase<
-  "approve" | "deny" | "revoke" | "devices"
+  | "device approve"
+  | "device deny"
+  | "device revoke"
+  | "device list"
+  | "device request"
+  | "device accept"
+  | "lease join"
 > & {
   readonly action:
     | "list"
@@ -320,7 +505,7 @@ export type DevicesCommandOutput = CommandOutputBase<
   readonly deniedRequest?: DeviceApprovalRequest;
   readonly revokedDevice?: RevokedDevice;
   readonly recoveryKey?: RecoveryKeyState;
-  readonly nextActions: readonly SafeAction[];
+  readonly nextActions: readonly RepairCommand[];
 };
 
 export type RecoveryCommandOutput = CommandOutputBase<"recover"> & {
@@ -328,7 +513,7 @@ export type RecoveryCommandOutput = CommandOutputBase<"recover"> & {
   readonly recoveryKey: RecoveryKeyState;
   readonly deviceRequest?: DeviceApprovalRequest;
   readonly encryptedGrant?: EncryptedDeviceGrant;
-  readonly nextActions: readonly SafeAction[];
+  readonly nextActions: readonly RepairCommand[];
 };
 
 export type CommandErrorStatus =
@@ -359,7 +544,7 @@ export type CommandErrorOutput = {
   readonly generatedAt: string;
   readonly status: CommandErrorStatus;
   readonly error: CommandError;
-  readonly nextActions?: readonly SafeAction[];
+  readonly nextActions?: readonly RepairCommand[];
 };
 
 export type WatchFrame =

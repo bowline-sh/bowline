@@ -3,6 +3,8 @@ __pycache__/
 node_modules/
 target/
 dist/
+!tests/fixtures/generated-artifacts/apps/web/dist/
+!tests/fixtures/generated-artifacts/apps/web/dist/index.js
 coverage/
 .turbo/
 .build/
@@ -30,6 +32,7 @@ apps/macos-menu-bar/.build/
 .impeccable/
 .tmp/
 *.tsbuildinfo
+!tests/fixtures/generated-artifacts/packages/contracts/tsconfig.tsbuildinfo
 .wrangler/
 .env
 .env.*

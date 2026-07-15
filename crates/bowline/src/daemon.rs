@@ -1,4 +1,5 @@
 use super::*;
+use bowline_core::commands::DaemonSyncState;
 
 pub(super) fn print_unknown_command(command: &str, json: bool) {
     if json {
@@ -18,10 +19,10 @@ pub(super) fn print_unknown_command(command: &str, json: bool) {
                 retry_after_seconds: None,
                 correlation_id: None,
             },
-            next_actions: vec![SafeAction {
-                label: "List bowline commands".to_string(),
-                command: Some("bowline help --json".to_string()),
-            }],
+            next_actions: vec![RepairCommand::inspect(
+                "List bowline commands".to_string(),
+                Some("bowline help --json".to_string()),
+            )],
         });
     } else {
         eprintln!("bowline unknown command: {command}");
@@ -32,33 +33,108 @@ pub(super) fn daemon_command_output(
     command: CommandName,
     generated_at: String,
     socket: &Path,
-    state: &str,
+    state: DaemonProcessState,
     daemon_version: Option<&str>,
     pid: Option<u32>,
     include_protocol: bool,
 ) -> DaemonCommandOutput {
-    DaemonCommandOutput {
-        contract_version: CONTRACT_VERSION,
+    daemon_command_output_with_sync(DaemonCommandOutputParams {
         command,
         generated_at,
-        daemon: daemon_process_output(socket, state, daemon_version, pid, include_protocol),
+        socket,
+        state,
+        sync_state: None,
+        unavailable_because: None,
+        daemon_version,
+        pid,
+        include_protocol,
+    })
+}
+
+struct DaemonCommandOutputParams<'a> {
+    command: CommandName,
+    generated_at: String,
+    socket: &'a Path,
+    state: DaemonProcessState,
+    sync_state: Option<DaemonSyncState>,
+    unavailable_because: Option<String>,
+    daemon_version: Option<&'a str>,
+    pid: Option<u32>,
+    include_protocol: bool,
+}
+
+fn daemon_command_output_with_sync(params: DaemonCommandOutputParams<'_>) -> DaemonCommandOutput {
+    DaemonCommandOutput {
+        contract_version: CONTRACT_VERSION,
+        command: params.command,
+        generated_at: params.generated_at,
+        daemon: daemon_process_output_with_sync(
+            params.socket,
+            params.state,
+            params.sync_state,
+            params.unavailable_because,
+            params.daemon_version,
+            params.pid,
+            params.include_protocol,
+        ),
     }
 }
 
 pub(super) fn daemon_process_output(
     socket: &Path,
-    state: &str,
+    state: DaemonProcessState,
+    daemon_version: Option<&str>,
+    pid: Option<u32>,
+    include_protocol: bool,
+) -> DaemonProcessOutput {
+    daemon_process_output_with_sync(
+        socket,
+        state,
+        None,
+        None,
+        daemon_version,
+        pid,
+        include_protocol,
+    )
+}
+
+fn daemon_process_output_with_sync(
+    socket: &Path,
+    state: DaemonProcessState,
+    sync_state: Option<DaemonSyncState>,
+    unavailable_because: Option<String>,
     daemon_version: Option<&str>,
     pid: Option<u32>,
     include_protocol: bool,
 ) -> DaemonProcessOutput {
     DaemonProcessOutput {
-        state: state.to_string(),
+        state: state.as_str().to_string(),
         socket: socket.display().to_string(),
+        sync_state,
+        unavailable_because,
         protocol: include_protocol.then(|| PROTOCOL.to_string()),
         version: include_protocol.then_some(PROTOCOL_VERSION),
         daemon_version: daemon_version.map(str::to_string),
         pid,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DaemonProcessState {
+    Running,
+    Starting,
+    Stopping,
+    Stopped,
+}
+
+impl DaemonProcessState {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Starting => "starting",
+            Self::Stopping => "stopping",
+            Self::Stopped => "stopped",
+        }
     }
 }
 
@@ -87,14 +163,14 @@ pub(super) fn print_daemon_start(socket: &Path, json: bool) -> ExitCode {
     let workspace_id =
         daemon_workspace_id_for_start().unwrap_or_else(|_| runtime::active_workspace_id());
     match handshake(socket) {
-        Ok(handshake) => {
-            if handshake_sync_workspace_ready_for_start(&handshake, workspace_id.as_str()) {
+        Ok(handshake) => match handshake_start_status(&handshake, workspace_id.as_str()) {
+            DaemonStartHandshakeStatus::Ready => {
                 if json {
                     print_json(&daemon_command_output(
                         CommandName::DaemonStart,
                         generated_at.clone(),
                         socket,
-                        "running",
+                        DaemonProcessState::Running,
                         Some(&handshake.daemon_version),
                         None,
                         true,
@@ -104,9 +180,33 @@ pub(super) fn print_daemon_start(socket: &Path, json: bool) -> ExitCode {
                 }
                 return ExitCode::SUCCESS;
             }
-            let _ = request_shutdown(socket);
-            wait_for_daemon_socket_to_stop(socket, Duration::from_secs(3));
-        }
+            DaemonStartHandshakeStatus::Degraded { state, reason } => {
+                if json {
+                    print_json(&daemon_command_output_with_sync(
+                        DaemonCommandOutputParams {
+                            command: CommandName::DaemonStart,
+                            generated_at: generated_at.clone(),
+                            socket,
+                            state: DaemonProcessState::Running,
+                            sync_state: Some(state),
+                            unavailable_because: Some(reason.clone()),
+                            daemon_version: Some(&handshake.daemon_version),
+                            pid: None,
+                            include_protocol: true,
+                        },
+                    ));
+                } else {
+                    println!("bowline daemon: running, {}: {reason}", state.as_str());
+                    println!("Next: bowline status");
+                    println!("Restart explicitly: bowline daemon restart");
+                }
+                return ExitCode::SUCCESS;
+            }
+            DaemonStartHandshakeStatus::WorkspaceMismatch => {
+                let _ = request_shutdown(socket);
+                wait_for_daemon_socket_to_stop(socket, Duration::from_secs(3));
+            }
+        },
         Err(error) => {
             remove_stale_daemon_socket_after_connect_error(socket, &error);
         }
@@ -119,7 +219,7 @@ pub(super) fn print_daemon_start(socket: &Path, json: bool) -> ExitCode {
                     CommandName::DaemonStart,
                     generated_at,
                     socket,
-                    "starting",
+                    DaemonProcessState::Starting,
                     None,
                     Some(child_id),
                     false,
@@ -153,17 +253,62 @@ pub(super) fn remove_stale_daemon_socket_after_connect_error(socket: &Path, erro
     }
 }
 
-pub(super) fn handshake_sync_workspace_ready_for_start(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum DaemonStartHandshakeStatus {
+    Ready,
+    Degraded {
+        state: DaemonSyncState,
+        reason: String,
+    },
+    WorkspaceMismatch,
+}
+
+pub(super) fn handshake_start_status(
     handshake: &Handshake,
     workspace_id: &str,
-) -> bool {
-    handshake.sync_json.as_deref().is_some_and(|sync| {
-        extract_json_string(sync, "workspaceId").as_deref() == Some(workspace_id)
-            && !matches!(
-                extract_json_string(sync, "state").as_deref(),
-                Some("limited" | "degraded")
-            )
-    })
+) -> DaemonStartHandshakeStatus {
+    let status = handshake.status_json.as_str();
+    let Some(sync_workspace_id) = json_string_field(status, "workspaceId") else {
+        return DaemonStartHandshakeStatus::Degraded {
+            state: DaemonSyncState::Unclassified,
+            reason: "workspace status is unavailable".to_string(),
+        };
+    };
+    if sync_workspace_id != workspace_id {
+        return DaemonStartHandshakeStatus::WorkspaceMismatch;
+    }
+    match json_pointer_string(status, "/status/level").as_deref() {
+        Some("limited") => DaemonStartHandshakeStatus::Degraded {
+            state: DaemonSyncState::Limited,
+            reason: daemon_degraded_reason(status, DaemonSyncState::Limited),
+        },
+        Some("attention") => DaemonStartHandshakeStatus::Degraded {
+            state: DaemonSyncState::Degraded,
+            reason: daemon_degraded_reason(status, DaemonSyncState::Degraded),
+        },
+        _ => DaemonStartHandshakeStatus::Ready,
+    }
+}
+
+fn daemon_degraded_reason(status: &str, state: DaemonSyncState) -> String {
+    json_pointer_string(status, "/status/attentionItems/0")
+        .unwrap_or_else(|| format!("sync state is {}", state.as_str()))
+}
+
+fn json_pointer_string(input: &str, pointer: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(input)
+        .ok()?
+        .pointer(pointer)?
+        .as_str()
+        .map(ToOwned::to_owned)
+}
+
+fn json_string_field(input: &str, field: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(input)
+        .ok()?
+        .get(field)?
+        .as_str()
+        .map(ToOwned::to_owned)
 }
 
 pub(super) fn wait_for_daemon_socket_to_stop(socket: &Path, timeout: Duration) {
@@ -185,7 +330,7 @@ pub(super) fn print_daemon_stop(socket: &Path, json: bool) -> ExitCode {
                     CommandName::DaemonStop,
                     generated_at,
                     socket,
-                    "stopping",
+                    DaemonProcessState::Stopping,
                     None,
                     None,
                     false,
@@ -201,7 +346,7 @@ pub(super) fn print_daemon_stop(socket: &Path, json: bool) -> ExitCode {
                     CommandName::DaemonStop,
                     generated_at,
                     socket,
-                    "stopped",
+                    DaemonProcessState::Stopped,
                     None,
                     None,
                     false,

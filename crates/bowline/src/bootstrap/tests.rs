@@ -1,11 +1,12 @@
 use super::*;
 use std::{cell::RefCell, rc::Rc};
 
-use bowline_control_plane::FakeControlPlaneClient;
+use bowline_control_plane::{DeviceControlPlaneClient, FakeControlPlaneClient};
 use bowline_core::{
     commands::{CONTRACT_VERSION, DeviceCommandAction, DevicesCommandOutput},
-    devices::{DevicePlatform, RecoveryKeyState},
+    devices::{DevicePlatform, DeviceTrustState, RecoveryKeyState},
     ids::{DeviceApprovalRequestId, WorkspaceId},
+    status::RepairCommand,
 };
 use bowline_local::{
     bootstrap::{
@@ -21,6 +22,7 @@ struct FakeBootstrapRunner {
     remote_keychain: FakeKeychain,
     workspace_id: WorkspaceId,
     request_id: Rc<RefCell<Option<DeviceApprovalRequestId>>>,
+    remote_daemon_running: Rc<RefCell<bool>>,
 }
 
 impl ProcessRunner for FakeBootstrapRunner {
@@ -35,7 +37,7 @@ impl ProcessRunner for FakeBootstrapRunner {
         _stdin: &str,
     ) -> Result<ProcessOutput, ProcessError> {
         let command = args.last().cloned().unwrap_or_default();
-        if command.contains("devices request") && command.contains("--json") {
+        if command.contains("device request") && command.contains("--json") {
             let request = bowline_local::trust::create_device_request(
                 &self.control_plane,
                 &self.remote_keychain,
@@ -45,7 +47,9 @@ impl ProcessRunner for FakeBootstrapRunner {
                     device_name: "Remote Linux".to_string(),
                     platform: DevicePlatform::Linux,
                     host: Some("linux-box".to_string()),
+                    lease_id: None,
                     root: Some("~/Code".to_string()),
+                    runtime: None,
                     generated_at: "2026-06-26T12:00:00Z".to_string(),
                 },
             )
@@ -69,7 +73,7 @@ impl ProcessRunner for FakeBootstrapRunner {
                 next_actions: Vec::new(),
             }));
         }
-        if command.contains("devices accept") {
+        if command.contains("device accept") {
             let request_id = self
                 .request_id
                 .borrow()
@@ -85,9 +89,22 @@ impl ProcessRunner for FakeBootstrapRunner {
             .expect("remote accepts grant");
             return Ok(json_output(&serde_json::json!({"ok": true})));
         }
+        if command.contains("daemon stop --json") {
+            *self.remote_daemon_running.borrow_mut() = false;
+            return Ok(json_output(
+                &serde_json::json!({"daemon": {"state": "stopped"}}),
+            ));
+        }
+        if command.contains("daemon start --json") {
+            *self.remote_daemon_running.borrow_mut() = true;
+            return Ok(json_output(
+                &serde_json::json!({"daemon": {"state": "starting"}}),
+            ));
+        }
         if command.contains("daemon status --json") {
+            let running = *self.remote_daemon_running.borrow();
             return Ok(json_output(&serde_json::json!({
-                "daemon": {"state": "running"},
+                "daemon": {"state": if running { "running" } else { "stopped" }},
                 "sync": {
                     "state": "idle",
                     "lastOutcome": "no-changes",
@@ -104,8 +121,7 @@ impl ProcessRunner for FakeBootstrapRunner {
                 }
             })));
         }
-        if command.contains("init ")
-            || command.contains("daemon start --json")
+        if command.contains("setup --root")
             || command.contains("ln -sfn")
             || command.contains("daemon.env")
         {
@@ -241,11 +257,11 @@ fn bootstrap_output_marks_sync_blocked_when_bootstrap_did_not_complete() {
             local_root: Some("~/Code".to_string()),
             generated_at: "2026-06-24T12:00:00Z".to_string(),
             steps: vec![step(
-                "install",
+                BootstrapStepName::Install,
                 BootstrapStepState::Blocked,
                 "install failed",
             )],
-            agent_handoff: None,
+            remote_status_items: Vec::new(),
         },
         None,
         None,
@@ -257,11 +273,11 @@ fn bootstrap_output_marks_sync_blocked_when_bootstrap_did_not_complete() {
     assert_eq!(output.next_required_phase, None);
     assert!(output.remote_status.needs_attention());
     assert_eq!(
-        output.next_actions,
-        vec![SafeAction {
-            label: "Retry remote bootstrap".to_string(),
-            command: Some("bowline connect 'linux-box' --root '~/Code' --json".to_string()),
-        }]
+        output.repair_actions,
+        vec![RepairCommand::mutating(
+            "Retry remote bootstrap",
+            Some("bowline connect linux-box --root '~/Code' --json".to_string())
+        )]
     );
 }
 
@@ -274,11 +290,11 @@ fn bootstrap_output_keeps_trust_separate_from_sync_status() {
             local_root: Some("~/Code".to_string()),
             generated_at: "2026-06-24T12:00:00Z".to_string(),
             steps: vec![step(
-                "sync",
+                BootstrapStepName::Sync,
                 BootstrapStepState::Blocked,
                 "daemon unavailable",
             )],
-            agent_handoff: None,
+            remote_status_items: Vec::new(),
         },
         None,
         None,
@@ -292,12 +308,12 @@ fn bootstrap_output_keeps_trust_separate_from_sync_status() {
     assert!(output.trusted);
     assert_eq!(output.sync, BootstrapSyncState::Blocked);
     assert_eq!(output.next_required_phase, None);
-    assert!(output.next_actions.iter().any(|action| {
+    assert!(output.repair_actions.iter().any(|action| {
         action.label == "Inspect remote daemon status"
             && action.command.as_deref()
                 == Some(ssh_command("linux-box", "bowline daemon status --json").as_str())
     }));
-    assert!(output.next_actions.iter().any(|action| {
+    assert!(output.repair_actions.iter().any(|action| {
         action.label == "Inspect remote status"
             && action.command.as_deref()
                 == Some(ssh_command("linux-box", "bowline status --root ~/Code --json").as_str())
@@ -305,15 +321,19 @@ fn bootstrap_output_keeps_trust_separate_from_sync_status() {
 }
 
 #[test]
-fn bootstrap_output_returns_agent_handoff_actions_when_ready() {
+fn bootstrap_output_ready_surfaces_inspect_without_agent_launch() {
     let output = bootstrap_output(
         BootstrapOutputBase {
             host: "linux-box".to_string(),
             root: "~/Code".to_string(),
             local_root: Some("~/Code".to_string()),
             generated_at: "2026-06-24T12:00:00Z".to_string(),
-            steps: vec![step("sync", BootstrapStepState::Completed, "sync ready")],
-            agent_handoff: None,
+            steps: vec![step(
+                BootstrapStepName::Sync,
+                BootstrapStepState::Completed,
+                "sync ready",
+            )],
+            remote_status_items: Vec::new(),
         },
         None,
         None,
@@ -322,24 +342,19 @@ fn bootstrap_output_returns_agent_handoff_actions_when_ready() {
     );
 
     assert_eq!(output.sync, BootstrapSyncState::Ready);
-    assert!(output.next_actions.iter().any(|action| {
+    assert!(output.repair_actions.iter().any(|action| {
         action.label == "Inspect remote status"
             && action.command.as_deref()
                 == Some(ssh_command("linux-box", "bowline status --root ~/Code --json").as_str())
     }));
-    assert!(output.next_actions.iter().any(|action| {
-        action.label == "Inspect remote next actions"
-            && action.command.as_deref()
-                == Some(ssh_command("linux-box", "bowline status --root ~/Code --json").as_str())
-    }));
-    assert!(output.next_actions.iter().any(|action| {
-            action.label == "Start agent work in a project"
-                && action.command.as_deref()
-                    == Some(ssh_command(
-                        "linux-box",
-                        "cd ~/Code/<project> && bowline agent start . --task '<task>' --base latest-workspace --hydrate-budget 512MiB --json",
-                    ).as_str())
-        }));
+    // Bootstrap no longer emits agent-launch actions; the host materializes the
+    // workspace and the agent runtime drives the work.
+    assert!(
+        !output
+            .repair_actions
+            .iter()
+            .any(|action| action.label.to_lowercase().contains("agent"))
+    );
 }
 
 #[test]
@@ -351,22 +366,27 @@ fn blocked_remote_agent_handoff_points_at_conflict_resolution() {
             local_root: Some("~/Code".to_string()),
             generated_at: "2026-06-24T12:00:00Z".to_string(),
             steps: vec![step(
-                "agent-lease",
+                BootstrapStepName::AgentLease,
                 BootstrapStepState::Blocked,
                 "Remote agent start failed: conflicts need attention",
             )],
-            agent_handoff: Some(BootstrapAgentHandoff {
-                project: "foo".to_string(),
-                task: "implement the thing".to_string(),
-                agent: Some("codex".to_string()),
+            remote_status_items: vec![StatusItem {
+                kind: StatusItemKind::Conflict,
+                summary: "1 unresolved conflict needs attention".to_string(),
+                subject: None,
+                path: None,
+                classification: None,
+                mode: None,
+                access: Vec::new(),
+                event_id: None,
+                event_name: None,
+                device_id: None,
                 lease_id: None,
-                write_target_mode: None,
-                write_target_path: None,
-                work_view_id: None,
-                work_view_path: None,
-                launched: false,
-                accepted: false,
-            }),
+                project_id: None,
+                snapshot_id: None,
+                policy_version: None,
+                env_record_id: None,
+            }],
         },
         None,
         None,
@@ -378,18 +398,25 @@ fn blocked_remote_agent_handoff_points_at_conflict_resolution() {
     );
 
     assert_eq!(output.sync, BootstrapSyncState::Blocked);
-    assert!(output.next_actions.iter().any(|action| {
+    assert!(output.repair_actions.iter().any(|action| {
         action.label == "Resolve remote conflicts"
             && action.command.as_deref()
                 == Some(ssh_command("linux-box", "bowline resolve ~/Code --json").as_str())
     }));
-    assert!(output.next_actions.iter().any(|action| {
-        action.label == "Start remote agent work"
-            && action.command.as_deref().is_some_and(|command| {
-                command.contains("bowline agent start foo")
-                    && command.contains("implement the thing")
-            })
-    }));
+    assert!(
+        output
+            .repair_actions
+            .iter()
+            .any(|action| action.label == "Retry remote bootstrap")
+    );
+    // A blocked handoff is repaired by resolving conflicts / retrying, never by an
+    // agent-launch action.
+    assert!(
+        !output
+            .repair_actions
+            .iter()
+            .any(|action| action.label == "Start remote agent work")
+    );
 }
 
 #[test]
@@ -401,11 +428,11 @@ fn bootstrap_output_returns_local_approval_recovery_action() {
             local_root: Some("~/Code".to_string()),
             generated_at: "2026-06-24T12:00:00Z".to_string(),
             steps: vec![step(
-                "approve",
+                BootstrapStepName::Approve,
                 BootstrapStepState::Blocked,
                 "key store locked",
             )],
-            agent_handoff: None,
+            remote_status_items: Vec::new(),
         },
         None,
         None,
@@ -414,11 +441,11 @@ fn bootstrap_output_returns_local_approval_recovery_action() {
     );
 
     assert_eq!(output.sync, BootstrapSyncState::Blocked);
-    assert!(output.next_actions.iter().any(|action| {
+    assert!(output.repair_actions.iter().any(|action| {
         action.label == "Inspect local device requests"
             && action.command.as_deref() == Some("bowline status --root ~/Code --json")
     }));
-    assert!(output.next_actions.iter().any(|action| {
+    assert!(output.repair_actions.iter().any(|action| {
         action.label == "Retry remote bootstrap"
             && action.command.as_deref()
                 == Some("bowline connect 'linux box' --root '/workspace/user/Code Projects' --json")
@@ -467,11 +494,21 @@ fn remote_bootstrap_secrets_require_durable_account_session() {
     let without_any_durable_auth = remote_bootstrap_secret_env_from(None, None);
     assert!(remote_bootstrap_auth_error(&without_any_durable_auth));
 
-    let with_session = remote_bootstrap_secret_env_from(Some("bowline-session".to_string()), None);
+    let with_session = remote_bootstrap_secret_env_from(
+        Some(runtime::AccountSessionRevocation {
+            session_id: "bowline-session".to_string(),
+            revocation_token: "bowline-revoke".to_string(),
+        }),
+        None,
+    );
     assert!(!remote_bootstrap_auth_error(&with_session));
     assert!(with_session.contains(&(
         "BOWLINE_ACCOUNT_SESSION_ID".to_string(),
         "bowline-session".to_string()
+    )));
+    assert!(with_session.contains(&(
+        "BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN".to_string(),
+        "bowline-revoke".to_string()
     )));
     assert!(
         !with_session
@@ -480,7 +517,10 @@ fn remote_bootstrap_secrets_require_durable_account_session() {
     );
 
     let with_control = remote_bootstrap_secret_env_from(
-        Some("bowline-session".to_string()),
+        Some(runtime::AccountSessionRevocation {
+            session_id: "bowline-session".to_string(),
+            revocation_token: "bowline-revoke".to_string(),
+        }),
         Some("durable-control".to_string()),
     );
 
@@ -501,7 +541,7 @@ fn remote_bootstrap_secrets_require_durable_account_session() {
 }
 
 #[test]
-fn fake_ssh_bootstrap_completes_device_trust_runs_agent_and_completes_direct_lease() {
+fn fake_ssh_bootstrap_completes_device_trust_and_prepares_agent_lease() {
     let control_plane = FakeControlPlaneClient::default();
     let workspace_id = WorkspaceId::new("ws_agent_native_fake_bootstrap");
     control_plane.create_workspace(workspace_id.as_str());
@@ -521,10 +561,11 @@ fn fake_ssh_bootstrap_completes_device_trust_runs_agent_and_completes_direct_lea
         remote_keychain: FakeKeychain::default(),
         workspace_id: workspace_id.clone(),
         request_id: Rc::new(RefCell::new(None)),
+        remote_daemon_running: Rc::new(RefCell::new(false)),
     };
-    let output = run_after_install(
-        &runner,
-        BootstrapSshArgs {
+    let output = run_after_install(AfterInstallInput {
+        runner: &runner,
+        args: BootstrapSshArgs {
             host: "linux-box".to_string(),
             root: "~/Code".to_string(),
             artifact: None,
@@ -532,13 +573,13 @@ fn fake_ssh_bootstrap_completes_device_trust_runs_agent_and_completes_direct_lea
             task: Some("implement the thing".to_string()),
             agent: Some("codex".to_string()),
         },
-        "2026-06-26T12:00:00Z".to_string(),
-        vec![step(
-            "install",
+        generated_at: "2026-06-26T12:00:00Z".to_string(),
+        steps: vec![step(
+            BootstrapStepName::Install,
             BootstrapStepState::Completed,
             "Installed fake bowline artifacts.",
         )],
-        RemoteBowlineInstall {
+        install: RemoteBowlineInstall {
             platform: RemotePlatform {
                 os: "linux".to_string(),
                 arch: "x86_64".to_string(),
@@ -548,12 +589,12 @@ fn fake_ssh_bootstrap_completes_device_trust_runs_agent_and_completes_direct_lea
             artifact_sha256: "0123456789abcdef".repeat(4),
             daemon_artifact_sha256: "fedcba9876543210".repeat(4),
         },
-        &control_plane,
-        &local_keychain,
-        workspace_id.clone(),
-        DeviceId::new("local-codex"),
-        Vec::new(),
-    );
+        control_plane: &control_plane,
+        key_store: &local_keychain,
+        workspace_id: workspace_id.clone(),
+        device_id: DeviceId::new("local-codex"),
+        remote_secret_env: Vec::new(),
+    });
 
     assert!(output.trusted);
     assert_eq!(output.sync, BootstrapSyncState::Ready);
@@ -573,35 +614,28 @@ fn fake_ssh_bootstrap_completes_device_trust_runs_agent_and_completes_direct_lea
         "remote-linux"
     );
     assert!(output.steps.iter().any(|step| {
-        step.name == "agent-lease"
+        step.name == BootstrapStepName::AgentLease
             && step.state == BootstrapStepState::Completed
             && step.summary.contains("lease-remote-codex")
+            && step.summary.contains("Prepared remote agent work")
     }));
-    assert!(output.steps.iter().any(|step| {
-        step.name == "agent-run"
-            && step.state == BootstrapStepState::Completed
-            && step.summary.contains("Codex finished")
-    }));
-    assert!(output.steps.iter().any(|step| {
-        step.name == "agent-complete"
-            && step.state == BootstrapStepState::Completed
-            && step.summary.contains("Completed direct remote lease")
-    }));
+    // Bootstrap prepares the handoff lease and stops; it never launches, completes,
+    // or accepts the agent, so no agent-launch repair actions are emitted.
     assert!(
         !output
-            .next_actions
+            .repair_actions
             .iter()
             .any(|action| action.label.contains("Launch Codex"))
     );
     assert!(
         !output
-            .next_actions
+            .repair_actions
             .iter()
             .any(|action| action.label.contains("Copy prompt"))
     );
 
     let trust = control_plane
-        .list_device_trust(workspace_id.as_str())
+        .list_device_trust(&workspace_id)
         .expect("trust list");
     assert!(trust.pending_requests.is_empty());
     assert!(trust.authorized_devices.iter().any(|device| {
@@ -636,7 +670,9 @@ fn remote_device_trust_requires_exact_authorized_device() {
             device_name: "Linux Server".to_string(),
             platform: bowline_core::devices::DevicePlatform::Linux,
             host: Some("linux-server".to_string()),
+            lease_id: None,
             root: Some("~/Code".to_string()),
+            runtime: None,
             generated_at: "2026-06-24T12:00:00Z".to_string(),
         },
     )

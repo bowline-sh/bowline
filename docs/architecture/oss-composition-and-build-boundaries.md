@@ -56,7 +56,6 @@ work.
 | Recovery keys                 | Generated word-based keys, CSPRNG entropy, checksum-protected word lists, OS keychain storage for device private keys                                      | Avoid raw key copying without relying on user-chosen phrases or default server-side escrow.                      |
 | Setup recipes and receipts    | `.bowlinesetup`, package-manager and toolchain detection, mise/asdf/Volta/direnv/devcontainer import, lockfile-aware install runners                       | Make normal commands work without manual setup on each machine while avoiding broad background script execution. |
 | Policy matching               | ripgrep `ignore` crate, glob libraries                                                                                                                     | Reuse matching; build the policy semantics ourselves.                                                            |
-| Search and symbols            | Tantivy, Tree-sitter, ripgrep fallback, Zoekt as scale reference                                                                                           | Agents need index-backed exploration before hydration.                                                           |
 | Secrets and env               | Synced encrypted project env store, `.env` import/rematerialization, age/rage-style envelope encryption, SOPS import/export, direnv and mise compatibility | Make project env follow machines, workspaces, and agents without requiring a new launch command.                 |
 | Agent integration             | MCP server, local daemon API, OpenHands/devcontainers/Coder integrations                                                                                   | These are consumers of leases, not replacements for leases.                                                      |
 | Filesystem tests              | pjdfstest, xfstests, real dev workload tests                                                                                                               | A mount that passes demos but fails editors is not safe enough.                                                  |
@@ -124,7 +123,7 @@ engine on the v1 path. The daemon and status spine come first internally, but
 the product proof is not complete until `~/Code` is an ordinary synced directory
 that tools can use without wrapper commands.
 
-1. Build `bowline login --root ~/Code` and `bowline status` first. Existing
+1. Build `bowline setup --root ~/Code` and `bowline status` first. Existing
    roots are read-only during init; requested missing roots are created as the
    happy path.
 2. Detect developer files, generated folders, env files, setup receipts,
@@ -141,10 +140,10 @@ that tools can use without wrapper commands.
    dependency regeneration.
 6. Add `.bowlinesetup`, setup receipts, and lockfile-backed inference so
    `cd ~/Code/foo && pnpm dev` works on a second machine.
-7. Add event-backed status and JSON-first `bowline status`, `bowline explain`,
-   `bowline approve`, and `bowline status --watch`. The macOS Menu Bar Status
-   App can land here as an ambient consumer of that status stream with narrow
-   pending device approval, and Linux desktop notifications can use
+7. Add event-backed status and JSON-first `bowline status`,
+   `bowline device approve`, and `bowline status --watch`. The macOS Menu Bar
+   Status App can land here as an ambient consumer of that status stream with
+   narrow pending device approval, and Linux desktop notifications can use
    `notify-rust` where available.
 8. Add `bowline connect` for agent-native Linux host setup over explicit SSH.
 9. Add conflict records, conflict bundles, and `bowline resolve` with agent CLI
@@ -153,10 +152,9 @@ that tools can use without wrapper commands.
     discovery, prompt recipes, and lifecycle verbs.
 11. Add agent leases with direct project writes by default, optional isolated
     overlays, and inherited project env.
-12. Add index-backed search and symbol lookup before broad hydration.
-13. Harden real-root sync, distribution, guided permissions, recovery, Finder
+12. Harden real-root sync, distribution, guided permissions, recovery, Finder
     Sync badges, and filesystem workload coverage.
-14. Build a merge test corpus that exercises the file identity confidence ladder
+13. Build a merge test corpus that exercises the file identity confidence ladder
     and conflict-span behavior before broader testing.
 
 ## Anti-goals

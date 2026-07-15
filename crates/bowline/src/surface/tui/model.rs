@@ -1,4 +1,7 @@
-use bowline_core::{commands::ActionsCommandOutput, status::StatusLevel};
+use bowline_core::{
+    commands::StatusCommandOutput,
+    status::{StatusAttention, StatusAvailability, StatusLevel},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TuiAction {
@@ -42,22 +45,13 @@ pub enum TuiTone {
 }
 
 impl TuiTone {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Healthy => "healthy",
-            Self::Preparing => "preparing",
-            Self::Attention => "attention",
-            Self::Limited => "limited",
-        }
-    }
-
     pub fn from_status_label(level: &str) -> Self {
-        match level {
-            "healthy" => Self::Healthy,
-            "preparing" => Self::Preparing,
-            "limited" => Self::Limited,
-            _ => Self::Attention,
-        }
+        StatusLevel::from_status_label(level)
+            .map(Self::from)
+            .unwrap_or_else(|| {
+                // Unknown labels should look actionable instead of falsely healthy.
+                Self::Attention
+            })
     }
 }
 
@@ -92,37 +86,57 @@ pub struct TuiModel {
     pub actions: Vec<TuiAction>,
     pub selected: usize,
     pub confirming: Option<usize>,
+    canonical_axes: bool,
 }
 
 impl TuiModel {
-    pub fn from_actions(output: &ActionsCommandOutput) -> Self {
-        let actions = output
-            .actions
+    pub fn from_status(output: &StatusCommandOutput) -> Self {
+        let mut actions = output
+            .next_actions
             .iter()
             .map(|action| TuiAction {
                 label: action.label.clone(),
                 command: action.command.clone(),
-                mutates: action.effect_category().requires_confirmation(),
+                // Producer-set; never re-derived from the command string.
+                mutates: action.mutates,
             })
             .collect::<Vec<_>>();
+        // Pending device-approval affordances are concrete local trust material;
+        // the TUI is a trusted local surface, so it renders them as runnable
+        // (state-changing) approve actions.
+        for approval in &output.device_approvals {
+            actions.push(TuiAction {
+                label: format!("Approve device (code {})", approval.code),
+                command: Some(approval.approve_command.clone()),
+                mutates: true,
+            });
+        }
         let details = if actions.is_empty() {
-            let mut details = output.non_actions.clone();
-            if details.is_empty() {
-                details.extend(output.status.attention_items.clone());
+            let mut details = output.status.attention_items.clone();
+            if details.is_empty()
+                && output.status_summary.presentation_level() == StatusLevel::Healthy
+            {
+                details.push("Nothing needs action right now.".to_string());
             }
             details
         } else {
             Vec::new()
         };
-        let tone = TuiTone::from(output.status.level);
+        let tone = TuiTone::from(output.status_summary.presentation_level());
+        let canonical_status = format!(
+            "{} · {}",
+            capability_label(output.status_summary.availability),
+            action_label(output.status_summary.attention)
+        );
         Self {
             title: "bowline".to_string(),
-            status: tone.label().to_string(),
+            status: canonical_status,
             tone,
             details,
             actions,
             selected: 0,
             confirming: None,
+            canonical_axes: true,
         }
     }
 
@@ -130,7 +144,9 @@ impl TuiModel {
     /// state that a bare status level cannot express).
     pub fn with_verdict(mut self, verdict: crate::surface::style::Verdict) -> Self {
         self.tone = TuiTone::from(verdict);
-        self.status = verdict.word().to_lowercase();
+        if !self.canonical_axes {
+            self.status = verdict.word().to_lowercase();
+        }
         self
     }
 
@@ -148,6 +164,7 @@ impl TuiModel {
             actions,
             selected: 0,
             confirming: None,
+            canonical_axes: false,
         }
     }
 
@@ -196,102 +213,273 @@ impl TuiModel {
     }
 }
 
-#[cfg(test)]
-fn mutates(command: Option<&str>) -> bool {
-    command
-        .map(|command| {
-            [
-                "bowline approve",
-                "bowline revoke",
-                "bowline recover create",
-                "bowline recover verify",
-                "bowline recover rotate",
-                "bowline recover revoke",
-                "bowline recover use",
-                "bowline setup",
-                "bowline accept",
-                "bowline discard",
-                "bowline restore",
-                "bowline cleanup --apply",
-                "bowline agent publish",
-                "bowline agent complete",
-                " --accept ",
-                " --reject ",
-            ]
-            .iter()
-            .any(|needle| command.contains(needle))
+fn capability_label(availability: StatusAvailability) -> &'static str {
+    match availability {
+        StatusAvailability::Ready => "capability ready",
+        StatusAvailability::Degraded => "capability degraded",
+        StatusAvailability::Unavailable => "capability unavailable",
+    }
+}
+
+fn action_label(attention: StatusAttention) -> &'static str {
+    match attention {
+        StatusAttention::None => "no action requested",
+        StatusAttention::Recommended => "action recommended",
+        StatusAttention::Required => "action required",
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnboardingStep {
+    AccountLogin,
+    RootChoice,
+    LocalReadiness,
+    ConnectHost,
+    Done,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnboardingResult {
+    pub root: Option<String>,
+    pub connect_command: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnboardingModel {
+    pub step: OnboardingStep,
+    pub root_input: String,
+    pub host_input: String,
+    default_root: String,
+}
+
+impl OnboardingModel {
+    pub fn new(default_root: String) -> Self {
+        Self {
+            step: OnboardingStep::AccountLogin,
+            root_input: default_root.clone(),
+            host_input: String::new(),
+            default_root,
+        }
+    }
+
+    pub fn title(&self) -> &'static str {
+        "bowline setup"
+    }
+
+    pub fn active_label(&self) -> &'static str {
+        match self.step {
+            OnboardingStep::AccountLogin => "Account",
+            OnboardingStep::RootChoice => "Root",
+            OnboardingStep::LocalReadiness => "Readiness",
+            OnboardingStep::ConnectHost => "Host",
+            OnboardingStep::Done => "Done",
+        }
+    }
+
+    pub fn active_value(&self) -> Option<&str> {
+        match self.step {
+            OnboardingStep::RootChoice => Some(&self.root_input),
+            OnboardingStep::ConnectHost => Some(&self.host_input),
+            _ => None,
+        }
+    }
+
+    pub fn push_char(&mut self, ch: char) {
+        match self.step {
+            OnboardingStep::RootChoice => self.root_input.push(ch),
+            OnboardingStep::ConnectHost => self.host_input.push(ch),
+            _ => {}
+        }
+    }
+
+    pub fn pop_char(&mut self) {
+        match self.step {
+            OnboardingStep::RootChoice => {
+                self.root_input.pop();
+            }
+            OnboardingStep::ConnectHost => {
+                self.host_input.pop();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn advance(&mut self) {
+        self.step = match self.step {
+            OnboardingStep::AccountLogin => OnboardingStep::RootChoice,
+            OnboardingStep::RootChoice => OnboardingStep::LocalReadiness,
+            OnboardingStep::LocalReadiness => OnboardingStep::ConnectHost,
+            OnboardingStep::ConnectHost | OnboardingStep::Done => OnboardingStep::Done,
+        };
+    }
+
+    pub fn result(&self) -> OnboardingResult {
+        let root = self.selected_root();
+        let host = self.host_input.trim();
+        OnboardingResult {
+            root: root.clone(),
+            connect_command: (!host.is_empty()).then(|| {
+                format!(
+                    "bowline connect {} --root {}",
+                    bowline_core::shell::quote_word(host),
+                    crate::io_helpers::shell_word(root.as_deref().unwrap_or("~/Code"))
+                )
+            }),
+        }
+    }
+
+    fn trimmed_root(&self) -> Option<String> {
+        let root = self.root_input.trim();
+        (!root.is_empty()).then(|| root.to_string())
+    }
+
+    fn selected_root(&self) -> Option<String> {
+        self.trimmed_root().or_else(|| {
+            let root = self.default_root.trim();
+            (!root.is_empty()).then(|| root.to_string())
         })
-        .unwrap_or(false)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use bowline_core::{
-        commands::{ActionsCommandOutput, CONTRACT_VERSION, CommandName},
-        status::{SafeAction, StatusLevel, StatusScope, WorkspaceStatus},
+        commands::{CONTRACT_VERSION, CommandName, StatusCommandOutput},
+        status::{
+            EventWatermarks, FreshnessVerdict, RepairCommand, StatusAttention, StatusFact,
+            StatusFactAvailabilityImpact, StatusFactScope, StatusLevel, StatusScope,
+            WorkspaceStatus, reduce_status_facts,
+        },
     };
 
-    use super::{TuiModel, TuiTone, mutates};
+    use super::{TuiModel, TuiTone};
 
-    fn actions_output(level: StatusLevel) -> ActionsCommandOutput {
-        ActionsCommandOutput {
+    fn status_summary(level: StatusLevel) -> bowline_core::status::StatusSummary {
+        let facts = match level {
+            StatusLevel::Healthy => Vec::new(),
+            StatusLevel::Attention => vec![
+                StatusFact::new(
+                    "test-attention",
+                    "status.aggregate_input",
+                    "status-reducer",
+                    StatusFactScope::Workspace,
+                    "2026-06-28T12:00:00Z",
+                    "test attention",
+                )
+                .with_impacts(
+                    StatusFactAvailabilityImpact::None,
+                    StatusAttention::Required,
+                ),
+            ],
+            StatusLevel::Limited => vec![
+                StatusFact::new(
+                    "test-limited",
+                    "status.aggregate_input",
+                    "status-reducer",
+                    StatusFactScope::Workspace,
+                    "2026-06-28T12:00:00Z",
+                    "test limited",
+                )
+                .with_impacts(
+                    StatusFactAvailabilityImpact::Degraded,
+                    StatusAttention::None,
+                ),
+            ],
+        };
+        reduce_status_facts(facts, 1, "2026-06-28T12:00:00Z")
+    }
+
+    fn status_output(level: StatusLevel) -> StatusCommandOutput {
+        StatusCommandOutput {
             contract_version: CONTRACT_VERSION,
-            command: CommandName::Actions,
+            command: CommandName::Status,
             generated_at: "2026-06-28T12:00:00Z".to_string(),
-            workspace_id: None,
+            workspace_id: bowline_core::ids::WorkspaceId::new("ws_code"),
             project_id: None,
             scope: Some(StatusScope::Project),
+            requested_path: None,
+            resolved_workspace_root: Some("~/Code".to_string()),
+            workspace_summary: None,
+            setup_readiness: None,
+            sync_queue: None,
+            freshness: FreshnessVerdict::Unknown,
+            stale_bases: Vec::new(),
             status: WorkspaceStatus {
                 level,
                 attention_items: Vec::new(),
             },
-            actions: vec![SafeAction {
-                label: "Inspect status".to_string(),
-                command: Some("bowline status --root ~/Code".to_string()),
-            }],
-            non_actions: Vec::new(),
+            status_summary: status_summary(level),
+            items: Vec::new(),
+            limits: Vec::new(),
+            event_watermarks: EventWatermarks {
+                last_scan_at: None,
+                last_event_id: None,
+                event_lag_ms: None,
+                sync_state: None,
+                watcher_state: None,
+                network_state: None,
+            },
+            next_actions: vec![RepairCommand::inspect(
+                "Inspect status".to_string(),
+                Some("bowline status --root ~/Code".to_string()),
+            )],
+            device_approvals: Vec::new(),
         }
     }
 
     #[test]
-    fn mutating_trust_and_recovery_commands_require_confirmation() {
-        for command in [
-            "bowline approve --root ~/Code --request req_1",
-            "bowline revoke --root ~/Code --device dev_1",
-            "bowline recover create",
-            "bowline recover verify rk_1",
-            "bowline recover rotate",
-            "bowline recover revoke rk_1",
-            "bowline recover use rk_1",
-            "bowline setup",
-            "bowline accept auth-fix",
-            "bowline discard auth-fix",
-            "bowline restore auth-fix",
-            "bowline cleanup --apply",
-            "bowline agent publish --lease lease_1",
-            "bowline agent complete --lease lease_1",
-            "bowline resolve ~/Code/app --accept conflict_1",
-            "bowline resolve ~/Code/app --reject conflict_1",
-        ] {
-            assert!(mutates(Some(command)), "{command}");
-        }
+    fn model_reads_producer_set_mutation_flag() {
+        let mut output = status_output(StatusLevel::Attention);
+        output.next_actions = vec![
+            RepairCommand::inspect("Inspect status", Some("bowline status".to_string())),
+            RepairCommand::mutating(
+                "Resolve conflicts",
+                Some("bowline resolve ~/Code".to_string()),
+            ),
+        ];
+        let model = TuiModel::from_status(&output);
+        assert!(!model.actions[0].mutates);
+        assert!(model.actions[1].mutates);
+    }
 
-        assert!(!mutates(Some("bowline status --root ~/Code")));
-        assert!(!mutates(Some("bowline recover status")));
+    #[test]
+    fn canonical_axes_survive_richer_verdict_tone() {
+        let mut output = status_output(StatusLevel::Attention);
+        output.status_summary = reduce_status_facts(
+            [StatusFact::new(
+                "mixed",
+                "status.aggregate_input",
+                "status-reducer",
+                StatusFactScope::Workspace,
+                output.generated_at.clone(),
+                "mixed",
+            )
+            .with_impacts(
+                StatusFactAvailabilityImpact::Degraded,
+                StatusAttention::Required,
+            )],
+            7,
+            output.generated_at.clone(),
+        );
+
+        let model =
+            TuiModel::from_status(&output).with_verdict(crate::surface::style::Verdict::NeedsYou);
+
+        assert_eq!(model.status, "capability degraded · action required");
     }
 
     #[test]
     fn model_preserves_status_tone_for_rendering() {
         assert_eq!(
-            TuiModel::from_actions(&actions_output(StatusLevel::Healthy)).tone,
+            TuiModel::from_status(&status_output(StatusLevel::Healthy)).tone,
             TuiTone::Healthy
         );
         assert_eq!(
-            TuiModel::from_actions(&actions_output(StatusLevel::Attention)).tone,
+            TuiModel::from_status(&status_output(StatusLevel::Attention)).tone,
             TuiTone::Attention
         );
         assert_eq!(
-            TuiModel::from_actions(&actions_output(StatusLevel::Limited)).tone,
+            TuiModel::from_status(&status_output(StatusLevel::Limited)).tone,
             TuiTone::Limited
         );
     }
@@ -324,7 +512,7 @@ mod tests {
         };
         let change = super::TuiAction {
             label: "Approve device".to_string(),
-            command: Some("bowline approve --root ~/Code --request req_1".to_string()),
+            command: Some("bowline device approve --root ~/Code --request req_1".to_string()),
             mutates: true,
         };
 

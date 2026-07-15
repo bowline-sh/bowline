@@ -1,0 +1,551 @@
+{
+  "manifestVersion": 1,
+  "fixtures": [
+    {
+      "id": "command.names",
+      "family": "commands",
+      "path": "command-names.json",
+      "format": "json",
+      "kind": "CommandNames",
+      "languageDecoders": {
+        "rust": "CommandNames",
+        "typescript": "CommandNames"
+      }
+    },
+    {
+      "id": "command.agent-context",
+      "family": "commands",
+      "path": "commands/agent-context.json",
+      "format": "json",
+      "kind": "AgentContextCommandOutput",
+      "languageDecoders": {
+        "rust": "AgentContextCommandOutput",
+        "typescript": "AgentContextCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.agent-lease-create",
+      "family": "commands",
+      "path": "commands/agent-lease-create.json",
+      "format": "json",
+      "kind": "AgentLeaseCreateCommandOutput",
+      "languageDecoders": {
+        "rust": "AgentLeaseCreateCommandOutput",
+        "typescript": "AgentLeaseCreateCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.agent-prompt",
+      "family": "commands",
+      "path": "commands/agent-prompt.json",
+      "format": "json",
+      "kind": "AgentPromptCommandOutput",
+      "languageDecoders": {
+        "rust": "AgentPromptCommandOutput",
+        "typescript": "AgentPromptCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.contract",
+      "family": "commands",
+      "path": "commands/contract.json",
+      "format": "json",
+      "kind": "ContractCommandOutput",
+      "languageDecoders": {
+        "rust": "ContractCommandOutput",
+        "typescript": "ContractCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.contract-summary",
+      "family": "commands",
+      "path": "commands/contract-summary.json",
+      "format": "json",
+      "kind": "ContractSummaryCommandOutput",
+      "languageDecoders": {
+        "rust": "ContractSummaryCommandOutput",
+        "typescript": "ContractSummaryCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.contract-work-diff",
+      "family": "commands",
+      "path": "commands/contract-work-diff.json",
+      "format": "json",
+      "kind": "ScopedContractCommandOutput",
+      "languageDecoders": {
+        "rust": "ScopedContractCommandOutput",
+        "typescript": "ScopedContractCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.dry-run",
+      "family": "commands",
+      "path": "commands/dry-run.json",
+      "format": "json",
+      "kind": "DryRunCommandOutput",
+      "languageDecoders": {
+        "rust": "DryRunCommandOutput",
+        "typescript": "DryRunCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.help",
+      "family": "commands",
+      "path": "commands/help.json",
+      "format": "json",
+      "kind": "HelpCommandOutput",
+      "languageDecoders": {
+        "rust": "HelpCommandOutput",
+        "typescript": "HelpCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.handoff-confirmation-required",
+      "family": "commands",
+      "path": "commands/handoff-confirmation-required.json",
+      "format": "json",
+      "kind": "HandoffCommandOutput",
+      "languageDecoders": {
+        "typescript": "HandoffCommandOutput"
+      }
+    },
+    {
+      "id": "command.handoff-dry-run",
+      "family": "commands",
+      "path": "commands/handoff-dry-run.json",
+      "format": "json",
+      "kind": "HandoffCommandOutput",
+      "languageDecoders": {
+        "typescript": "HandoffCommandOutput"
+      }
+    },
+    {
+      "id": "command.handoff-no-supported-session",
+      "family": "commands",
+      "path": "commands/handoff-no-supported-session.json",
+      "format": "json",
+      "kind": "HandoffCommandOutput",
+      "languageDecoders": {
+        "typescript": "HandoffCommandOutput"
+      }
+    },
+    {
+      "id": "command.handoff-receipt",
+      "family": "commands",
+      "path": "commands/handoff-receipt.json",
+      "format": "json",
+      "kind": "HandoffCommandOutput",
+      "languageDecoders": {
+        "typescript": "HandoffCommandOutput"
+      }
+    },
+    {
+      "id": "command.handoff-target-not-trusted",
+      "family": "commands",
+      "path": "commands/handoff-target-not-trusted.json",
+      "format": "json",
+      "kind": "HandoffCommandOutput",
+      "languageDecoders": {
+        "typescript": "HandoffCommandOutput"
+      }
+    },
+    {
+      "id": "command.handoff-tmux-missing",
+      "family": "commands",
+      "path": "commands/handoff-tmux-missing.json",
+      "format": "json",
+      "kind": "HandoffCommandOutput",
+      "languageDecoders": {
+        "typescript": "HandoffCommandOutput"
+      }
+    },
+    {
+      "id": "command.handoff-trust-stale",
+      "family": "commands",
+      "path": "commands/handoff-trust-stale.json",
+      "format": "json",
+      "kind": "HandoffCommandOutput",
+      "languageDecoders": {
+        "typescript": "HandoffCommandOutput"
+      }
+    },
+    {
+      "id": "command.history",
+      "family": "commands",
+      "path": "commands/history.json",
+      "format": "json",
+      "kind": "HistoryCommandOutput",
+      "languageDecoders": {
+        "rust": "HistoryCommandOutput",
+        "typescript": "HistoryCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.setup-blocked",
+      "family": "commands",
+      "path": "commands/setup-blocked.json",
+      "format": "json",
+      "kind": "SetupProjectOutput",
+      "languageDecoders": {
+        "rust": "SetupProjectOutput",
+        "typescript": "SetupProjectOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.setup-machine",
+      "family": "commands",
+      "path": "commands/setup-machine.json",
+      "format": "json",
+      "kind": "SetupCommandOutput",
+      "languageDecoders": {
+        "rust": "SetupCommandOutput",
+        "typescript": "SetupCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.version",
+      "family": "commands",
+      "path": "commands/version.json",
+      "format": "json",
+      "kind": "VersionCommandOutput",
+      "languageDecoders": {
+        "rust": "VersionCommandOutput",
+        "typescript": "VersionCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.work-accept-review-ready",
+      "family": "commands",
+      "path": "commands/work-accept-review-ready.json",
+      "format": "json",
+      "kind": "WorkLifecycleCommandOutput",
+      "languageDecoders": {
+        "rust": "WorkLifecycleCommandOutput",
+        "typescript": "WorkLifecycleCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.work-accept",
+      "family": "commands",
+      "path": "commands/work-accept.json",
+      "format": "json",
+      "kind": "WorkLifecycleCommandOutput",
+      "languageDecoders": {
+        "rust": "WorkLifecycleCommandOutput",
+        "typescript": "WorkLifecycleCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.work-accept-partial",
+      "family": "commands",
+      "path": "commands/work-accept-partial.json",
+      "format": "json",
+      "kind": "WorkLifecycleCommandOutput",
+      "languageDecoders": {
+        "rust": "WorkLifecycleCommandOutput",
+        "typescript": "WorkLifecycleCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.work-discard",
+      "family": "commands",
+      "path": "commands/work-discard.json",
+      "format": "json",
+      "kind": "WorkLifecycleCommandOutput",
+      "languageDecoders": {
+        "rust": "WorkLifecycleCommandOutput",
+        "typescript": "WorkLifecycleCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.work-review",
+      "family": "commands",
+      "path": "commands/work-review.json",
+      "format": "json",
+      "kind": "WorkDiffCommandOutput",
+      "languageDecoders": {
+        "rust": "WorkDiffCommandOutput",
+        "typescript": "WorkDiffCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.work-create-created",
+      "family": "commands",
+      "path": "commands/work-create-created.json",
+      "format": "json",
+      "kind": "WorkCreateCommandOutput",
+      "languageDecoders": {
+        "rust": "WorkCreateCommandOutput",
+        "typescript": "WorkCreateCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.work-create-reused",
+      "family": "commands",
+      "path": "commands/work-create-reused.json",
+      "format": "json",
+      "kind": "WorkCreateCommandOutput",
+      "languageDecoders": {
+        "rust": "WorkCreateCommandOutput",
+        "typescript": "WorkCreateCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "event.metadata-corrupt",
+      "family": "events",
+      "path": "events/metadata-corrupt.json",
+      "format": "json",
+      "kind": "WorkspaceEvent",
+      "languageDecoders": {
+        "rust": "WorkspaceEvent",
+        "typescript": "WorkspaceEvent",
+        "swift": "WorkspaceEventFixture"
+      }
+    },
+    {
+      "id": "proof.device-proof-subjects",
+      "family": "proofs",
+      "path": "proofs/device-proof-subjects.json",
+      "format": "json",
+      "kind": "DeviceProofSubjects",
+      "languageDecoders": {
+        "rust": "DeviceProofSubjects",
+        "typescript": "DeviceProofSubjects"
+      }
+    },
+    {
+      "id": "snapshot.content-layout-segmented-v1",
+      "family": "snapshots",
+      "path": "snapshots/content-layout-segmented-v1.json",
+      "format": "json",
+      "kind": "ContentLayout",
+      "languageDecoders": {
+        "rust": "ContentLayout",
+        "typescript": "ContentLayout"
+      }
+    },
+    {
+      "id": "snapshot.mixed-tree",
+      "family": "snapshots",
+      "path": "snapshots/mixed-tree.json",
+      "format": "json",
+      "kind": "SnapshotManifest",
+      "languageDecoders": {
+        "rust": "SnapshotManifest",
+        "typescript": "SnapshotManifest"
+      }
+    },
+    {
+      "id": "status.active-lease",
+      "family": "status",
+      "path": "status/active-lease.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "status.attention",
+      "family": "status",
+      "path": "status/attention.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "status.conflict",
+      "family": "status",
+      "path": "status/conflict.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "status.degraded-watcher",
+      "family": "status",
+      "path": "status/degraded-watcher.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "status.healthy",
+      "family": "status",
+      "path": "status/healthy.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "status.limited",
+      "family": "status",
+      "path": "status/limited.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "status.offline-content-fetch-limited",
+      "family": "status",
+      "path": "status/offline-content-fetch-limited.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "status.offline-degraded",
+      "family": "status",
+      "path": "status/offline-degraded.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "status.metadata-corrupt-limited",
+      "family": "status",
+      "path": "status/metadata-corrupt-limited.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "status.pending-device",
+      "family": "status",
+      "path": "status/pending-device.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "status.review-ready-lease",
+      "family": "status",
+      "path": "status/review-ready-lease.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "status.setup-readiness-blocked",
+      "family": "status",
+      "path": "status/setup-readiness-blocked.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "status.stale-agent-base",
+      "family": "status",
+      "path": "status/stale-agent-base.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "status.sync-queue-limited",
+      "family": "status",
+      "path": "status/sync-queue-limited.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "status.work-view-attention",
+      "family": "status",
+      "path": "status/work-view-attention.json",
+      "format": "json",
+      "kind": "StatusCommandOutput",
+      "languageDecoders": {
+        "rust": "StatusCommandOutput",
+        "typescript": "StatusCommandOutput",
+        "swift": "StatusCommandOutput"
+      }
+    },
+    {
+      "id": "stream.status-watch",
+      "family": "streams",
+      "path": "streams/status-watch.ndjson",
+      "format": "ndjson",
+      "kind": "WatchFrame",
+      "languageDecoders": {
+        "rust": "WatchFrame",
+        "typescript": "WatchFrame",
+        "swift": "WatchFrame"
+      }
+    }
+  ]
+}

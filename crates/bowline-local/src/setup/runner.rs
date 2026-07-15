@@ -16,23 +16,20 @@ use std::{
 use bowline_core::{
     events::{EventName, EventSeverity, EventSubject, EventSubjectKind, WorkspaceEvent},
     ids::{EventId, ProjectId, WorkspaceId},
-    workspace_graph::{HydrationState, NamespaceEntryKind},
 };
 use serde::Serialize;
 
 use crate::{
     env::{EnvLineKind, parse_env_text},
     events::LocalEventError,
-    hydration_budget::reconcile_materialized_hydration_queue,
-    metadata::{
-        HydrationQueueRecord, MetadataError, MetadataStore, SetupReceiptRecord,
-        default_database_path,
-    },
+    metadata::{MetadataStore, SetupReceiptRecord, default_database_path},
 };
 
 use super::{
-    SetupCommandPlan, SetupInferenceError, collect_receipt_identity_inputs, infer_setup_plan,
-    load_setup_recipe, redact_setup_text_with_values,
+    PackageManagerIdentity, SetupCommandPlan, SetupInferenceError, SetupReadinessClassification,
+    SetupReadinessState, classify_setup_command_result, collect_setup_identity, infer_setup_plan,
+    inferred_receipt_key, inferred_recipe_hash, load_setup_recipe, recipe_receipt_key,
+    redact_setup_text, redact_setup_text_with_values, setup_receipt_id,
 };
 
 mod command;
@@ -40,13 +37,14 @@ mod error;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use bowline_core::status::SetupReceiptState;
 use command::*;
 pub use error::SetupRunError;
 
 const MAX_CAPTURED_OUTPUT: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrewarmOptions {
+pub struct ProjectSetupOptions {
     pub db_path: Option<PathBuf>,
     pub project_path: String,
     pub approve_setup: bool,
@@ -56,24 +54,61 @@ pub struct PrewarmOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PrewarmOutcome {
+pub struct ProjectSetupOutcome {
     pub workspace_id: WorkspaceId,
     pub project_id: ProjectId,
     pub project_path: String,
-    pub state: PrewarmState,
+    pub state: ProjectSetupState,
     pub receipt_ids: Vec<String>,
     pub redacted_summary: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum PrewarmState {
+pub enum ProjectSetupState {
     Hot,
     SetupBlocked,
     NoSetupNeeded,
 }
 
-pub fn prewarm_project(options: PrewarmOptions) -> Result<PrewarmOutcome, SetupRunError> {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LearnedSetupCandidate {
+    pub command: String,
+    pub cwd: String,
+    pub suggestion: String,
+    pub learned: bool,
+}
+
+pub fn learned_setup_candidate(
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+    command_text: &str,
+) -> Result<LearnedSetupCandidate, SetupRunError> {
+    let project_root = project_root.as_ref();
+    let cwd = cwd.as_ref();
+    let relative_cwd = cwd
+        .strip_prefix(project_root)
+        .map(|path| {
+            if path.as_os_str().is_empty() {
+                ".".to_string()
+            } else {
+                path.display().to_string()
+            }
+        })
+        .unwrap_or_else(|_| cwd.display().to_string());
+    let redacted = redact_setup_text(command_text);
+    Ok(LearnedSetupCandidate {
+        suggestion: format!("last successful boot used: `{}`", redacted.text),
+        command: redacted.text,
+        cwd: relative_cwd,
+        learned: true,
+    })
+}
+
+pub fn run_project_setup(
+    options: ProjectSetupOptions,
+) -> Result<ProjectSetupOutcome, SetupRunError> {
     let db_path = options
         .db_path
         .clone()
@@ -93,7 +128,7 @@ pub fn prewarm_project(options: PrewarmOptions) -> Result<PrewarmOutcome, SetupR
     let project_root = validate_project_root(&workspace_root, &project.path)?;
 
     store.set_project_hot_state(&workspace.id, &project.id, "warming")?;
-    let outcome = prewarm_project_root(
+    let outcome = run_project_setup_root(
         &store,
         &workspace.id,
         &project.id,
@@ -103,27 +138,10 @@ pub fn prewarm_project(options: PrewarmOptions) -> Result<PrewarmOutcome, SetupR
         &options,
     );
     match outcome {
-        Ok(mut outcome) => {
-            let queued_prefetch = queue_hot_project_prefetch(
-                &store,
-                &workspace.id,
-                &project.id,
-                &options.generated_at,
-            )?;
-            let completed_prefetch = reconcile_materialized_hydration_queue(
-                &store,
-                &workspace.id,
-                &options.generated_at,
-            )?;
-            if queued_prefetch > 0 || completed_prefetch > 0 {
-                outcome.redacted_summary = format!(
-                    "{} Hot project prefetch queued {} file(s); {} already local.",
-                    outcome.redacted_summary, queued_prefetch, completed_prefetch
-                );
-            }
+        Ok(outcome) => {
             let hot_state = match outcome.state {
-                PrewarmState::Hot | PrewarmState::NoSetupNeeded => "hot",
-                PrewarmState::SetupBlocked => "setup.blocked",
+                ProjectSetupState::Hot | ProjectSetupState::NoSetupNeeded => "hot",
+                ProjectSetupState::SetupBlocked => "setup.blocked",
             };
             store.set_project_hot_state(&workspace.id, &project.id, hot_state)?;
             Ok(outcome)
@@ -135,57 +153,15 @@ pub fn prewarm_project(options: PrewarmOptions) -> Result<PrewarmOutcome, SetupR
     }
 }
 
-fn queue_hot_project_prefetch(
-    store: &MetadataStore,
-    workspace_id: &WorkspaceId,
-    project_id: &ProjectId,
-    now: &str,
-) -> Result<usize, MetadataError> {
-    let mut queued = 0;
-    for node in store.projected_nodes_for_project(workspace_id, project_id)? {
-        if node.kind != NamespaceEntryKind::File || node.hydration_state != HydrationState::Cold {
-            continue;
-        }
-        let Some(content_id) = node.content_id.clone() else {
-            continue;
-        };
-        store.enqueue_hydration(&HydrationQueueRecord {
-            id: format!(
-                "prefetch_{}",
-                blake3::hash(
-                    format!(
-                        "{}:{}:{}",
-                        workspace_id.as_str(),
-                        project_id.as_str(),
-                        node.path
-                    )
-                    .as_bytes()
-                )
-                .to_hex()
-            ),
-            workspace_id: workspace_id.clone(),
-            project_id: Some(project_id.clone()),
-            path: node.path,
-            content_id: Some(content_id),
-            priority: "hot-project-prefetch".to_string(),
-            state: "queued".to_string(),
-            cause: "hot-project-prefetch".to_string(),
-            updated_at: now.to_string(),
-        })?;
-        queued += 1;
-    }
-    Ok(queued)
-}
-
-fn prewarm_project_root(
+fn run_project_setup_root(
     store: &MetadataStore,
     workspace_id: &WorkspaceId,
     project_id: &ProjectId,
     project_path: &str,
     project_root: &Path,
     db_path: &Path,
-    options: &PrewarmOptions,
-) -> Result<PrewarmOutcome, SetupRunError> {
+    options: &ProjectSetupOptions,
+) -> Result<ProjectSetupOutcome, SetupRunError> {
     let recipe_path = project_root.join(".bowlinesetup");
     if let Some(recipe_metadata) = setup_recipe_metadata(&recipe_path)? {
         if recipe_metadata.file_type().is_symlink() {
@@ -200,73 +176,57 @@ fn prewarm_project_root(
         }
         let recipe = load_setup_recipe(project_root, &recipe_path)?;
         if recipe.commands.is_empty() {
-            return Ok(PrewarmOutcome {
+            return Ok(ProjectSetupOutcome {
                 workspace_id: workspace_id.clone(),
                 project_id: project_id.clone(),
                 project_path: project_path.to_string(),
-                state: PrewarmState::NoSetupNeeded,
+                state: ProjectSetupState::NoSetupNeeded,
                 receipt_ids: Vec::new(),
                 redacted_summary: "Setup recipe did not contain runnable commands.".to_string(),
             });
         }
+        let setup_context = SetupCommandContext {
+            store,
+            workspace_id,
+            project_id,
+            project_path,
+            project_root,
+            trigger: &options.trigger,
+            db_path,
+            now: &options.generated_at,
+        };
         let prior_approved =
             receipt_exists_for_hash(store, workspace_id, project_id, &recipe.recipe_hash)?;
         if !options.approve_setup && !prior_approved {
-            let receipt_id =
-                setup_receipt_id(workspace_id, project_id, &recipe.recipe_hash, "approval");
-            store.upsert_setup_receipt(&SetupReceiptRecord {
-                id: receipt_id.clone(),
-                workspace_id: workspace_id.clone(),
-                project_id: Some(project_id.clone()),
-                command: "recipe approval required".to_string(),
-                state: "approval-required".to_string(),
-                recipe_hash: recipe.recipe_hash.clone(),
-                approval_state: "required".to_string(),
-                trigger: options.trigger.clone(),
-                cwd: project_path.to_string(),
-                os: std::env::consts::OS.to_string(),
-                arch: std::env::consts::ARCH.to_string(),
-                env_profile: "default".to_string(),
-                output_path: None,
+            let receipt_id = record_approval_required_receipt(ApprovalRequiredReceiptRequest {
+                context: setup_context,
+                recipe_hash: &recipe.recipe_hash,
+                source: ".bowlinesetup",
+                command: "recipe approval required",
                 redacted_summary: "Setup recipe needs local approval before execution.".to_string(),
-                receipt_json: serde_json::to_string(&ApprovalReceipt {
-                    recipe_hash: &recipe.recipe_hash,
-                    source: ".bowlinesetup",
-                    trigger: &options.trigger,
-                })?,
-                updated_at: options.generated_at.clone(),
+                setup_identity_hash: setup_identity_hash_for_root(
+                    project_root,
+                    Some(recipe.recipe_hash.clone()),
+                    None,
+                )?,
+                event_summary: "Setup recipe needs local approval before execution.",
             })?;
-            append_setup_event(
-                store,
-                EventName::SetupBlocked,
-                EventSeverity::Attention,
-                "Setup recipe needs local approval before execution.",
-                workspace_id,
-                project_id,
-                project_path,
-                &receipt_id,
-                &options.trigger,
-                &options.generated_at,
-            )?;
-            return Ok(PrewarmOutcome {
+            return Ok(ProjectSetupOutcome {
                 workspace_id: workspace_id.clone(),
                 project_id: project_id.clone(),
                 project_path: project_path.to_string(),
-                state: PrewarmState::SetupBlocked,
+                state: ProjectSetupState::SetupBlocked,
                 receipt_ids: vec![receipt_id],
                 redacted_summary: "Setup recipe needs local approval before execution.".to_string(),
             });
         }
         if options.approve_setup {
             record_setup_approval(
-                store,
-                workspace_id,
-                project_id,
-                project_path,
-                &recipe.recipe_hash,
-                ".bowlinesetup",
-                &options.trigger,
-                &options.generated_at,
+                &setup_context,
+                SetupApprovalReceipt {
+                    recipe_hash: &recipe.recipe_hash,
+                    source: ".bowlinesetup",
+                },
             )?;
         }
 
@@ -275,64 +235,112 @@ fn prewarm_project_root(
             let receipt_key = recipe_receipt_key(&command, &recipe.recipe_hash)?;
             let expected_receipt_id =
                 setup_receipt_id(workspace_id, project_id, &recipe.recipe_hash, &receipt_key);
-            if setup_receipt_state(store, workspace_id, &expected_receipt_id)?
-                .is_some_and(|state| state == "completed")
-            {
+            if setup_receipt_state(store, workspace_id, &expected_receipt_id)?.is_some_and(
+                |state| SetupReceiptState::from_wire(&state) == Some(SetupReceiptState::Completed),
+            ) {
                 receipt_ids.push(expected_receipt_id);
                 continue;
             }
             let receipt_id = run_shell_command(
-                store,
-                workspace_id,
-                project_id,
-                project_path,
-                &command.command,
-                &receipt_key,
-                &recipe.recipe_hash,
-                "approved",
-                &options.trigger,
-                &command.cwd,
-                db_path,
-                &options.generated_at,
+                SetupCommandContext { ..setup_context },
+                SetupShellCommand {
+                    command_text: &command.command,
+                    receipt_key: &receipt_key,
+                    recipe_hash: &recipe.recipe_hash,
+                    approval_state: SetupApprovalState::Approved,
+                    package_manager: None,
+                    cwd: &command.cwd,
+                },
             )?;
             receipt_ids.push(receipt_id.clone());
-            let latest = store.setup_receipts(workspace_id)?;
-            if latest
-                .iter()
-                .find(|receipt| receipt.id == receipt_id)
-                .is_some_and(|receipt| receipt.state == "failed")
+            if store
+                .setup_receipt_by_id(workspace_id, &receipt_id)?
+                .is_some_and(|receipt| {
+                    SetupReceiptState::from_wire(&receipt.state) == Some(SetupReceiptState::Failed)
+                })
             {
-                return Ok(PrewarmOutcome {
+                return Ok(ProjectSetupOutcome {
                     workspace_id: workspace_id.clone(),
                     project_id: project_id.clone(),
                     project_path: project_path.to_string(),
-                    state: PrewarmState::SetupBlocked,
+                    state: ProjectSetupState::SetupBlocked,
                     receipt_ids,
                     redacted_summary: "Setup stopped after the first failed command.".to_string(),
                 });
             }
         }
 
-        return Ok(PrewarmOutcome {
+        return Ok(ProjectSetupOutcome {
             workspace_id: workspace_id.clone(),
             project_id: project_id.clone(),
             project_path: project_path.to_string(),
-            state: PrewarmState::Hot,
+            state: ProjectSetupState::Hot,
             receipt_ids,
             redacted_summary: "Setup completed with redacted output.".to_string(),
         });
     }
 
     let Some(plan) = infer_setup_plan(project_root)? else {
-        return Ok(PrewarmOutcome {
+        return Ok(ProjectSetupOutcome {
             workspace_id: workspace_id.clone(),
             project_id: project_id.clone(),
             project_path: project_path.to_string(),
-            state: PrewarmState::NoSetupNeeded,
+            state: ProjectSetupState::NoSetupNeeded,
             receipt_ids: Vec::new(),
             redacted_summary: "No setup recipe or safe lockfile restore was needed.".to_string(),
         });
     };
+
+    if !plan.blockers.is_empty() {
+        let setup_context = SetupCommandContext {
+            store,
+            workspace_id,
+            project_id,
+            project_path,
+            project_root,
+            trigger: &options.trigger,
+            db_path,
+            now: &options.generated_at,
+        };
+        let summary = plan
+            .blockers
+            .iter()
+            .map(|blocker| blocker.message.clone())
+            .collect::<Vec<_>>()
+            .join("; ");
+        let receipt_id = record_approval_required_receipt(ApprovalRequiredReceiptRequest {
+            context: setup_context,
+            recipe_hash: "inferred:toolchains",
+            source: "toolchains",
+            command: "toolchain setup blocker",
+            redacted_summary: summary.clone(),
+            setup_identity_hash: setup_identity_hash_for_root(
+                project_root,
+                Some("inferred:toolchains".to_string()),
+                None,
+            )?,
+            event_summary: "Toolchain setup needs local action before execution.",
+        })?;
+        return Ok(ProjectSetupOutcome {
+            workspace_id: workspace_id.clone(),
+            project_id: project_id.clone(),
+            project_path: project_path.to_string(),
+            state: ProjectSetupState::SetupBlocked,
+            receipt_ids: vec![receipt_id],
+            redacted_summary: summary,
+        });
+    }
+
+    if plan.commands.is_empty() {
+        return Ok(ProjectSetupOutcome {
+            workspace_id: workspace_id.clone(),
+            project_id: project_id.clone(),
+            project_path: project_path.to_string(),
+            state: ProjectSetupState::NoSetupNeeded,
+            receipt_ids: Vec::new(),
+            redacted_summary: "No setup recipe or safe lockfile restore was needed.".to_string(),
+        });
+    }
 
     if plan
         .commands
@@ -341,52 +349,37 @@ fn prewarm_project_root(
         && !options.approve_setup
         && !inferred_commands_completed(store, workspace_id, project_id, &plan.commands)?
     {
-        let receipt_id = setup_receipt_id(workspace_id, project_id, "inferred", "approval");
+        let setup_context = SetupCommandContext {
+            store,
+            workspace_id,
+            project_id,
+            project_path,
+            project_root,
+            trigger: &options.trigger,
+            db_path,
+            now: &options.generated_at,
+        };
+        let setup_identity_hash = commands_setup_identity_hash(&plan.commands)?;
         let reasons = plan
             .commands
             .iter()
             .flat_map(|command| command.approval_reasons.clone())
             .collect::<Vec<_>>()
             .join("; ");
-        store.upsert_setup_receipt(&SetupReceiptRecord {
-            id: receipt_id.clone(),
-            workspace_id: workspace_id.clone(),
-            project_id: Some(project_id.clone()),
-            command: "inferred setup approval required".to_string(),
-            state: "approval-required".to_string(),
-            recipe_hash: "inferred".to_string(),
-            approval_state: "required".to_string(),
-            trigger: options.trigger.clone(),
-            cwd: project_path.to_string(),
-            os: std::env::consts::OS.to_string(),
-            arch: std::env::consts::ARCH.to_string(),
-            env_profile: "default".to_string(),
-            output_path: None,
+        let receipt_id = record_approval_required_receipt(ApprovalRequiredReceiptRequest {
+            context: setup_context,
+            recipe_hash: "inferred",
+            source: "inferred",
+            command: "inferred setup approval required",
             redacted_summary: format!("Inferred setup needs approval: {reasons}"),
-            receipt_json: serde_json::to_string(&ApprovalReceipt {
-                recipe_hash: "inferred",
-                source: "lockfiles",
-                trigger: &options.trigger,
-            })?,
-            updated_at: options.generated_at.clone(),
+            setup_identity_hash,
+            event_summary: "Inferred setup needs local approval before execution.",
         })?;
-        append_setup_event(
-            store,
-            EventName::SetupBlocked,
-            EventSeverity::Attention,
-            "Inferred setup needs local approval before execution.",
-            workspace_id,
-            project_id,
-            project_path,
-            &receipt_id,
-            &options.trigger,
-            &options.generated_at,
-        )?;
-        return Ok(PrewarmOutcome {
+        return Ok(ProjectSetupOutcome {
             workspace_id: workspace_id.clone(),
             project_id: project_id.clone(),
             project_path: project_path.to_string(),
-            state: PrewarmState::SetupBlocked,
+            state: ProjectSetupState::SetupBlocked,
             receipt_ids: vec![receipt_id],
             redacted_summary: "Inferred setup needs local approval before execution.".to_string(),
         });
@@ -397,15 +390,22 @@ fn prewarm_project_root(
             .iter()
             .any(|command| command.approval_required)
     {
-        record_setup_approval(
+        let setup_context = SetupCommandContext {
             store,
             workspace_id,
             project_id,
             project_path,
-            "inferred",
-            "lockfiles",
-            &options.trigger,
-            &options.generated_at,
+            project_root,
+            trigger: &options.trigger,
+            db_path,
+            now: &options.generated_at,
+        };
+        record_setup_approval(
+            &setup_context,
+            SetupApprovalReceipt {
+                recipe_hash: "inferred",
+                source: "inferred",
+            },
         )?;
     }
 
@@ -420,6 +420,67 @@ fn prewarm_project_root(
     )
 }
 
+struct ApprovalRequiredReceiptRequest<'a> {
+    context: SetupCommandContext<'a>,
+    recipe_hash: &'a str,
+    source: &'a str,
+    command: &'a str,
+    redacted_summary: String,
+    setup_identity_hash: String,
+    event_summary: &'a str,
+}
+
+fn record_approval_required_receipt(
+    request: ApprovalRequiredReceiptRequest<'_>,
+) -> Result<String, SetupRunError> {
+    let receipt_id = setup_receipt_id(
+        request.context.workspace_id,
+        request.context.project_id,
+        request.recipe_hash,
+        "approval",
+    );
+    request
+        .context
+        .store
+        .upsert_setup_receipt(&SetupReceiptRecord {
+            id: receipt_id.clone(),
+            workspace_id: request.context.workspace_id.clone(),
+            project_id: Some(request.context.project_id.clone()),
+            command: request.command.to_string(),
+            state: SetupReceiptState::ApprovalRequired.as_str().to_string(),
+            recipe_hash: request.recipe_hash.to_string(),
+            approval_state: SetupApprovalState::Required.as_str().to_string(),
+            trigger: request.context.trigger.to_string(),
+            cwd: request.context.project_path.to_string(),
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+            env_profile: "default".to_string(),
+            output_path: None,
+            redacted_summary: request.redacted_summary.clone(),
+            setup_identity_hash: request.setup_identity_hash,
+            readiness_state: SetupReadinessState::NeedsSetup.as_str().to_string(),
+            readiness_reason: request.redacted_summary,
+            readiness_remedy: "Approve setup locally, then rerun setup for the hot project."
+                .to_string(),
+            receipt_json: serde_json::to_string(&ApprovalReceipt {
+                recipe_hash: request.recipe_hash,
+                source: request.source,
+                trigger: request.context.trigger,
+            })?,
+            updated_at: request.context.now.to_string(),
+        })?;
+    append_setup_event(
+        &request.context,
+        SetupEventRecord {
+            name: EventName::SetupBlocked,
+            severity: EventSeverity::Attention,
+            summary: request.event_summary,
+            receipt_id: &receipt_id,
+        },
+    )?;
+    Ok(receipt_id)
+}
+
 fn run_inferred_plan(
     store: &MetadataStore,
     workspace_id: &WorkspaceId,
@@ -427,61 +488,72 @@ fn run_inferred_plan(
     project_path: &str,
     commands: Vec<SetupCommandPlan>,
     db_path: &Path,
-    options: &PrewarmOptions,
-) -> Result<PrewarmOutcome, SetupRunError> {
+    options: &ProjectSetupOptions,
+) -> Result<ProjectSetupOutcome, SetupRunError> {
     let mut receipt_ids = Vec::new();
+    let inferred_project_root = commands
+        .first()
+        .map(|command| command.cwd.clone())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let setup_context = SetupCommandContext {
+        store,
+        workspace_id,
+        project_id,
+        project_path,
+        project_root: &inferred_project_root,
+        trigger: &options.trigger,
+        db_path,
+        now: &options.generated_at,
+    };
     for command in commands {
         let command_text = command.command.join(" ");
-        let recipe_hash = format!("inferred:{}", command.lockfile);
+        let recipe_hash = inferred_recipe_hash(&command);
         let receipt_key = inferred_receipt_key(&command, &command_text)?;
         let expected_receipt_id =
             setup_receipt_id(workspace_id, project_id, &recipe_hash, &receipt_key);
-        if setup_receipt_state(store, workspace_id, &expected_receipt_id)?
-            .is_some_and(|state| state == "completed")
-        {
+        if setup_receipt_state(store, workspace_id, &expected_receipt_id)?.is_some_and(|state| {
+            SetupReceiptState::from_wire(&state) == Some(SetupReceiptState::Completed)
+        }) {
             receipt_ids.push(expected_receipt_id);
             continue;
         }
         let receipt_id = run_shell_command(
-            store,
-            workspace_id,
-            project_id,
-            project_path,
-            &command_text,
-            &receipt_key,
-            &recipe_hash,
-            if command.approval_required {
-                "approved"
-            } else {
-                "not-required"
+            SetupCommandContext { ..setup_context },
+            SetupShellCommand {
+                command_text: &command_text,
+                receipt_key: &receipt_key,
+                recipe_hash: &recipe_hash,
+                approval_state: if command.approval_required {
+                    SetupApprovalState::Approved
+                } else {
+                    SetupApprovalState::NotRequired
+                },
+                package_manager: Some(&command.package_manager),
+                cwd: &command.cwd,
             },
-            &options.trigger,
-            &command.cwd,
-            db_path,
-            &options.generated_at,
         )?;
         receipt_ids.push(receipt_id.clone());
         if store
-            .setup_receipts(workspace_id)?
-            .iter()
-            .find(|receipt| receipt.id == receipt_id)
-            .is_some_and(|receipt| receipt.state == "failed")
+            .setup_receipt_by_id(workspace_id, &receipt_id)?
+            .is_some_and(|receipt| {
+                SetupReceiptState::from_wire(&receipt.state) == Some(SetupReceiptState::Failed)
+            })
         {
-            return Ok(PrewarmOutcome {
+            return Ok(ProjectSetupOutcome {
                 workspace_id: workspace_id.clone(),
                 project_id: project_id.clone(),
                 project_path: project_path.to_string(),
-                state: PrewarmState::SetupBlocked,
+                state: ProjectSetupState::SetupBlocked,
                 receipt_ids,
                 redacted_summary: "Setup stopped after the first failed command.".to_string(),
             });
         }
     }
-    Ok(PrewarmOutcome {
+    Ok(ProjectSetupOutcome {
         workspace_id: workspace_id.clone(),
         project_id: project_id.clone(),
         project_path: project_path.to_string(),
-        state: PrewarmState::Hot,
+        state: ProjectSetupState::Hot,
         receipt_ids,
         redacted_summary: "Setup completed with redacted output.".to_string(),
     })
@@ -498,12 +570,12 @@ fn inferred_commands_completed(
     }
     for command in commands {
         let command_text = command.command.join(" ");
-        let recipe_hash = format!("inferred:{}", command.lockfile);
+        let recipe_hash = inferred_recipe_hash(command);
         let receipt_key = inferred_receipt_key(command, &command_text)?;
         let receipt_id = setup_receipt_id(workspace_id, project_id, &recipe_hash, &receipt_key);
-        if setup_receipt_state(store, workspace_id, &receipt_id)?
-            .is_none_or(|state| state != "completed")
-        {
+        if setup_receipt_state(store, workspace_id, &receipt_id)?.is_none_or(|state| {
+            SetupReceiptState::from_wire(&state) != Some(SetupReceiptState::Completed)
+        }) {
             return Ok(false);
         }
     }
@@ -539,7 +611,7 @@ fn validate_project_root(
     }
 }
 
-fn combined_output(stdout: &[u8], stderr: &[u8]) -> String {
+pub(crate) fn combined_output(stdout: &[u8], stderr: &[u8]) -> String {
     let mut bytes = Vec::with_capacity(stdout.len() + stderr.len() + 1);
     bytes.extend_from_slice(stdout);
     if !stderr.is_empty() {
@@ -549,7 +621,7 @@ fn combined_output(stdout: &[u8], stderr: &[u8]) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-fn bounded_output_text(text: &str) -> String {
+pub(crate) fn bounded_output_text(text: &str) -> String {
     if text.len() <= MAX_CAPTURED_OUTPUT {
         return text.to_string();
     }
@@ -565,48 +637,26 @@ fn bounded_output_text(text: &str) -> String {
     output
 }
 
-fn inferred_receipt_key(
-    command: &SetupCommandPlan,
-    command_text: &str,
+fn setup_identity_hash_for_root(
+    project_root: &Path,
+    recipe_hash: Option<String>,
+    package_manager: Option<PackageManagerIdentity>,
 ) -> Result<String, SetupRunError> {
-    let recipe_hash = format!("inferred:{}", command.lockfile);
-    let identity = collect_receipt_identity_inputs(
-        &command.cwd,
-        "default",
-        Some(recipe_hash),
-        Some(command.package_manager.clone()),
-    )?;
-    let identity_json = serde_json::to_string(&identity)?;
-    let identity_hash = blake3::hash(identity_json.as_bytes());
-    Ok(format!(
-        "lockfile:{}:identity:{}:{}",
-        command.lockfile,
-        identity_hash.to_hex(),
-        command_text
-    ))
+    Ok(collect_setup_identity(project_root, "default", recipe_hash, package_manager)?.hash)
 }
 
-fn recipe_receipt_key(
-    command: &super::SetupRecipeCommand,
-    recipe_hash: &str,
-) -> Result<String, SetupRunError> {
-    let identity = collect_receipt_identity_inputs(
-        &command.cwd,
-        "default",
-        Some(recipe_hash.to_string()),
-        None,
-    )?;
-    let identity_json = serde_json::to_string(&identity)?;
-    let identity_hash = blake3::hash(identity_json.as_bytes());
-    Ok(format!(
-        "line:{}:{}:identity:{}",
-        command.line_number,
-        command.command,
-        identity_hash.to_hex()
-    ))
+fn commands_setup_identity_hash(commands: &[SetupCommandPlan]) -> Result<String, SetupRunError> {
+    if let Some(command) = commands.first() {
+        return setup_identity_hash_for_root(
+            &command.cwd,
+            Some(inferred_recipe_hash(command)),
+            Some(command.package_manager.clone()),
+        );
+    }
+    Err(SetupRunError::EmptySetupPlan)
 }
 
-fn known_env_values(
+pub(crate) fn known_env_values(
     store: &MetadataStore,
     workspace_id: &WorkspaceId,
     workspace_root: &Path,
@@ -673,10 +723,10 @@ fn collect_env_values_from_file(
 }
 
 fn is_env_file_name(name: &str) -> bool {
-    name == ".env" || name.starts_with(".env.") || name.ends_with(".env")
+    crate::policy::is_project_env_name(name)
 }
 
-fn write_setup_log(db_path: &Path, receipt_id: &str, text: &str) -> io::Result<PathBuf> {
+pub(crate) fn write_setup_log(db_path: &Path, receipt_id: &str, text: &str) -> io::Result<PathBuf> {
     let log_dir = db_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -728,11 +778,17 @@ fn receipt_exists_for_hash(
     project_id: &ProjectId,
     recipe_hash: &str,
 ) -> Result<bool, SetupRunError> {
-    Ok(store.setup_receipts(workspace_id)?.iter().any(|receipt| {
-        receipt.project_id.as_ref() == Some(project_id)
-            && receipt.recipe_hash == recipe_hash
-            && matches!(receipt.state.as_str(), "completed" | "approved")
-    }))
+    Ok(store
+        .setup_receipt_for_recipe(
+            workspace_id,
+            project_id,
+            recipe_hash,
+            &[
+                SetupReceiptState::Completed.as_str(),
+                SetupReceiptState::Approved.as_str(),
+            ],
+        )?
+        .is_some())
 }
 
 fn setup_receipt_state(
@@ -741,26 +797,8 @@ fn setup_receipt_state(
     receipt_id: &str,
 ) -> Result<Option<String>, SetupRunError> {
     Ok(store
-        .setup_receipts(workspace_id)?
-        .into_iter()
-        .find(|receipt| receipt.id == receipt_id)
+        .setup_receipt_by_id(workspace_id, receipt_id)?
         .map(|receipt| receipt.state))
-}
-
-fn setup_receipt_id(
-    workspace_id: &WorkspaceId,
-    project_id: &ProjectId,
-    recipe_hash: &str,
-    command: &str,
-) -> String {
-    let input = format!(
-        "{}:{}:{}:{}",
-        workspace_id.as_str(),
-        project_id.as_str(),
-        recipe_hash,
-        command
-    );
-    format!("setup_{}", blake3::hash(input.as_bytes()).to_hex())
 }
 
 #[derive(Serialize)]

@@ -10,7 +10,7 @@ The product must never trade developer trust for sync convenience. If the system
 cannot prove an action is safe, it must stop and explain the state.
 
 - Never silently delete unknown local files.
-- Never mutate an existing workspace during first init. `bowline login` can
+- Never mutate an existing workspace during first setup. `bowline setup` can
   observe, classify, index, and report; it cannot write project files, mutate
   Git, import secrets, run setup, hydrate content, or sync portable state.
 - Never silently move projects from other roots into `~/Code`. Creating a
@@ -26,8 +26,13 @@ cannot prove an action is safe, it must stop and explain the state.
   bases, but it must not fetch, write, repair, merge, publish, or decide sync
   semantics.
 - Never merge, repair, or publish `.git/` as Git. Sync `.git/` as opaque
-  encrypted workspace state, excluding only high-confidence lock and temp files
-  by default.
+  encrypted workspace state, excluding only the named machine-local set (index,
+  locks, reflogs, operation scratch, temp objects) recorded in architecture
+  decision 2; never delete local copies of excluded paths.
+- The sole `.git` content `bowline` rewrites is the machine-local absolute path
+  inside a linked worktree's gitlink and its `gitdir`/`commondir` admin files,
+  and only to move that path in or out of the synced workspace root; never
+  delete the local copy, never touch any other git content.
 - Never use repo, package, or monorepo boundaries to stop default sync inside
   the accepted workspace root.
 - Never treat an ignore rule as proof that real workspace state must stay local.
@@ -66,18 +71,17 @@ cannot prove an action is safe, it must stop and explain the state.
   Trusted devices get the accepted workspace root; agent leases scope agent
   behavior.
 - Never make native notifications the only path for device approval.
-  `bowline status`, the TUI, and `bowline approve` must show pending approvals.
+  `bowline status`, the TUI, and `bowline device approve` must show pending
+  approvals.
 - Never accept user-chosen passphrases as workspace recovery material. Recovery
   Keys are generated word-based keys.
 - Never provide default server-side recovery for encrypted workspace data
   without an authorized device or Recovery Key.
-- Never let agents mutate the canonical live folder directly.
 - Never use last-writer-wins for code.
 - Never auto-apply an agent conflict resolution to the live project.
 - Never inject conflict markers into live project files automatically.
 - Never block a whole text file when only a smaller conflict span is unsafe.
 - Never collapse delete-versus-edit into an automatic delete or edit.
-- Never hydrate the whole workspace because a watcher scanned it.
 - Never claim a workspace is healthy while degraded or offline.
 - Never mark a whole workspace or project as blocked when only a specific path,
   action, or capability is limited.
@@ -141,9 +145,10 @@ state with no active work at risk stays passive.
 
 The Menu Bar Status App consumes this same status. It can show a compact icon
 and ambient dropdown for workspace health, pending device approvals, conflicts,
-degraded state, sync and hydration state, and agent activity. It may approve a
-pending device only after explicit inline confirmation, using the same
-`bowline approve <request> --yes --json` trust path as the CLI. CLI and TUI
+degraded state, sync and hydration state, and agent activity. It may approve or
+deny a pending device only after explicit inline confirmation, using the same
+`bowline device approve --request <id> --yes --json` and
+`bowline device deny --request <id> --json` trust paths as the CLI. CLI and TUI
 remain the durable surfaces for all other actions and repair through
 `bowline status --json`, `bowline tui [path]`, and
 `bowline resolve <project> --tui`. Headless hosts must be able to complete the
@@ -166,8 +171,8 @@ Every agent task must run through a lease with:
   requested
 - inherited project env by default
 - explicit env restrictions only when configured
-- a hydration budget
-- an expiry time
+- an RFC3339 expiry that is later than creation and capped by the supported
+  maximum lease duration
 - an audit trail
 - an output target, such as a workspace continuation snapshot or patch bundle
 
@@ -176,9 +181,11 @@ finishes without conflicting with newer workspace work, that snapshot becomes
 the project state that follows the user to the next machine. Publishing is
 outside `bowline`.
 
-Agents must use index-backed search before broad recursive reads. A watcher,
-language server, or model exploration loop must not hydrate the world by
-accident.
+Agents inspect the synced project tree with their own tools. Workspaces
+materialize by default, so leases don't impose a hydration budget. The sync and
+materialization paths must still enforce bounded scope, path validation,
+resource ceilings, and fail-closed handling for malformed or expired lease
+metadata.
 
 Agent context is part of the trust boundary. `AgentContextV1` must include the
 fresh workspace snapshot, lease scope, env metadata without secret values,
@@ -234,7 +241,7 @@ the explicit SSH bootstrap path, but it is not equivalent to a hardware-backed
 desktop keychain.
 
 Passive commands must not probe the desktop keychain by default. Commands such
-as `bowline login`, `bowline status`, contract tests, and smoke scripts may
+as `bowline setup`, `bowline status`, contract tests, and smoke scripts may
 decorate their output with auth or trust state only when a non-interactive
 secret store is explicitly configured through `BOWLINE_SECRET_STORE_PATH` or
 `BOWLINE_SECRET_STORE=server-local`. Development and CI subprocesses should set

@@ -13,11 +13,11 @@ use bowline_core::{
     ids::{
         DeviceApprovalRequestId, DeviceId, EncryptedDeviceGrantId, RecoveryEnvelopeId, WorkspaceId,
     },
-    status::SafeAction,
+    status::RepairCommand,
 };
 
 use crate::{
-    device_keys::{DeviceKeyError, DeviceKeyStore},
+    device_keys::{DeviceKeyError, DeviceKeyStore, DeviceProofVerifier},
     trust::{self, DeviceRequestOptions, TrustError, grants},
 };
 
@@ -73,22 +73,30 @@ where
     let workspace_key = key_store
         .load_workspace_key(&workspace_id)?
         .ok_or_else(|| RecoveryError::MissingWorkspaceKey(workspace_id.clone()))?;
-    let ciphertext = grants::encrypted_recovery_envelope(&workspace_key, &recovery_key.words)?;
+    let identity = key_store.load_or_create_device_identity()?;
+    let authorizer = recovery_device_authorizer(&identity, created_by_device_id.clone())?;
+    let ciphertext =
+        grants::encrypted_recovery_envelope(&workspace_key, &recovery_key.words, vec![authorizer])?;
     let envelope_id = RecoveryEnvelopeId::new(format!("rk_{}", recovery_key.fingerprint));
     let recovery_proof_verifier =
         grants::recovery_proof_verifier(&recovery_key.words, &workspace_id, envelope_id.as_str());
-    let identity = key_store.load_or_create_device_identity()?;
+    let proof_subject = grants::recovery_envelope_payload_proof_subject(
+        envelope_id.as_str(),
+        &recovery_key.fingerprint,
+        &recovery_proof_verifier,
+        &ciphertext,
+    );
     let created_by_device_proof = grants::device_authorization_proof(
         &identity,
         &workspace_id,
         &created_by_device_id,
         "create-recovery-envelope",
-        envelope_id.as_str(),
-    );
+        &proof_subject,
+    )?;
     let envelope = control_plane.create_recovery_envelope(RecoveryEnvelopeInput {
-        workspace_id: workspace_id.as_str().to_string(),
-        envelope_id: envelope_id.as_str().to_string(),
-        created_by_device_id: created_by_device_id.as_str().to_string(),
+        workspace_id: workspace_id.clone(),
+        envelope_id: envelope_id.clone(),
+        created_by_device_id: created_by_device_id.clone(),
         created_by_device_proof,
         ciphertext,
         fingerprint: recovery_key.fingerprint.clone(),
@@ -115,13 +123,13 @@ where
             recovery_key: state,
             device_request: None,
             encrypted_grant: None,
-            next_actions: vec![SafeAction {
-                label: "Verify the generated Recovery Key".to_string(),
-                command: Some(format!(
+            next_actions: vec![RepairCommand::mutating(
+                "Verify the generated Recovery Key".to_string(),
+                Some(format!(
                     "printf '%s\\n' '<recovery-words>' | bowline recover verify {}",
                     envelope_id.as_str()
                 )),
-            }],
+            )],
         },
     ))
 }
@@ -142,7 +150,7 @@ where
     Mnemonic::parse_in_normalized(Language::English, words)
         .map_err(|_| RecoveryError::InvalidWords)?;
     let envelope = control_plane
-        .list_recovery_envelopes(workspace_id.as_str())?
+        .list_recovery_envelopes(&workspace_id)?
         .into_iter()
         .find(|envelope| envelope.envelope_id == envelope_id.as_str())
         .ok_or_else(|| RecoveryError::MissingRecoveryEnvelope(envelope_id.clone()))?;
@@ -156,9 +164,9 @@ where
     if envelope.fingerprint != expected_fingerprint {
         return Err(RecoveryError::InvalidWords);
     }
-    let workspace_key = grants::decrypt_recovery_envelope(&envelope.ciphertext, words)
+    let recovery_payload = grants::decrypt_recovery_envelope(&envelope.ciphertext, words)
         .map_err(|_| RecoveryError::InvalidWords)?;
-    if workspace_key.workspace_id != workspace_id {
+    if recovery_payload.workspace_key.workspace_id != workspace_id {
         return Err(RecoveryError::Grant(grants::GrantError::WorkspaceMismatch));
     }
     let identity = key_store.load_or_create_device_identity()?;
@@ -167,12 +175,12 @@ where
         &workspace_id,
         &verified_by_device_id,
         "verify-recovery-envelope",
-        envelope_id.as_str(),
-    );
+        &grants::recovery_envelope_proof_subject(envelope_id.as_str()),
+    )?;
     let envelope = control_plane.verify_recovery_envelope(
-        workspace_id.as_str(),
-        envelope_id.as_str(),
-        verified_by_device_id.as_str(),
+        &workspace_id,
+        &envelope_id,
+        &verified_by_device_id,
         &verified_by_device_proof,
         &grants::recovery_proof(words, &workspace_id, envelope_id.as_str()),
     )?;
@@ -212,22 +220,30 @@ where
     let workspace_key = key_store
         .load_workspace_key(&workspace_id)?
         .ok_or_else(|| RecoveryError::MissingWorkspaceKey(workspace_id.clone()))?;
-    let ciphertext = grants::encrypted_recovery_envelope(&workspace_key, &recovery_key.words)?;
+    let identity = key_store.load_or_create_device_identity()?;
+    let authorizer = recovery_device_authorizer(&identity, rotated_by_device_id.clone())?;
+    let ciphertext =
+        grants::encrypted_recovery_envelope(&workspace_key, &recovery_key.words, vec![authorizer])?;
     let envelope_id = RecoveryEnvelopeId::new(format!("rk_{}", recovery_key.fingerprint));
     let recovery_proof_verifier =
         grants::recovery_proof_verifier(&recovery_key.words, &workspace_id, envelope_id.as_str());
-    let identity = key_store.load_or_create_device_identity()?;
+    let proof_subject = grants::recovery_envelope_payload_proof_subject(
+        envelope_id.as_str(),
+        &recovery_key.fingerprint,
+        &recovery_proof_verifier,
+        &ciphertext,
+    );
     let created_by_device_proof = grants::device_authorization_proof(
         &identity,
         &workspace_id,
         &rotated_by_device_id,
         "rotate-recovery-envelope",
-        envelope_id.as_str(),
-    );
+        &proof_subject,
+    )?;
     let envelope = control_plane.rotate_recovery_envelope(RecoveryEnvelopeInput {
-        workspace_id: workspace_id.as_str().to_string(),
-        envelope_id: envelope_id.as_str().to_string(),
-        created_by_device_id: rotated_by_device_id.as_str().to_string(),
+        workspace_id: workspace_id.clone(),
+        envelope_id: envelope_id.clone(),
+        created_by_device_id: rotated_by_device_id.clone(),
         created_by_device_proof,
         ciphertext,
         fingerprint: recovery_key.fingerprint.clone(),
@@ -248,13 +264,13 @@ where
             ),
             device_request: None,
             encrypted_grant: None,
-            next_actions: vec![SafeAction {
-                label: "Verify the rotated Recovery Key".to_string(),
-                command: Some(format!(
+            next_actions: vec![RepairCommand::mutating(
+                "Verify the rotated Recovery Key".to_string(),
+                Some(format!(
                     "printf '%s\\n' '<recovery-words>' | bowline recover verify {}",
-                    envelope.envelope_id
+                    envelope.envelope_id.as_str()
                 )),
-            }],
+            )],
         },
     ))
 }
@@ -282,7 +298,7 @@ where
     Mnemonic::parse_in_normalized(Language::English, &options.words)
         .map_err(|_| RecoveryError::InvalidWords)?;
     let envelope = control_plane
-        .list_recovery_envelopes(options.workspace_id.as_str())?
+        .list_recovery_envelopes(&options.workspace_id)?
         .into_iter()
         .find(|envelope| envelope.envelope_id == options.envelope_id.as_str())
         .ok_or_else(|| RecoveryError::MissingRecoveryEnvelope(options.envelope_id.clone()))?;
@@ -293,10 +309,12 @@ where
     if envelope.fingerprint != expected_fingerprint {
         return Err(RecoveryError::InvalidWords);
     }
-    let workspace_key = grants::decrypt_recovery_envelope(&envelope.ciphertext, &options.words)?;
-    if workspace_key.workspace_id != options.workspace_id {
+    let recovery_payload = grants::decrypt_recovery_envelope(&envelope.ciphertext, &options.words)?;
+    if recovery_payload.workspace_key.workspace_id != options.workspace_id {
         return Err(RecoveryError::Grant(grants::GrantError::WorkspaceMismatch));
     }
+    let workspace_key = recovery_payload.workspace_key;
+    let recovery_device_proof_verifiers = recovery_payload.device_proof_verifiers;
 
     let request = trust::create_device_request(
         control_plane,
@@ -307,44 +325,55 @@ where
             device_name: options.device_name,
             platform: options.platform,
             host: None,
+            lease_id: None,
             root: Some("~/Code".to_string()),
+            runtime: None,
             generated_at: options.generated_at.clone(),
         },
     )?;
     let request_id = request.request_id.clone();
     let control_plane_request = control_plane
-        .list_device_trust(options.workspace_id.as_str())?
+        .list_device_trust(&options.workspace_id)?
         .pending_requests
         .into_iter()
         .find(|pending| pending.request_id == request_id.as_str())
         .ok_or_else(|| TrustError::MissingPendingRequest(request_id.as_str().to_string()))?;
-    let ciphertext =
-        grants::encrypt_workspace_key_for_request(&workspace_key, &control_plane_request)?;
+    let grant_authorizer = recovery_device_proof_verifiers.first().cloned();
+    let ciphertext = grants::encrypt_workspace_key_for_request(
+        &workspace_key,
+        &control_plane_request,
+        grant_authorizer,
+    )?;
     let grant_acceptance_proof =
         grants::grant_acceptance_proof(&workspace_key, &request_id, &options.device_id);
     let grant_acceptance_proof_verifier =
         grants::grant_acceptance_proof_verifier(&grant_acceptance_proof);
     let grant = control_plane.authorize_device_with_recovery(RecoveryDeviceAuthorizationInput {
-        workspace_id: options.workspace_id.as_str().to_string(),
+        workspace_id: options.workspace_id.clone(),
         envelope_id: envelope.envelope_id.clone(),
-        request_id: request_id.as_str().to_string(),
+        request_id: request_id.clone(),
         encrypted_grant_ciphertext: ciphertext,
         grant_acceptance_proof_verifier,
         key_epoch: workspace_key.key_epoch,
         recovery_proof: grants::recovery_proof(
             &options.words,
             &options.workspace_id,
-            &envelope.envelope_id,
+            envelope.envelope_id.as_str(),
         ),
         expires_in_ticks: 600,
     })?;
     let grant_acceptance_proof =
         grants::grant_acceptance_proof(&workspace_key, &request_id, &options.device_id);
     let accepted = control_plane.confirm_device_grant_accepted(GrantAcceptanceInput {
-        request_id: request_id.as_str().to_string(),
-        device_id: options.device_id.as_str().to_string(),
+        request_id: request_id.clone(),
+        device_id: options.device_id.clone(),
         grant_acceptance_proof,
     })?;
+    cache_recovery_device_proof_verifiers(
+        key_store,
+        &options.workspace_id,
+        recovery_device_proof_verifiers,
+    )?;
     key_store.store_workspace_key(workspace_key)?;
 
     Ok(RecoveryCommandOutput {
@@ -373,6 +402,34 @@ where
         }),
         next_actions: Vec::new(),
     })
+}
+
+fn recovery_device_authorizer(
+    identity: &crate::device_keys::DeviceIdentity,
+    device_id: DeviceId,
+) -> Result<grants::DeviceGrantAuthorizer, RecoveryError> {
+    Ok(grants::DeviceGrantAuthorizer {
+        device_id,
+        device_authorization_proof_verifier: grants::device_authorization_proof_verifier(identity)?,
+    })
+}
+
+fn cache_recovery_device_proof_verifiers<K>(
+    key_store: &K,
+    workspace_id: &WorkspaceId,
+    verifiers: Vec<grants::DeviceGrantAuthorizer>,
+) -> Result<(), RecoveryError>
+where
+    K: DeviceKeyStore + ?Sized,
+{
+    for verifier in verifiers {
+        key_store.store_device_proof_verifier(DeviceProofVerifier {
+            workspace_id: workspace_id.clone(),
+            device_id: verifier.device_id,
+            proof_verifier: verifier.device_authorization_proof_verifier,
+        })?;
+    }
+    Ok(())
 }
 
 fn recovery_state_from_envelope(
@@ -453,7 +510,8 @@ impl From<bowline_control_plane::ControlPlaneError> for RecoveryError {
 #[cfg(test)]
 mod tests {
     use bowline_control_plane::{
-        ControlPlaneClient, DeterministicClock, DeterministicIdGenerator, RecoveryEnvelopeState,
+        DeterministicClock, DeterministicIdGenerator, DeviceControlPlaneClient,
+        RecoveryControlPlaneClient, RecoveryEnvelopeState,
     };
     use bowline_core::{
         commands::RecoveryCommandAction,
@@ -466,7 +524,9 @@ mod tests {
         use_recovery_key, verify_recovery_key,
     };
     use crate::{
-        device_keys::DeviceKeyStore, fakes::FakeKeychain, trust::ensure_first_device_trust_root,
+        device_keys::DeviceKeyStore,
+        fakes::FakeKeychain,
+        trust::{ensure_first_device_trust_root, grants},
     };
 
     #[test]
@@ -525,7 +585,7 @@ mod tests {
 
         assert!(matches!(error, RecoveryError::InvalidWords));
         let envelopes = control_plane
-            .list_recovery_envelopes(workspace_id.as_str())
+            .list_recovery_envelopes(&workspace_id)
             .expect("envelopes");
         let envelope = envelopes
             .iter()
@@ -553,6 +613,12 @@ mod tests {
             "t000000000001",
         )
         .expect("first device");
+        let trusted_verifier = grants::device_authorization_proof_verifier(
+            &trusted_keychain
+                .load_or_create_device_identity()
+                .expect("trusted identity"),
+        )
+        .expect("trusted verifier");
         let (recovery_key, created) = create_recovery_key(
             &control_plane,
             &trusted_keychain,
@@ -604,8 +670,19 @@ mod tests {
                 .expect("fresh keychain readable")
                 .is_some()
         );
+        assert!(
+            fresh_keychain
+                .load_device_proof_verifiers()
+                .expect("fresh verifier cache readable")
+                .iter()
+                .any(|verifier| {
+                    verifier.workspace_id == workspace_id
+                        && verifier.device_id.as_str() == "trusted-device"
+                        && verifier.proof_verifier == trusted_verifier
+                })
+        );
         let trust = control_plane
-            .list_device_trust(workspace_id.as_str())
+            .list_device_trust(&workspace_id)
             .expect("trust list");
         assert!(
             trust

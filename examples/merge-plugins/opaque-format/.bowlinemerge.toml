@@ -1,0 +1,10 @@
+schema = 1
+
+[[plugins]]
+id = "opaque-format"
+version = "0.1.0"
+digest = "blake3:<replace-with-module-digest>"
+module = ".bowline/plugins/opaque-format.wasm"
+match = ["*.opaque"]
+matcher-version = "2"
+validator-version = "1"

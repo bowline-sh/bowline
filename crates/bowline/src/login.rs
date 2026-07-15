@@ -5,7 +5,6 @@ use crate::runtime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginArgs {
-    pub root: Option<String>,
     pub no_poll: bool,
     pub headless: bool,
 }

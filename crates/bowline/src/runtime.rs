@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env,
     path::{Path, PathBuf},
 };
@@ -14,17 +15,31 @@ use bowline_core::{
 };
 use bowline_local::{
     account::workos,
-    device_keys::{AccountTokens, DeviceKeyStore, KeyringDeviceKeyStore, ServerLocalSecretStore},
+    device_keys::{AccountTokens, DeviceKeyStore, default_device_key_store},
     metadata::{MetadataStore, default_database_path},
     trust::grants,
 };
 
+mod account_session;
+pub use account_session::{
+    AccountSessionRevocation, account_session_id, ensure_durable_account_session,
+    environment_account_session_revocation, revoke_account_session,
+    stored_account_session_revocation,
+};
+
 pub fn control_plane() -> Result<Box<dyn ControlPlaneClient>, String> {
+    let bootstrap_token = env::var("BOWLINE_BOOTSTRAP_TOKEN")
+        .ok()
+        .filter(|value| !value.is_empty());
+    control_plane_with_bootstrap_token(bootstrap_token)
+}
+
+pub fn control_plane_with_bootstrap_token(
+    bootstrap_token: Option<String>,
+) -> Result<Box<dyn ControlPlaneClient>, String> {
     let convex_url = hosted_convex_url();
     if let Some(convex_url) = convex_url {
-        if let Ok(bootstrap_token) = env::var("BOWLINE_BOOTSTRAP_TOKEN")
-            && !bootstrap_token.is_empty()
-        {
+        if let Some(bootstrap_token) = bootstrap_token {
             return Ok(Box::new(
                 HostedControlPlaneClient::try_new_with_bootstrap_token(convex_url, bootstrap_token)
                     .map_err(|error| error.to_string())?
@@ -75,7 +90,7 @@ pub fn control_plane() -> Result<Box<dyn ControlPlaneClient>, String> {
     }
 
     Err(
-        "control-plane configuration is missing; run `bowline login --root <path>` or set CONVEX_URL and BOWLINE_CONTROL_PLANE_TOKEN"
+        "control-plane configuration is missing; run `bowline setup --root <path>` or set CONVEX_URL and BOWLINE_CONTROL_PLANE_TOKEN"
             .to_string(),
     )
 }
@@ -90,6 +105,27 @@ fn hosted_client_with_device_proof(
         .load_or_create_device_identity()
         .map_err(|error| error.to_string())?;
     let signer_device_id = device_id.clone();
+    let verifier_device_id = device_id.clone();
+    let verifier_identity = identity.clone();
+    let mut verifier_cache = store
+        .load_device_proof_verifiers()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|verifier| {
+            (
+                (
+                    verifier.workspace_id.as_str().to_string(),
+                    verifier.device_id.as_str().to_string(),
+                ),
+                verifier.proof_verifier,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    verifier_cache.insert(
+        (String::new(), verifier_device_id.as_str().to_string()),
+        grants::device_authorization_proof_verifier(&verifier_identity)
+            .map_err(|error| error.to_string())?,
+    );
     HostedControlPlaneClient::try_new_with_token(convex_url, control_plane_token)
         .map_err(|error| error.to_string())
         .map(|client| {
@@ -101,13 +137,22 @@ fn hosted_client_with_device_proof(
                             "hosted client refused to sign for a different device id".to_string(),
                         ));
                     }
-                    Ok(grants::device_authorization_proof(
+                    grants::device_authorization_proof(
                         &identity,
                         &WorkspaceId::new(workspace_id.to_string()),
                         &signer_device_id,
                         action,
                         subject,
-                    ))
+                    )
+                    .map_err(|error| ControlPlaneError::Storage(error.to_string()))
+                })
+                .with_device_proof_verifier_resolver(move |_workspace_id, proof_device_id| {
+                    Ok(verifier_cache
+                        .get(&(_workspace_id.to_string(), proof_device_id.to_string()))
+                        .or_else(|| {
+                            verifier_cache.get(&(String::new(), proof_device_id.to_string()))
+                        })
+                        .cloned())
                 })
         })
 }
@@ -126,23 +171,11 @@ fn explicit_workspace_id_configured() -> bool {
 }
 
 pub fn key_store() -> Result<Box<dyn DeviceKeyStore>, String> {
-    if let Some(path) = configured_secret_store_path() {
-        return Ok(Box::new(ServerLocalSecretStore::new(path)));
-    }
-    if keychain_secret_store_allowed() {
-        return Ok(Box::new(KeyringDeviceKeyStore::new("default")));
-    }
-    Ok(Box::new(ServerLocalSecretStore::new(
-        ServerLocalSecretStore::default_path().map_err(|error| error.to_string())?,
-    )))
+    default_device_key_store().map_err(|error| error.to_string())
 }
 
 pub fn passive_secret_store_probe_allowed() -> bool {
     true
-}
-
-fn configured_secret_store_path() -> Option<String> {
-    nonempty_env_value(env::var("BOWLINE_SECRET_STORE_PATH").ok())
 }
 
 fn nonempty_env_value(value: Option<String>) -> Option<String> {
@@ -163,60 +196,6 @@ pub fn workos_access_token(store: &dyn DeviceKeyStore) -> Option<String> {
         return Some(tokens.access_token);
     }
     refresh_workos_tokens(store, &tokens.refresh_token).map(|tokens| tokens.access_token)
-}
-
-pub fn account_session_id(store: &dyn DeviceKeyStore) -> Option<String> {
-    nonempty_env_value(env::var("BOWLINE_ACCOUNT_SESSION_ID").ok())
-        .filter(|session_id| durable_account_session_id(session_id))
-        .or_else(|| {
-            store
-                .load_account_tokens()
-                .ok()
-                .flatten()
-                .and_then(|tokens| tokens.account_session_id)
-                .filter(|session_id| durable_account_session_id(session_id))
-        })
-}
-
-fn durable_account_session_id(session_id: &str) -> bool {
-    session_id.starts_with("bowline_session_")
-}
-
-pub fn ensure_durable_account_session(
-    store: &dyn DeviceKeyStore,
-    workspace_id: Option<&WorkspaceId>,
-) -> Result<Option<String>, String> {
-    if let Some(session_id) = account_session_id(store) {
-        return Ok(Some(session_id));
-    }
-    if store
-        .load_account_tokens()
-        .map_err(|error| error.to_string())?
-        .is_none()
-    {
-        return Ok(None);
-    };
-    let Some(access_token) = workos_access_token(store) else {
-        return Ok(None);
-    };
-    let Some(mut tokens) = store
-        .load_account_tokens()
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(None);
-    };
-    let convex_url =
-        hosted_convex_url().ok_or_else(|| "hosted control plane is missing".to_string())?;
-    let client = HostedControlPlaneClient::try_new_with_token(convex_url, String::new())
-        .map_err(|error| error.to_string())?;
-    let session_id = client
-        .register_account_session_id(access_token, workspace_id.map(|id| id.as_str()))
-        .map_err(|error| error.to_string())?;
-    tokens.account_session_id = Some(session_id.clone());
-    store
-        .store_account_tokens(tokens)
-        .map_err(|error| error.to_string())?;
-    Ok(Some(session_id))
 }
 
 fn refresh_env_workos_token(store: &dyn DeviceKeyStore) -> Option<String> {
@@ -302,17 +281,12 @@ fn decode_base64url(input: &str) -> Option<Vec<u8>> {
     Some(output)
 }
 
+#[cfg(test)]
 fn keychain_probe_value_allowed(value: Option<&str>) -> bool {
     matches!(value, Some("1") | Some("true") | Some("yes"))
 }
 
-fn keychain_secret_store_allowed() -> bool {
-    keychain_secret_store_allowed_from(
-        env::var("BOWLINE_SECRET_STORE").ok().as_deref(),
-        env::var("BOWLINE_ALLOW_KEYCHAIN_PROBE").ok().as_deref(),
-    )
-}
-
+#[cfg(test)]
 fn keychain_secret_store_allowed_from(store: Option<&str>, probe: Option<&str>) -> bool {
     store == Some("keychain") && keychain_probe_value_allowed(probe)
 }
@@ -332,7 +306,10 @@ fn workspace_id_with_probes(
     if let Ok(workspace_id) = env::var("BOWLINE_WORKSPACE_ID")
         && !workspace_id.is_empty()
     {
-        return workspace_id_from_inputs(Some(workspace_id), false, false, false, None);
+        return workspace_id_from_sources(WorkspaceIdSources {
+            explicit_workspace_id: Some(workspace_id),
+            ..WorkspaceIdSources::default()
+        });
     }
     let hosted_control_plane = hosted_control_plane_configured();
     if hosted_control_plane
@@ -340,87 +317,77 @@ fn workspace_id_with_probes(
         && let Ok(store) = key_store()
     {
         if let Ok(Some(tokens)) = store.load_account_tokens() {
-            return workspace_id_from_inputs(
-                None,
+            return workspace_id_from_sources(WorkspaceIdSources {
                 hosted_control_plane,
                 allow_account_probe,
                 allow_local_metadata_probe,
-                Some(tokens.account_id.as_str()),
-            );
+                account_id: Some(tokens.account_id.as_str()),
+                ..WorkspaceIdSources::default()
+            });
         }
         if let Some(access_token) = workos_access_token(&*store)
             && let Some(account_id) = workos_account_id_from_access_token(&access_token)
         {
-            return workspace_id_from_inputs(
-                None,
+            return workspace_id_from_sources(WorkspaceIdSources {
                 hosted_control_plane,
                 allow_account_probe,
                 allow_local_metadata_probe,
-                Some(&account_id),
-            );
+                account_id: Some(&account_id),
+                ..WorkspaceIdSources::default()
+            });
         }
     }
     if allow_local_metadata_probe && let Some(workspace_id) = local_accepted_workspace_id() {
-        return workspace_id_from_sources(
-            None,
+        return workspace_id_from_sources(WorkspaceIdSources {
             hosted_control_plane,
             allow_account_probe,
             allow_local_metadata_probe,
-            None,
-            Some(workspace_id),
-        );
+            local_workspace_id: Some(workspace_id),
+            ..WorkspaceIdSources::default()
+        });
     }
-    workspace_id_from_sources(
-        None,
+    workspace_id_from_sources(WorkspaceIdSources {
         hosted_control_plane,
         allow_account_probe,
         allow_local_metadata_probe,
-        None,
-        None,
-    )
+        ..WorkspaceIdSources::default()
+    })
 }
 
-fn workspace_id_from_inputs(
+/// Inputs for workspace-id resolution, applied in precedence order: explicit
+/// id, account-scoped hosted id, locally accepted workspace, then the default.
+#[derive(Default)]
+struct WorkspaceIdSources<'a> {
     explicit_workspace_id: Option<String>,
     hosted_control_plane: bool,
     allow_account_probe: bool,
     allow_local_metadata_probe: bool,
-    account_id: Option<&str>,
-) -> WorkspaceId {
-    workspace_id_from_sources(
-        explicit_workspace_id,
-        hosted_control_plane,
-        allow_account_probe,
-        allow_local_metadata_probe,
-        account_id,
-        None,
-    )
-}
-
-fn workspace_id_from_sources(
-    explicit_workspace_id: Option<String>,
-    hosted_control_plane: bool,
-    allow_account_probe: bool,
-    allow_local_metadata_probe: bool,
-    account_id: Option<&str>,
+    account_id: Option<&'a str>,
     local_workspace_id: Option<WorkspaceId>,
-) -> WorkspaceId {
-    if let Some(workspace_id) = explicit_workspace_id.filter(|value| !value.is_empty()) {
+}
+
+fn workspace_id_from_sources(sources: WorkspaceIdSources<'_>) -> WorkspaceId {
+    if let Some(workspace_id) = sources
+        .explicit_workspace_id
+        .filter(|value| !value.is_empty())
+    {
         return WorkspaceId::new(workspace_id);
     }
-    if hosted_control_plane
-        && allow_account_probe
-        && let Some(account_id) = account_id
+    if sources.hosted_control_plane
+        && sources.allow_account_probe
+        && let Some(account_id) = sources.account_id
     {
         return WorkspaceId::new(account_scoped_workspace_id(account_id));
     }
-    if allow_local_metadata_probe && let Some(workspace_id) = local_workspace_id {
+    if sources.allow_local_metadata_probe
+        && let Some(workspace_id) = sources.local_workspace_id
+    {
         return workspace_id;
     }
     WorkspaceId::new("ws_code")
 }
 
-fn selected_metadata_database_path() -> Option<PathBuf> {
+pub fn selected_metadata_database_path() -> Option<PathBuf> {
     env::var_os("BOWLINE_METADATA_DB")
         .map(PathBuf::from)
         .or_else(|| default_database_path().ok())
@@ -442,14 +409,14 @@ pub fn active_workspace_root() -> Option<String> {
 
 pub fn workspace_id_for_root(root: &str) -> Result<WorkspaceId, String> {
     let db_path = selected_metadata_database_path()
-        .ok_or_else(|| format!("no local metadata database; run `bowline login --root {root}`"))?;
+        .ok_or_else(|| format!("no local metadata database; run `bowline setup --root {root}`"))?;
     let store = MetadataStore::open(db_path).map_err(|error| error.to_string())?;
     store
         .workspace_by_accepted_root(root)
         .map_err(|error| error.to_string())?
         .map(|workspace| workspace.id)
         .ok_or_else(|| {
-            format!("workspace root is not initialized; run `bowline login --root {root}`")
+            format!("workspace root is not initialized; run `bowline setup --root {root}`")
         })
 }
 
@@ -474,9 +441,13 @@ pub fn daemon_device_id(workspace_id: &WorkspaceId) -> DeviceId {
         return DeviceId::new(device_id);
     }
 
+    let persisted_device_id = selected_metadata_database_path()
+        .and_then(|db_path| db_path.parent().map(Path::to_path_buf))
+        .and_then(|state_root| persisted_daemon_device_id_for_workspace(&state_root, workspace_id));
     trusted_device_id_for_local_identity(workspace_id)
+        .or(persisted_device_id)
         .map(DeviceId::new)
-        .unwrap_or_else(device_id)
+        .unwrap_or_else(|| DeviceId::new(default_device_id()))
 }
 
 pub fn device_name() -> String {
@@ -515,8 +486,16 @@ fn configured_device_id_from(
 fn persisted_daemon_device_id() -> Option<String> {
     let db_path = selected_metadata_database_path()?;
     let state_root = db_path.parent()?;
+    let workspace_id = active_workspace_id_for_persisted_daemon_device()?;
+    persisted_daemon_device_id_for_workspace(state_root, &workspace_id)
+}
+
+pub(crate) fn persisted_daemon_device_id_for_workspace(
+    state_root: &Path,
+    workspace_id: &WorkspaceId,
+) -> Option<String> {
     let persisted_workspace_id = persisted_daemon_env_value(state_root, "BOWLINE_WORKSPACE_ID")?;
-    if active_workspace_id_for_persisted_daemon_device()?.as_str() != persisted_workspace_id {
+    if persisted_workspace_id != workspace_id.as_str() {
         return None;
     }
     persisted_daemon_env_value(state_root, "BOWLINE_DEVICE_ID")
@@ -541,10 +520,7 @@ fn persisted_daemon_env_value(state_root: &Path, name: &str) -> Option<String> {
 fn trusted_device_id_for_local_identity(workspace_id: &WorkspaceId) -> Option<String> {
     let store = key_store().ok()?;
     let identity = store.load_or_create_device_identity().ok()?;
-    let trust = control_plane()
-        .ok()?
-        .list_device_trust(workspace_id.as_str())
-        .ok()?;
+    let trust = control_plane().ok()?.list_device_trust(workspace_id).ok()?;
     select_authorized_device_for_identity(
         &trust.authorized_devices,
         identity.fingerprint.as_str(),
@@ -584,12 +560,14 @@ fn platform_label() -> &'static str {
 #[cfg(test)]
 mod tests {
     use bowline_control_plane::{AuthorizedDeviceRecord, ControlPlaneTimestamp};
+    use bowline_core::ids::{DeviceId, WorkspaceId};
 
     use super::{
-        account_scoped_workspace_id, configured_device_id_from, keychain_secret_store_allowed_from,
-        nonempty_env_value, persisted_daemon_env_value, select_authorized_device_for_identity,
-        workos_account_id_from_access_token, workos_token_is_not_expired, workspace_id_from_inputs,
-        workspace_id_from_sources,
+        WorkspaceIdSources, account_scoped_workspace_id, configured_device_id_from,
+        keychain_secret_store_allowed_from, nonempty_env_value,
+        persisted_daemon_device_id_for_workspace, persisted_daemon_env_value,
+        select_authorized_device_for_identity, workos_account_id_from_access_token,
+        workos_token_is_not_expired, workspace_id_from_sources,
     };
 
     #[test]
@@ -675,21 +653,32 @@ mod tests {
     #[test]
     fn active_workspace_id_can_scope_account_without_local_metadata_probe() {
         assert_eq!(
-            workspace_id_from_inputs(None, true, false, false, Some("account_active")).as_str(),
+            workspace_id_from_sources(WorkspaceIdSources {
+                hosted_control_plane: true,
+                account_id: Some("account_active"),
+                ..WorkspaceIdSources::default()
+            })
+            .as_str(),
             "ws_code"
         );
         assert_eq!(
-            workspace_id_from_inputs(None, true, true, false, Some("account_active")).as_str(),
+            workspace_id_from_sources(WorkspaceIdSources {
+                hosted_control_plane: true,
+                allow_account_probe: true,
+                account_id: Some("account_active"),
+                ..WorkspaceIdSources::default()
+            })
+            .as_str(),
             account_scoped_workspace_id("account_active")
         );
         assert_eq!(
-            workspace_id_from_inputs(
-                Some("ws_explicit".to_string()),
-                true,
-                true,
-                false,
-                Some("account_active")
-            )
+            workspace_id_from_sources(WorkspaceIdSources {
+                explicit_workspace_id: Some("ws_explicit".to_string()),
+                hosted_control_plane: true,
+                allow_account_probe: true,
+                account_id: Some("account_active"),
+                ..WorkspaceIdSources::default()
+            })
             .as_str(),
             "ws_explicit"
         );
@@ -702,7 +691,14 @@ mod tests {
             workos_account_id_from_access_token(token).expect("token sub should parse");
 
         assert_eq!(
-            workspace_id_from_inputs(None, true, true, true, Some(&account_id)).as_str(),
+            workspace_id_from_sources(WorkspaceIdSources {
+                hosted_control_plane: true,
+                allow_account_probe: true,
+                allow_local_metadata_probe: true,
+                account_id: Some(&account_id),
+                ..WorkspaceIdSources::default()
+            })
+            .as_str(),
             account_scoped_workspace_id("account_active")
         );
     }
@@ -710,26 +706,25 @@ mod tests {
     #[test]
     fn authenticated_hosted_workspace_id_ignores_stale_local_workspace() {
         assert_eq!(
-            workspace_id_from_sources(
-                None,
-                true,
-                true,
-                true,
-                Some("account_active"),
-                Some(bowline_core::ids::WorkspaceId::new("ws_code"))
-            )
+            workspace_id_from_sources(WorkspaceIdSources {
+                hosted_control_plane: true,
+                allow_account_probe: true,
+                allow_local_metadata_probe: true,
+                account_id: Some("account_active"),
+                local_workspace_id: Some(bowline_core::ids::WorkspaceId::new("ws_code")),
+                ..WorkspaceIdSources::default()
+            })
             .as_str(),
             account_scoped_workspace_id("account_active")
         );
         assert_eq!(
-            workspace_id_from_sources(
-                None,
-                false,
-                true,
-                true,
-                Some("account_active"),
-                Some(bowline_core::ids::WorkspaceId::new("ws_code"))
-            )
+            workspace_id_from_sources(WorkspaceIdSources {
+                allow_account_probe: true,
+                allow_local_metadata_probe: true,
+                account_id: Some("account_active"),
+                local_workspace_id: Some(bowline_core::ids::WorkspaceId::new("ws_code")),
+                ..WorkspaceIdSources::default()
+            })
             .as_str(),
             "ws_code"
         );
@@ -769,6 +764,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn persisted_daemon_device_id_is_scoped_to_requested_workspace() {
+        let state_root = tempfile_dir("runtime-daemon-workspace-scope");
+        std::fs::write(
+            state_root.join("daemon.env"),
+            "BOWLINE_WORKSPACE_ID=workspace_a\nBOWLINE_DEVICE_ID=device_a\n",
+        )
+        .expect("write daemon environment");
+
+        assert_eq!(
+            persisted_daemon_device_id_for_workspace(&state_root, &WorkspaceId::new("workspace_a"))
+                .as_deref(),
+            Some("device_a")
+        );
+        assert_eq!(
+            persisted_daemon_device_id_for_workspace(&state_root, &WorkspaceId::new("workspace_b")),
+            None
+        );
+
+        std::fs::remove_dir_all(state_root).expect("remove temp dir");
+    }
+
     fn authorized_device(
         device_id: &str,
         fingerprint: &str,
@@ -776,13 +793,14 @@ mod tests {
         revoked: bool,
     ) -> AuthorizedDeviceRecord {
         AuthorizedDeviceRecord {
-            workspace_id: "ws_code".to_string(),
-            device_id: device_id.to_string(),
+            workspace_id: WorkspaceId::new("ws_code"),
+            device_id: DeviceId::new(device_id),
             device_name: device_id.to_string(),
             platform: platform.to_string(),
             device_fingerprint: fingerprint.to_string(),
             authorized_at: ControlPlaneTimestamp { tick: 1 },
             authorized_by_device_id: None,
+            device_authorization_proof_verifier: None,
             revoked_at: revoked.then_some(ControlPlaneTimestamp { tick: 2 }),
         }
     }

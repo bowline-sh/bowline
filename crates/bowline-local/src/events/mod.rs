@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::{collections::BTreeMap, error::Error, fmt};
 
 use bowline_core::{
     events::{
@@ -12,7 +12,13 @@ use bowline_core::{
 use rusqlite::{OptionalExtension, ToSql, params, params_from_iter};
 use serde_json::{Map, Value};
 
-use crate::metadata::{MetadataError, MetadataStore};
+use crate::{
+    metadata::{MetadataError, MetadataStore, ProjectRecord},
+    status::event_name_label,
+};
+
+mod status_clear;
+use status_clear::scoped_status_signal_events_sql;
 
 #[derive(Debug)]
 pub enum LocalEventError {
@@ -29,29 +35,6 @@ pub struct EventQuery {
     pub path_prefix: Option<String>,
     pub limit: u32,
 }
-
-const STATUS_CLEAR_EVENT_NAMES: &[&str] = &[
-    "conflict.resolution_accepted",
-    "conflict.resolution_rejected",
-    "device.approved",
-    "device.revoked",
-    "setup.completed",
-    "hydration.completed",
-    "policy.changed",
-    "lease.created",
-    "lease.updated",
-    "daemon.recovered",
-    "index.updated",
-    "sync.completed",
-    "sync.recovered",
-    "watcher.recovered",
-    "network.recovered",
-    "work.accepted",
-    "work.archived",
-    "work.cleanup_completed",
-    "work.discarded",
-    "work.restored",
-];
 
 impl MetadataStore {
     pub fn append_event(
@@ -138,6 +121,33 @@ impl MetadataStore {
         )?;
 
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn status_signal_events_by_project(
+        &self,
+        workspace_id: &WorkspaceId,
+        projects: &[ProjectRecord],
+    ) -> Result<BTreeMap<ProjectId, Vec<WorkspaceEvent>>, LocalEventError> {
+        let events = self.list_status_signal_events_scoped(EventQuery {
+            workspace_id: Some(workspace_id.clone()),
+            project_id: None,
+            path_prefix: None,
+            limit: 0,
+        })?;
+        let mut events_by_project = BTreeMap::<ProjectId, Vec<WorkspaceEvent>>::new();
+
+        for event in events {
+            for project in projects {
+                if event_matches_project_scope(&event, project) {
+                    events_by_project
+                        .entry(project.id.clone())
+                        .or_default()
+                        .push(event.clone());
+                }
+            }
+        }
+
+        Ok(events_by_project)
     }
 
     pub fn scoped_event_watermarks(
@@ -544,24 +554,6 @@ fn scoped_events_sql(query: &EventQuery, select_id_only: bool) -> (String, Vec<B
     (sql, params)
 }
 
-fn scoped_status_signal_events_sql(query: &EventQuery) -> (String, Vec<Box<dyn ToSql>>) {
-    let mut sql = format!("{} FROM events", event_select(false));
-    let mut clauses = Vec::new();
-    let mut params: Vec<Box<dyn ToSql>> = Vec::new();
-
-    add_scope_clauses(query, &mut clauses, &mut params);
-    let placeholders = vec!["?"; STATUS_CLEAR_EVENT_NAMES.len()].join(", ");
-    clauses.push(format!("(severity != 'info' OR name IN ({placeholders}))"));
-    for name in STATUS_CLEAR_EVENT_NAMES {
-        params.push(Box::new((*name).to_string()));
-    }
-
-    append_where_clauses(&mut sql, &clauses);
-    sql.push_str(" ORDER BY occurred_at DESC, id DESC");
-
-    (sql, params)
-}
-
 fn event_select(select_id_only: bool) -> &'static str {
     if select_id_only {
         "SELECT id"
@@ -602,6 +594,13 @@ fn add_scope_clauses(
 fn push_path_prefix_params(path_prefix: &str, params: &mut Vec<Box<dyn ToSql>>) {
     params.push(Box::new(path_prefix.to_string()));
     params.push(Box::new(format!("{path_prefix}/")));
+}
+
+fn event_matches_project_scope(event: &WorkspaceEvent, project: &ProjectRecord) -> bool {
+    event.project_id.as_ref() == Some(&project.id)
+        || event.path.as_deref().is_some_and(|path| {
+            path == project.path || path.starts_with(&format!("{}/", project.path))
+        })
 }
 
 fn append_where_clauses(sql: &mut String, clauses: &[String]) {
@@ -839,16 +838,16 @@ mod tests {
         assert!(matches!(error, super::LocalEventError::DuplicateEventId(_)));
         let events = store.list_events(10).expect("events list");
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].summary, "Index updated.");
+        assert_eq!(events[0].summary, "Sync started.");
     }
 
     fn test_event(workspace_id: &WorkspaceId) -> WorkspaceEvent {
         let mut event = WorkspaceEvent::new(
             EventId::new("evt_test_001"),
-            EventName::IndexUpdated,
+            EventName::SyncStarted,
             "2026-06-23T12:00:00Z",
             EventSeverity::Info,
-            "Index updated.",
+            "Sync started.",
             workspace_id.clone(),
         );
         event.subject = Some(EventSubject {

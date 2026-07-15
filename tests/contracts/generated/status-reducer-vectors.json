@@ -1,0 +1,1092 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "attention": "none",
+        "availability": "ready",
+        "facts": [
+          {
+            "attentionImpact": "none",
+            "availabilityImpact": "none",
+            "dedupeKey": "status-reducer:workspace:ws_fixture:cross.none.none",
+            "id": "cross.none.none",
+            "kind": "status.aggregate_input",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "status-reducer",
+            "summaryKey": "status.status.aggregate_input"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "cross.none.none",
+        "snapshotVersion": 7
+      },
+      "id": "cross-product.none.none",
+      "input": [
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "none",
+          "dedupeKey": "status-reducer:workspace:ws_fixture:cross.none.none",
+          "id": "cross.none.none",
+          "kind": "status.aggregate_input",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "status-reducer",
+          "summaryKey": "status.status.aggregate_input"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "recommended",
+        "availability": "ready",
+        "facts": [
+          {
+            "attentionImpact": "recommended",
+            "availabilityImpact": "none",
+            "dedupeKey": "status-reducer:workspace:ws_fixture:cross.none.recommended",
+            "id": "cross.none.recommended",
+            "kind": "status.aggregate_input",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "status-reducer",
+            "summaryKey": "status.status.aggregate_input"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "cross.none.recommended",
+        "snapshotVersion": 7
+      },
+      "id": "cross-product.none.recommended",
+      "input": [
+        {
+          "attentionImpact": "recommended",
+          "availabilityImpact": "none",
+          "dedupeKey": "status-reducer:workspace:ws_fixture:cross.none.recommended",
+          "id": "cross.none.recommended",
+          "kind": "status.aggregate_input",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "status-reducer",
+          "summaryKey": "status.status.aggregate_input"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "required",
+        "availability": "ready",
+        "facts": [
+          {
+            "attentionImpact": "required",
+            "availabilityImpact": "none",
+            "dedupeKey": "status-reducer:workspace:ws_fixture:cross.none.required",
+            "id": "cross.none.required",
+            "kind": "status.aggregate_input",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "status-reducer",
+            "summaryKey": "status.status.aggregate_input"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "cross.none.required",
+        "snapshotVersion": 7
+      },
+      "id": "cross-product.none.required",
+      "input": [
+        {
+          "attentionImpact": "required",
+          "availabilityImpact": "none",
+          "dedupeKey": "status-reducer:workspace:ws_fixture:cross.none.required",
+          "id": "cross.none.required",
+          "kind": "status.aggregate_input",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "status-reducer",
+          "summaryKey": "status.status.aggregate_input"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "none",
+        "availability": "degraded",
+        "facts": [
+          {
+            "attentionImpact": "none",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "status-reducer:workspace:ws_fixture:cross.degraded.none",
+            "id": "cross.degraded.none",
+            "kind": "status.aggregate_input",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "status-reducer",
+            "summaryKey": "status.status.aggregate_input"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "cross.degraded.none",
+        "snapshotVersion": 7
+      },
+      "id": "cross-product.degraded.none",
+      "input": [
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "status-reducer:workspace:ws_fixture:cross.degraded.none",
+          "id": "cross.degraded.none",
+          "kind": "status.aggregate_input",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "status-reducer",
+          "summaryKey": "status.status.aggregate_input"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "recommended",
+        "availability": "degraded",
+        "facts": [
+          {
+            "attentionImpact": "recommended",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "status-reducer:workspace:ws_fixture:cross.degraded.recommended",
+            "id": "cross.degraded.recommended",
+            "kind": "status.aggregate_input",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "status-reducer",
+            "summaryKey": "status.status.aggregate_input"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "cross.degraded.recommended",
+        "snapshotVersion": 7
+      },
+      "id": "cross-product.degraded.recommended",
+      "input": [
+        {
+          "attentionImpact": "recommended",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "status-reducer:workspace:ws_fixture:cross.degraded.recommended",
+          "id": "cross.degraded.recommended",
+          "kind": "status.aggregate_input",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "status-reducer",
+          "summaryKey": "status.status.aggregate_input"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "required",
+        "availability": "degraded",
+        "facts": [
+          {
+            "attentionImpact": "required",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "status-reducer:workspace:ws_fixture:cross.degraded.required",
+            "id": "cross.degraded.required",
+            "kind": "status.aggregate_input",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "status-reducer",
+            "summaryKey": "status.status.aggregate_input"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "cross.degraded.required",
+        "snapshotVersion": 7
+      },
+      "id": "cross-product.degraded.required",
+      "input": [
+        {
+          "attentionImpact": "required",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "status-reducer:workspace:ws_fixture:cross.degraded.required",
+          "id": "cross.degraded.required",
+          "kind": "status.aggregate_input",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "status-reducer",
+          "summaryKey": "status.status.aggregate_input"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "none",
+        "availability": "unavailable",
+        "facts": [
+          {
+            "attentionImpact": "none",
+            "availabilityImpact": "unavailable",
+            "dedupeKey": "status-reducer:workspace:ws_fixture:cross.unavailable.none",
+            "id": "cross.unavailable.none",
+            "kind": "status.aggregate_input",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "status-reducer",
+            "summaryKey": "status.status.aggregate_input"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "cross.unavailable.none",
+        "snapshotVersion": 7
+      },
+      "id": "cross-product.unavailable.none",
+      "input": [
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "unavailable",
+          "dedupeKey": "status-reducer:workspace:ws_fixture:cross.unavailable.none",
+          "id": "cross.unavailable.none",
+          "kind": "status.aggregate_input",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "status-reducer",
+          "summaryKey": "status.status.aggregate_input"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "recommended",
+        "availability": "unavailable",
+        "facts": [
+          {
+            "attentionImpact": "recommended",
+            "availabilityImpact": "unavailable",
+            "dedupeKey": "status-reducer:workspace:ws_fixture:cross.unavailable.recommended",
+            "id": "cross.unavailable.recommended",
+            "kind": "status.aggregate_input",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "status-reducer",
+            "summaryKey": "status.status.aggregate_input"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "cross.unavailable.recommended",
+        "snapshotVersion": 7
+      },
+      "id": "cross-product.unavailable.recommended",
+      "input": [
+        {
+          "attentionImpact": "recommended",
+          "availabilityImpact": "unavailable",
+          "dedupeKey": "status-reducer:workspace:ws_fixture:cross.unavailable.recommended",
+          "id": "cross.unavailable.recommended",
+          "kind": "status.aggregate_input",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "status-reducer",
+          "summaryKey": "status.status.aggregate_input"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "required",
+        "availability": "unavailable",
+        "facts": [
+          {
+            "attentionImpact": "required",
+            "availabilityImpact": "unavailable",
+            "dedupeKey": "status-reducer:workspace:ws_fixture:cross.unavailable.required",
+            "id": "cross.unavailable.required",
+            "kind": "status.aggregate_input",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "status-reducer",
+            "summaryKey": "status.status.aggregate_input"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "cross.unavailable.required",
+        "snapshotVersion": 7
+      },
+      "id": "cross-product.unavailable.required",
+      "input": [
+        {
+          "attentionImpact": "required",
+          "availabilityImpact": "unavailable",
+          "dedupeKey": "status-reducer:workspace:ws_fixture:cross.unavailable.required",
+          "id": "cross.unavailable.required",
+          "kind": "status.aggregate_input",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "status-reducer",
+          "summaryKey": "status.status.aggregate_input"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "required",
+        "availability": "degraded",
+        "facts": [
+          {
+            "attentionImpact": "required",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "local-conflict-store:workspace:ws_fixture:conflict",
+            "id": "conflict",
+            "kind": "sync.conflict_unresolved",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "local-conflict-store",
+            "summaryKey": "status.sync.conflict_unresolved"
+          },
+          {
+            "attentionImpact": "none",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "local-network-observer:workspace:ws_fixture:offline",
+            "id": "offline",
+            "kind": "network.offline",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "local-network-observer",
+            "summaryKey": "status.network.offline"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "conflict",
+        "snapshotVersion": 7
+      },
+      "id": "contradictory.offline-and-conflict",
+      "input": [
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "local-network-observer:workspace:ws_fixture:offline",
+          "id": "offline",
+          "kind": "network.offline",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-network-observer",
+          "summaryKey": "status.network.offline"
+        },
+        {
+          "attentionImpact": "required",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "local-conflict-store:workspace:ws_fixture:conflict",
+          "id": "conflict",
+          "kind": "sync.conflict_unresolved",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-conflict-store",
+          "summaryKey": "status.sync.conflict_unresolved"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "required",
+        "availability": "degraded",
+        "facts": [
+          {
+            "attentionImpact": "required",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "local-conflict-store:workspace:ws_fixture:conflict",
+            "id": "conflict",
+            "kind": "sync.conflict_unresolved",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "local-conflict-store",
+            "summaryKey": "status.sync.conflict_unresolved"
+          },
+          {
+            "attentionImpact": "none",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "local-network-observer:workspace:ws_fixture:offline",
+            "id": "offline",
+            "kind": "network.offline",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "local-network-observer",
+            "summaryKey": "status.network.offline"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "conflict",
+        "snapshotVersion": 7
+      },
+      "id": "permutation.conflict-and-offline",
+      "input": [
+        {
+          "attentionImpact": "required",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "local-conflict-store:workspace:ws_fixture:conflict",
+          "id": "conflict",
+          "kind": "sync.conflict_unresolved",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-conflict-store",
+          "summaryKey": "status.sync.conflict_unresolved"
+        },
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "local-network-observer:workspace:ws_fixture:offline",
+          "id": "offline",
+          "kind": "network.offline",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-network-observer",
+          "summaryKey": "status.network.offline"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "required",
+        "availability": "degraded",
+        "facts": [
+          {
+            "attentionImpact": "required",
+            "availabilityImpact": "none",
+            "dedupeKey": "hosted-device-trust:workspace:ws_fixture:approval-pending",
+            "id": "approval-pending",
+            "kind": "device.approval_pending",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "hosted-device-trust",
+            "summaryKey": "status.device.approval_pending"
+          },
+          {
+            "attentionImpact": "recommended",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "hosted-freshness-reducer:workspace:ws_fixture:telemetry-stale",
+            "id": "telemetry-stale",
+            "kind": "telemetry.stale",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "hosted-freshness-reducer",
+            "summaryKey": "status.telemetry.stale"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "approval-pending",
+        "snapshotVersion": 7
+      },
+      "id": "contradictory.stale-daemon-and-pending-approval",
+      "input": [
+        {
+          "attentionImpact": "recommended",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "hosted-freshness-reducer:workspace:ws_fixture:telemetry-stale",
+          "id": "telemetry-stale",
+          "kind": "telemetry.stale",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "hosted-freshness-reducer",
+          "summaryKey": "status.telemetry.stale"
+        },
+        {
+          "attentionImpact": "required",
+          "availabilityImpact": "none",
+          "dedupeKey": "hosted-device-trust:workspace:ws_fixture:approval-pending",
+          "id": "approval-pending",
+          "kind": "device.approval_pending",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "hosted-device-trust",
+          "summaryKey": "status.device.approval_pending"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "recommended",
+        "availability": "unavailable",
+        "facts": [
+          {
+            "attentionImpact": "recommended",
+            "availabilityImpact": "unavailable",
+            "dedupeKey": "local-sync-scheduler:workspace:ws_fixture:component-unavailable",
+            "id": "component-unavailable",
+            "kind": "sync.component_unavailable",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "local-sync-scheduler",
+            "summaryKey": "status.sync.component_unavailable"
+          },
+          {
+            "attentionImpact": "none",
+            "availabilityImpact": "none",
+            "dedupeKey": "local-sync-scheduler:workspace:ws_fixture:queue-pending",
+            "id": "queue-pending",
+            "kind": "sync.queue_pending",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "local-sync-scheduler",
+            "summaryKey": "status.sync.queue_pending"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "component-unavailable",
+        "snapshotVersion": 7
+      },
+      "id": "contradictory.component-unavailable-and-queued-work",
+      "input": [
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "none",
+          "dedupeKey": "local-sync-scheduler:workspace:ws_fixture:queue-pending",
+          "id": "queue-pending",
+          "kind": "sync.queue_pending",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-sync-scheduler",
+          "summaryKey": "status.sync.queue_pending"
+        },
+        {
+          "attentionImpact": "recommended",
+          "availabilityImpact": "unavailable",
+          "dedupeKey": "local-sync-scheduler:workspace:ws_fixture:component-unavailable",
+          "id": "component-unavailable",
+          "kind": "sync.component_unavailable",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-sync-scheduler",
+          "summaryKey": "status.sync.component_unavailable"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "required",
+        "availability": "degraded",
+        "facts": [
+          {
+            "attentionImpact": "required",
+            "availabilityImpact": "none",
+            "dedupeKey": "hosted-billing:workspace:ws_fixture:account-action",
+            "id": "account-action",
+            "kind": "billing.payment_attention",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "account",
+            "scopeId": "acct_fixture",
+            "source": "hosted-billing",
+            "summaryKey": "status.billing.payment_attention"
+          },
+          {
+            "attentionImpact": "none",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "local-sync-scheduler:workspace:ws_fixture:daemon-degraded",
+            "id": "daemon-degraded",
+            "kind": "sync.component_degraded",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "local-sync-scheduler",
+            "summaryKey": "status.sync.component_degraded"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "account-action",
+        "snapshotVersion": 7
+      },
+      "id": "contradictory.account-action-and-daemon-degraded",
+      "input": [
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "local-sync-scheduler:workspace:ws_fixture:daemon-degraded",
+          "id": "daemon-degraded",
+          "kind": "sync.component_degraded",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-sync-scheduler",
+          "summaryKey": "status.sync.component_degraded"
+        },
+        {
+          "attentionImpact": "required",
+          "availabilityImpact": "none",
+          "dedupeKey": "hosted-billing:workspace:ws_fixture:account-action",
+          "id": "account-action",
+          "kind": "billing.payment_attention",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "account",
+          "scopeId": "acct_fixture",
+          "source": "hosted-billing",
+          "summaryKey": "status.billing.payment_attention"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "recommended",
+        "availability": "ready",
+        "facts": [
+          {
+            "attentionImpact": "recommended",
+            "availabilityImpact": "none",
+            "dedupeKey": "local-work-store:workspace:ws_fixture:review-ready",
+            "id": "review-ready",
+            "kind": "work_view.review_ready",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "local-work-store",
+            "summaryKey": "status.work_view.review_ready"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "review-ready",
+        "snapshotVersion": 7
+      },
+      "id": "contradictory.healthy-and-review-recommended",
+      "input": [
+        {
+          "attentionImpact": "recommended",
+          "availabilityImpact": "none",
+          "dedupeKey": "local-work-store:workspace:ws_fixture:review-ready",
+          "id": "review-ready",
+          "kind": "work_view.review_ready",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-work-store",
+          "summaryKey": "status.work_view.review_ready"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "none",
+        "availability": "degraded",
+        "facts": [
+          {
+            "attentionImpact": "none",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "retry",
+            "id": "retry-new",
+            "kind": "sync.retry_waiting",
+            "observedAt": "2026-07-12T10:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "local-sync-scheduler",
+            "summaryKey": "status.sync.retry_waiting"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "retry-new",
+        "snapshotVersion": 7
+      },
+      "id": "dedupe.newest",
+      "input": [
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "retry",
+          "id": "retry-new",
+          "kind": "sync.retry_waiting",
+          "observedAt": "2026-07-12T10:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-sync-scheduler",
+          "summaryKey": "status.sync.retry_waiting"
+        },
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "retry",
+          "id": "retry-old",
+          "kind": "sync.retry_waiting",
+          "observedAt": "2026-07-12T09:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-sync-scheduler",
+          "summaryKey": "status.sync.retry_waiting"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "none",
+        "availability": "degraded",
+        "facts": [
+          {
+            "attentionImpact": "none",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "offset-order",
+            "id": "offset-newer",
+            "kind": "sync.retry_waiting",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "local-sync-scheduler",
+            "summaryKey": "status.sync.retry_waiting"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "offset-newer",
+        "snapshotVersion": 7
+      },
+      "id": "dedupe.offsets-use-instants",
+      "input": [
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "offset-order",
+          "id": "offset-older",
+          "kind": "sync.retry_waiting",
+          "observedAt": "2026-07-12T12:30:00+02:00",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-sync-scheduler",
+          "summaryKey": "status.sync.retry_waiting"
+        },
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "offset-order",
+          "id": "offset-newer",
+          "kind": "sync.retry_waiting",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-sync-scheduler",
+          "summaryKey": "status.sync.retry_waiting"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "none",
+        "availability": "degraded",
+        "facts": [
+          {
+            "attentionImpact": "none",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "same-instant",
+            "id": "same-instant-z",
+            "kind": "sync.retry_waiting",
+            "observedAt": "2026-07-12T12:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "local-sync-scheduler",
+            "summaryKey": "status.sync.retry_waiting"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "same-instant-z",
+        "snapshotVersion": 7
+      },
+      "id": "dedupe.equal-instants-use-id",
+      "input": [
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "same-instant",
+          "id": "same-instant-a",
+          "kind": "sync.retry_waiting",
+          "observedAt": "2026-07-12T13:00:00.000+01:00",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-sync-scheduler",
+          "summaryKey": "status.sync.retry_waiting"
+        },
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "same-instant",
+          "id": "same-instant-z",
+          "kind": "sync.retry_waiting",
+          "observedAt": "2026-07-12T12:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-sync-scheduler",
+          "summaryKey": "status.sync.retry_waiting"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "recommended",
+        "availability": "degraded",
+        "facts": [
+          {
+            "attentionImpact": "recommended",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "local-network-observer:workspace:ws_fixture:offline-expired",
+            "id": "offline-expired",
+            "kind": "network.offline",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "local-network-observer",
+            "staleAfter": "2026-07-12T10:00:00Z",
+            "summaryKey": "status.network.offline"
+          }
+        ],
+        "freshness": "stale",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "offline-expired",
+        "snapshotVersion": 7
+      },
+      "id": "stale.network-marked",
+      "input": [
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "local-network-observer:workspace:ws_fixture:offline-expired",
+          "id": "offline-expired",
+          "kind": "network.offline",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-network-observer",
+          "staleAfter": "2026-07-12T10:00:00Z",
+          "summaryKey": "status.network.offline"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "recommended",
+        "availability": "degraded",
+        "facts": [
+          {
+            "attentionImpact": "recommended",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "hosted-freshness-reducer:workspace:ws_fixture:telemetry",
+            "id": "telemetry",
+            "kind": "telemetry.stale",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "hosted-freshness-reducer",
+            "staleAfter": "2026-07-12T10:00:00Z",
+            "summaryKey": "status.telemetry.stale"
+          }
+        ],
+        "freshness": "stale",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "telemetry",
+        "snapshotVersion": 7
+      },
+      "id": "stale.mark",
+      "input": [
+        {
+          "attentionImpact": "recommended",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "hosted-freshness-reducer:workspace:ws_fixture:telemetry",
+          "id": "telemetry",
+          "kind": "telemetry.stale",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "hosted-freshness-reducer",
+          "staleAfter": "2026-07-12T10:00:00Z",
+          "summaryKey": "status.telemetry.stale"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "none",
+        "availability": "degraded",
+        "facts": [
+          {
+            "attentionImpact": "none",
+            "availabilityImpact": "degraded",
+            "dedupeKey": "local-network-observer:workspace:ws_fixture:fraction-future",
+            "id": "fraction-future",
+            "kind": "network.offline",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "local-network-observer",
+            "staleAfter": "2026-07-12T12:00:00.000001+00:00",
+            "summaryKey": "status.network.offline"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "fraction-future",
+        "snapshotVersion": 7
+      },
+      "id": "freshness.fraction-width-uses-instant",
+      "input": [
+        {
+          "attentionImpact": "none",
+          "availabilityImpact": "degraded",
+          "dedupeKey": "local-network-observer:workspace:ws_fixture:fraction-future",
+          "id": "fraction-future",
+          "kind": "network.offline",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "local-network-observer",
+          "staleAfter": "2026-07-12T12:00:00.000001+00:00",
+          "summaryKey": "status.network.offline"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "attention": "none",
+        "availability": "ready",
+        "facts": [
+          {
+            "attentionImpact": "none",
+            "availabilityImpact": "none",
+            "dedupeKey": "future.authority:workspace:ws_fixture:future",
+            "id": "future",
+            "kind": "future.fact",
+            "observedAt": "2026-07-12T11:00:00Z",
+            "parameters": {},
+            "scope": "workspace",
+            "scopeId": "ws_fixture",
+            "source": "future.authority",
+            "summaryKey": "status.future.fact"
+          }
+        ],
+        "freshness": "fresh",
+        "observedAt": "2026-07-12T12:00:00Z",
+        "primaryFactId": "future",
+        "snapshotVersion": 7
+      },
+      "id": "unknown.kind-and-action",
+      "input": [
+        {
+          "action": {
+            "kind": "future.action"
+          },
+          "attentionImpact": "required",
+          "availabilityImpact": "unavailable",
+          "dedupeKey": "future.authority:workspace:ws_fixture:future",
+          "id": "future",
+          "kind": "future.fact",
+          "observedAt": "2026-07-12T11:00:00Z",
+          "parameters": {},
+          "scope": "workspace",
+          "scopeId": "ws_fixture",
+          "source": "future.authority",
+          "summaryKey": "status.future.fact"
+        }
+      ]
+    }
+  ],
+  "options": {
+    "aggregateChildren": true,
+    "observedAt": "2026-07-12T12:00:00Z",
+    "scope": "workspace",
+    "scopeId": "ws_fixture",
+    "snapshotVersion": 7
+  },
+  "vectorVersion": 1
+}

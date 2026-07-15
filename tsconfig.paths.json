@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
+    "paths": {
+      "@bowline/config": ["packages/config/src/index.ts"],
+      "@bowline/contracts": ["packages/contracts/src/index.ts"],
+      "@bowline/contracts/*": ["packages/contracts/src/*.ts"],
+      "@bowline/control-plane": ["packages/control-plane/src/index.ts"],
+      "@bowline/control-plane/*": ["packages/control-plane/src/*"],
+      "@bowline/ui": ["packages/ui/src/index.ts"]
+    }
+  }
+}

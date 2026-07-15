@@ -1,45 +1,50 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 8,
   "command": "contract",
   "generatedAt": "2026-06-29T12:00:00Z",
-  "cliVersion": "0.1.0",
+  "cliVersion": "0.1.1",
   "protocol": "bowline.local",
   "protocolVersion": 1,
-  "eventSchemaVersion": 1,
+  "eventSchemaVersion": 3,
   "package": "bowline",
   "packageContractSource": "packages/contracts/src/index.ts",
+  "exitCodes": {
+    "success": 0,
+    "usageError": 2,
+    "retryableRuntimeError": 3,
+    "userActionRequired": 4,
+    "blockedOrDegradedBySafety": 5
+  },
   "commandOutputTypes": [
-    "ActionsCommandOutput",
-    "AgentBudgetCommandOutput",
-    "AgentContextCommandOutput",
-    "AgentLeaseCreateCommandOutput",
-    "AgentPromptCommandOutput",
-    "AgentToolResult",
-    "BootstrapSshCommandOutput",
-    "ContractCommandOutput",
-    "DaemonCommandOutput",
-    "DaemonServiceOutput",
-    "DaemonStatusOutput",
-    "DevicesCommandOutput",
-    "DiagnosticsCollectCommandOutput",
-    "DryRunCommandOutput",
-    "EventsCommandOutput",
-    "ExplainCommandOutput",
     "HelpCommandOutput",
-    "InitCommandOutput",
-    "LoginCommandOutput",
-    "PrewarmCommandOutput",
-    "RecoveryCommandOutput",
-    "ResolveCommandOutput",
-    "SearchCommandOutput",
-    "StatusCommandOutput",
-    "SymbolCommandOutput",
     "VersionCommandOutput",
-    "WorkCleanupCommandOutput",
+    "ContractCommandOutput",
+    "UpdateCommandOutput",
+    "LoginCommandOutput",
+    "LogoutCommandOutput",
+    "StatusCommandOutput",
+    "SetupCommandOutput",
+    "SetupProjectOutput",
+    "EventsCommandOutput",
+    "HistoryCommandOutput",
+    "ResolveCommandOutput",
+    "DevicesCommandOutput",
+    "RecoveryCommandOutput",
+    "BootstrapSshCommandOutput",
+    "WorkCreateCommandOutput",
+    "WorkListCommandOutput",
     "WorkDiffCommandOutput",
     "WorkLifecycleCommandOutput",
-    "WorkListCommandOutput",
-    "WorkonCommandOutput"
+    "WorkCleanupCommandOutput",
+    "AgentLeaseCreateCommandOutput",
+    "AgentContextCommandOutput",
+    "AgentPromptCommandOutput",
+    "AgentToolResult",
+    "AgentMcpTokenCommandOutput",
+    "DaemonCommandOutput",
+    "DaemonStatusOutput",
+    "DaemonServiceOutput",
+    "DiagnosticsCollectCommandOutput"
   ],
   "commands": [
     {
@@ -47,30 +52,66 @@
       "name": "contract",
       "summary": "Print the machine-readable CLI command and output contract.",
       "usage": "bowline contract --json",
+      "positionals": [],
       "jsonOutputType": "ContractCommandOutput",
       "sideEffectLevel": "none",
       "supportsJson": true,
       "supportsDryRun": false,
-      "supportsIdempotencyKey": false,
       "relatedCommands": ["help", "version"]
     },
     {
       "group": "Workspace",
-      "name": "search",
-      "summary": "Search indexed project text with bounded, cursored results.",
-      "usage": "bowline search <query> [path] [--limit <n>] [--cursor <cursor>] [--path-prefix <prefix>] [--json]",
-      "jsonOutputType": "SearchCommandOutput",
+      "name": "history",
+      "summary": "List project restore points and path history.",
+      "usage": "bowline history [path] [--limit <n>] [--cursor <cursor>] [--since <time>] [--until <time>] [--json]",
+      "positionals": [
+        {
+          "name": "path",
+          "required": false,
+          "repeatable": false
+        }
+      ],
+      "jsonOutputType": "HistoryCommandOutput",
       "sideEffectLevel": "read",
       "supportsJson": true,
       "supportsDryRun": false,
-      "supportsIdempotencyKey": false,
       "boundedOutput": {
-        "defaultLimit": 20,
-        "maxLimit": 100,
-        "cursorFormat": "v1:<offset>",
-        "pathPrefix": true
+        "defaultLimit": 50,
+        "maxLimit": 500,
+        "cursorFormat": "offset",
+        "pathPrefix": false
       },
-      "relatedCommands": ["symbols"]
+      "relatedCommands": ["events", "work create"]
+    },
+    {
+      "group": "Trust",
+      "name": "device list",
+      "summary": "List local device records.",
+      "usage": "bowline device list [--root <path>] [--json|--human|--quiet]",
+      "positionals": [],
+      "jsonOutputType": "DevicesCommandOutput",
+      "sideEffectLevel": "read",
+      "supportsJson": true,
+      "supportsDryRun": false,
+      "relatedCommands": ["device approve", "device revoke", "device request"]
+    },
+    {
+      "group": "Work",
+      "name": "work diff",
+      "summary": "Show the diff for a work view.",
+      "usage": "bowline work diff [target] [--path <glob>...] [--json]",
+      "positionals": [
+        {
+          "name": "target",
+          "required": false,
+          "repeatable": false
+        }
+      ],
+      "jsonOutputType": "WorkDiffCommandOutput",
+      "sideEffectLevel": "read",
+      "supportsJson": true,
+      "supportsDryRun": false,
+      "relatedCommands": ["work review"]
     }
   ],
   "fixtures": [
@@ -78,6 +119,16 @@
       "name": "help",
       "path": "tests/contracts/commands/help.json",
       "outputType": "HelpCommandOutput"
+    },
+    {
+      "name": "history",
+      "path": "tests/contracts/commands/history.json",
+      "outputType": "HistoryCommandOutput"
+    },
+    {
+      "name": "setup-machine",
+      "path": "tests/contracts/commands/setup-machine.json",
+      "outputType": "SetupCommandOutput"
     }
   ]
 }

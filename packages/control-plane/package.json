@@ -8,15 +8,11 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./devices": {
-      "types": "./dist/devices/index.d.ts",
-      "default": "./dist/devices/index.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm --filter @bowline/contracts exec tsc --build tsconfig.json --force && vitest run src convex-tests",
+    "test": "pnpm --filter @bowline/contracts exec tsc --build tsconfig.json --force && vitest run convex-tests",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
@@ -26,7 +22,7 @@
   "devDependencies": {
     "convex": "^1.42.0",
     "convex-test": "^0.0.53",
-    "typescript": "^5.9.3",
+    "typescript": "^6.0.3",
     "vitest": "^4.1.6"
   }
 }

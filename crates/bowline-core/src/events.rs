@@ -2,158 +2,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::ids::{DeviceId, EventId, LeaseId, ProjectId, WorkspaceId};
+pub use crate::wire::EventName;
 
 pub const EVENT_SCHEMA_VERSION: u16 = 3;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EventName {
-    #[serde(rename = "namespace.created")]
-    NamespaceCreated,
-    #[serde(rename = "namespace.moved")]
-    NamespaceMoved,
-    #[serde(rename = "namespace.deleted_or_archived")]
-    NamespaceDeletedOrArchived,
-    #[serde(rename = "hydration.started")]
-    HydrationStarted,
-    #[serde(rename = "hydration.completed")]
-    HydrationCompleted,
-    #[serde(rename = "hydration.blocked")]
-    HydrationBlocked,
-    #[serde(rename = "hydration.budget_reserved")]
-    HydrationBudgetReserved,
-    #[serde(rename = "hydration.budget_committed")]
-    HydrationBudgetCommitted,
-    #[serde(rename = "hydration.budget_released")]
-    HydrationBudgetReleased,
-    #[serde(rename = "hydration.budget_denied")]
-    HydrationBudgetDenied,
-    #[serde(rename = "hydration.budget_override_granted")]
-    HydrationBudgetOverrideGranted,
-    #[serde(rename = "policy.classified")]
-    PolicyClassified,
-    #[serde(rename = "policy.needs_approval")]
-    PolicyNeedsApproval,
-    #[serde(rename = "policy.changed")]
-    PolicyChanged,
-    #[serde(rename = "env.imported")]
-    EnvImported,
-    #[serde(rename = "env.materialized")]
-    EnvMaterialized,
-    #[serde(rename = "env.revoked")]
-    EnvRevoked,
-    #[serde(rename = "setup.started")]
-    SetupStarted,
-    #[serde(rename = "setup.completed")]
-    SetupCompleted,
-    #[serde(rename = "setup.blocked")]
-    SetupBlocked,
-    #[serde(rename = "source.stale")]
-    SourceStale,
-    #[serde(rename = "work.created")]
-    WorkCreated,
-    #[serde(rename = "work.updated")]
-    WorkUpdated,
-    #[serde(rename = "work.review_ready")]
-    WorkReviewReady,
-    #[serde(rename = "work.accepted")]
-    WorkAccepted,
-    #[serde(rename = "work.discarded")]
-    WorkDiscarded,
-    #[serde(rename = "work.restored")]
-    WorkRestored,
-    #[serde(rename = "work.expired")]
-    WorkExpired,
-    #[serde(rename = "work.archived")]
-    WorkArchived,
-    #[serde(rename = "work.cleanup_previewed")]
-    WorkCleanupPreviewed,
-    #[serde(rename = "work.cleanup_completed")]
-    WorkCleanupCompleted,
-    #[serde(rename = "lease.created")]
-    LeaseCreated,
-    #[serde(rename = "lease.updated")]
-    LeaseUpdated,
-    #[serde(rename = "lease.expired")]
-    LeaseExpired,
-    #[serde(rename = "lease.completed")]
-    LeaseCompleted,
-    #[serde(rename = "lease.blocked")]
-    LeaseBlocked,
-    #[serde(rename = "lease.revoked")]
-    LeaseRevoked,
-    #[serde(rename = "lease.review_ready")]
-    LeaseReviewReady,
-    #[serde(rename = "lease.tool_invoked")]
-    LeaseToolInvoked,
-    #[serde(rename = "lease.tool_denied")]
-    LeaseToolDenied,
-    #[serde(rename = "lease.hydration_requested")]
-    LeaseHydrationRequested,
-    #[serde(rename = "lease.cleanup_completed")]
-    LeaseCleanupCompleted,
-    #[serde(rename = "overlay.changed")]
-    OverlayChanged,
-    #[serde(rename = "publish.requested")]
-    PublishRequested,
-    #[serde(rename = "conflict.created")]
-    ConflictCreated,
-    #[serde(rename = "conflict.bundle_created")]
-    ConflictBundleCreated,
-    #[serde(rename = "conflict.resolution_proposed")]
-    ConflictResolutionProposed,
-    #[serde(rename = "conflict.resolution_accepted")]
-    ConflictResolutionAccepted,
-    #[serde(rename = "conflict.resolution_rejected")]
-    ConflictResolutionRejected,
-    #[serde(rename = "daemon.degraded")]
-    DaemonDegraded,
-    #[serde(rename = "daemon.recovered")]
-    DaemonRecovered,
-    #[serde(rename = "device.approval_requested")]
-    DeviceApprovalRequested,
-    #[serde(rename = "device.approved")]
-    DeviceApproved,
-    #[serde(rename = "device.denied")]
-    DeviceDenied,
-    #[serde(rename = "device.revoked")]
-    DeviceRevoked,
-    #[serde(rename = "recovery_key.created")]
-    RecoveryKeyCreated,
-    #[serde(rename = "recovery_key.verified")]
-    RecoveryKeyVerified,
-    #[serde(rename = "recovery_key.rotated")]
-    RecoveryKeyRotated,
-    #[serde(rename = "recovery_key.revoked")]
-    RecoveryKeyRevoked,
-    #[serde(rename = "auth.login_started")]
-    AuthLoginStarted,
-    #[serde(rename = "auth.login_completed")]
-    AuthLoginCompleted,
-    #[serde(rename = "index.updated")]
-    IndexUpdated,
-    #[serde(rename = "index.degraded")]
-    IndexDegraded,
-    #[serde(rename = "sync.started")]
-    SyncStarted,
-    #[serde(rename = "sync.completed")]
-    SyncCompleted,
-    #[serde(rename = "sync.limited")]
-    SyncLimited,
-    #[serde(rename = "sync.degraded")]
-    SyncDegraded,
-    #[serde(rename = "sync.recovered")]
-    SyncRecovered,
-    #[serde(rename = "watcher.degraded")]
-    WatcherDegraded,
-    #[serde(rename = "watcher.recovered")]
-    WatcherRecovered,
-    #[serde(rename = "network.offline")]
-    NetworkOffline,
-    #[serde(rename = "network.recovered")]
-    NetworkRecovered,
-    #[serde(rename = "metadata.corrupt")]
-    MetadataCorrupt,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -180,7 +31,6 @@ pub enum EventSubjectKind {
     WorkView,
     Lease,
     Overlay,
-    Index,
     Device,
     Metadata,
     Component,

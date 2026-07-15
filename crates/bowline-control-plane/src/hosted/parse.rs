@@ -1,27 +1,87 @@
+use super::generated::HostedWorkspaceRef;
 use super::*;
 
-pub(super) fn parse_workspace_ref(value: &Value) -> ControlPlaneResult<WorkspaceRef> {
-    let object = value_object(value)?;
+pub(super) fn workspace_ref_from_dto(
+    dto: HostedWorkspaceRef,
+    verifier_for_device: impl Fn(&str, &str) -> ControlPlaneResult<Option<String>>,
+) -> ControlPlaneResult<WorkspaceRef> {
+    let HostedWorkspaceRef {
+        workspace_id,
+        version,
+        snapshot_id,
+        updated_at,
+        updated_by_device_id,
+        head_signature,
+    } = dto;
+    // Re-run the workspace-head signature verification on the typed DTO: a bare
+    // serde decode is not verification. This performs the exact same check over
+    // the exact same bytes as the former Value-based parser, delegating to the
+    // unchanged `verify_workspace_head_signature` verifier.
+    if version > 0 {
+        let head_signature = head_signature
+            .ok_or_else(|| shape_error("signed workspace ref is missing head signature"))?;
+        let signer_device_id = updated_by_device_id
+            .as_deref()
+            .ok_or_else(|| shape_error("signed workspace ref is missing updated device id"))?;
+        let verifier = verifier_for_device(&workspace_id, signer_device_id)?
+            .ok_or_else(|| shape_error("signed workspace ref verifier is unavailable locally"))?;
+        verify_workspace_head_signature(
+            &workspace_id,
+            version,
+            &snapshot_id,
+            signer_device_id,
+            &verifier,
+            &head_signature,
+        )?;
+    } else if snapshot_id != bowline_core::hosted::EMPTY_SNAPSHOT_ID {
+        return Err(shape_error(
+            "genesis workspace ref must reference the empty snapshot",
+        ));
+    }
     Ok(WorkspaceRef {
-        workspace_id: string_field(object, "workspaceId")?,
-        version: u64_field(object, "version")?,
-        snapshot_id: string_field(object, "snapshotId")?,
-        updated_at: current_timestamp(),
-        updated_by_device_id: optional_string_field(object, "updatedByDeviceId")?,
+        workspace_id: WorkspaceId::new(workspace_id),
+        version,
+        snapshot_id: SnapshotId::new(snapshot_id),
+        updated_at: parse_control_timestamp(&updated_at)
+            .map_err(|error| add_field_context(error, "updatedAt"))?,
+        updated_by_device_id: updated_by_device_id.map(DeviceId::new),
     })
 }
 
-pub(super) fn parse_compact_event(value: &Value) -> ControlPlaneResult<CompactEvent> {
-    let object = value_object(value)?;
-    Ok(CompactEvent {
-        event_id: string_field(object, "eventId")?,
-        workspace_id: string_field(object, "workspaceId")?,
-        at: current_timestamp(),
-        kind: parse_event_kind(&string_field(object, "kind")?)?,
-        subject: string_field(object, "subject")?,
-    })
+fn verify_workspace_head_signature(
+    workspace_id: &str,
+    version: u64,
+    snapshot_id: &str,
+    device_id: &str,
+    verifier: &str,
+    proof: &str,
+) -> ControlPlaneResult<()> {
+    let subject = workspace_head_proof_subject(workspace_id, version, snapshot_id);
+    match crate::verify_device_authorization_proof(
+        verifier,
+        proof,
+        workspace_id,
+        device_id,
+        "sign-workspace-head",
+        &subject,
+    ) {
+        Ok(()) => Ok(()),
+        Err(crate::device_proofs::DeviceAuthorizationProofError::InvalidPrefix) => {
+            Err(shape_error("signed workspace ref proof has invalid prefix"))
+        }
+        Err(crate::device_proofs::DeviceAuthorizationProofError::MalformedVerifier) => {
+            Err(shape_error("signed workspace ref verifier is malformed"))
+        }
+        Err(crate::device_proofs::DeviceAuthorizationProofError::MalformedSignature) => {
+            Err(shape_error("signed workspace ref signature is malformed"))
+        }
+        Err(crate::device_proofs::DeviceAuthorizationProofError::VerificationFailed) => {
+            Err(shape_error("workspace ref signed head verification failed"))
+        }
+    }
 }
 
+#[cfg(test)]
 pub(super) fn parse_event_kind(kind: &str) -> ControlPlaneResult<CompactEventKind> {
     match kind {
         "device.harness_approved" => Ok(CompactEventKind::DeviceHarnessApproved),
@@ -38,28 +98,20 @@ pub(super) fn parse_event_kind(kind: &str) -> ControlPlaneResult<CompactEventKin
         "auth.login_completed" => Ok(CompactEventKind::AuthLoginCompleted),
         "conflict.detected" => Ok(CompactEventKind::ConflictDetected),
         "conflict.resolved" => Ok(CompactEventKind::ConflictResolved),
-        "lease.blocked" => Ok(CompactEventKind::LeaseBlocked),
-        "lease.cleanup_completed" => Ok(CompactEventKind::LeaseCleanupCompleted),
+        "lease.claimed" => Ok(CompactEventKind::LeaseClaimed),
         "lease.completed" => Ok(CompactEventKind::LeaseCompleted),
         "lease.created" => Ok(CompactEventKind::LeaseCreated),
-        "lease.expired" => Ok(CompactEventKind::LeaseExpired),
-        "lease.hydration_requested" => Ok(CompactEventKind::LeaseHydrationRequested),
-        "lease.revoked" => Ok(CompactEventKind::LeaseRevoked),
+        "lease.dispatched" => Ok(CompactEventKind::LeaseDispatched),
         "lease.review_ready" => Ok(CompactEventKind::LeaseReviewReady),
-        "lease.tool_denied" => Ok(CompactEventKind::LeaseToolDenied),
-        "lease.tool_invoked" => Ok(CompactEventKind::LeaseToolInvoked),
         "lease.updated" => Ok(CompactEventKind::LeaseUpdated),
-        "object_manifest.committed" => Ok(CompactEventKind::ObjectManifestCommitted),
+        "snapshot_root.committed" => Ok(CompactEventKind::SnapshotRootCommitted),
         "object_pointer.added" => Ok(CompactEventKind::ObjectPointerAdded),
         "overlay.changed" => Ok(CompactEventKind::OverlayChanged),
-        "publish.requested" => Ok(CompactEventKind::PublishRequested),
         "work.accepted" => Ok(CompactEventKind::WorkAccepted),
-        "work.archived" => Ok(CompactEventKind::WorkArchived),
         "work.cleanup_completed" => Ok(CompactEventKind::WorkCleanupCompleted),
         "work.cleanup_previewed" => Ok(CompactEventKind::WorkCleanupPreviewed),
         "work.created" => Ok(CompactEventKind::WorkCreated),
         "work.discarded" => Ok(CompactEventKind::WorkDiscarded),
-        "work.expired" => Ok(CompactEventKind::WorkExpired),
         "work.restored" => Ok(CompactEventKind::WorkRestored),
         "work.review_ready" => Ok(CompactEventKind::WorkReviewReady),
         "work.updated" => Ok(CompactEventKind::WorkUpdated),
@@ -69,288 +121,30 @@ pub(super) fn parse_event_kind(kind: &str) -> ControlPlaneResult<CompactEventKin
     }
 }
 
-pub(super) fn parse_device_request(value: &Value) -> ControlPlaneResult<DeviceRequest> {
-    let object = value_object(value)?;
-    Ok(DeviceRequest {
-        request_id: string_field(object, "requestId")?,
-        workspace_id: string_field(object, "workspaceId")?,
-        device_id: string_field(object, "deviceId")?,
-        device_name: string_field(object, "deviceName")?,
-        platform: string_field(object, "platform")?,
-        device_public_key: string_field(object, "devicePublicKey")?,
-        device_fingerprint: string_field(object, "deviceFingerprint")?,
-        matching_code: string_field(object, "matchingCode")?,
-        account_id: optional_string_field(object, "accountId")?,
-        host: optional_string_field(object, "host")?,
-        root: optional_string_field(object, "root")?,
-        requested_at: current_timestamp(),
-        expires_at: current_timestamp(),
-        state: parse_device_request_state(
-            &string_field(object, "state").unwrap_or_else(|_| "pending".to_string()),
-        )?,
-    })
-}
-
-pub(super) fn parse_device_request_state(state: &str) -> ControlPlaneResult<DeviceRequestState> {
-    match state {
-        "pending" => Ok(DeviceRequestState::Pending),
-        "approved" => Ok(DeviceRequestState::Approved),
-        "denied" => Ok(DeviceRequestState::Denied),
-        "expired" => Ok(DeviceRequestState::Expired),
-        _ => Err(shape_error("unknown device request state")),
-    }
-}
-
-pub(super) fn parse_bootstrap_session(
-    value: &Value,
-    token: String,
-) -> ControlPlaneResult<BootstrapSession> {
-    let object = value_object(value)?;
-    Ok(BootstrapSession {
-        session_id: string_field(object, "sessionId")?,
-        workspace_id: string_field(object, "workspaceId")?,
-        token,
-        expires_at: current_timestamp(),
-    })
-}
-
-pub(super) fn parse_authorized_device(value: &Value) -> ControlPlaneResult<AuthorizedDeviceRecord> {
-    let object = value_object(value)?;
-    Ok(AuthorizedDeviceRecord {
-        workspace_id: string_field(object, "workspaceId")?,
-        device_id: string_field(object, "deviceId")?,
-        device_name: string_field(object, "deviceName")?,
-        platform: string_field(object, "platform")?,
-        device_fingerprint: string_field(object, "deviceFingerprint")?,
-        authorized_at: current_timestamp(),
-        authorized_by_device_id: optional_string_field(object, "authorizedByDeviceId")?,
-        revoked_at: None,
-    })
-}
-
-pub(super) fn parse_revoked_device(value: &Value) -> ControlPlaneResult<RevokedDeviceRecord> {
-    let object = value_object(value)?;
-    Ok(RevokedDeviceRecord {
-        workspace_id: string_field(object, "workspaceId")?,
-        device_id: string_field(object, "deviceId")?,
-        device_name: string_field(object, "deviceName")?,
-        platform: string_field(object, "platform")?,
-        device_fingerprint: string_field(object, "deviceFingerprint")?,
-        revoked_at: current_timestamp(),
-        revoked_by_device_id: string_field(object, "revokedByDeviceId")?,
-        reason: string_field(object, "reason")?,
-    })
-}
-
-pub(super) fn parse_device_approval(value: &Value) -> ControlPlaneResult<DeviceApproval> {
-    let object = value_object(value)?;
-    Ok(DeviceApproval {
-        grant_id: string_field(object, "grantId")?,
-        request_id: string_field(object, "requestId")?,
-        workspace_id: string_field(object, "workspaceId")?,
-        device_id: string_field(object, "deviceId")
-            .or_else(|_| string_field(object, "requesterDeviceId"))?,
-        device_name: string_field(object, "deviceName")?,
-        platform: string_field(object, "platform")?,
-        device_fingerprint: string_field(object, "deviceFingerprint")
-            .or_else(|_| string_field(object, "requesterDeviceFingerprint"))?,
-        approved_by_device_id: string_field(object, "approverDeviceId")?,
-        encrypted_grant_ciphertext: string_field(object, "ciphertext")?,
-        key_epoch: u64_field(object, "keyEpoch")? as u32,
-        granted_at: current_timestamp(),
-        expires_at: current_timestamp(),
-        accepted_at: optional_string_field(object, "acceptedAt")?.map(|_| current_timestamp()),
-        harness_only: false,
-    })
-}
-
-pub(super) fn parse_device_denial(value: &Value) -> ControlPlaneResult<DeviceDenial> {
-    let object = value_object(value)?;
-    Ok(DeviceDenial {
-        request_id: string_field(object, "requestId")?,
-        workspace_id: string_field(object, "workspaceId")?,
-        device_id: string_field(object, "deviceId")?,
-        denied_by_device_id: string_field(object, "deniedByDeviceId")?,
-        denied_at: current_timestamp(),
-        reason: string_field(object, "reason")?,
-    })
-}
-
-pub(super) fn parse_recovery_envelope(value: &Value) -> ControlPlaneResult<RecoveryEnvelopeRecord> {
-    let object = value_object(value)?;
-    Ok(RecoveryEnvelopeRecord {
-        workspace_id: string_field(object, "workspaceId")?,
-        envelope_id: string_field(object, "envelopeId")?,
-        created_by_device_id: string_field(object, "createdByDeviceId")?,
-        ciphertext: string_field(object, "ciphertext")?,
-        fingerprint: string_field(object, "fingerprint")?,
-        state: parse_recovery_envelope_state(&string_field(object, "state")?)?,
-        created_at: current_timestamp(),
-        verified_at: optional_string_field(object, "verifiedAt")?.map(|_| current_timestamp()),
-        rotated_at: optional_string_field(object, "rotatedAt")?.map(|_| current_timestamp()),
-        revoked_at: optional_string_field(object, "revokedAt")?.map(|_| current_timestamp()),
-    })
-}
-
-pub(super) fn parse_recovery_envelope_state(
-    state: &str,
-) -> ControlPlaneResult<RecoveryEnvelopeState> {
-    match state {
-        "generated-unverified" => Ok(RecoveryEnvelopeState::GeneratedUnverified),
-        "active" => Ok(RecoveryEnvelopeState::Active),
-        "rotated" => Ok(RecoveryEnvelopeState::Rotated),
-        "revoked" => Ok(RecoveryEnvelopeState::Revoked),
-        _ => Err(shape_error("unknown recovery envelope state")),
-    }
-}
-
+#[cfg(test)]
 pub(super) fn parse_object_kind(kind: &str) -> ControlPlaneResult<ObjectKind> {
     match kind {
         "source-pack" => Ok(ObjectKind::SourcePack),
-        "index-pack" => Ok(ObjectKind::IndexPack),
         "locator-index" => Ok(ObjectKind::LocatorIndex),
+        "snapshot-metadata-page" => Ok(ObjectKind::SnapshotMetadataPage),
         "snapshot-manifest" => Ok(ObjectKind::SnapshotManifest),
-        "overlay-pack" | "agent-overlay" => Ok(ObjectKind::AgentOverlay),
+        "overlay-pack" => Ok(ObjectKind::AgentOverlay),
+        "conflict-bundle" => Ok(ObjectKind::ConflictBundle),
         _ => Err(shape_error("unknown object kind")),
     }
 }
 
-pub(super) fn parse_storage_metadata(value: &Value) -> ControlPlaneResult<ObjectMetadata> {
-    let object = value_object(value)?;
-    let object_key = string_field(object, "objectKey")?;
-    Ok(ObjectMetadata {
-        key: StorageObjectKey::new(object_key).map_err(|_| {
-            ControlPlaneError::InvalidObjectKey {
-                reason: "object keys must be generated opaque pack, manifest, or overlay keys",
-            }
-        })?,
-        kind: parse_storage_object_kind(&string_field(object, "kind")?)?,
-        byte_len: u64_field(object, "byteLength")?,
-        hash: string_field(object, "hash")?,
-        key_epoch: u64_field(object, "keyEpoch")? as u32,
-        created_by_device_id: None,
-        created_at_unix_ms: current_timestamp().tick,
-        retention_state: parse_retention_state(
-            &string_field(object, "retentionState").unwrap_or_else(|_| "current".to_string()),
-        )?,
-        retain_until_unix_ms: None,
-    })
-}
-
-pub(super) fn parse_object_manifest_record(
-    value: &Value,
-) -> ControlPlaneResult<ObjectManifestRecord> {
-    let object = value_object(value)?;
-    Ok(ObjectManifestRecord {
-        workspace_id: string_field(object, "workspaceId")?,
-        snapshot_id: string_field(object, "snapshotId")?,
-        manifest_id: string_field(object, "manifestId")?,
-        manifest_object: parse_object_pointer(required_control_field(object, "manifestObject")?)?,
-        pack_objects: array_field(object, "packObjects")?
-            .iter()
-            .map(parse_object_pointer)
-            .collect::<ControlPlaneResult<Vec<_>>>()?,
-        committed_by_device_id: string_field(object, "committedByDeviceId")?,
-        committed_at: current_timestamp(),
-    })
-}
-
-pub(super) fn parse_object_pointer(value: &Value) -> ControlPlaneResult<ObjectPointer> {
-    let object = value_object(value)?;
-    Ok(ObjectPointer {
-        object_key: string_field(object, "objectKey")?,
-        content_id: string_field(object, "contentId")?,
-        byte_len: u64_field(object, "byteLength")?,
-        hash: string_field(object, "hash")?,
-        key_epoch: u64_field(object, "keyEpoch")? as u32,
-        kind: parse_object_kind(&string_field(object, "kind")?)?,
-        created_at: current_timestamp(),
-    })
-}
-
-pub(super) fn parse_conflict_metadata_record(
-    value: &Value,
-) -> ControlPlaneResult<ConflictMetadataRecord> {
-    let object = value_object(value)?;
-    Ok(ConflictMetadataRecord {
-        workspace_id: string_field(object, "workspaceId")?,
-        conflict_id: string_field(object, "conflictId")?,
-        conflict_kind: string_field(object, "conflictKind")?,
-        paths: array_field(object, "paths")?
-            .iter()
-            .map(value_string)
-            .collect::<ControlPlaneResult<Vec<_>>>()?,
-        contains_secrets: bool_field(object, "containsSecrets")?,
-        state: string_field(object, "state")?,
-        base_snapshot_id: string_field(object, "baseSnapshotId")?,
-        remote_snapshot_id: string_field(object, "remoteSnapshotId")?,
-        detected_by_device_id: string_field(object, "detectedByDeviceId")?,
-        bundle_object: match object.get("bundleObject") {
-            Some(Value::Null) | None => None,
-            Some(value) => Some(parse_object_pointer(value)?),
-        },
-        detected_at: current_timestamp(),
-        resolved_by_device_id: optional_string_field(object, "resolvedByDeviceId")?,
-        resolved_at: optional_string_field(object, "resolvedAt")?.map(|_| current_timestamp()),
-    })
-}
-
-pub(super) fn parse_work_view_record(value: &Value) -> ControlPlaneResult<WorkViewRecord> {
-    let object = value_object(value)?;
-    if let Some(work_view) = object.get("workView") {
-        return parse_work_view_record(work_view);
-    }
-    Ok(WorkViewRecord {
-        workspace_id: string_field(object, "workspaceId")?,
-        work_view_id: string_field(object, "workViewId")?,
-        project_id: string_field(object, "projectId")?,
-        name: string_field(object, "name")?,
-        visible_path: string_field(object, "visiblePath")?,
-        base_snapshot_id: string_field(object, "baseSnapshotId")?,
-        base_workspace_version: u64_field(object, "baseWorkspaceVersion")?,
-        overlay_head: optional_object_pointer_field(object, "overlayHead")?,
-        overlay_version: u64_field(object, "overlayVersion")?,
-        lifecycle: parse_work_view_lifecycle(&string_field(object, "lifecycle")?)?,
-        created_by_device_id: string_field(object, "createdByDeviceId")?,
-        updated_by_device_id: string_field(object, "updatedByDeviceId")?,
-        created_at: current_timestamp(),
-        updated_at: current_timestamp(),
-    })
-}
-
-pub(super) fn parse_lease(value: &Value) -> ControlPlaneResult<Lease> {
-    let object = value_object(value)?;
-    if let Some(lease) = object.get("lease") {
-        return parse_lease(lease);
-    }
-    Ok(Lease {
-        lease_id: string_field(object, "leaseId")?,
-        workspace_id: string_field(object, "workspaceId")?,
-        project_id: string_field(object, "projectId")?,
-        device_id: string_field(object, "deviceId")?,
-        write_target_mode: parse_lease_write_target_mode(&string_field(
-            object,
-            "writeTargetMode",
-        )?)?,
-        work_view_id: optional_string_field(object, "workViewId")?,
-        base_snapshot_id: string_field(object, "baseSnapshotId")?,
-        version: u64_field(object, "version")?,
-        execution_state: parse_lease_execution_state(&string_field(object, "executionState")?)?,
-        output_state: parse_lease_output_state(&string_field(object, "outputState")?)?,
-        status_code: string_field(object, "statusCode")?,
-        output_object: optional_object_pointer_field(object, "outputObject")?,
-        audit_object: optional_object_pointer_field(object, "auditObject")?,
-        created_at: parse_control_timestamp_field(object, "createdAt")?,
-        updated_at: parse_control_timestamp_field(object, "updatedAt")?,
-        expires_at: parse_control_timestamp_field(object, "expiresAt")?,
-    })
-}
-
-pub(super) fn parse_control_timestamp_field(
-    object: &BTreeMap<String, Value>,
+/// Re-validate an optional canonical timestamp string decoded from a typed
+/// hosted DTO, attaching the wire field name to any parse error. Shared by the
+/// typed hosted boundaries (recovery, devices) that read `Option<String>`
+/// timestamp fields rather than raw Convex objects.
+pub(super) fn optional_timestamp_from_dto(
+    value: Option<String>,
     field: &'static str,
-) -> ControlPlaneResult<ControlPlaneTimestamp> {
-    parse_control_timestamp(&string_field(object, field)?)
+) -> ControlPlaneResult<Option<ControlPlaneTimestamp>> {
+    value
+        .map(|raw| parse_control_timestamp(&raw).map_err(|error| add_field_context(error, field)))
+        .transpose()
 }
 
 pub(super) fn parse_control_timestamp(value: &str) -> ControlPlaneResult<ControlPlaneTimestamp> {
@@ -381,30 +175,17 @@ pub(super) fn account_session_cache_key(workspace_id: Option<&str>) -> String {
     workspace_id.unwrap_or("").to_string()
 }
 
-pub(super) fn parse_lease_execution_state(state: &str) -> ControlPlaneResult<LeaseExecutionState> {
+#[cfg(test)]
+pub(super) fn parse_lease_session_state(state: &str) -> ControlPlaneResult<LeaseSessionState> {
     match state {
-        "active" => Ok(LeaseExecutionState::Active),
-        "blocked" => Ok(LeaseExecutionState::Blocked),
-        "completed" => Ok(LeaseExecutionState::Completed),
-        "expired" => Ok(LeaseExecutionState::Expired),
-        "revoked" => Ok(LeaseExecutionState::Revoked),
-        _ => Err(shape_error("unknown lease execution state")),
+        "provisional" => Ok(LeaseSessionState::Provisional),
+        "open" => Ok(LeaseSessionState::Open),
+        "completed" => Ok(LeaseSessionState::Completed),
+        _ => Err(shape_error("unknown lease session state")),
     }
 }
 
-pub(super) fn parse_lease_output_state(state: &str) -> ControlPlaneResult<LeaseOutputState> {
-    match state {
-        "empty" => Ok(LeaseOutputState::Empty),
-        "dirty" => Ok(LeaseOutputState::Dirty),
-        "review-ready" => Ok(LeaseOutputState::ReviewReady),
-        "accepted" => Ok(LeaseOutputState::Accepted),
-        "discarded" => Ok(LeaseOutputState::Discarded),
-        "conflicted" => Ok(LeaseOutputState::Conflicted),
-        "retained" => Ok(LeaseOutputState::Retained),
-        _ => Err(shape_error("unknown lease output state")),
-    }
-}
-
+#[cfg(test)]
 pub(super) fn parse_lease_write_target_mode(
     state: &str,
 ) -> ControlPlaneResult<LeaseWriteTargetMode> {
@@ -415,48 +196,21 @@ pub(super) fn parse_lease_write_target_mode(
     }
 }
 
-pub(super) fn optional_object_pointer_field(
-    object: &BTreeMap<String, Value>,
-    field: &'static str,
-) -> ControlPlaneResult<Option<ObjectPointer>> {
-    match object.get(field) {
-        Some(Value::Null) | None => Ok(None),
-        Some(value) => parse_object_pointer(value).map(Some),
-    }
-}
-
+// Retained only for the cfg(test) proof-contract and parser fixtures that
+// rebuild a WorkViewLifecycleUpdate from a fixture string; production decoding
+// now happens in the typed hosted work_views boundary.
+#[cfg(test)]
 pub(super) fn parse_work_view_lifecycle(state: &str) -> ControlPlaneResult<WorkViewLifecycleState> {
     match state {
         "active" => Ok(WorkViewLifecycleState::Active),
         "review-ready" => Ok(WorkViewLifecycleState::ReviewReady),
         "accepted" => Ok(WorkViewLifecycleState::Accepted),
         "discarded" => Ok(WorkViewLifecycleState::Discarded),
-        "expired" => Ok(WorkViewLifecycleState::Expired),
-        "archived" => Ok(WorkViewLifecycleState::Archived),
         _ => Err(shape_error("unknown work view lifecycle state")),
     }
 }
 
-pub(super) fn required_control_field<'a>(
-    object: &'a BTreeMap<String, Value>,
-    field: &'static str,
-) -> ControlPlaneResult<&'a Value> {
-    object
-        .get(field)
-        .ok_or_else(|| shape_error("expected Convex object field"))
-}
-
-pub(super) fn parse_storage_object_kind(kind: &str) -> ControlPlaneResult<StorageObjectKind> {
-    match kind {
-        "source-pack" => Ok(StorageObjectKind::SourcePack),
-        "index-pack" => Ok(StorageObjectKind::IndexPack),
-        "locator-index" => Ok(StorageObjectKind::LocatorIndex),
-        "snapshot-manifest" => Ok(StorageObjectKind::SnapshotManifest),
-        "overlay-pack" | "agent-overlay" => Ok(StorageObjectKind::AgentOverlay),
-        _ => Err(shape_error("unknown storage object kind")),
-    }
-}
-
+#[cfg(test)]
 pub(super) fn parse_retention_state(state: &str) -> ControlPlaneResult<RetentionState> {
     match state {
         "pending" => Ok(RetentionState::Pending),

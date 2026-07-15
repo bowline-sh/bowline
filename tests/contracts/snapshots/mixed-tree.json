@@ -1,124 +1,13 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 5,
   "snapshotId": "snap_mixed_tree_001",
   "workspaceId": "ws_code",
   "projectId": "proj_acme_web",
   "kind": "workspace-head",
   "baseSnapshotId": "snap_base_001",
-  "entries": [
-    {
-      "path": "acme/web",
-      "kind": "directory",
-      "classification": "workspace-sync",
-      "mode": "structure-only",
-      "access": [
-        "human-readable",
-        "agent-readable"
-      ],
-      "hydrationState": "local"
-    },
-    {
-      "path": "acme/web/src/index.ts",
-      "kind": "file",
-      "classification": "workspace-sync",
-      "mode": "encrypted-sync",
-      "access": [
-        "human-readable",
-        "agent-readable"
-      ],
-      "contentId": "cid_source_001",
-      "locator": {
-        "contentId": "cid_source_001",
-        "storage": "packed",
-        "rawSize": 42,
-        "packId": "pack_source_001",
-        "offset": 128,
-        "length": 96
-      },
-      "byteLen": 42,
-      "hydrationState": "local"
-    },
-    {
-      "path": "acme/web/.env.local",
-      "kind": "file",
-      "classification": "project-env",
-      "mode": "project-env",
-      "access": [
-        "human-readable",
-        "lease-only"
-      ],
-      "contentId": "cid_env_001",
-      "byteLen": 24,
-      "hydrationState": "local"
-    },
-    {
-      "path": "acme/web/node_modules",
-      "kind": "placeholder",
-      "classification": "dependency",
-      "mode": "local-regenerate",
-      "access": [
-        "human-readable"
-      ],
-      "hydrationState": "structure-only"
-    },
-    {
-      "path": "acme/web/docs/latest",
-      "kind": "symlink",
-      "classification": "workspace-sync",
-      "mode": "encrypted-sync",
-      "access": [
-        "human-readable",
-        "agent-readable"
-      ],
-      "symlinkTarget": "../README.md",
-      "hydrationState": "local"
-    },
-    {
-      "path": "acme/web/fixtures/demo.sqlite",
-      "kind": "file",
-      "classification": "large-file",
-      "mode": "lazy",
-      "access": [
-        "human-readable",
-        "agent-readable"
-      ],
-      "contentId": "cid_large_001",
-      "locator": {
-        "contentId": "cid_large_001",
-        "storage": "chunked",
-        "rawSize": 16777216,
-        "chunkIds": [
-          "cid_large_chunk_001",
-          "cid_large_chunk_002"
-        ]
-      },
-      "byteLen": 16777216,
-      "hydrationState": "cold"
-    },
-    {
-      "path": "acme/web/.git/HEAD",
-      "kind": "file",
-      "classification": "workspace-sync",
-      "mode": "encrypted-sync",
-      "access": [
-        "human-readable",
-        "agent-hidden"
-      ],
-      "contentId": "cid_git_head_001",
-      "byteLen": 21,
-      "hydrationState": "local"
-    },
-    {
-      "path": "acme/web/tmp/old.log",
-      "kind": "tombstone",
-      "classification": "cache",
-      "mode": "local-cache",
-      "access": [
-        "human-readable"
-      ],
-      "hydrationState": "missing"
-    }
-  ],
+  "namespaceRootId": "nsp_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "semanticManifestDigest": "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+  "entryCount": 7,
   "refs": [
     {
       "name": "workspace-head",

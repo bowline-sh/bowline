@@ -1,0 +1,28 @@
+[package]
+name = "bowline-testkit"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+default = []
+fault-injection = ["bowline-local/fault-injection"]
+
+[dependencies]
+bowline-control-plane = { path = "../bowline-control-plane" }
+bowline-core = { path = "../bowline-core" }
+bowline-local = { path = "../bowline-local", features = ["test-support"] }
+bowline-storage = { path = "../bowline-storage" }
+
+[dev-dependencies]
+blake3 = "1.8"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

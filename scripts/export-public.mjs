@@ -23,28 +23,12 @@ const ignoredDirectorySegments = new Set([
 
 const ignoredFilePatterns = [
   /\.tsbuildinfo$/u,
+  /(^|\/)examples\/merge-plugins\/[^/]+\/Cargo\.lock$/u,
   /(^|\/)\.DS_Store$/u,
   /(^|\/)(npm-debug|yarn-error|pnpm-debug)\.log$/u,
 ];
 
-const publicRootScripts = [
-  "build",
-  "check:architecture",
-  "check:architecture-imports",
-  "check:architecture-fixtures",
-  "check:file-lengths",
-  "check:generated-artifacts",
-  "check:install-script",
-  "check:package-scripts",
-  "check:public-export",
-  "check:rust-boundaries",
-  "lint",
-  "rust:verify",
-  "test",
-  "typecheck",
-  "verify",
-  "verify:public",
-];
+const publicRootScripts = ["build", "lint", "test", "typecheck"];
 
 function parseArgs(argv) {
   const args = {
@@ -168,7 +152,25 @@ async function rewritePublicRootPackage(targetRoot) {
       scripts[name] = privateScripts[name];
     }
   }
-  scripts.verify = "pnpm verify:public";
+  scripts.verify = [
+    "node scripts/check-toolchain-declarations.mjs",
+    "pnpm --filter @bowline/config test",
+    "pnpm --filter @bowline/contracts test",
+    "pnpm --filter @bowline/contracts build",
+    "pnpm --filter @bowline/control-plane typecheck",
+    "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-dev-target} CARGO_INCREMENTAL=0 cargo fmt --check",
+    "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-dev-target} CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets --all-features -- -D warnings",
+    "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-dev-target} CARGO_INCREMENTAL=0 cargo test --workspace",
+    "node scripts/check-examples.mjs",
+    "node scripts/check-generated-artifacts.mjs",
+    "node scripts/check-architecture-imports.mjs",
+    "node scripts/check-rust-boundaries.mjs",
+    "node scripts/check-file-lengths.mjs",
+    "node scripts/check-public-export.mjs",
+    "node scripts/check-whitespace.mjs",
+    "pnpm lint",
+    "pnpm typecheck",
+  ].join(" && ");
   pkg.scripts = scripts;
   await writeFile(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
 }

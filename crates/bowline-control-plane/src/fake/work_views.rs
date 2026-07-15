@@ -17,8 +17,9 @@ impl WorkViewControlPlaneClient for FakeControlPlaneClient {
         };
         if workspace_ref.snapshot_id != input.base_snapshot_id
             && !state
-                .manifests_by_snapshot
-                .contains_key(&(input.workspace_id.clone(), input.base_snapshot_id.clone()))
+                .snapshot_roots
+                .get(&(input.workspace_id.clone(), input.base_snapshot_id.clone()))
+                .is_some_and(|root| root.complete)
         {
             return Err(ControlPlaneError::Conflict {
                 resource: "work view",
@@ -78,21 +79,18 @@ impl WorkViewControlPlaneClient for FakeControlPlaneClient {
 
     fn list_work_views(
         &self,
-        workspace_id: &str,
+        workspace_id: &WorkspaceId,
         include_all: bool,
     ) -> ControlPlaneResult<Vec<WorkViewRecord>> {
         self.ensure_workspace(workspace_id)?;
         let state = self.state.lock().expect("fake control plane poisoned");
-        Self::ensure_trusted_device_if_configured(
-            &state,
-            workspace_id,
-            self.local_device_id.as_deref(),
-        )?;
+        let local_device_id = self.local_device_id.as_deref().map(DeviceId::new);
+        Self::ensure_trusted_device_if_configured(&state, workspace_id, local_device_id.as_ref())?;
         let mut records = state
             .work_views
             .values()
             .filter(|view| {
-                view.workspace_id == workspace_id
+                &view.workspace_id == workspace_id
                     && (include_all
                         || matches!(
                             view.lifecycle,
@@ -142,9 +140,9 @@ impl WorkViewControlPlaneClient for FakeControlPlaneClient {
 
     fn restore_work_view(
         &self,
-        workspace_id: &str,
-        work_view_id: &str,
-        restored_by_device_id: &str,
+        workspace_id: &WorkspaceId,
+        work_view_id: &WorkViewId,
+        restored_by_device_id: &DeviceId,
     ) -> ControlPlaneResult<WorkViewRecord> {
         self.ensure_workspace(workspace_id)?;
         let mut state = self.state.lock().expect("fake control plane poisoned");
@@ -153,16 +151,16 @@ impl WorkViewControlPlaneClient for FakeControlPlaneClient {
             workspace_id,
             Some(restored_by_device_id),
         )?;
-        let key = (workspace_id.to_string(), work_view_id.to_string());
+        let key = (workspace_id.clone(), work_view_id.clone());
         let record =
             state
                 .work_views
                 .get_mut(&key)
                 .ok_or_else(|| ControlPlaneError::WorkViewMissing {
-                    work_view_id: work_view_id.to_string(),
+                    work_view_id: work_view_id.clone(),
                 })?;
         record.lifecycle = WorkViewLifecycleState::Active;
-        record.updated_by_device_id = restored_by_device_id.to_string();
+        record.updated_by_device_id = restored_by_device_id.clone();
         record.updated_at = self.clock.now();
         let record = record.clone();
         state

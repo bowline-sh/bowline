@@ -1,0 +1,55 @@
+{
+  "contractVersion": 8,
+  "command": "handoff",
+  "generatedAt": "2026-06-29T12:00:00Z",
+  "outcome": "receipt",
+  "target": "linux-home",
+  "projectPath": "~/Code/bowline",
+  "candidates": [
+    {
+      "agent": "claude",
+      "sessionId": "sess_claude_1",
+      "sourcePath": "~/.claude/projects/bowline/sess_claude_1.jsonl",
+      "projectPath": "~/Code/bowline",
+      "modifiedAtUnixSeconds": 1782734400,
+      "selected": true
+    }
+  ],
+  "selected": {
+    "agent": "claude",
+    "sessionId": "sess_claude_1",
+    "sourcePath": "~/.claude/projects/bowline/sess_claude_1.jsonl",
+    "projectPath": "~/Code/bowline",
+    "modifiedAtUnixSeconds": 1782734400,
+    "selected": true
+  },
+  "plan": {
+    "target": "linux-home",
+    "agent": "claude",
+    "sessionMode": "resume_existing",
+    "projectPath": "~/Code/bowline",
+    "remoteProjectPath": "~/Code/bowline",
+    "tmuxSession": "bowline-claude-bowline-sess_claude_-29t12-00-00z",
+    "launchCommand": "tmux new-session -d -s bowline-claude-bowline-sess_claude_-29t12-00-00z -c ~/Code/bowline 'claude --resume sess_claude_1'",
+    "transfer": {
+      "encrypted": true,
+      "durableCloudStorage": false,
+      "installsByteExactSessionFiles": true,
+      "remoteInstallerCommand": "bowline internal handoff install-bundle --json"
+    }
+  },
+  "receipt": {
+    "agent": "claude",
+    "target": "linux-home",
+    "remoteProjectPath": "~/Code/bowline",
+    "tmuxSession": "bowline-claude-bowline-sess_claude_-29t12-00-00z",
+    "attachCommand": "ssh linux-home -t 'tmux attach -t bowline-claude-bowline-sess_claude_-29t12-00-00z'",
+    "monitoring": false,
+    "workspaceLock": false,
+    "sameSessionConcurrencyRisk": true,
+    "sessionMode": "resume_existing",
+    "agentRuntimeVerified": false,
+    "note": "Bowline is not monitoring this session and did not verify agent runtime/auth state."
+  },
+  "nextActions": []
+}

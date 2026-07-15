@@ -47,7 +47,7 @@ brew install bowline-sh/tap/bowline
 Verify the install:
 
 ```bash
-bowline --version
+bowline version
 bowline-daemon --version
 ```
 
@@ -56,20 +56,20 @@ bowline-daemon --version
 Create or adopt your workspace:
 
 ```bash
-bowline login --root ~/Code
+bowline setup --root ~/Code
 bowline status
 ```
 
-`bowline login` opens the account flow, creates the workspace if needed, and
-trusts the first device. `bowline status` shows sync state, pending device
-approvals, agent work, and recovery actions.
+`bowline setup` opens the account flow when needed, creates or adopts the
+workspace root, and trusts the first device. `bowline status` shows sync state,
+pending device approvals, agent work, and recovery actions.
 
 ## Second machine
 
 Install Bowline on the second machine, then run:
 
 ```bash
-bowline login --root ~/Code
+bowline setup --root ~/Code
 bowline status
 ```
 
@@ -82,7 +82,7 @@ store. Generated folders such as `node_modules` stay local by default.
 Agents work through leases instead of writing directly into the live workspace:
 
 ```bash
-bowline agent lease create ~/Code/my-project --task "describe the work"
+bowline agent start ~/Code/my-project --task "describe the work"
 bowline work list
 ```
 
@@ -95,7 +95,7 @@ You need pnpm and a Rust toolchain installed. Then build the release binaries:
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm verify:public
+pnpm verify
 cargo build --release -p bowline -p bowline-daemon
 ```
 

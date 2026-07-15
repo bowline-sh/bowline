@@ -3,7 +3,7 @@ use std::fs;
 use bowline_core::{
     commands::{CONTRACT_VERSION, CommandName, WorkCleanupCommandOutput},
     events::EventName,
-    status::{SafeAction, WorkspaceStatus},
+    status::{RepairCommand, WorkspaceStatus},
     work_views::{
         WorkCommandAction, WorkViewLifecycle, WorkViewRetentionState, WorkViewVisibility,
     },
@@ -32,11 +32,8 @@ pub fn cleanup_work_views(
         .filter(|view| {
             matches!(
                 view.lifecycle,
-                WorkViewLifecycle::Accepted
-                    | WorkViewLifecycle::Discarded
-                    | WorkViewLifecycle::Expired
-                    | WorkViewLifecycle::Archived
-            )
+                WorkViewLifecycle::Accepted | WorkViewLifecycle::Discarded
+            ) && !matches!(view.retention.state, WorkViewRetentionState::DeleteEligible)
         })
         .collect::<Vec<_>>();
     let previewed_paths = candidates
@@ -76,7 +73,9 @@ pub fn cleanup_work_views(
                     deleted_paths.push(display_path(&path));
                 }
             }
-            view.lifecycle = WorkViewLifecycle::Archived;
+            // Cleanup is a terminal scrub, not a lifecycle transition: remove
+            // materializations and mark the row delete-eligible while preserving
+            // whether the work was accepted or discarded.
             view.visibility = WorkViewVisibility::Hidden;
             view.retention.state = WorkViewRetentionState::DeleteEligible;
             view.retention.retain_until = None;
@@ -115,9 +114,9 @@ pub fn cleanup_work_views(
         previewed_paths,
         deleted_paths,
         status: WorkspaceStatus::healthy(),
-        next_actions: vec![SafeAction {
-            label: "List retained work views".to_string(),
-            command: Some(status_command),
-        }],
+        next_actions: vec![RepairCommand::inspect(
+            "List retained work views".to_string(),
+            Some(status_command),
+        )],
     })
 }

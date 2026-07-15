@@ -1,19 +1,20 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 8,
   "command": "status",
   "generatedAt": "2026-06-23T12:00:00Z",
+  "statusSummary": { "availability": "degraded", "attention": "none", "facts": [], "snapshotVersion": 1, "observedAt": "2026-06-23T12:00:00Z", "freshness": "fresh" },
   "workspaceId": "ws_code",
   "projectId": "proj_acme_web",
   "status": {
     "level": "limited",
     "attentionItems": [
-      "fixtures/demo.sqlite cannot hydrate while the network is offline."
+      "fixtures/demo.sqlite cannot materialize while the network is offline."
     ]
   },
   "items": [
     {
-      "kind": "hydration",
-      "summary": "Large file content is available as structure only until the network returns.",
+      "kind": "materialization",
+      "summary": "Large file content is waiting for remote bytes until the network returns.",
       "path": "fixtures/demo.sqlite",
       "classification": "large-file",
       "mode": "lazy",
@@ -26,11 +27,11 @@
   ],
   "limits": [
     {
-      "capability": "hydrate",
+      "capability": "materialization",
       "unavailableBecause": "network offline",
       "stillWorks": [
-        "project structure",
-        "local cached reads"
+        "ready local files",
+        "status"
       ],
       "path": "fixtures/demo.sqlite"
     }
@@ -45,10 +46,10 @@
   },
   "nextActions": [
     {
-      "label": "Retry hydration when online",
-      "command": "bowline explain ~/Code/acme/web/fixtures/demo.sqlite",
-      "effectCategory": "inspect",
-      "targetKind": "workspace"
+      "label": "Retry materialization when online",
+      "command": "bowline status --root ~/Code/acme/web",
+      "mutates": false
     }
-  ]
+  ],
+  "freshness": "unknown"
 }

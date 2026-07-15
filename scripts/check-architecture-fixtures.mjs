@@ -15,11 +15,11 @@ const expectedFailures = [
   {
     args: [
       "scripts/check-generated-artifacts.mjs",
-      "--files-from",
-      "tests/fixtures/generated-artifacts/tracked-files.txt",
+      "--root",
+      "tests/fixtures/generated-artifacts",
     ],
     name: "generated artifact fixture",
-    output: "tracked generated artifact",
+    output: "generated artifact",
   },
   {
     args: [
@@ -33,6 +33,7 @@ const expectedFailures = [
   {
     args: [
       "scripts/check-rust-boundaries.mjs",
+      "--source-only",
       "--root",
       "tests/fixtures/rust-boundaries",
     ],
@@ -41,14 +42,55 @@ const expectedFailures = [
   },
   {
     args: [
-      "scripts/check-public-export.mjs",
+      "scripts/check-rust-boundaries.mjs",
+      "--source-only",
       "--root",
-      "tests/fixtures/public-export/content",
-      "--files-from",
-      "tests/fixtures/public-export/leaky-files.txt",
+      "tests/fixtures/rust-status-composition",
     ],
-    name: "public export leak fixture",
-    output: "must stay private",
+    name: "daemon status authority fixture",
+    output: "daemon status composition must stay inside status_projection",
+  },
+  {
+    args: [
+      "scripts/check-rust-boundaries.mjs",
+      "--source-only",
+      "--root",
+      "tests/fixtures/daemon-polling",
+    ],
+    name: "daemon polling boundary fixture",
+    output: "daemon accept/coordinator loops must be wakeable",
+  },
+  {
+    args: [
+      "scripts/check-rust-boundaries.mjs",
+      "--source-only",
+      "--root",
+      "tests/fixtures/daemon-request-spawn",
+    ],
+    name: "daemon per-request worker fixture",
+    output: "must dispatch through bounded executors",
+  },
+  {
+    args: [
+      "scripts/check-rust-boundaries.mjs",
+      "--source-only",
+      "--root",
+      "tests/fixtures/daemon-detach",
+    ],
+    name: "daemon thread detachment fixture",
+    output: "never detach a live worker",
+  },
+];
+
+const expectedSuccesses = [
+  {
+    args: [
+      "scripts/check-rust-boundaries.mjs",
+      "--source-only",
+      "--root",
+      "tests/fixtures/rust-status-owner",
+    ],
+    name: "daemon status projection owner fixture",
   },
 ];
 
@@ -69,6 +111,18 @@ for (const fixture of expectedFailures) {
   if (!output.includes(fixture.output)) {
     errors.push(
       `${fixture.name}: expected output containing '${fixture.output}'`,
+    );
+  }
+}
+
+for (const fixture of expectedSuccesses) {
+  const result = spawnSync(process.execPath, fixture.args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.status !== 0) {
+    errors.push(
+      `${fixture.name}: expected success but failed\n${result.stdout}\n${result.stderr}`,
     );
   }
 }
@@ -190,15 +244,18 @@ function runPublicExportFixture() {
     join(secretRoot, "fake-token.txt"),
     "PUBLIC_EXPORT_TEST_TOKEN=not-a-real-token-value\n",
   );
-  writeFileSync(join(secretRoot, "files.txt"), "fake-token.txt\n");
+  writeFileSync(
+    join(secretRoot, "manifest.json"),
+    JSON.stringify({ include: ["fake-token.txt"] }),
+  );
   requireFailure(
     "public export secret fixture",
     run(process.execPath, [
       join(process.cwd(), "scripts/check-public-export.mjs"),
       "--root",
       secretRoot,
-      "--files-from",
-      join(secretRoot, "files.txt"),
+      "--manifest",
+      "manifest.json",
     ]),
     "secret-looking assignment",
   );
@@ -206,17 +263,52 @@ function runPublicExportFixture() {
     join(secretRoot, "home-path.txt"),
     ["", "Users", "alice", "Code", "acme"].join("/") + "\n",
   );
-  writeFileSync(join(secretRoot, "home-files.txt"), "home-path.txt\n");
+  writeFileSync(
+    join(secretRoot, "manifest.json"),
+    JSON.stringify({ include: ["home-path.txt"] }),
+  );
   requireFailure(
     "public export home path fixture",
     run(process.execPath, [
       join(process.cwd(), "scripts/check-public-export.mjs"),
       "--root",
       secretRoot,
-      "--files-from",
-      join(secretRoot, "home-files.txt"),
+      "--manifest",
+      "manifest.json",
     ]),
     "private local absolute path",
+  );
+  const workspaceCoverageRoot = join(root, "workspace-coverage");
+  mkdirSync(join(workspaceCoverageRoot, "crates", "included"), {
+    recursive: true,
+  });
+  mkdirSync(join(workspaceCoverageRoot, "crates", "missing"), {
+    recursive: true,
+  });
+  writeFileSync(
+    join(workspaceCoverageRoot, "Cargo.toml"),
+    '[workspace]\nmembers = [\n  "crates/included",\n  "crates/missing",\n]\nresolver = "3"\n',
+  );
+  writeFileSync(
+    join(workspaceCoverageRoot, "crates", "included", "Cargo.toml"),
+    '[package]\nname = "included"\nversion = "0.1.0"\n',
+  );
+  writeFileSync(
+    join(workspaceCoverageRoot, "crates", "missing", "Cargo.toml"),
+    '[package]\nname = "missing"\nversion = "0.1.0"\n',
+  );
+  writeFileSync(
+    join(workspaceCoverageRoot, "public-export.json"),
+    JSON.stringify({ include: ["Cargo.toml", "crates/included"] }, null, 2),
+  );
+  requireFailure(
+    "public export workspace member fixture",
+    run(process.execPath, [
+      join(process.cwd(), "scripts/check-public-export.mjs"),
+      "--root",
+      workspaceCoverageRoot,
+    ]),
+    "crates/missing: Rust workspace member is absent from the public export",
   );
   symlinkSync("../private-source", join(source, "private-link"));
   writeFileSync(
@@ -266,22 +358,6 @@ function runPublicExportFixture() {
       "public export symlink fixture: target was pruned before validation",
     );
   }
-  writeFileSync(join(target, "AGENTS.md"), "private\n");
-  requireSuccess(
-    "public all-tracked leak fixture git add",
-    run("git", ["add", "AGENTS.md"], { cwd: target }),
-  );
-  requireFailure(
-    "public all-tracked leak fixture",
-    run(process.execPath, [
-      join(process.cwd(), "scripts/check-public-export.mjs"),
-      "--root",
-      target,
-      "--all-tracked",
-    ]),
-    "prerelease agent instructions must stay private",
-  );
-
   const dirtyTarget = join(root, "dirty-target");
   mkdirSync(dirtyTarget);
   requireSuccess(

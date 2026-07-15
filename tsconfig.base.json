@@ -1,10 +1,12 @@
 {
+  "extends": "./tsconfig.paths.json",
   "compilerOptions": {
     "allowSyntheticDefaultImports": true,
     "declaration": true,
     "declarationMap": true,
     "exactOptionalPropertyTypes": true,
     "isolatedModules": true,
+    "ignoreDeprecations": "6.0",
     "lib": ["ES2023"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
@@ -15,15 +17,6 @@
     "noUncheckedIndexedAccess": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "baseUrl": ".",
-    "paths": {
-      "@bowline/config": ["packages/config/src/index.ts"],
-      "@bowline/contracts": ["packages/contracts/src/index.ts"],
-      "@bowline/contracts/*": ["packages/contracts/src/*.ts"],
-      "@bowline/control-plane": ["packages/control-plane/src/index.ts"],
-      "@bowline/control-plane/*": ["packages/control-plane/src/*"],
-      "@bowline/ui": ["packages/ui/src/index.ts"]
-    },
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "strict": true,

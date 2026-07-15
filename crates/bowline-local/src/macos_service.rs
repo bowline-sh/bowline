@@ -1,29 +1,18 @@
 use std::{
-    env,
-    error::Error,
-    fmt,
-    fs::{self, OpenOptions},
-    io::{self, Write},
+    env, fmt, fs, io,
     path::{Path, PathBuf},
     process::Command,
 };
 
-use crate::bootstrap::process::{ProcessError, ProcessRunner};
+use bowline_core::fs_atomic::{AtomicWriteOptions, write_atomic};
+
+use crate::{
+    bootstrap::process::ProcessRunner,
+    service_runtime::{self, ServiceRuntimeError},
+};
 
 pub const SERVICE_LABEL: &str = "io.bowline.daemon";
 pub const PLIST_NAME: &str = "io.bowline.daemon.plist";
-const LAUNCHER_NAME: &str = "bowline-daemon-launcher.sh";
-const PERSISTED_ENV_KEYS: &[&str] = &[
-    "CONVEX_URL",
-    "BOWLINE_WORKSPACE_ID",
-    "BOWLINE_DEVICE_ID",
-    "BOWLINE_DEVICE_NAME",
-    "BOWLINE_SECRET_STORE",
-    "BOWLINE_ACCOUNT_SESSION_ID",
-    "BOWLINE_CONTROL_PLANE_TOKEN",
-    "BOWLINE_WORKOS_ACCESS_TOKEN",
-    "BOWLINE_WORKOS_CLIENT_ID",
-];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MacosServiceConfig {
@@ -59,19 +48,15 @@ pub enum MacosServiceState {
     Unknown(String),
 }
 
-#[derive(Debug)]
-pub enum MacosServiceError {
-    MissingHome,
-    MissingUserId,
-    Io(io::Error),
-    Process(ProcessError),
-    Unavailable(String),
-    CommandFailed {
-        program: String,
-        status_code: i32,
-        stderr: String,
-    },
+service_runtime::service_error! {
+    pub enum MacosServiceError {
+        MissingHome => "HOME is unavailable",
+        MissingUserId => "macOS user id is unavailable",
+    }
+    io_context: "launch agent file operation failed",
 }
+
+service_runtime::service_outcome_parts!(MacosServiceOutcome, MacosServiceState);
 
 pub fn current_platform_supported() -> bool {
     cfg!(target_os = "macos")
@@ -114,11 +99,6 @@ where
 {
     fs::create_dir_all(&options.launch_agents_dir)?;
     fs::create_dir_all(&options.config.state_root)?;
-    write_owner_only(
-        &launcher_path(&options.config.state_root),
-        &render_daemon_launcher(),
-        0o700,
-    )?;
     let plist_path = plist_path(&options.launch_agents_dir);
     write_owner_only(
         &plist_path,
@@ -208,24 +188,21 @@ pub fn service_status<R>(
 where
     R: ProcessRunner,
 {
-    let output = runner.run(
+    let output = service_runtime::run_service_command(
+        runner,
         "launchctl",
-        &[
+        [
             "print".to_string(),
             format!("{launch_domain}/{SERVICE_LABEL}"),
         ],
-    )?;
+        launchctl_missing_service,
+        launchctl_failure,
+    );
+    let output = output?;
     if output.status_code != 0 {
-        if launchctl_missing_service(&output.stderr) {
-            return Ok(outcome(
-                plist_path(launch_agents_dir),
-                MacosServiceState::Inactive,
-            ));
-        }
-        return Err(launchctl_failure(
-            "launchctl",
-            output.status_code,
-            output.stderr,
+        return Ok(outcome(
+            plist_path(launch_agents_dir),
+            MacosServiceState::Inactive,
         ));
     }
     Ok(outcome(
@@ -235,12 +212,7 @@ where
 }
 
 pub fn render_launch_agent_plist(config: &MacosServiceConfig) -> String {
-    let launcher = launcher_path(&config.state_root);
-    let daemon_env = config.state_root.join("daemon.env");
     let args = [
-        "/bin/sh".to_string(),
-        launcher.display().to_string(),
-        daemon_env.display().to_string(),
         config.daemon.display().to_string(),
         "serve".to_string(),
         "--socket".to_string(),
@@ -307,20 +279,12 @@ pub fn render_launch_agent_plist(config: &MacosServiceConfig) -> String {
     )
 }
 
-pub fn launcher_path(state_root: &Path) -> PathBuf {
-    state_root.join(LAUNCHER_NAME)
-}
-
 pub fn plist_path(launch_agents_dir: &Path) -> PathBuf {
     launch_agents_dir.join(PLIST_NAME)
 }
 
 fn outcome(unit_path: PathBuf, state: MacosServiceState) -> MacosServiceOutcome {
-    MacosServiceOutcome {
-        service_name: SERVICE_LABEL.to_string(),
-        unit_path,
-        state,
-    }
+    service_runtime::service_outcome(SERVICE_LABEL, unit_path, state)
 }
 
 fn run_launchctl<R>(
@@ -331,29 +295,23 @@ fn run_launchctl<R>(
 where
     R: ProcessRunner,
 {
-    let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
-    let output = runner.run("launchctl", &args)?;
-    if output.status_code == 0 || (ignore_missing && launchctl_missing_service(&output.stderr)) {
-        return Ok(());
-    }
-    Err(launchctl_failure(
+    service_runtime::run_service_command(
+        runner,
         "launchctl",
-        output.status_code,
-        output.stderr,
-    ))
+        args.iter().copied(),
+        |stderr| ignore_missing && launchctl_missing_service(stderr),
+        launchctl_failure,
+    )
+    .map(|_| ())
+    .map_err(MacosServiceError::from)
 }
 
-fn launchctl_failure(program: &str, status_code: i32, stderr: String) -> MacosServiceError {
-    if launchctl_domain_unavailable(&stderr) {
-        return MacosServiceError::Unavailable(
-            "macOS user launch domain is unavailable; sign in to a GUI session".to_string(),
-        );
-    }
-    MacosServiceError::CommandFailed {
-        program: program.to_string(),
-        status_code,
-        stderr,
-    }
+fn launchctl_failure(failure: service_runtime::CommandFailure) -> ServiceRuntimeError {
+    service_runtime::classify_command_failure(
+        failure,
+        launchctl_domain_unavailable,
+        "macOS user launch domain is unavailable; sign in to a GUI session",
+    )
 }
 
 fn launchctl_domain_unavailable(stderr: &str) -> bool {
@@ -392,56 +350,16 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn render_daemon_launcher() -> String {
-    let cases = PERSISTED_ENV_KEYS.to_vec().join("|");
-    format!(
-        r#"#!/bin/sh
-set -eu
-env_file="$1"
-shift
-if [ -f "$env_file" ]; then
-  while IFS='=' read -r key value || [ -n "$key" ]; do
-    case "$key" in
-      {cases})
-        if [ -n "$value" ]; then
-          export "$key=$value"
-        fi
-        ;;
-    esac
-  done < "$env_file"
-fi
-exec "$@"
-"#
-    )
-}
-
 fn write_owner_only(path: &Path, contents: &str, mode: u32) -> io::Result<()> {
-    let temp_path = path.with_file_name(format!(
-        ".{}.{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(PLIST_NAME),
-        std::process::id()
-    ));
-    let _ = fs::remove_file(&temp_path);
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(mode);
-    }
-    let write_result = (|| {
-        let mut file = options.open(&temp_path)?;
-        file.write_all(contents.as_bytes())?;
-        file.sync_all()?;
-        fs::rename(&temp_path, path)?;
-        Ok(())
-    })();
-    if write_result.is_err() {
-        let _ = fs::remove_file(&temp_path);
-    }
-    write_result
+    write_atomic(
+        path,
+        contents.as_bytes(),
+        AtomicWriteOptions {
+            unix_mode: Some(mode),
+            reject_symlink: false,
+            replace_existing: true,
+        },
+    )
 }
 
 impl fmt::Display for MacosServiceState {
@@ -457,135 +375,25 @@ impl fmt::Display for MacosServiceState {
     }
 }
 
-impl fmt::Display for MacosServiceError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingHome => formatter.write_str("HOME is unavailable"),
-            Self::MissingUserId => formatter.write_str("macOS user id is unavailable"),
-            Self::Io(error) => write!(formatter, "launch agent file operation failed: {error}"),
-            Self::Process(error) => error.fmt(formatter),
-            Self::Unavailable(message) => formatter.write_str(message),
-            Self::CommandFailed {
-                program,
-                status_code,
-                stderr,
-            } => write!(
-                formatter,
-                "`{program}` failed with status {status_code}: {stderr}"
-            ),
-        }
-    }
-}
-
-impl Error for MacosServiceError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            Self::Process(error) => Some(error),
-            _ => None,
-        }
-    }
-}
-
-impl From<io::Error> for MacosServiceError {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
-impl From<ProcessError> for MacosServiceError {
-    fn from(error: ProcessError) -> Self {
-        Self::Process(error)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, collections::VecDeque, fs, path::PathBuf, rc::Rc};
+    use std::{fs, path::PathBuf};
 
-    use crate::bootstrap::process::{ProcessError, ProcessOutput, ProcessRunner};
+    use crate::{
+        bootstrap::process::ProcessOutput,
+        service_runtime::test_support::{RecordingRunner, SequenceRunner},
+    };
 
     use super::{
         MacosServiceConfig, MacosServiceOptions, MacosServiceState, install_or_update_service,
-        launcher_path, plist_path, render_daemon_launcher, render_launch_agent_plist,
-        restart_service, service_status, uninstall_service,
+        plist_path, render_launch_agent_plist, restart_service, service_status, uninstall_service,
     };
 
-    #[derive(Clone)]
-    struct RecordingRunner {
-        calls: Rc<RefCell<Vec<Vec<String>>>>,
-        output: ProcessOutput,
-    }
-
-    impl RecordingRunner {
-        fn ok() -> Self {
-            Self {
-                calls: Rc::new(RefCell::new(Vec::new())),
-                output: ProcessOutput {
-                    status_code: 0,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                },
-            }
-        }
-
-        fn with_output(output: ProcessOutput) -> Self {
-            Self {
-                calls: Rc::new(RefCell::new(Vec::new())),
-                output,
-            }
-        }
-    }
-
-    impl ProcessRunner for RecordingRunner {
-        fn run(&self, program: &str, args: &[String]) -> Result<ProcessOutput, ProcessError> {
-            let mut call = vec![program.to_string()];
-            call.extend(args.iter().cloned());
-            self.calls.borrow_mut().push(call);
-            Ok(self.output.clone())
-        }
-    }
-
-    #[derive(Clone)]
-    struct SequenceRunner {
-        calls: Rc<RefCell<Vec<Vec<String>>>>,
-        outputs: Rc<RefCell<VecDeque<ProcessOutput>>>,
-    }
-
-    impl SequenceRunner {
-        fn new(outputs: Vec<ProcessOutput>) -> Self {
-            Self {
-                calls: Rc::new(RefCell::new(Vec::new())),
-                outputs: Rc::new(RefCell::new(outputs.into())),
-            }
-        }
-    }
-
-    impl ProcessRunner for SequenceRunner {
-        fn run(&self, program: &str, args: &[String]) -> Result<ProcessOutput, ProcessError> {
-            let mut call = vec![program.to_string()];
-            call.extend(args.iter().cloned());
-            self.calls.borrow_mut().push(call);
-            Ok(self
-                .outputs
-                .borrow_mut()
-                .pop_front()
-                .unwrap_or_else(|| ProcessOutput {
-                    status_code: 0,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                }))
-        }
-    }
-
     #[test]
-    fn rendered_plist_runs_daemon_through_safe_env_launcher() {
+    fn rendered_plist_runs_daemon_directly() {
         let plist = render_launch_agent_plist(&config_with_spaces());
 
         assert!(plist.contains("<string>io.bowline.daemon</string>"));
-        assert!(plist.contains("<string>/bin/sh</string>"));
-        assert!(plist.contains("<string>/tmp/bowline state/bowline-daemon-launcher.sh</string>"));
-        assert!(plist.contains("<string>/tmp/bowline state/daemon.env</string>"));
         assert!(plist.contains("<string>/tmp/bin/bowline-daemon</string>"));
         assert!(plist.contains("<string>--sync-root</string>"));
         assert!(plist.contains("<string>/tmp/Code Root</string>"));
@@ -595,18 +403,9 @@ mod tests {
         assert!(plist.contains("<string>ws_code</string>"));
         assert!(plist.contains("<string>--sync-device</string>"));
         assert!(plist.contains("<string>device-mac</string>"));
+        assert!(!plist.contains("<string>/bin/sh</string>"));
         assert!(!plist.contains("BOWLINE_ACCOUNT_SESSION_ID"));
         assert!(!plist.contains("EnvironmentVariables"));
-    }
-
-    #[test]
-    fn launcher_parses_allowlisted_environment_without_sourcing_shell() {
-        let launcher = render_daemon_launcher();
-
-        assert!(launcher.contains("BOWLINE_ACCOUNT_SESSION_ID"));
-        assert!(launcher.contains("export \"$key=$value\""));
-        assert!(!launcher.contains(". \"$"));
-        assert!(!launcher.contains("source "));
     }
 
     #[test]
@@ -652,11 +451,6 @@ mod tests {
                 .expect("plist")
                 .contains("RunAtLoad")
         );
-        assert!(
-            fs::read_to_string(launcher_path(&config.state_root))
-                .expect("launcher")
-                .contains("exec \"$@\"")
-        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -667,12 +461,6 @@ mod tests {
                 .mode()
                 & 0o777;
             assert_eq!(mode, 0o600);
-            let launcher_mode = fs::metadata(launcher_path(&config.state_root))
-                .expect("launcher metadata")
-                .permissions()
-                .mode()
-                & 0o777;
-            assert_eq!(launcher_mode, 0o700);
         }
         assert_eq!(
             *runner.calls.borrow(),

@@ -1,156 +1,40 @@
 use super::*;
 
-pub(super) fn audit_tool_result(
-    store: &MetadataStore,
-    lease: &AgentLease,
-    mut result: AgentToolResult,
-    generated_at: &str,
-) -> Result<AgentToolResult, AgentError> {
-    if result.outcome == AgentToolResultOutcome::Allowed {
-        if let Some((event_name, summary)) = success_event_for_tool(result.tool) {
-            let event_id = EventId::new(format!(
-                "evt_tool_invoked_{}_{}",
-                lease.id.as_str(),
-                stable_token(&format!(
-                    "{}:{}:{}:{}",
-                    result.request_id,
-                    serde_json::to_string(&result.tool).unwrap_or_default(),
-                    generated_at,
-                    result.summary,
-                ))
-            ));
-            append_lease_event(
-                store,
-                lease,
-                event_name,
-                event_id.clone(),
-                generated_at,
-                summary,
-            )?;
-            result.event_id = Some(event_id);
-        }
-        return Ok(result);
-    }
-    if result.outcome != AgentToolResultOutcome::Denied {
-        return Ok(result);
-    }
-    let event_id = EventId::new(format!(
-        "evt_tool_denied_{}_{}",
-        lease.id.as_str(),
-        stable_token(&format!(
-            "{}:{}:{}",
-            result.request_id,
-            serde_json::to_string(&result.tool).unwrap_or_default(),
-            generated_at
-        ))
-    ));
-    append_lease_event(
-        store,
-        lease,
-        EventName::LeaseToolDenied,
-        event_id.clone(),
-        generated_at,
-        "Agent tool request was denied.",
-    )?;
-    result.event_id = Some(event_id);
-    Ok(result)
-}
-
-pub(super) fn success_event_for_tool(tool: AgentToolName) -> Option<(EventName, &'static str)> {
-    match tool {
-        AgentToolName::WriteOverlayFile => {
-            Some((EventName::OverlayChanged, "Agent overlay changed."))
-        }
-        AgentToolName::RunCommandWithReceipt => {
-            Some((EventName::LeaseToolInvoked, "Agent command tool completed."))
-        }
-        AgentToolName::RequestHydration => Some((
-            EventName::LeaseToolInvoked,
-            "Agent hydration tool completed.",
-        )),
-        AgentToolName::PublishOverlayForReview => {
-            Some((EventName::PublishRequested, "Agent publish requested."))
-        }
-        AgentToolName::CompleteTask => Some((
-            EventName::LeaseToolInvoked,
-            "Agent completion tool completed.",
-        )),
-        _ => None,
-    }
-}
-
-pub(super) fn append_lease_event(
-    store: &MetadataStore,
-    lease: &AgentLease,
-    name: EventName,
-    event_id: EventId,
-    generated_at: &str,
-    summary: &str,
-) -> Result<(), AgentError> {
-    store.append_event(lease_event(lease, name, event_id, generated_at, summary))?;
-    Ok(())
-}
-
 pub(super) fn persist_created_agent_lease(
     store: &MetadataStore,
     lease: &AgentLease,
     event_id: EventId,
     generated_at: &str,
 ) -> Result<(), AgentError> {
-    store
-        .connection()
-        .execute("BEGIN IMMEDIATE", [])
-        .map_err(MetadataError::from)?;
-    let result = (|| {
-        store.upsert_agent_lease(lease)?;
-        store.append_event(lease_event(
+    store.persist_agent_lease_with_event(
+        lease,
+        lease_event(
             lease,
             EventName::LeaseCreated,
             event_id,
             generated_at,
             "Agent lease created.",
-        ))?;
-        Ok::<(), AgentError>(())
-    })();
-    match result {
-        Ok(()) => {
-            store
-                .connection()
-                .execute("COMMIT", [])
-                .map_err(MetadataError::from)?;
-            Ok(())
-        }
-        Err(error) => {
-            let _ = store.connection().execute("ROLLBACK", []);
-            Err(error)
-        }
-    }
+        ),
+    )?;
+    Ok(())
 }
 
 pub(super) fn rollback_created_agent_work_view(store: &MetadataStore, lease: &AgentLease) {
-    let _ = store.connection().execute(
-        "DELETE FROM leases WHERE id = ?1",
-        rusqlite::params![lease.id.as_str()],
-    );
-    let _ = store.connection().execute(
-        "DELETE FROM work_view_base_files WHERE workspace_id = ?1 AND work_view_id = ?2",
-        rusqlite::params![lease.workspace_id.as_str(), lease.work_view_id.as_str()],
-    );
-    let _ = store.connection().execute(
-        "DELETE FROM work_views WHERE workspace_id = ?1 AND id = ?2",
-        rusqlite::params![lease.workspace_id.as_str(), lease.work_view_id.as_str()],
-    );
+    if let Err(error) = store.rollback_created_agent_work_view_metadata(lease) {
+        super::log_best_effort_metadata_cleanup("rollback created agent work view", error);
+    }
     let work_view_path = expand_display_path(&lease.work_view_path);
-    if work_view_path.exists() {
-        let _ = fs::remove_dir_all(work_view_path);
+    if work_view_path.exists()
+        && let Err(error) = fs::remove_dir_all(work_view_path)
+    {
+        eprintln!("bowline agent filesystem cleanup skipped (remove work view): {error}");
     }
 }
 
 pub(super) fn rollback_provisional_agent_lease(store: &MetadataStore, lease: &AgentLease) {
-    let _ = store.connection().execute(
-        "DELETE FROM leases WHERE id = ?1",
-        rusqlite::params![lease.id.as_str()],
-    );
+    if let Err(error) = store.delete_agent_lease(&lease.id) {
+        super::log_best_effort_metadata_cleanup("rollback provisional agent lease", error);
+    }
 }
 
 pub(crate) fn recover_provisional_agent_leases(
@@ -194,19 +78,19 @@ pub(super) fn recover_provisional_agent_lease(
         return Ok(());
     }
 
-    lease.execution_state = AgentLeaseExecutionState::Active;
+    lease.session_state = AgentSessionState::Open;
     lease.status_summary = "active".to_string();
     lease.updated_at = generated_at.to_string();
-    persist_created_agent_lease(
-        store,
-        &lease,
-        lease.audit.local_event_id.clone(),
-        generated_at,
-    )
+    let event_id = EventId::new(format!(
+        "evt_lease_recovered_{}",
+        stable_token(&format!("{}:{generated_at}", lease.id.as_str()))
+    ));
+    persist_created_agent_lease(store, &lease, event_id, generated_at)
 }
 
 pub(super) fn is_provisional_agent_lease(lease: &AgentLease) -> bool {
-    lease.execution_state == AgentLeaseExecutionState::Blocked && lease.status_summary == "creating"
+    lease.session_state == AgentSessionState::Provisional
+        && lease.dispatch_state == AgentLeaseDispatchState::None
 }
 
 pub(super) fn lease_event(

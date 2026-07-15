@@ -1,0 +1,26 @@
+{
+  "kind": "segmented-v1",
+  "logicalContentId": "cid_segmented_whole_file_001",
+  "logicalLength": 10,
+  "segmentSize": 6,
+  "segments": [
+    {
+      "ordinal": 0,
+      "plaintextLength": 6,
+      "segmentId": "seg_content_001",
+      "packId": "pack_segments_001",
+      "offset": 0,
+      "length": 22,
+      "formatVersion": 1
+    },
+    {
+      "ordinal": 1,
+      "plaintextLength": 4,
+      "segmentId": "seg_content_002",
+      "packId": "pack_segments_001",
+      "offset": 22,
+      "length": 20,
+      "formatVersion": 1
+    }
+  ]
+}

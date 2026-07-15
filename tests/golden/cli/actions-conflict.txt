@@ -1,4 +1,0 @@
-  ▲ NEEDS YOU
-
-  Next
-  → bowline resolve ~/Code/acme/web   Resolve the conflict

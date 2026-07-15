@@ -560,9 +560,9 @@ mod tests {
 
         assert_eq!(
             remote_shell_path(local_code.to_str().expect("utf8 path")),
-            "$HOME/'Code'"
+            "$HOME/Code"
         );
-        assert_eq!(remote_shell_path("~/Code"), "$HOME/'Code'");
+        assert_eq!(remote_shell_path("~/Code"), "$HOME/Code");
     }
 
     #[test]

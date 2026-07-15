@@ -33,95 +33,18 @@ pub(super) fn scoped_path(root: &str, requested: &str) -> Result<PathBuf, AgentE
 
 pub(super) fn scoped_read_path(lease: &AgentLease, requested: &str) -> Result<PathBuf, AgentError> {
     let path = scoped_path(lease_write_target_path(lease), requested)?;
-    ensure_path_in_scope(
-        lease_write_target_path(lease),
-        &path,
-        &lease.scopes.read.roots,
-    )?;
+    ensure_path_in_scope(lease_write_target_path(lease), &path)?;
     Ok(path)
 }
 
-pub(super) fn scoped_write_path(
-    lease: &AgentLease,
-    requested: &str,
-) -> Result<PathBuf, AgentError> {
-    let path = scoped_path(lease_write_target_path(lease), requested)?;
-    ensure_path_in_scope(
-        lease_write_target_path(lease),
-        &path,
-        &lease.scopes.write.roots,
-    )?;
-    Ok(path)
-}
-
-pub(super) fn ensure_path_in_scope(
-    lease_root: &str,
-    path: &Path,
-    scope_roots: &[String],
-) -> Result<(), AgentError> {
-    if scope_roots
-        .iter()
-        .map(|root| scope_root_path(lease_root, root))
-        .any(|root| path.starts_with(root))
-    {
+pub(super) fn ensure_path_in_scope(lease_root: &str, path: &Path) -> Result<(), AgentError> {
+    if path.starts_with(expand_display_path(lease_root)) {
         Ok(())
     } else {
         Err(AgentError::ToolDenied {
             code: "path-outside-lease".to_string(),
         })
     }
-}
-
-pub(super) fn scope_root_path(lease_root: &str, root: &str) -> PathBuf {
-    let expanded = expand_display_path(root);
-    if expanded.is_absolute() || root == "~" || root.starts_with("~/") {
-        expanded
-    } else {
-        expand_display_path(lease_root).join(expanded)
-    }
-}
-
-pub(super) fn agent_read_allowed(lease_root: &str, path: &Path) -> bool {
-    let Some(decision) = agent_path_decision(lease_root, path) else {
-        return false;
-    };
-    !matches!(
-        decision.classification,
-        PathClassification::ProjectEnv
-            | PathClassification::SecretLooking
-            | PathClassification::LocalOnly
-            | PathClassification::Blocked
-    ) && decision.access.contains(&AccessFlag::AgentReadable)
-        && !decision.access.contains(&AccessFlag::AgentHidden)
-}
-
-pub(super) fn agent_write_allowed_decision(decision: &crate::policy::PathPolicyDecision) -> bool {
-    matches!(
-        decision.classification,
-        PathClassification::WorkspaceSync | PathClassification::LargeFile
-    ) && !decision.access.contains(&AccessFlag::AgentHidden)
-}
-
-pub(super) fn agent_path_decision(
-    lease_root: &str,
-    path: &Path,
-) -> Option<crate::policy::PathPolicyDecision> {
-    let root = expand_display_path(lease_root);
-    let relative = path.strip_prefix(&root).ok()?;
-    let relative_path = relative
-        .to_string_lossy()
-        .replace(std::path::MAIN_SEPARATOR, "/");
-    let metadata = fs::symlink_metadata(path).ok();
-    let policy =
-        UserPolicy::load_for_path(&root, &relative_path).unwrap_or_else(|_| UserPolicy::empty());
-    Some(classify_path(
-        &PathFacts {
-            relative_path,
-            is_dir: metadata.as_ref().is_some_and(|metadata| metadata.is_dir()),
-            byte_len: metadata.as_ref().map(|metadata| metadata.len()),
-        },
-        &policy,
-    ))
 }
 
 pub(super) fn ensure_no_symlink_components(root: &Path, path: &Path) -> Result<(), AgentError> {
@@ -149,57 +72,6 @@ pub(super) fn ensure_no_symlink_components(root: &Path, path: &Path) -> Result<(
             }
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => break,
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn create_parent_dirs_without_symlinks(
-    root: &Path,
-    parent: &Path,
-) -> Result<(), AgentError> {
-    if fs::symlink_metadata(root)
-        .map(|metadata| metadata.file_type().is_symlink())
-        .unwrap_or(false)
-    {
-        return Err(AgentError::ToolDenied {
-            code: "path-outside-lease".to_string(),
-        });
-    }
-    let relative = parent
-        .strip_prefix(root)
-        .map_err(|_| AgentError::ToolDenied {
-            code: "path-outside-lease".to_string(),
-        })?;
-    let mut current = root.to_path_buf();
-    for component in relative.components() {
-        match component {
-            Component::Normal(part) => current.push(part),
-            Component::CurDir => continue,
-            Component::RootDir | Component::Prefix(_) | Component::ParentDir => {
-                return Err(AgentError::ToolDenied {
-                    code: "path-outside-lease".to_string(),
-                });
-            }
-        }
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(AgentError::ToolDenied {
-                    code: "path-outside-lease".to_string(),
-                });
-            }
-            Ok(metadata) if metadata.is_dir() => {}
-            Ok(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "path component is not a directory",
-                )
-                .into());
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir(&current)?;
-            }
             Err(error) => return Err(error.into()),
         }
     }

@@ -74,7 +74,7 @@ function main() {
 
   run("pnpm", ["install", "--frozen-lockfile"], { cwd: targetRoot });
   if (hasChanges) git(targetRoot, ["add", "-A"]);
-  run("pnpm", ["verify:public"], { cwd: targetRoot });
+  run("pnpm", ["verify"], { cwd: targetRoot });
 
   if (!hasChanges) {
     console.log("Public export is unchanged; no commit created.");

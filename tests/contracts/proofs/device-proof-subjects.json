@@ -1,0 +1,808 @@
+{
+  "$comment": "Source of truth for bowline device-authorization proof subjects (scheme v2). Consumed by crates/bowline-control-plane/src/hosted/proof_contract.rs and packages/control-plane/convex-tests/device-proof-subjects.contract.test.ts. Fixture-first: change this file BEFORE changing either builder.",
+  "messageHeader": "bowline device authorization proof v2",
+  "messageVectors": [
+    {
+      "name": "ascii",
+      "fields": [
+        "bowline device authorization proof v2",
+        "ws_1",
+        "device_1",
+        "create-upload-intent",
+        "authorityFormatVersion=2\nobjectKey=packs_pk_1\nkind=source-pack\nbyteLength=4\ncontentId="
+      ],
+      "sha256Hex": "bec9b6ce91c8f5fe77c585fd344f3a776b938922e6700537c66b955889d46414"
+    },
+    {
+      "name": "unicode-multibyte",
+      "fields": [
+        "bowline device authorization proof v2",
+        "ws_1",
+        "device_1",
+        "create-work-view",
+        "name=caf\u00e9-\u65e5\u672c\u8a9e-\ud83d\ude80"
+      ],
+      "sha256Hex": "3a96feed9178c4841797554453518452418766844026e938902457f39a7a4b1e"
+    },
+    {
+      "name": "embedded-newline-field",
+      "fields": [
+        "bowline device authorization proof v2",
+        "ws_1",
+        "device_1",
+        "x",
+        "a=1\nb=2"
+      ],
+      "sha256Hex": "ff08abd56b24617e3f3eb10c9d9efbd78b5c91216d5f85561f7f208ee2c544fc"
+    }
+  ],
+  "projectionInvariants": [
+    {
+      "builder": "workspaceHead",
+      "caseName": "unsigned-transport-field-does-not-enter-subject",
+      "implementations": ["rust", "ts"],
+      "baseInput": {
+        "workspaceId": "ws_projection_fixture",
+        "version": 7,
+        "snapshotId": "snap_projection_fixture"
+      },
+      "unsignedTransportInput": {
+        "workspaceId": "ws_projection_fixture",
+        "version": 7,
+        "snapshotId": "snap_projection_fixture",
+        "clientRequestId": "request_unsigned_transport_only"
+      },
+      "signedTransportInput": {
+        "workspaceId": "ws_projection_fixture",
+        "version": 8,
+        "snapshotId": "snap_projection_fixture"
+      },
+      "expectedSubject": "workspaceId=ws_projection_fixture\nversion=7\nsnapshotId=snap_projection_fixture",
+      "expectedSignedSubject": "workspaceId=ws_projection_fixture\nversion=8\nsnapshotId=snap_projection_fixture"
+    }
+  ],
+  "cases": [
+    {
+      "builder": "statusPublish",
+      "caseName": "existing-rust-pin",
+      "implementations": ["rust", "ts"],
+      "action": "publish-workspace-status",
+      "input": {
+        "workspaceId": "ws_code",
+        "snapshotId": "snap_abc123",
+        "availability": "ready",
+        "attention": "required",
+        "schemaHash": "50d18e16c5458754a8a6b8cd6c4db320f17802d2bf222df333c0a3d7d337c8e3",
+        "snapshotVersion": 1,
+        "observedAt": "2026-06-29T12:00:00Z"
+      },
+      "expectedSubject": "workspaceId=ws_code\nsnapshotId=snap_abc123\navailability=ready\nattention=required\nschemaHash=50d18e16c5458754a8a6b8cd6c4db320f17802d2bf222df333c0a3d7d337c8e3\nsnapshotVersion=1\nobservedAt=2026-06-29T12:00:00Z"
+    },
+    {
+      "builder": "bootstrapSession",
+      "caseName": "all-fields",
+      "implementations": ["rust", "ts"],
+      "action": "create-bootstrap-session",
+      "input": {
+        "workspaceId": "ws_boot",
+        "host": "macbook.local",
+        "leaseHandoffDigest": "handoff_sha256",
+        "leaseId": "lease_boot",
+        "root": "/workspace/Code/project",
+        "runtime": "darwin-arm64",
+        "setupReceiptsDigest": "receipts_sha256",
+        "expiresInTicks": 900,
+        "bootstrapTokenHash": "sha256:boot"
+      },
+      "expectedSubject": "workspaceId=ws_boot\nhost=macbook.local\nleaseHandoffDigest=handoff_sha256\nleaseId=lease_boot\nroot=/workspace/Code/project\nruntime=darwin-arm64\nsetupReceiptsDigest=receipts_sha256\nexpiresInTicks=900\nbootstrapTokenHash=sha256:boot"
+    },
+    {
+      "builder": "deviceRequestApproval",
+      "caseName": "request-id",
+      "implementations": ["rust", "ts"],
+      "action": "approve-device-request",
+      "input": {
+        "requestId": "request_approve_fixture"
+      },
+      "expectedSubject": "requestId=request_approve_fixture"
+    },
+    {
+      "builder": "deviceRequestDenial",
+      "caseName": "request-id",
+      "implementations": ["rust", "ts"],
+      "action": "deny-device-request",
+      "input": {
+        "requestId": "request_deny_fixture"
+      },
+      "expectedSubject": "requestId=request_deny_fixture"
+    },
+    {
+      "builder": "deviceRevocation",
+      "caseName": "device-id",
+      "implementations": ["rust", "ts"],
+      "action": "revoke-device",
+      "input": {
+        "deviceId": "device_revoke_fixture"
+      },
+      "expectedSubject": "deviceId=device_revoke_fixture"
+    },
+    {
+      "builder": "bootstrapSession",
+      "caseName": "explicit-defaults",
+      "implementations": ["rust", "ts"],
+      "action": "create-bootstrap-session",
+      "input": {
+        "workspaceId": "ws_boot",
+        "expiresInTicks": 600,
+        "bootstrapTokenHash": "sha256:default"
+      },
+      "expectedSubject": "workspaceId=ws_boot\nhost=\nleaseHandoffDigest=\nleaseId=\nroot=\nruntime=\nsetupReceiptsDigest=\nexpiresInTicks=600\nbootstrapTokenHash=sha256:default"
+    },
+    {
+      "builder": "bootstrapSession",
+      "caseName": "ts-omitted-defaults",
+      "implementations": ["ts"],
+      "action": "create-bootstrap-session",
+      "input": {
+        "workspaceId": "ws_boot",
+        "bootstrapTokenHash": "sha256:default"
+      },
+      "expectedSubject": "workspaceId=ws_boot\nhost=\nleaseHandoffDigest=\nleaseId=\nroot=\nruntime=\nsetupReceiptsDigest=\nexpiresInTicks=600\nbootstrapTokenHash=sha256:default"
+    },
+    {
+      "builder": "conflictReconcile",
+      "caseName": "comma-path-and-secret",
+      "implementations": ["rust", "ts"],
+      "action": "reconcile-conflict-occurrence",
+      "input": {
+        "conflictId": "conflict_1",
+        "conflictKind": "merge",
+        "paths": ["src/a,b.txt", "README.md"],
+        "baseSnapshotId": "snap_base",
+        "remoteSnapshotId": "snap_remote",
+        "containsSecrets": true,
+        "desiredState": "unresolved",
+        "occurrenceVersion": 7,
+        "reason": "remote head diverged"
+      },
+      "expectedSubject": "conflictId=conflict_1\nconflictKind=merge\npaths.count=2\npaths.0.length=11\npaths.0.value=src/a,b.txt\npaths.1.length=9\npaths.1.value=README.md\nbaseSnapshotId=snap_base\nremoteSnapshotId=snap_remote\noccurrenceVersion=7\ndesiredState=unresolved\ncontainsSecrets=true\nreason=remote head diverged\nbundleObjectKey=\nbundleContentId=\nbundleHash=\nbundleByteLength=\nbundleKeyEpoch=\nbundleKind="
+    },
+    {
+      "builder": "conflictReconcile",
+      "caseName": "comma-path-collision-counterpart",
+      "implementations": ["rust", "ts"],
+      "action": "reconcile-conflict-occurrence",
+      "input": {
+        "conflictId": "conflict_1",
+        "conflictKind": "merge",
+        "paths": ["src/a", "b.txt", "README.md"],
+        "baseSnapshotId": "snap_base",
+        "remoteSnapshotId": "snap_remote",
+        "containsSecrets": true,
+        "desiredState": "unresolved",
+        "occurrenceVersion": 7,
+        "reason": "remote head diverged"
+      },
+      "expectedSubject": "conflictId=conflict_1\nconflictKind=merge\npaths.count=3\npaths.0.length=5\npaths.0.value=src/a\npaths.1.length=5\npaths.1.value=b.txt\npaths.2.length=9\npaths.2.value=README.md\nbaseSnapshotId=snap_base\nremoteSnapshotId=snap_remote\noccurrenceVersion=7\ndesiredState=unresolved\ncontainsSecrets=true\nreason=remote head diverged\nbundleObjectKey=\nbundleContentId=\nbundleHash=\nbundleByteLength=\nbundleKeyEpoch=\nbundleKind="
+    },
+    {
+      "builder": "conflictReconcile",
+      "caseName": "empty-paths",
+      "implementations": ["rust", "ts"],
+      "action": "reconcile-conflict-occurrence",
+      "input": {
+        "conflictId": "conflict_empty",
+        "conflictKind": "manual",
+        "paths": [],
+        "baseSnapshotId": "snap_base",
+        "remoteSnapshotId": "snap_remote",
+        "containsSecrets": false,
+        "desiredState": "unresolved",
+        "occurrenceVersion": 8,
+        "reason": "manual conflict"
+      },
+      "expectedSubject": "conflictId=conflict_empty\nconflictKind=manual\npaths.count=0\nbaseSnapshotId=snap_base\nremoteSnapshotId=snap_remote\noccurrenceVersion=8\ndesiredState=unresolved\ncontainsSecrets=false\nreason=manual conflict\nbundleObjectKey=\nbundleContentId=\nbundleHash=\nbundleByteLength=\nbundleKeyEpoch=\nbundleKind="
+    },
+    {
+      "builder": "conflictList",
+      "caseName": "workspace",
+      "implementations": ["rust", "ts"],
+      "action": "list-workspace-conflicts",
+      "input": {
+        "workspaceId": "ws_conflicts"
+      },
+      "expectedSubject": "workspaceId=ws_conflicts"
+    },
+    {
+      "builder": "workspaceRef",
+      "caseName": "zero-version-empty-next",
+      "implementations": ["rust", "ts"],
+      "action": "compare-and-swap-workspace-ref",
+      "input": {
+        "expectedVersion": 0,
+        "nextSnapshotId": ""
+      },
+      "expectedSubject": "expectedVersion=0\nnextSnapshotId="
+    },
+    {
+      "builder": "workspaceHead",
+      "caseName": "signed-head",
+      "implementations": ["rust", "ts"],
+      "action": "sign-workspace-head",
+      "input": {
+        "workspaceId": "ws_code",
+        "version": 7,
+        "snapshotId": "snap_head"
+      },
+      "expectedSubject": "workspaceId=ws_code\nversion=7\nsnapshotId=snap_head"
+    },
+    {
+      "builder": "uploadIntent",
+      "caseName": "content-id-absent",
+      "implementations": ["rust", "ts"],
+      "action": "create-upload-intent",
+      "input": {
+        "objectKey": "packs_pk_0123456789abcdef",
+        "kind": "source-pack",
+        "byteLength": 4
+      },
+      "expectedSubject": "authorityFormatVersion=2\nobjectKey=packs_pk_0123456789abcdef\nkind=source-pack\nbyteLength=4\ncontentId="
+    },
+    {
+      "builder": "uploadIntent",
+      "caseName": "content-id-empty",
+      "implementations": ["rust", "ts"],
+      "action": "create-upload-intent",
+      "input": {
+        "objectKey": "indexes_ix_0123456789abcdef",
+        "kind": "locator-index",
+        "byteLength": 0,
+        "contentId": ""
+      },
+      "expectedSubject": "authorityFormatVersion=2\nobjectKey=indexes_ix_0123456789abcdef\nkind=locator-index\nbyteLength=0\ncontentId="
+    },
+    {
+      "builder": "uploadIntent",
+      "caseName": "content-id-present",
+      "implementations": ["rust", "ts"],
+      "action": "create-upload-intent",
+      "input": {
+        "objectKey": "indexes_ix_locator",
+        "kind": "locator-index",
+        "byteLength": 15,
+        "contentId": "cid_locator"
+      },
+      "expectedSubject": "authorityFormatVersion=2\nobjectKey=indexes_ix_locator\nkind=locator-index\nbyteLength=15\ncontentId=cid_locator"
+    },
+    {
+      "builder": "downloadIntent",
+      "caseName": "full-range",
+      "implementations": ["rust", "ts"],
+      "action": "create-download-intent",
+      "input": {
+        "objectKey": "packs_pk_download"
+      },
+      "expectedSubject": "objectKey=packs_pk_download\nrange=full\noffset=\nlength="
+    },
+    {
+      "builder": "downloadIntent",
+      "caseName": "bounded-zero-range",
+      "implementations": ["rust", "ts"],
+      "action": "create-download-intent",
+      "input": {
+        "objectKey": "packs_pk_download",
+        "range": {
+          "offset": 0,
+          "length": 0
+        }
+      },
+      "expectedSubject": "objectKey=packs_pk_download\nrange=bounded\noffset=0\nlength=0"
+    },
+    {
+      "builder": "uploadVerification",
+      "caseName": "content-id-absent",
+      "implementations": ["rust", "ts"],
+      "action": "verify-upload-intent",
+      "input": {
+        "objectKey": "packs_pk_verify",
+        "byteLength": 123
+      },
+      "expectedSubject": "objectKey=packs_pk_verify\nbyteLength=123\ncontentId="
+    },
+    {
+      "builder": "uploadVerification",
+      "caseName": "content-id-empty",
+      "implementations": ["rust", "ts"],
+      "action": "verify-upload-intent",
+      "input": {
+        "objectKey": "packs_pk_verify",
+        "byteLength": 123,
+        "contentId": ""
+      },
+      "expectedSubject": "objectKey=packs_pk_verify\nbyteLength=123\ncontentId="
+    },
+    {
+      "builder": "objectRetention",
+      "caseName": "pending",
+      "implementations": ["rust", "ts"],
+      "action": "mark-object-retention-state",
+      "input": {
+        "objectKey": "packs_pk_retention",
+        "retentionState": "pending"
+      },
+      "expectedSubject": "objectKey=packs_pk_retention\nretentionState=pending"
+    },
+    {
+      "builder": "objectRetention",
+      "caseName": "current",
+      "implementations": ["rust", "ts"],
+      "action": "mark-object-retention-state",
+      "input": {
+        "objectKey": "packs_pk_retention",
+        "retentionState": "current"
+      },
+      "expectedSubject": "objectKey=packs_pk_retention\nretentionState=current"
+    },
+    {
+      "builder": "objectRetention",
+      "caseName": "orphan-candidate",
+      "implementations": ["rust", "ts"],
+      "action": "mark-object-retention-state",
+      "input": {
+        "objectKey": "packs_pk_retention",
+        "retentionState": "orphan-candidate"
+      },
+      "expectedSubject": "objectKey=packs_pk_retention\nretentionState=orphan-candidate"
+    },
+    {
+      "builder": "objectRetention",
+      "caseName": "retained",
+      "implementations": ["rust", "ts"],
+      "action": "mark-object-retention-state",
+      "input": {
+        "objectKey": "packs_pk_retention",
+        "retentionState": "retained"
+      },
+      "expectedSubject": "objectKey=packs_pk_retention\nretentionState=retained"
+    },
+    {
+      "builder": "objectRetention",
+      "caseName": "delete-eligible",
+      "implementations": ["rust", "ts"],
+      "action": "mark-object-retention-state",
+      "input": {
+        "objectKey": "packs_pk_retention",
+        "retentionState": "delete-eligible"
+      },
+      "expectedSubject": "objectKey=packs_pk_retention\nretentionState=delete-eligible"
+    },
+    {
+      "builder": "objectPointer",
+      "caseName": "source-pack",
+      "implementations": ["rust", "ts"],
+      "action": "fragment",
+      "input": {
+        "objectKey": "packs_pk_source",
+        "kind": "source-pack",
+        "byteLength": 4,
+        "contentId": "cid_source",
+        "hash": "hash_source",
+        "keyEpoch": 1
+      },
+      "expectedSubject": "packs_pk_source:source-pack:4:hash_source:1:cid_source"
+    },
+    {
+      "builder": "objectPointer",
+      "caseName": "content-id-variant",
+      "implementations": ["rust", "ts"],
+      "action": "fixture-only",
+      "input": {
+        "objectKey": "packs_pk_source",
+        "kind": "source-pack",
+        "byteLength": 4,
+        "contentId": "cid_source_variant",
+        "hash": "hash_source",
+        "keyEpoch": 1
+      },
+      "expectedSubject": "packs_pk_source:source-pack:4:hash_source:1:cid_source_variant"
+    },
+    {
+      "builder": "objectPointer",
+      "caseName": "large-number",
+      "implementations": ["rust", "ts"],
+      "action": "fragment",
+      "input": {
+        "objectKey": "packs_pk_large",
+        "kind": "overlay-pack",
+        "byteLength": 9007199254740991,
+        "contentId": "cid_large",
+        "hash": "hash_large",
+        "keyEpoch": 0
+      },
+      "expectedSubject": "packs_pk_large:overlay-pack:9007199254740991:hash_large:0:cid_large"
+    },
+    {
+      "builder": "metadataBindings",
+      "caseName": "bounded-sidecar",
+      "implementations": ["rust", "ts"],
+      "action": "commit-metadata-bindings",
+      "input": {
+        "bindings": [
+          {
+            "logicalId": "nsp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "recordKind": "namespace-page",
+            "object": {
+              "objectKey": "metadata_mp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "kind": "snapshot-metadata-page",
+              "byteLength": 321,
+              "contentId": "nsp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "hash": "b3_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "keyEpoch": 7
+            },
+            "sidecar": {
+              "childLogicalIds": ["ctl_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],
+              "directObjectKeys": ["packs_pk_a"],
+              "digest": "b3_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            }
+          }
+        ]
+      },
+      "expectedSubject": "bindings.count=1\nbindings.0.length=474\nbindings.0.value=nsp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:namespace-page:metadata_mp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:snapshot-metadata-page:321:b3_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:7:nsp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:b3_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:ctl_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd:packs_pk_a"
+    },
+    {
+      "builder": "resolveMetadataBindings",
+      "caseName": "two-logical-ids",
+      "implementations": ["rust", "ts"],
+      "action": "resolve-metadata-bindings",
+      "input": {
+        "logicalIds": [
+          "nsp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ctl_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ]
+      },
+      "expectedSubject": "logicalIds.count=2\nlogicalIds.0.length=68\nlogicalIds.0.value=nsp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nlogicalIds.1.length=68\nlogicalIds.1.value=ctl_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "builder": "snapshotRoot",
+      "caseName": "namespace-and-extra-root",
+      "implementations": ["rust", "ts"],
+      "action": "commit-snapshot-root",
+      "input": {
+        "snapshotId": "snap_root",
+        "manifestId": "manifest_root",
+        "manifestObject": {
+          "objectKey": "manifests_mf_root",
+          "kind": "snapshot-manifest",
+          "byteLength": 88,
+          "contentId": "cid_manifest_root",
+          "hash": "b3_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "keyEpoch": 4
+        },
+        "namespaceRootId": "nsp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "extraRootLogicalIds": ["ctl_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"]
+      },
+      "expectedSubject": "snapshotId=snap_root\nmanifestId=manifest_root\nmanifestObject=manifests_mf_root:snapshot-manifest:88:b3_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:4:cid_manifest_root\nnamespaceRootId=nsp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nextraRootLogicalIds.count=1\nextraRootLogicalIds.0.length=68\nextraRootLogicalIds.0.value=ctl_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "builder": "objectMetadata",
+      "caseName": "locator-index",
+      "implementations": ["rust", "ts"],
+      "action": "commit-uploaded-object-metadata",
+      "input": {
+        "objectKey": "indexes_ix_locator_meta",
+        "kind": "locator-index",
+        "byteLength": 8,
+        "contentId": "cid_locator_meta",
+        "hash": "hash_locator_meta",
+        "keyEpoch": 3
+      },
+      "expectedSubject": "object=indexes_ix_locator_meta:locator-index:8:hash_locator_meta:3:cid_locator_meta"
+    },
+    {
+      "builder": "snapshotRootQuery",
+      "caseName": "snapshot",
+      "implementations": ["rust", "ts"],
+      "action": "get-snapshot-root",
+      "input": {
+        "snapshotId": "snap_manifest_pointer"
+      },
+      "expectedSubject": "snapshotId=snap_manifest_pointer"
+    },
+    {
+      "builder": "headObjectMetadata",
+      "caseName": "raw-object-key",
+      "implementations": ["rust", "ts"],
+      "action": "head-object-metadata",
+      "input": {
+        "objectKey": "packs_pk_raw_passthrough"
+      },
+      "expectedSubject": "packs_pk_raw_passthrough"
+    },
+    {
+      "builder": "workViewCreate",
+      "caseName": "separator-and-unicode",
+      "implementations": ["rust", "ts"],
+      "action": "create-work-view",
+      "input": {
+        "workViewId": "work_1",
+        "projectId": "project_1",
+        "name": "name=alpha:beta",
+        "visiblePath": ".work/caf\u00e9-\u65e5\u672c\u8a9e",
+        "baseSnapshotId": "snap_base",
+        "baseWorkspaceVersion": 0
+      },
+      "expectedSubject": "workViewId=work_1\nprojectId=project_1\nname=name=alpha:beta\nvisiblePath=.work/caf\u00e9-\u65e5\u672c\u8a9e\nbaseSnapshotId=snap_base\nbaseWorkspaceVersion=0\nexpiresAt.present=false\nexpiresAt.value=\nretainUntil.present=false\nretainUntil.value="
+    },
+    {
+      "builder": "workViewCreate",
+      "caseName": "populated-optionals",
+      "implementations": ["rust", "ts"],
+      "action": "create-work-view",
+      "input": {
+        "workViewId": "work_2",
+        "projectId": "project_1",
+        "name": "with optionals",
+        "visiblePath": ".work/optionals",
+        "baseSnapshotId": "snap_base",
+        "baseWorkspaceVersion": 9,
+        "expiresAt": "2026-07-04T12:00:00Z",
+        "retainUntil": "2026-07-05T12:00:00Z"
+      },
+      "expectedSubject": "workViewId=work_2\nprojectId=project_1\nname=with optionals\nvisiblePath=.work/optionals\nbaseSnapshotId=snap_base\nbaseWorkspaceVersion=9\nexpiresAt.present=true\nexpiresAt.value=2026-07-04T12:00:00Z\nretainUntil.present=true\nretainUntil.value=2026-07-05T12:00:00Z"
+    },
+    {
+      "builder": "workViewCreate",
+      "caseName": "present-empty-optionals",
+      "implementations": ["rust", "ts"],
+      "action": "create-work-view",
+      "input": {
+        "workViewId": "work_empty",
+        "projectId": "project_1",
+        "name": "empty optionals",
+        "visiblePath": ".work/empty-optionals",
+        "baseSnapshotId": "snap_base",
+        "baseWorkspaceVersion": 10,
+        "expiresAt": "",
+        "retainUntil": ""
+      },
+      "expectedSubject": "workViewId=work_empty\nprojectId=project_1\nname=empty optionals\nvisiblePath=.work/empty-optionals\nbaseSnapshotId=snap_base\nbaseWorkspaceVersion=10\nexpiresAt.present=true\nexpiresAt.value=\nretainUntil.present=true\nretainUntil.value="
+    },
+    {
+      "builder": "workViewLifecycle",
+      "caseName": "review-ready",
+      "implementations": ["rust", "ts"],
+      "action": "update-work-view-lifecycle",
+      "input": {
+        "workViewId": "work_1",
+        "lifecycle": "review-ready"
+      },
+      "expectedSubject": "workViewId=work_1\nlifecycle=review-ready"
+    },
+    {
+      "builder": "workViewUpdate",
+      "caseName": "all-fields",
+      "implementations": ["ts"],
+      "action": "update-work-view",
+      "input": {
+        "workViewId": "work_1",
+        "expectedVersion": 0,
+        "eventKind": "work.review_ready",
+        "expiresAt": "t000000000123",
+        "lifecycleState": "review-ready",
+        "retainUntil": "2026-07-04T12:00:00Z",
+        "reviewReadyAt": "2026-07-03T13:00:00Z"
+      },
+      "expectedSubject": "workViewId=work_1\nexpectedVersion=0\neventKind.present=true\neventKind.value=work.review_ready\nexpiresAt.present=true\nexpiresAt.value=t000000000123\nlifecycleState.present=true\nlifecycleState.value=review-ready\nretainUntil.present=true\nretainUntil.value=2026-07-04T12:00:00Z\nreviewReadyAt.present=true\nreviewReadyAt.value=2026-07-03T13:00:00Z"
+    },
+    {
+      "builder": "workViewUpdate",
+      "caseName": "optionals-omitted",
+      "implementations": ["ts"],
+      "action": "update-work-view",
+      "input": {
+        "workViewId": "work_1",
+        "expectedVersion": 1
+      },
+      "expectedSubject": "workViewId=work_1\nexpectedVersion=1\neventKind.present=false\neventKind.value=\nexpiresAt.present=false\nexpiresAt.value=\nlifecycleState.present=false\nlifecycleState.value=\nretainUntil.present=false\nretainUntil.value=\nreviewReadyAt.present=false\nreviewReadyAt.value="
+    },
+    {
+      "builder": "workViewUpdate",
+      "caseName": "present-empty-optionals",
+      "implementations": ["ts"],
+      "action": "update-work-view",
+      "input": {
+        "workViewId": "work_empty",
+        "expectedVersion": 2,
+        "expiresAt": "",
+        "retainUntil": "",
+        "reviewReadyAt": ""
+      },
+      "expectedSubject": "workViewId=work_empty\nexpectedVersion=2\neventKind.present=false\neventKind.value=\nexpiresAt.present=true\nexpiresAt.value=\nlifecycleState.present=false\nlifecycleState.value=\nretainUntil.present=true\nretainUntil.value=\nreviewReadyAt.present=true\nreviewReadyAt.value="
+    },
+    {
+      "builder": "workViewOverlay",
+      "caseName": "large-overlay-pointer",
+      "implementations": ["rust", "ts"],
+      "action": "commit-work-view-overlay",
+      "input": {
+        "workViewId": "work_1",
+        "expectedOverlayVersion": 0,
+        "overlayObject": {
+          "objectKey": "packs_pk_large",
+          "kind": "overlay-pack",
+          "byteLength": 9007199254740991,
+          "contentId": "cid_large",
+          "hash": "hash_large",
+          "keyEpoch": 0
+        }
+      },
+      "expectedSubject": "workViewId=work_1\nexpectedOverlayVersion=0\noverlayObject=packs_pk_large:overlay-pack:9007199254740991:hash_large:0:cid_large"
+    },
+    {
+      "builder": "workViewList",
+      "caseName": "explicit-false",
+      "implementations": ["rust", "ts"],
+      "action": "list-work-views",
+      "input": {
+        "includeAll": false
+      },
+      "expectedSubject": "includeAll=false"
+    },
+    {
+      "builder": "workViewList",
+      "caseName": "explicit-true",
+      "implementations": ["rust", "ts"],
+      "action": "list-work-views",
+      "input": {
+        "includeAll": true
+      },
+      "expectedSubject": "includeAll=true"
+    },
+    {
+      "builder": "workViewList",
+      "caseName": "ts-omitted-default",
+      "implementations": ["ts"],
+      "action": "list-work-views",
+      "input": {},
+      "expectedSubject": "includeAll=false"
+    },
+    {
+      "builder": "workViewRestore",
+      "caseName": "work-view",
+      "implementations": ["rust", "ts"],
+      "action": "restore-work-view",
+      "input": {
+        "workViewId": "work_1"
+      },
+      "expectedSubject": "workViewId=work_1"
+    },
+    {
+      "builder": "leaseCreate",
+      "caseName": "explicit-provisional-session",
+      "implementations": ["rust", "ts"],
+      "action": "create-lease",
+      "input": {
+        "leaseId": "lease_1",
+        "projectId": "project_1",
+        "writeTargetMode": "work-view",
+        "workViewId": "work_1",
+        "baseSnapshotId": "snap_base",
+        "taskLabel": "fix target bug",
+        "sessionState": "provisional",
+        "statusCode": "pending",
+        "expiresAt": "t000000000123"
+      },
+      "expectedSubject": "leaseId=lease_1\nprojectId=project_1\ntargetDeviceRef=\noriginDeviceRef=\nwriteTargetMode=work-view\nworkViewId=work_1\nbaseSnapshotId=snap_base\ntaskLabel=fix target bug\nsessionState=provisional\nstatusCode=pending\nexpiresAt=t000000000123"
+    },
+    {
+      "builder": "leaseCreate",
+      "caseName": "explicit-defaults-no-pointers",
+      "implementations": ["rust", "ts"],
+      "action": "create-lease",
+      "input": {
+        "leaseId": "lease_defaults",
+        "projectId": "project_1",
+        "writeTargetMode": "direct",
+        "baseSnapshotId": "snap_base",
+        "sessionState": "open",
+        "statusCode": "ok",
+        "expiresAt": "t000000000123"
+      },
+      "expectedSubject": "leaseId=lease_defaults\nprojectId=project_1\ntargetDeviceRef=\noriginDeviceRef=\nwriteTargetMode=direct\nworkViewId=\nbaseSnapshotId=snap_base\ntaskLabel=\nsessionState=open\nstatusCode=ok\nexpiresAt=t000000000123"
+    },
+    {
+      "builder": "leaseCreate",
+      "caseName": "ts-omitted-defaults",
+      "implementations": ["ts"],
+      "action": "create-lease",
+      "input": {
+        "leaseId": "lease_defaults",
+        "projectId": "project_1",
+        "writeTargetMode": "direct",
+        "baseSnapshotId": "snap_base",
+        "statusCode": "ok",
+        "expiresAt": "t000000000123"
+      },
+      "expectedSubject": "leaseId=lease_defaults\nprojectId=project_1\ntargetDeviceRef=\noriginDeviceRef=\nwriteTargetMode=direct\nworkViewId=\nbaseSnapshotId=snap_base\ntaskLabel=\nsessionState=open\nstatusCode=ok\nexpiresAt=t000000000123"
+    },
+    {
+      "builder": "leaseUpdate",
+      "caseName": "optionals-omitted",
+      "implementations": ["rust", "ts"],
+      "action": "update-lease",
+      "input": {
+        "leaseId": "lease_1",
+        "expectedVersion": 0
+      },
+      "expectedSubject": "leaseId=lease_1\nexpectedVersion=0\neventKind=\nsessionState=\nstatusCode="
+    },
+    {
+      "builder": "leaseUpdate",
+      "caseName": "all-fields",
+      "implementations": ["rust", "ts"],
+      "action": "update-lease",
+      "input": {
+        "leaseId": "lease_1",
+        "expectedVersion": 2,
+        "eventKind": "lease.review_ready",
+        "sessionState": "completed",
+        "statusCode": "done"
+      },
+      "expectedSubject": "leaseId=lease_1\nexpectedVersion=2\neventKind=lease.review_ready\nsessionState=completed\nstatusCode=done"
+    },
+    {
+      "builder": "leaseList",
+      "caseName": "constant",
+      "implementations": ["rust", "ts"],
+      "action": "list-leases",
+      "input": {},
+      "expectedSubject": "compact=true"
+    },
+    {
+      "builder": "recoveryEnvelopeCreate",
+      "caseName": "raw-envelope-id",
+      "implementations": ["rust", "ts"],
+      "action": "create-recovery-envelope",
+      "input": {
+        "envelopeId": "recovery_env_1",
+        "ciphertext": "recovery_env_1:ciphertext",
+        "fingerprint": "recovery_env_1:fingerprint",
+        "recoveryProofVerifier": "recovery_env_1:verifier"
+      },
+      "expectedSubject": "envelopeId=recovery_env_1\nfingerprint=recovery_env_1:fingerprint\nrecoveryProofVerifier=recovery_env_1:verifier\nciphertextHash=sha256:a7af2b5ab1bdc57eefc6b06577669ff8dbdacc080ffb70af80d36bedc10c1070"
+    },
+    {
+      "builder": "recoveryEnvelopeVerify",
+      "caseName": "raw-envelope-id",
+      "implementations": ["rust", "ts"],
+      "action": "verify-recovery-envelope",
+      "input": {
+        "envelopeId": "recovery_env_1"
+      },
+      "expectedSubject": "envelopeId=recovery_env_1"
+    },
+    {
+      "builder": "recoveryEnvelopeRotate",
+      "caseName": "raw-envelope-id",
+      "implementations": ["rust", "ts"],
+      "action": "rotate-recovery-envelope",
+      "input": {
+        "envelopeId": "recovery_env_2",
+        "ciphertext": "recovery_env_2:ciphertext",
+        "fingerprint": "recovery_env_2:fingerprint",
+        "recoveryProofVerifier": "recovery_env_2:verifier"
+      },
+      "expectedSubject": "envelopeId=recovery_env_2\nfingerprint=recovery_env_2:fingerprint\nrecoveryProofVerifier=recovery_env_2:verifier\nciphertextHash=sha256:0bc5fd7a8733cb205c477ad4849c9a15d9b2800273acac85bd05853d4aafe337"
+    },
+    {
+      "builder": "recoveryEnvelopeRevoke",
+      "caseName": "raw-envelope-id",
+      "implementations": ["rust", "ts"],
+      "action": "revoke-recovery-envelope",
+      "input": {
+        "envelopeId": "recovery_env_2"
+      },
+      "expectedSubject": "envelopeId=recovery_env_2"
+    }
+  ]
+}

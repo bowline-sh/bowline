@@ -5,7 +5,7 @@ import type {
   WorkspaceId,
   WorkViewId,
 } from "./ids";
-import type { SafeAction, WorkspaceStatus } from "./status";
+import type { RepairCommand, WorkspaceStatus } from "./status";
 import type { CommandOutputBase } from "./commands";
 
 export const WORK_VIEW_LIFECYCLES = [
@@ -91,6 +91,7 @@ export type WorkDiffEntry = {
 
 export const WORK_COMMAND_ACTIONS = [
   "created",
+  "reused",
   "listed",
   "diffed",
   "review-ready",
@@ -102,44 +103,48 @@ export const WORK_COMMAND_ACTIONS = [
 ] as const;
 export type WorkCommandAction = (typeof WORK_COMMAND_ACTIONS)[number];
 
-export type WorkonCommandOutput = CommandOutputBase<"workon"> & {
-  readonly action: "created";
+export type WorkCreateCommandOutput = CommandOutputBase<"work create"> & {
+  readonly action: "created" | "reused";
   readonly workView: WorkView;
   readonly status: WorkspaceStatus;
-  readonly nextActions: readonly SafeAction[];
+  readonly nextActions: readonly RepairCommand[];
 };
 
-export type WorkListCommandOutput = CommandOutputBase<"work"> & {
+export type WorkListCommandOutput = CommandOutputBase<"work list"> & {
   readonly action: "listed";
   readonly workspaceId: WorkspaceId;
   readonly workViews: readonly WorkView[];
   readonly includeHidden: boolean;
   readonly status: WorkspaceStatus;
-  readonly nextActions: readonly SafeAction[];
+  readonly nextActions: readonly RepairCommand[];
 };
 
-export type WorkDiffCommandOutput = CommandOutputBase<"review" | "diff"> & {
+export type WorkDiffCommandOutput = CommandOutputBase<
+  "work review" | "work diff"
+> & {
   readonly action: "diffed";
   readonly workView: WorkView;
   readonly changes: readonly WorkDiffEntry[];
   readonly status: WorkspaceStatus;
-  readonly nextActions: readonly SafeAction[];
+  readonly nextActions: readonly RepairCommand[];
 };
 
 export type WorkLifecycleCommandOutput = CommandOutputBase<
-  "accept" | "discard" | "restore"
+  "work accept" | "work discard" | "work restore"
 > & {
   readonly action: "accepted" | "review-ready" | "discarded" | "restored";
+  readonly paths?: readonly string[];
+  readonly partial?: boolean;
   readonly workView: WorkView;
   readonly status: WorkspaceStatus;
-  readonly nextActions: readonly SafeAction[];
+  readonly nextActions: readonly RepairCommand[];
 };
 
-export type WorkCleanupCommandOutput = CommandOutputBase<"cleanup"> & {
+export type WorkCleanupCommandOutput = CommandOutputBase<"work cleanup"> & {
   readonly action: "cleanup-previewed" | "cleanup-applied";
   readonly workspaceId: WorkspaceId;
   readonly previewedPaths: readonly string[];
   readonly deletedPaths: readonly string[];
   readonly status: WorkspaceStatus;
-  readonly nextActions: readonly SafeAction[];
+  readonly nextActions: readonly RepairCommand[];
 };

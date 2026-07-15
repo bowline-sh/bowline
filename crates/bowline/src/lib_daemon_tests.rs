@@ -2,44 +2,209 @@ use crate::runtime;
 
 use super::{Command, DaemonCommand, WorkspaceSelection, parse_args, redact_setup_text};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
 
 #[test]
 fn daemon_start_reuses_only_usable_workspace_daemon() {
     let idle = super::Handshake {
         daemon_version: "test".to_string(),
-        sync_json: Some(
-            r#"{"state":"idle","workspaceId":"ws_code","snapshotId":"snap_1","version":1}"#
+        status_json:
+            r#"{"workspaceId":"ws_code","status":{"level":"healthy","attentionItems":[]}}"#
                 .to_string(),
-        ),
     };
     let limited = super::Handshake {
         daemon_version: "test".to_string(),
-        sync_json: Some(
-            r#"{"state":"limited","workspaceId":"ws_code","unavailableBecause":"missing token"}"#
-                .to_string(),
-        ),
+        status_json: r#"{"workspaceId":"ws_code","status":{"level":"limited","attentionItems":["missing token"]}}"#.to_string(),
     };
     let degraded = super::Handshake {
         daemon_version: "test".to_string(),
-        sync_json: Some(r#"{"state":"degraded","workspaceId":"ws_code"}"#.to_string()),
+        status_json:
+            r#"{"workspaceId":"ws_code","status":{"level":"attention","attentionItems":[]}}"#
+                .to_string(),
     };
 
-    assert!(super::handshake_sync_workspace_ready_for_start(
-        &idle, "ws_code"
-    ));
-    assert!(!super::handshake_sync_workspace_ready_for_start(
-        &idle, "ws_other"
-    ));
-    assert!(!super::handshake_sync_workspace_ready_for_start(
-        &limited, "ws_code"
-    ));
-    assert!(!super::handshake_sync_workspace_ready_for_start(
-        &degraded, "ws_code"
-    ));
+    assert_eq!(
+        super::handshake_start_status(&idle, "ws_code"),
+        super::DaemonStartHandshakeStatus::Ready
+    );
+    assert_eq!(
+        super::handshake_start_status(&idle, "ws_other"),
+        super::DaemonStartHandshakeStatus::WorkspaceMismatch
+    );
+    assert_eq!(
+        super::handshake_start_status(&limited, "ws_code"),
+        super::DaemonStartHandshakeStatus::Degraded {
+            state: bowline_core::commands::DaemonSyncState::Limited,
+            reason: "missing token".to_string()
+        }
+    );
+    assert_eq!(
+        super::handshake_start_status(&degraded, "ws_code"),
+        super::DaemonStartHandshakeStatus::Degraded {
+            state: bowline_core::commands::DaemonSyncState::Degraded,
+            reason: "sync state is degraded".to_string()
+        }
+    );
+    assert_eq!(
+        super::handshake_start_status(
+            &super::Handshake {
+                daemon_version: "test".to_string(),
+                status_json: "{}".to_string(),
+            },
+            "ws_code"
+        ),
+        super::DaemonStartHandshakeStatus::Degraded {
+            state: bowline_core::commands::DaemonSyncState::Unclassified,
+            reason: "workspace status is unavailable".to_string()
+        }
+    );
+}
+
+fn assert_daemon_start_does_not_shutdown_degraded_daemon() {
+    let temp = tempfile_dir("bowline-degraded-daemon-start");
+    let socket = temp.join("daemon.sock");
+    let workspace_id = super::daemon_workspace_id_for_start()
+        .unwrap_or_else(|_| runtime::active_workspace_id())
+        .as_str()
+        .to_string();
+    let ready = Arc::new(AtomicBool::new(false));
+    let shutdown_seen = Arc::new(AtomicBool::new(false));
+    let thread_ready = Arc::clone(&ready);
+    let thread_shutdown_seen = Arc::clone(&shutdown_seen);
+    let thread_socket = socket.clone();
+
+    let handle = std::thread::spawn(move || {
+        let listener = std::os::unix::net::UnixListener::bind(&thread_socket)
+            .expect("bind fake daemon socket");
+        listener
+            .set_nonblocking(true)
+            .expect("set fake daemon nonblocking");
+        thread_ready.store(true, Ordering::SeqCst);
+        let started = Instant::now();
+        let mut hello_seen = false;
+        while started.elapsed() < Duration::from_secs(2) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream
+                        .set_nonblocking(false)
+                        .expect("make accepted daemon socket blocking");
+                    use bowline_core::wire::generated::{
+                        DaemonClientHello, DaemonRpcRequest, DaemonRpcResponse, DaemonServerHello,
+                        MACHINE_CONTRACT_VERSION,
+                    };
+                    let codec = bowline_daemon_rpc::FrameCodec::default();
+                    codec
+                        .read_magic(&mut stream)
+                        .expect("read daemon RPC magic");
+                    let _: DaemonClientHello = codec.read(&mut stream).expect("read client hello");
+                    codec
+                        .write(
+                            &mut stream,
+                            &DaemonServerHello {
+                                protocol_version: bowline_daemon_rpc::DAEMON_RPC_PROTOCOL_VERSION,
+                                contract_version: MACHINE_CONTRACT_VERSION,
+                                schema_hash: bowline_core::wire::generated::WIRE_SCHEMA_HASH
+                                    .to_string(),
+                                daemon_version: "test".to_string(),
+                                capabilities: vec![
+                                    "daemon.info".to_string(),
+                                    "daemon.shutdown".to_string(),
+                                    "status.snapshot".to_string(),
+                                ],
+                                instance_id: "fake-daemon".to_string(),
+                            },
+                        )
+                        .expect("write server hello");
+                    let request: DaemonRpcRequest =
+                        codec.read(&mut stream).expect("read daemon request");
+                    if request.method == "daemon.shutdown" {
+                        thread_shutdown_seen.store(true, Ordering::SeqCst);
+                        codec
+                            .write(
+                                &mut stream,
+                                &DaemonRpcResponse {
+                                    request_id: request.request_id,
+                                    result: Some(serde_json::json!({"status": "stopping"})),
+                                    error: None,
+                                },
+                            )
+                            .expect("write shutdown response");
+                    } else {
+                        assert_eq!(request.method, "daemon.info");
+                        hello_seen = true;
+                        let result = serde_json::json!({
+                            "daemonVersion": "test",
+                        });
+                        codec
+                            .write(
+                                &mut stream,
+                                &DaemonRpcResponse {
+                                    request_id: request.request_id,
+                                    result: Some(result),
+                                    error: None,
+                                },
+                            )
+                            .expect("write daemon info response");
+                        let status_request: DaemonRpcRequest =
+                            codec.read(&mut stream).expect("read status request");
+                        assert_eq!(status_request.method, "status.getSnapshot");
+                        let mut snapshot: serde_json::Value = serde_json::from_str(include_str!(
+                            "../../../tests/contracts/status/limited.json"
+                        ))
+                        .expect("shared status fixture");
+                        snapshot["workspaceId"] = serde_json::Value::String(workspace_id.clone());
+                        codec
+                            .write(
+                                &mut stream,
+                                &DaemonRpcResponse {
+                                    request_id: status_request.request_id,
+                                    result: Some(serde_json::json!({
+                                        "instanceId": "fake-daemon",
+                                        "sequence": 1,
+                                        "snapshot": snapshot,
+                                    })),
+                                    error: None,
+                                },
+                            )
+                            .expect("write status snapshot response");
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if hello_seen && started.elapsed() > Duration::from_millis(250) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("fake daemon accept failed: {error}"),
+            }
+        }
+    });
+
+    let wait_started = Instant::now();
+    while (!ready.load(Ordering::SeqCst) || !socket.exists())
+        && wait_started.elapsed() < Duration::from_secs(3)
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(ready.load(Ordering::SeqCst));
+    assert!(socket.exists());
+
+    let code = super::print_daemon_start(&socket, false);
+
+    handle.join().expect("fake daemon thread");
+    assert_eq!(code, std::process::ExitCode::SUCCESS);
+    assert!(!shutdown_seen.load(Ordering::SeqCst));
+    let _ = std::fs::remove_dir_all(temp);
 }
 
 #[test]
 fn daemon_start_removes_socket_only_after_connection_refused() {
+    assert_daemon_start_does_not_shutdown_degraded_daemon();
+
     let temp = tempfile_dir("bowline-stale-daemon-socket");
     let socket = temp.join("daemon.sock");
     {
@@ -73,21 +238,30 @@ fn parses_daemon_status_socket() {
 
     assert!(cli.json);
     assert_eq!(cli.socket, PathBuf::from("/tmp/bowline-test.sock"));
-    assert_eq!(cli.command, Command::Daemon(DaemonCommand::Status));
+    assert_eq!(
+        cli.command.expect("parsed command"),
+        Command::Daemon(DaemonCommand::Status)
+    );
 }
 
 #[test]
 fn parses_daemon_service_lifecycle_commands() {
     assert_eq!(
-        parse_args(["daemon", "install"]).command,
+        parse_args(["daemon", "install"])
+            .command
+            .expect("parsed command"),
         Command::Daemon(DaemonCommand::Install)
     );
     assert_eq!(
-        parse_args(["daemon", "restart"]).command,
+        parse_args(["daemon", "restart"])
+            .command
+            .expect("parsed command"),
         Command::Daemon(DaemonCommand::Restart)
     );
     assert_eq!(
-        parse_args(["daemon", "uninstall"]).command,
+        parse_args(["daemon", "uninstall"])
+            .command
+            .expect("parsed command"),
         Command::Daemon(DaemonCommand::Uninstall)
     );
 }
@@ -95,16 +269,15 @@ fn parses_daemon_service_lifecycle_commands() {
 #[test]
 fn parses_diagnostics_collect() {
     assert_eq!(
-        parse_args(["diagnostics", "collect", "--root", "~/Code"]).command,
+        parse_args(["diagnostics", "collect", "--root", "~/Code"])
+            .command
+            .expect("parsed command"),
         Command::DiagnosticsCollect(WorkspaceSelection {
             root: "~/Code".to_string(),
             project: None,
         })
     );
-    assert!(matches!(
-        parse_args(["diagnostics"]).command,
-        Command::UsageError { .. }
-    ));
+    assert!(parse_args(["diagnostics"]).command.is_err());
 }
 
 #[test]
@@ -346,7 +519,7 @@ fn daemon_status_json_keeps_service_top_level() {
 
     let running: serde_json::Value = serde_json::from_str(&super::daemon_status_json(
         Path::new("/tmp/bowline.sock"),
-        "running",
+        super::DaemonProcessState::Running,
         Some("daemon-test"),
         Some("{\"state\":\"ready\"}"),
         Some(&service),
@@ -354,7 +527,7 @@ fn daemon_status_json_keeps_service_top_level() {
     .expect("running status json");
     let stopped: serde_json::Value = serde_json::from_str(&super::daemon_status_json(
         Path::new("/tmp/bowline.sock"),
-        "stopped",
+        super::DaemonProcessState::Stopped,
         None,
         None,
         Some(&service),

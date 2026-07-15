@@ -1,195 +1,224 @@
 use super::*;
 
-pub(super) fn parse_positionals(args: &[String]) -> Command {
-    match args {
-        [] => Command::Help(None),
-        [command] if command == "help" => Command::Help(None),
-        [command, rest @ ..] if command == "help" => Command::Help(Some(rest.to_vec())),
-        [command] if command == "version" => Command::Version,
-        [command] if command == "contract" => Command::Contract,
-        [command, rest @ ..] if command == "update" => parse_update_command(rest),
-        [command, rest @ ..] if command == "login" => parse_login_command(rest),
-        [command] if command == "logout" => Command::Logout,
-        [command, rest @ ..] if command == "logout" => usage_error(
-            CommandName::Logout,
-            format!("unexpected bowline logout argument `{}`", rest[0]),
-        ),
-        [command, rest @ ..] if command == "approve" => parse_approve_command(rest),
-        [command, rest @ ..] if command == "deny" => parse_deny_command(rest),
-        [command, rest @ ..] if command == "revoke" => parse_revoke_command(rest),
-        [command, rest @ ..] if command == "recover" => parse_recovery_command(rest),
-        [command, rest @ ..] if command == "init" => parse_init_command(rest),
-        [command, rest @ ..] if command == "setup" => parse_setup_command(rest),
-        [command, rest @ ..] if command == "prewarm" => parse_prewarm_command(rest),
-        [command, rest @ ..] if command == "status" => parse_status_command(rest),
-        [command, rest @ ..] if command == "actions" => parse_actions_command(rest),
-        [command, rest @ ..] if command == "tui" => parse_tui_command(rest),
-        [command, rest @ ..] if command == "search" => parse_search_command(rest),
-        [command, rest @ ..] if command == "symbols" => parse_symbols_command(rest),
-        [command, rest @ ..] if command == "explain" => parse_explain_command(rest),
-        [command, rest @ ..] if command == "devices" => parse_devices_command(rest),
-        [command, rest @ ..] if command == "events" => parse_events_command(rest),
-        [command, rest @ ..] if command == "workon" => parse_workon_command(rest),
-        [command, rest @ ..] if command == "work" => parse_work_command(rest),
-        [command, rest @ ..] if command == "review" => parse_review_command(rest),
-        [command, rest @ ..] if command == "diff" => parse_work_selector_command(
-            CommandName::Diff,
-            rest,
-            "bowline diff requires a work-view id or name",
-        ),
-        [command, rest @ ..] if command == "accept" => parse_work_selector_command(
-            CommandName::Accept,
-            rest,
-            "bowline accept requires a work-view id or name",
-        ),
-        [command, rest @ ..] if command == "discard" => parse_work_selector_command(
-            CommandName::Discard,
-            rest,
-            "bowline discard requires a work-view id or name",
-        ),
-        [command, rest @ ..] if command == "restore" => parse_work_selector_command(
-            CommandName::Restore,
-            rest,
-            "bowline restore requires a work-view id or name",
-        ),
-        [command, rest @ ..] if command == "cleanup" => parse_cleanup_command(rest),
-        [command, subcommand, rest @ ..] if command == "dev" && subcommand == "cloud-spike" => {
-            parse_dev_cloud_spike_command(rest)
+pub(super) fn construct_command(
+    command: CommandName,
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    match command {
+        CommandName::Help => Ok(Command::Help(
+            (!values.positionals().is_empty()).then(|| values.positionals().to_vec()),
+        )),
+        CommandName::Version => no_argument_command(command, values, Command::Version),
+        CommandName::Contract => parse_contract_command(values),
+        CommandName::Mcp => parse_mcp_command(values),
+        CommandName::Update => parse_update_command(values),
+        CommandName::Login => parse_login_command(values),
+        CommandName::Logout => no_argument_command(command, values, Command::Logout),
+        CommandName::Approve => parse_approve_command(values),
+        CommandName::Deny => parse_deny_command(values),
+        CommandName::Revoke => parse_revoke_command(values),
+        CommandName::Recover => parse_recovery_command(values),
+        CommandName::Setup => parse_setup_command(values),
+        CommandName::Status => parse_status_command(values),
+        CommandName::Devices | CommandName::DeviceRequest | CommandName::DeviceAccept => {
+            parse_device_command(command, values)
         }
-        [command, ..] if command == "dev" => {
-            usage_error(CommandName::Unknown, "expected `bowline dev cloud-spike`")
+        CommandName::Events => parse_events_command(values),
+        CommandName::History => parse_history_command(values),
+        CommandName::Tui => parse_tui_command(values),
+        CommandName::Resolve => parse_resolve_command(values),
+        CommandName::ForgetLocal => parse_forget_local_command(values),
+        CommandName::Archive => parse_archive_command(values),
+        CommandName::Purge => parse_purge_command(values),
+        CommandName::WorkCreate => parse_work_create_command(values),
+        CommandName::Review => parse_review_command(values),
+        CommandName::Work => parse_work_command(values),
+        CommandName::Diff | CommandName::Accept | CommandName::Discard | CommandName::Restore => {
+            parse_work_selector_command(command, values)
         }
-        [command, rest @ ..] if command == "connect" => parse_connect_command(rest),
-        [command, ..] if command == "bootstrap" => {
-            usage_error(CommandName::Connect, "expected `bowline connect <host>`")
+        CommandName::Cleanup => parse_cleanup_command(values),
+        CommandName::AgentContext
+        | CommandName::AgentPrompt
+        | CommandName::AgentComplete
+        | CommandName::AgentCancel => parse_agent_selector_command(command, values),
+        CommandName::AgentStart => parse_agent_start_command(values),
+        CommandName::AgentExtend => parse_agent_extend_command(values),
+        CommandName::AgentMcpToken => parse_agent_mcp_token_command(values),
+        CommandName::LeaseJoin => parse_lease_join_command(values),
+        CommandName::DaemonStart => {
+            no_argument_command(command, values, Command::Daemon(DaemonCommand::Start))
         }
-        [command, subcommand, rest @ ..] if command == "agent" && subcommand == "start" => {
-            parse_agent_start_command(rest)
+        CommandName::DaemonStop => {
+            no_argument_command(command, values, Command::Daemon(DaemonCommand::Stop))
         }
-        [command, subcommand, rest @ ..] if command == "agent" && subcommand == "context" => {
-            parse_agent_selector_command(CommandName::AgentContext, rest)
+        CommandName::DaemonStatus => {
+            no_argument_command(command, values, Command::Daemon(DaemonCommand::Status))
         }
-        [command, subcommand, rest @ ..] if command == "agent" && subcommand == "prompt" => {
-            parse_agent_selector_command(CommandName::AgentPrompt, rest)
+        CommandName::DaemonInstall => {
+            no_argument_command(command, values, Command::Daemon(DaemonCommand::Install))
         }
-        [command, subcommand, rest @ ..] if command == "agent" && subcommand == "publish" => {
-            parse_agent_selector_command(CommandName::AgentPublish, rest)
+        CommandName::DaemonRestart => {
+            no_argument_command(command, values, Command::Daemon(DaemonCommand::Restart))
         }
-        [command, subcommand, rest @ ..] if command == "agent" && subcommand == "complete" => {
-            parse_agent_selector_command(CommandName::AgentComplete, rest)
+        CommandName::DaemonUninstall => {
+            no_argument_command(command, values, Command::Daemon(DaemonCommand::Uninstall))
         }
-        [command, subcommand, rest @ ..] if command == "agent" && subcommand == "budget" => {
-            parse_agent_budget_command(rest)
-        }
-        [command, ..] if command == "agent" => usage_error(
-            CommandName::AgentStart,
-            "expected `bowline agent start ...`, `bowline agent context ...`, `bowline agent prompt ...`, `bowline agent publish ...`, `bowline agent complete ...`, or `bowline agent budget ...`",
-        ),
-        [command, rest @ ..] if command == "resolve" => parse_resolve_command(rest),
-        [command, subcommand] if command == "daemon" && subcommand == "start" => {
-            Command::Daemon(DaemonCommand::Start)
-        }
-        [command, subcommand] if command == "daemon" && subcommand == "stop" => {
-            Command::Daemon(DaemonCommand::Stop)
-        }
-        [command, subcommand] if command == "daemon" && subcommand == "status" => {
-            Command::Daemon(DaemonCommand::Status)
-        }
-        [command, subcommand] if command == "daemon" && subcommand == "install" => {
-            Command::Daemon(DaemonCommand::Install)
-        }
-        [command, subcommand] if command == "daemon" && subcommand == "restart" => {
-            Command::Daemon(DaemonCommand::Restart)
-        }
-        [command, subcommand] if command == "daemon" && subcommand == "uninstall" => {
-            Command::Daemon(DaemonCommand::Uninstall)
-        }
-        [command, ..] if command == "daemon" => usage_error(
-            CommandName::DaemonStatus,
-            "expected `bowline daemon start`, `bowline daemon stop`, `bowline daemon status`, `bowline daemon install`, `bowline daemon restart`, or `bowline daemon uninstall`",
-        ),
-        [command, subcommand, rest @ ..] if command == "diagnostics" && subcommand == "collect" => {
-            match parse_selection_only(CommandName::DiagnosticsCollect, "diagnostics collect", rest)
-            {
-                Ok(selection) => Command::DiagnosticsCollect(selection),
-                Err(error) => *error,
+        CommandName::DiagnosticsCollect => {
+            match parse_selection_only(command, command.token(), values) {
+                Ok(selection) => Ok(Command::DiagnosticsCollect(selection)),
+                Err(error) => Err(*error),
             }
         }
-        [command, ..] if command == "diagnostics" => usage_error(
-            CommandName::DiagnosticsCollect,
-            "expected `bowline diagnostics collect`",
-        ),
-        [command, ..] => Command::Unknown(command.clone()),
+        CommandName::Connect => parse_connect_command(values),
+        CommandName::Handoff => parse_handoff_command(values),
+        CommandName::Unknown => Err(ParseError::Unknown(command.token().to_string())),
     }
 }
 
-pub(super) fn parse_update_command(args: &[String]) -> Command {
-    let mut check = false;
-    let mut version = None;
-    let mut index = 0_usize;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--check" => check = true,
-            "--version" => {
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    return usage_error(CommandName::Update, "missing value for --version");
-                };
-                version = Some(value.clone());
-            }
-            value if value.starts_with("--version=") => {
-                version = Some(value.trim_start_matches("--version=").to_string());
-            }
-            unexpected => {
-                return usage_error(
-                    CommandName::Update,
-                    format!("unexpected bowline update argument `{unexpected}`"),
-                );
-            }
-        }
-        index += 1;
+fn no_argument_command(
+    command_name: CommandName,
+    values: &crate::registry::ParsedValues,
+    command: Command,
+) -> Result<Command, ParseError> {
+    match values.positionals() {
+        [] => Ok(command),
+        [unexpected, ..] => usage_error(
+            command_name,
+            format!(
+                "unexpected bowline {} argument `{unexpected}`",
+                command_name.token()
+            ),
+        ),
     }
-
-    Command::Update(UpdateArgs { check, version })
 }
 
-pub(super) fn parse_dev_cloud_spike_command(args: &[String]) -> Command {
-    let mut provider = CloudSpikeProvider::Fake;
-    let mut index = 0_usize;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--provider" => {
-                let Some(value) = args.get(index + 1) else {
-                    return usage_error(CommandName::Unknown, "missing value for --provider");
-                };
-                provider = match value.as_str() {
-                    "fake" => CloudSpikeProvider::Fake,
-                    "hosted" => CloudSpikeProvider::Hosted,
-                    _ => {
-                        return usage_error(
-                            CommandName::Unknown,
-                            "expected --provider fake or --provider hosted",
-                        );
-                    }
-                };
-                index += 2;
-            }
-            flag if flag.starts_with("--") => {
-                return usage_error(
-                    CommandName::Unknown,
-                    format!("unknown bowline dev cloud-spike option `{flag}`"),
-                );
-            }
-            value => {
-                return usage_error(
-                    CommandName::Unknown,
-                    format!("unexpected bowline dev cloud-spike argument `{value}`"),
-                );
-            }
+fn parse_contract_command(values: &crate::registry::ParsedValues) -> Result<Command, ParseError> {
+    let topic = values.positionals();
+    if values.flag("--summary") {
+        if topic.is_empty() {
+            Ok(Command::Contract(ContractMode::Summary))
+        } else {
+            usage_error(
+                CommandName::Contract,
+                format!(
+                    "--summary cannot be combined with contract topic `{}`",
+                    topic.join(" ")
+                ),
+            )
         }
+    } else if topic.is_empty() {
+        Ok(Command::Contract(ContractMode::Full))
+    } else {
+        Ok(Command::Contract(ContractMode::Topic(topic.to_vec())))
+    }
+}
+
+fn parse_mcp_command(values: &crate::registry::ParsedValues) -> Result<Command, ParseError> {
+    if let Some(unexpected) = values.positionals().first() {
+        return usage_error(
+            CommandName::Mcp,
+            format!("unexpected bowline mcp argument `{unexpected}`"),
+        );
     }
 
-    Command::DevCloudSpike(CloudSpikeArgs { provider })
+    Ok(Command::Mcp(McpArgs {
+        lease_id: values.option("--lease").map(str::to_string),
+        token_file: values.option("--token-file").map(str::to_string),
+    }))
+}
+
+pub(super) fn parse_handoff_command(
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    let Some(target) = values.positionals().first() else {
+        return command_usage_error(
+            CommandName::Handoff,
+            "usage_error",
+            "bowline handoff requires a target".to_string(),
+            handoff_usage_actions(),
+        );
+    };
+    if let Some(unexpected) = values.positionals().get(1) {
+        return command_usage_error(
+            CommandName::Handoff,
+            "usage_error",
+            format!("unexpected bowline handoff argument `{unexpected}`"),
+            handoff_usage_actions(),
+        );
+    }
+    let agent = match values.option("--agent") {
+        Some(value) => match parse_handoff_agent(value) {
+            Some(parsed) => Some(parsed),
+            None => {
+                return command_usage_error(
+                    CommandName::Handoff,
+                    "unsupported_agent",
+                    format!("bowline handoff --agent must be codex or claude, got `{value}`"),
+                    handoff_usage_actions(),
+                );
+            }
+        },
+        None => None,
+    };
+    let session = values.option("--session").map(str::to_string);
+    let prompt = values.option("--prompt").map(str::to_string);
+    let prompt_file = values.option("--prompt-file").map(str::to_string);
+    let project = values.option("--project").map(str::to_string);
+
+    if prompt.is_some() && prompt_file.is_some() {
+        return command_usage_error(
+            CommandName::Handoff,
+            "usage_error",
+            "bowline handoff cannot combine --prompt and --prompt-file".to_string(),
+            handoff_usage_actions(),
+        );
+    }
+    if session.is_some() && (prompt.is_some() || prompt_file.is_some()) {
+        return command_usage_error(
+            CommandName::Handoff,
+            "usage_error",
+            "bowline handoff cannot combine --session with prompt launch mode".to_string(),
+            handoff_usage_actions(),
+        );
+    }
+
+    Ok(Command::Handoff(HandoffArgs {
+        target: target.to_string(),
+        agent,
+        session,
+        prompt,
+        prompt_file,
+        project,
+    }))
+}
+
+fn parse_handoff_agent(value: &str) -> Option<HandoffAgent> {
+    match value {
+        "codex" => Some(HandoffAgent::Codex),
+        "claude" => Some(HandoffAgent::Claude),
+        _ => None,
+    }
+}
+
+fn handoff_usage_actions() -> Vec<RepairCommand> {
+    vec![RepairCommand::inspect(
+        "See handoff usage",
+        Some("bowline help handoff".to_string()),
+    )]
+}
+
+pub(super) fn parse_update_command(
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    if let Some(unexpected) = values.positionals().first() {
+        return usage_error(
+            CommandName::Update,
+            format!("unexpected bowline update argument `{unexpected}`"),
+        );
+    }
+
+    Ok(Command::Update(UpdateArgs {
+        check: values.flag("--check"),
+        version: values.option("--version").map(str::to_string),
+    }))
 }

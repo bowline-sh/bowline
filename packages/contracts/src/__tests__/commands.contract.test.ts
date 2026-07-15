@@ -1,16 +1,16 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
-  isAgentBudgetCommandOutput,
+  COMMAND_NAMES,
   isAgentContextCommandOutput,
   isAgentLeaseCreateCommandOutput,
+  isAgentMcpTokenCommandOutput,
   isAgentPromptCommandOutput,
   isAgentToolResult,
-  isActionsCommandOutput,
   isBootstrapSshCommandOutput,
   isCommandErrorOutput,
   isContractCommandOutput,
+  isContractSummaryCommandOutput,
   isDaemonCommandOutput,
   isDaemonServiceOutput,
   isDaemonStatusOutput,
@@ -18,36 +18,45 @@ import {
   isDiagnosticsCollectCommandOutput,
   isDryRunCommandOutput,
   isEventsCommandOutput,
-  isExplainCommandOutput,
   isHelpCommandOutput,
-  isInitCommandOutput,
+  isHandoffCommandOutput,
+  isHandoffInstallReceipt,
+  isHistoryCommandOutput,
   isLoginCommandOutput,
   isLogoutCommandOutput,
-  isPrewarmCommandOutput,
+  isSetupProjectOutput,
+  isScopedContractCommandOutput,
   isRecoveryCommandOutput,
   isResolveCommandOutput,
-  isSearchCommandOutput,
+  isSetupCommandOutput,
   isStatusCommandOutput,
-  isSymbolCommandOutput,
   isUpdateCommandOutput,
   isVersionCommandOutput,
   isWorkCleanupCommandOutput,
   isWorkDiffCommandOutput,
   isWorkLifecycleCommandOutput,
   isWorkListCommandOutput,
-  isWorkonCommandOutput,
+  isWorkCreateCommandOutput,
+  EVENT_SCHEMA_VERSION,
   statusNeedsAttention,
 } from "../index";
+import {
+  isRecord,
+  manifestEntriesFor,
+  readContractFixture,
+} from "./support/contractFixtures";
+import { isStringArray } from "../guard-primitives";
 
 const commandOutputGuards: Record<string, (value: unknown) => boolean> = {
-  ActionsCommandOutput: isActionsCommandOutput,
-  AgentBudgetCommandOutput: isAgentBudgetCommandOutput,
   AgentContextCommandOutput: isAgentContextCommandOutput,
   AgentLeaseCreateCommandOutput: isAgentLeaseCreateCommandOutput,
+  AgentMcpTokenCommandOutput: isAgentMcpTokenCommandOutput,
   AgentPromptCommandOutput: isAgentPromptCommandOutput,
   AgentToolResult: isAgentToolResult,
   BootstrapSshCommandOutput: isBootstrapSshCommandOutput,
+  CommandNames: isStringArray,
   ContractCommandOutput: isContractCommandOutput,
+  ContractSummaryCommandOutput: isContractSummaryCommandOutput,
   DaemonCommandOutput: isDaemonCommandOutput,
   DaemonServiceOutput: isDaemonServiceOutput,
   DaemonStatusOutput: isDaemonStatusOutput,
@@ -55,47 +64,72 @@ const commandOutputGuards: Record<string, (value: unknown) => boolean> = {
   DiagnosticsCollectCommandOutput: isDiagnosticsCollectCommandOutput,
   DryRunCommandOutput: isDryRunCommandOutput,
   EventsCommandOutput: isEventsCommandOutput,
-  ExplainCommandOutput: isExplainCommandOutput,
   HelpCommandOutput: isHelpCommandOutput,
-  InitCommandOutput: isInitCommandOutput,
+  HandoffCommandOutput: isHandoffCommandOutput,
+  HistoryCommandOutput: isHistoryCommandOutput,
   LoginCommandOutput: isLoginCommandOutput,
   LogoutCommandOutput: isLogoutCommandOutput,
-  PrewarmCommandOutput: isPrewarmCommandOutput,
+  SetupProjectOutput: isSetupProjectOutput,
+  ScopedContractCommandOutput: isScopedContractCommandOutput,
   RecoveryCommandOutput: isRecoveryCommandOutput,
   ResolveCommandOutput: isResolveCommandOutput,
-  SearchCommandOutput: isSearchCommandOutput,
+  SetupCommandOutput: isSetupCommandOutput,
   StatusCommandOutput: isStatusCommandOutput,
-  SymbolCommandOutput: isSymbolCommandOutput,
   UpdateCommandOutput: isUpdateCommandOutput,
   VersionCommandOutput: isVersionCommandOutput,
   WorkCleanupCommandOutput: isWorkCleanupCommandOutput,
   WorkDiffCommandOutput: isWorkDiffCommandOutput,
   WorkLifecycleCommandOutput: isWorkLifecycleCommandOutput,
   WorkListCommandOutput: isWorkListCommandOutput,
-  WorkonCommandOutput: isWorkonCommandOutput,
+  WorkCreateCommandOutput: isWorkCreateCommandOutput,
 };
 
 describe("workspace command contracts", () => {
-  it("accepts the shared explain fixture", () => {
-    const fixture = readCommandFixture("explain-env");
+  it("keeps advertised command names in the shared fixture set", () => {
+    const fixture = readContractFixture("command-names.json");
+    expect(isStringArray(fixture)).toBe(true);
+    if (!isStringArray(fixture)) return;
 
-    expect(isExplainCommandOutput(fixture)).toBe(true);
-    if (!isExplainCommandOutput(fixture)) return;
+    // Ordering is presentation-only; serialized command-name membership is the contract.
+    const fixtureNames = new Set(fixture);
+    expect(fixtureNames.size).toBe(fixture.length);
+    expect(new Set(COMMAND_NAMES)).toEqual(fixtureNames);
+  });
 
-    expect(fixture.command).toBe("explain");
-    expect(fixture.mode).toBe("project-env");
-    expect(fixture.summary).not.toContain("API_KEY");
+  it("accepts every command fixture listed in the manifest", () => {
+    for (const entry of manifestEntriesFor("commands")) {
+      expect(entry.format).toBe("json");
+      const guard = commandOutputGuards[entry.kind];
+      expect(
+        guard,
+        `${entry.id} uses an unknown TypeScript decoder`,
+      ).toBeDefined();
+      if (guard === undefined) return;
+
+      expect(guard(readContractFixture(entry.path))).toBe(true);
+    }
   });
 
   it("accepts the shared setup fixture", () => {
     const fixture = readCommandFixture("setup-blocked");
 
-    expect(isPrewarmCommandOutput(fixture)).toBe(true);
-    if (!isPrewarmCommandOutput(fixture)) return;
+    expect(isSetupProjectOutput(fixture)).toBe(true);
+    if (!isSetupProjectOutput(fixture)) return;
 
     expect(fixture.command).toBe("setup");
     expect(fixture.outcome.state).toBe("setup-blocked");
     expect(fixture.outcome.redactedSummary).not.toContain("SECRET_VALUE");
+  });
+
+  it("accepts setup machine output", () => {
+    const fixture = readCommandFixture("setup-machine");
+
+    expect(isSetupCommandOutput(fixture)).toBe(true);
+    if (!isSetupCommandOutput(fixture)) return;
+
+    expect(fixture.command).toBe("setup");
+    expect(fixture.root).toBe("~/Code");
+    expect(fixture.login.status).toBe("account-authenticated");
   });
 
   it("keeps observed-only status as attention-worthy", () => {
@@ -109,11 +143,11 @@ describe("workspace command contracts", () => {
     ).toBe(true);
   });
 
-  it("accepts legacy command names in command errors", () => {
+  it("rejects removed command names in command errors", () => {
     expect(
       isCommandErrorOutput({
         command: "init",
-        contractVersion: 3,
+        contractVersion: 8,
         generatedAt: "2026-06-27T12:00:00Z",
         status: "usage-error",
         error: {
@@ -122,15 +156,16 @@ describe("workspace command contracts", () => {
           recoverability: "user-action",
         },
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("accepts discovery and dry-run command fixtures", () => {
     expect(isHelpCommandOutput(readCommandFixture("help"))).toBe(true);
+    expect(isHistoryCommandOutput(readCommandFixture("history"))).toBe(true);
     expect(isVersionCommandOutput(readCommandFixture("version"))).toBe(true);
     expect(
       isUpdateCommandOutput({
-        contractVersion: 3,
+        contractVersion: 8,
         command: "update",
         generatedAt: "2026-06-29T12:00:00Z",
         ok: true,
@@ -142,13 +177,103 @@ describe("workspace command contracts", () => {
       }),
     ).toBe(true);
     expect(isContractCommandOutput(readCommandFixture("contract"))).toBe(true);
+    expect(
+      isContractSummaryCommandOutput(readCommandFixture("contract-summary")),
+    ).toBe(true);
+    const scopedContract = readCommandFixture("contract-work-diff");
+    expect(isScopedContractCommandOutput(scopedContract)).toBe(true);
+    const scopedContractRecord = expectRecord(scopedContract);
+    const descriptor = expectRecord(scopedContractRecord.descriptor);
+    expect(descriptor.positionals).toEqual([
+      { name: "target", required: false, repeatable: false },
+    ]);
     expect(isDryRunCommandOutput(readCommandFixture("dry-run"))).toBe(true);
+  });
+
+  it("accepts handoff command outcome fixtures", () => {
+    for (const fixtureName of [
+      "handoff-dry-run",
+      "handoff-confirmation-required",
+      "handoff-receipt",
+      "handoff-no-supported-session",
+      "handoff-target-not-trusted",
+      "handoff-trust-stale",
+      "handoff-tmux-missing",
+    ]) {
+      expect(isHandoffCommandOutput(readCommandFixture(fixtureName))).toBe(
+        true,
+      );
+    }
+
+    const receipt = readCommandFixture("handoff-receipt");
+    expect(isHandoffCommandOutput(receipt)).toBe(true);
+    if (!isHandoffCommandOutput(receipt)) return;
+    expect(receipt.outcome).toBe("receipt");
+    expect(receipt.receipt?.monitoring).toBe(false);
+    expect(receipt.receipt?.workspaceLock).toBe(false);
+    expect(receipt.receipt?.agentRuntimeVerified).toBe(false);
+  });
+
+  it("rejects impossible handoff outcome combinations", () => {
+    const receipt = readCommandFixture("handoff-receipt");
+    expect(isHandoffCommandOutput(receipt)).toBe(true);
+    if (!isHandoffCommandOutput(receipt)) return;
+
+    expect(isHandoffCommandOutput({ ...receipt, receipt: undefined })).toBe(
+      false,
+    );
+    expect(
+      isHandoffCommandOutput({
+        ...receipt,
+        outcome: "dry_run",
+      }),
+    ).toBe(false);
+    expect(
+      isHandoffCommandOutput({
+        ...receipt,
+        receipt: {
+          ...receipt.receipt,
+          monitoring: true,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isHandoffCommandOutput({
+        ...receipt,
+        receipt: {
+          ...receipt.receipt,
+          agentRuntimeVerified: true,
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts hidden handoff installer receipts", () => {
+    expect(
+      isHandoffInstallReceipt({
+        agent: "codex",
+        sessionMode: "resume_existing",
+        sessionId: "sess_codex_1",
+        installedFiles: ["/agent-home/.codex/sessions/sess_codex_1.jsonl"],
+        remoteProjectPath: "~/Code/bowline",
+      }),
+    ).toBe(true);
+
+    expect(
+      isHandoffInstallReceipt({
+        agent: "codex",
+        sessionMode: "resume_existing",
+        installedFiles: [123],
+        remoteProjectPath: "~/Code/bowline",
+      }),
+    ).toBe(false);
   });
 
   it("has guards for every advertised command output type", () => {
     const contract = readCommandFixture("contract");
     expect(isContractCommandOutput(contract)).toBe(true);
     if (!isContractCommandOutput(contract)) return;
+    expect(contract.eventSchemaVersion).toBe(EVENT_SCHEMA_VERSION);
 
     const missing = contract.commandOutputTypes.filter(
       (outputType) => commandOutputGuards[outputType] === undefined,
@@ -159,7 +284,7 @@ describe("workspace command contracts", () => {
   it("accepts daemon, diagnostics, and agent tool command surfaces", () => {
     expect(
       isDaemonCommandOutput({
-        contractVersion: 3,
+        contractVersion: 8,
         command: "daemon start",
         generatedAt: "2026-06-29T12:00:00Z",
         daemon: { state: "starting", socket: "/tmp/bowline.sock", pid: 123 },
@@ -168,7 +293,7 @@ describe("workspace command contracts", () => {
 
     expect(
       isDaemonStatusOutput({
-        contractVersion: 3,
+        contractVersion: 8,
         command: "daemon status",
         generatedAt: "2026-06-29T12:00:00Z",
         daemon: {
@@ -188,7 +313,7 @@ describe("workspace command contracts", () => {
 
     expect(
       isDaemonServiceOutput({
-        contractVersion: 3,
+        contractVersion: 8,
         command: "daemon install",
         generatedAt: "2026-06-29T12:00:00Z",
         service: {
@@ -201,7 +326,7 @@ describe("workspace command contracts", () => {
 
     expect(
       isDiagnosticsCollectCommandOutput({
-        contractVersion: 3,
+        contractVersion: 8,
         command: "diagnostics collect",
         generatedAt: "2026-06-29T12:00:00Z",
         redactionRules: ["home-path"],
@@ -213,48 +338,24 @@ describe("workspace command contracts", () => {
       isAgentToolResult({
         requestId: "req_1",
         leaseId: "lease_1",
-        tool: "complete_task",
+        tool: "list_overlay_changes",
         outcome: "allowed",
-        summary: "completed",
-        payload: { outputState: "completed" },
+        summary: "overlay changes listed",
+        payload: { changes: [] },
       }),
     ).toBe(true);
   });
 
   it("rejects malformed discovery, command, and cursor shapes", () => {
-    const help = readCommandFixture("help") as Record<string, unknown>;
+    const help = expectRecord(readCommandFixture("help"));
     const withoutContractVersion = { ...help };
     delete withoutContractVersion.contractVersion;
     expect(isHelpCommandOutput(withoutContractVersion)).toBe(false);
 
     expect(
       isDryRunCommandOutput({
-        ...(readCommandFixture("dry-run") as Record<string, unknown>),
+        ...expectRecord(readCommandFixture("dry-run")),
         command: "not a command",
-      }),
-    ).toBe(false);
-
-    expect(
-      isSearchCommandOutput({
-        command: "search",
-        contractVersion: 3,
-        generatedAt: "2026-06-29T12:00:00Z",
-        workspaceId: "ws_json",
-        projectId: "proj_json",
-        query: "needle",
-        index: {
-          state: "ready",
-          source: "local",
-          pathCount: 1,
-          fileCount: 1,
-          indexedBytes: 10,
-          summary: "ready",
-        },
-        results: [],
-        truncated: true,
-        nextCursor: "offset:20",
-        status: { level: "healthy", attentionItems: [] },
-        nextActions: [],
       }),
     ).toBe(false);
   });
@@ -263,7 +364,7 @@ describe("workspace command contracts", () => {
     const output = {
       action: "create",
       command: "recover",
-      contractVersion: 3,
+      contractVersion: 8,
       generatedAt: "2026-06-24T12:00:00Z",
       generatedWords: "alpha beta gamma",
       recoveryKey: {
@@ -287,10 +388,10 @@ describe("workspace command contracts", () => {
   it("accepts blocked bootstrap sync output", () => {
     const output = {
       command: "connect",
-      contractVersion: 3,
+      contractVersion: 8,
       generatedAt: "2026-06-24T12:00:00Z",
       host: "linux-box",
-      nextActions: [],
+      repairActions: [],
       sync: "blocked",
       remoteStatus: {
         attentionItems: ["Remote bootstrap did not complete."],
@@ -345,12 +446,13 @@ describe("workspace command contracts", () => {
           state: "unresolved",
         },
       ],
-      contractVersion: 3,
+      contractVersion: 8,
       generatedAt: "2026-06-24T12:00:00Z",
       nextActions: [
         {
           command: "bowline resolve /tmp/project --copy-prompt",
           label: "Print repair prompt",
+          mutates: false,
         },
       ],
       projectOrPath: "/tmp/project",
@@ -374,6 +476,12 @@ describe("workspace command contracts", () => {
     expect(output.availableAgents).toEqual([]);
     expect(JSON.stringify(output.availableActions)).not.toContain("--agent");
     expect(output.prompt.text).not.toContain("SECRET_VALUE");
+
+    const conflict = output.conflicts[0];
+    const span = conflict?.spans[0];
+    if (span === undefined) throw new Error("Expected a resolve conflict span");
+    span.baseStartLine = -1.5;
+    expect(isResolveCommandOutput(output)).toBe(true);
   });
 
   it("accepts resolve diff output", () => {
@@ -398,7 +506,7 @@ describe("workspace command contracts", () => {
           state: "unresolved",
         },
       ],
-      contractVersion: 3,
+      contractVersion: 8,
       diff: {
         affectedFiles: ["apps/web/.env.local"],
         bundlePath: "/tmp/project/.bowline/conflicts/conflict_same_line",
@@ -411,6 +519,7 @@ describe("workspace command contracts", () => {
         {
           command: "bowline resolve /tmp/project --diff conflict_same_line",
           label: "Open diff conflict_same_line",
+          mutates: false,
         },
       ],
       projectOrPath: "/tmp/project",
@@ -425,14 +534,20 @@ describe("workspace command contracts", () => {
   });
 
   it("accepts Phase 9 work view command fixtures", () => {
-    expect(isWorkonCommandOutput(readCommandFixture("workon-created"))).toBe(
-      true,
-    );
+    expect(
+      isWorkCreateCommandOutput(readCommandFixture("work-create-created")),
+    ).toBe(true);
+    expect(
+      isWorkCreateCommandOutput(readCommandFixture("work-create-reused")),
+    ).toBe(true);
     expect(isWorkDiffCommandOutput(readCommandFixture("work-review"))).toBe(
       true,
     );
     expect(
       isWorkLifecycleCommandOutput(readCommandFixture("work-accept")),
+    ).toBe(true);
+    expect(
+      isWorkLifecycleCommandOutput(readCommandFixture("work-accept-partial")),
     ).toBe(true);
     expect(
       isWorkLifecycleCommandOutput(
@@ -458,6 +573,14 @@ describe("workspace command contracts", () => {
     );
   });
 
+  it("keeps fractional agent prompt recipe versions valid", () => {
+    const output = expectRecord(readCommandFixture("agent-prompt"));
+    const prompt = expectRecord(output.prompt);
+    prompt.recipeVersion = 1.5;
+
+    expect(isAgentPromptCommandOutput(output)).toBe(true);
+  });
+
   it("keeps review-ready work as attention, not limited", () => {
     const fixture = readStatusFixture("work-view-attention");
 
@@ -471,19 +594,18 @@ describe("workspace command contracts", () => {
 });
 
 function readCommandFixture(name: string): unknown {
-  const fixtureUrl = new URL(
-    `../../../../tests/contracts/commands/${name}.json`,
-    import.meta.url,
-  );
-
-  return JSON.parse(readFileSync(fixtureUrl, "utf8")) as unknown;
+  return readContractFixture(`commands/${name}.json`);
 }
 
 function readStatusFixture(name: string): unknown {
-  const fixtureUrl = new URL(
-    `../../../../tests/contracts/status/${name}.json`,
-    import.meta.url,
-  );
+  return readContractFixture(`status/${name}.json`);
+}
 
-  return JSON.parse(readFileSync(fixtureUrl, "utf8")) as unknown;
+function expectRecord(value: unknown): Record<string, unknown> {
+  expect(isRecord(value)).toBe(true);
+  if (!isRecord(value)) {
+    throw new Error("Expected fixture to be a JSON object");
+  }
+
+  return value;
 }

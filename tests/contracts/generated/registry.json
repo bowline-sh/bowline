@@ -1,0 +1,1200 @@
+{
+  "declarations": [
+    "Timestamp",
+    "OpaqueJson",
+    "MachineContractVersion",
+    "EventName",
+    "EventSeverity",
+    "WireWorkspaceEvent",
+    "WireStatusLevel",
+    "DeviceApprovalAffordance",
+    "WireStatusScope",
+    "WireStatusItemKind",
+    "WireStatusSubjectKind",
+    "WirePathClassification",
+    "WireMaterializationMode",
+    "WireAccessFlag",
+    "WireStatusSubject",
+    "WireWorkspaceStatus",
+    "WireStatusItem",
+    "WireComponentState",
+    "WireNetworkState",
+    "WireFreshnessAxis",
+    "WireFreshnessVerdict",
+    "WireProjectSetupReadinessState",
+    "WireSetupReceiptState",
+    "WireControlPlaneSupportCapability",
+    "WireProjectAttentionSummary",
+    "WireObservedWorkspaceSummary",
+    "WireWorkspaceSummary",
+    "WireSyncQueueStatus",
+    "WireEventWatermarks",
+    "WireStaleBaseStatus",
+    "WireProjectSetupReadiness",
+    "WireLimitedCapability",
+    "WireRepairCommand",
+    "WireStatusCommandOutput",
+    "WireEventSubjectKind",
+    "WireEventActorKind",
+    "WireCommandRecoverability",
+    "WireCommandErrorStatus",
+    "WireEventRedactionStatus",
+    "WireEventSubject",
+    "WireEventActor",
+    "WireEventRedaction",
+    "WireCommandError",
+    "WireCommandErrorOutput",
+    "WireWatchWorkspaceEvent",
+    "WireWatchStatusFrame",
+    "WireWatchEventFrame",
+    "WireWatchErrorFrame",
+    "WireWatchFrame",
+    "StatusAvailability",
+    "StatusAttention",
+    "StatusFactScope",
+    "StatusFreshness",
+    "StatusFactAvailabilityImpact",
+    "StatusFactAttentionImpact",
+    "StatusFactId",
+    "StatusFactKind",
+    "StatusActionKind",
+    "StatusActionReference",
+    "StatusFact",
+    "StatusSummary",
+    "CommandName",
+    "WireVersionCommandOutput",
+    "WireHelpCommandOutput",
+    "WireContractCommandOutput",
+    "DaemonRpcErrorCode",
+    "DaemonClientHello",
+    "DaemonServerHello",
+    "DaemonRpcError",
+    "DaemonRpcRequest",
+    "DaemonRpcResponse",
+    "DaemonRpcEvent",
+    "DaemonRpcCancel",
+    "DaemonStatusScopeParams",
+    "DaemonStatusSnapshotResult",
+    "DaemonStatusSubscribeResult",
+    "DaemonStatusEventPayload",
+    "DaemonDeviceActionParams",
+    "DaemonSyncRequestParams",
+    "DaemonSyncOperationKind",
+    "DaemonSyncResourceKind",
+    "DaemonSyncOperationState",
+    "DaemonSyncOperationOwnership",
+    "DaemonSyncCancellationOutcome",
+    "DaemonSyncRequestOutcome",
+    "DaemonSyncResource",
+    "DaemonOperationResult",
+    "DaemonSyncRequestResult",
+    "DaemonCancelOperationParams",
+    "DaemonCancelOperationResult",
+    "HostedRefsListWorkspaceRefHistoryRequest",
+    "HostedWorkspaceRefHistoryRecord",
+    "HostedRefsListWorkspaceRefHistoryResponse",
+    "HostedRetentionState",
+    "HostedGcDeleteSkipReason",
+    "HostedStorageGcObjectRef",
+    "HostedRetentionListStorageGcObjectsRequest",
+    "HostedRetentionListStorageGcObjectsResponse",
+    "HostedRetentionDeleteObjectMetadataAfterGcRequest",
+    "HostedRetentionDeleteObjectMetadataAfterGcResponse",
+    "HostedWorkViewLifecycleState",
+    "HostedObjectKind",
+    "HostedWorkViewOverlayCommitOutcome",
+    "HostedObjectPointer",
+    "HostedWorkView",
+    "HostedOverlayObjectInput",
+    "HostedWorkViewsListWorkViewsRequest",
+    "HostedWorkViewsListWorkViewsResponse",
+    "HostedWorkViewsCreateWorkViewRequest",
+    "HostedWorkViewsRestoreWorkViewRequest",
+    "HostedWorkViewsUpdateWorkViewLifecycleRequest",
+    "HostedWorkViewsCommitOverlayPointerRequest",
+    "HostedWorkViewsCommitOverlayPointerResponse",
+    "HostedRecoveryEnvelopeState",
+    "HostedRecoveryEnvelope",
+    "HostedRecoveryDeviceGrant",
+    "HostedRecoveryGetRecoveryEnvelopesRequest",
+    "HostedRecoveryGetRecoveryEnvelopesResponse",
+    "HostedRecoveryCreateRecoveryEnvelopeRequest",
+    "HostedRecoveryRotateRecoveryEnvelopeRequest",
+    "HostedRecoveryRevokeRecoveryEnvelopeRequest",
+    "HostedRecoveryVerifyRecoveryEnvelopeRequest",
+    "HostedRecoveryAuthorizeDeviceWithRecoveryRequest",
+    "HostedDeviceRequestState",
+    "HostedDeviceRequest",
+    "HostedAuthorizedDevice",
+    "HostedRevokedDevice",
+    "HostedBootstrapSession",
+    "HostedDeviceApproval",
+    "HostedDeviceDenial",
+    "HostedDeviceApprovalOrNull",
+    "HostedDevicesListDeviceTrustResponse",
+    "HostedDevicesApproveDeviceRequestRequest",
+    "HostedDevicesConfirmGrantAcceptedRequest",
+    "HostedDevicesConfirmGrantAcceptedWithBootstrapRequest",
+    "HostedDevicesCreateBootstrapSessionRequest",
+    "HostedDevicesCreateFirstAuthorizedDeviceRequest",
+    "HostedDevicesCreatePendingDeviceRequest",
+    "HostedDevicesCreatePendingDeviceWithBootstrapRequest",
+    "HostedDevicesDenyDeviceRequestRequest",
+    "HostedDevicesGetEncryptedGrantRequest",
+    "HostedDevicesGetEncryptedGrantWithBootstrapRequest",
+    "HostedDevicesListDeviceTrustRequest",
+    "HostedDevicesRevokeDeviceRequest",
+    "HostedObjectMetadata",
+    "HostedDownloadIntentRange",
+    "HostedObjectMetadataOrNull",
+    "HostedObjectPointerInput",
+    "HostedObjectsCreateUploadIntentRequest",
+    "HostedObjectsCreateDownloadIntentRequest",
+    "HostedObjectsCreateUploadVerificationIntentRequest",
+    "HostedObjectsMarkObjectRetentionStateRequest",
+    "HostedObjectsCreateStorageGcDeleteIntentRequest",
+    "HostedObjectsCommitUploadedObjectMetadataRequest",
+    "HostedObjectQueriesGetObjectMetadataRequest",
+    "HostedObjectsCreateUploadIntentResponse",
+    "HostedObjectsCreateDownloadIntentResponse",
+    "HostedObjectsCreateUploadVerificationIntentResponse",
+    "HostedObjectsCreateStorageGcDeleteIntentResponse",
+    "HostedConflictOccurrenceState",
+    "HostedConflictReconcileOutcome",
+    "HostedCompactEventKind",
+    "HostedStatusAvailability",
+    "HostedStatusAttention",
+    "HostedStatusFreshness",
+    "HostedStatusFactScope",
+    "HostedStatusFactAvailabilityImpact",
+    "HostedStatusFactAttentionImpact",
+    "HostedWorkspaceRef",
+    "HostedRefsGetWorkspaceRefRequest",
+    "HostedRefsCreateWorkspaceRefRequest",
+    "HostedRefsCompareAndSwapWorkspaceRefRequest",
+    "HostedWorkspaceRefOrNull",
+    "HostedRefsCompareAndSwapWorkspaceRefResponse",
+    "HostedConflictMetadataRecord",
+    "HostedConflictsListWorkspaceConflictsRequest",
+    "HostedConflictsListWorkspaceConflictsResponse",
+    "HostedConflictsReconcileConflictOccurrenceRequest",
+    "HostedConflictReconcileResult",
+    "HostedCompactEvent",
+    "HostedEventsListCompactEventsRequest",
+    "HostedEventsListCompactEventsResponse",
+    "HostedStatusActionReference",
+    "HostedStatusFact",
+    "HostedSyncQueue",
+    "HostedEventWatermarks",
+    "HostedWorkspaceSummary",
+    "HostedStatusItem",
+    "HostedLimitedCapability",
+    "HostedStatusPublishWorkspaceStatusRequest",
+    "HostedStatusPublishWorkspaceStatusResponse",
+    "HostedLeaseSessionState",
+    "HostedLeaseWriteTargetMode",
+    "HostedLeaseEventKind",
+    "HostedLeaseUpdateError",
+    "HostedLease",
+    "HostedEventsCreateLeaseRequest",
+    "HostedEventsCreateLeaseResponse",
+    "HostedEventsUpdateLeaseRequest",
+    "HostedEventsUpdateLeaseResponse",
+    "HostedEventsListLeasesRequest",
+    "HostedEventsListLeasesResponse",
+    "HostedAuthRegisterAccountSessionRequest",
+    "HostedAuthRegisterAccountSessionResponse",
+    "HostedMetadataRecordKind",
+    "HostedMetadataBindingOutcome",
+    "HostedMetadataPagePointerInput",
+    "HostedMetadataPagePointer",
+    "HostedSnapshotManifestPointerInput",
+    "HostedSnapshotManifestPointer",
+    "HostedMetadataSidecar",
+    "HostedMetadataBindingInput",
+    "HostedMetadataBindingRecord",
+    "HostedObjectsCommitMetadataBindingsRequest",
+    "HostedMetadataBindingsResponse",
+    "HostedObjectQueriesResolveMetadataBindingsRequest",
+    "HostedObjectsCommitSnapshotRootRequest",
+    "HostedSnapshotRootRecord",
+    "HostedObjectQueriesGetSnapshotRootRequest",
+    "HostedSnapshotRootRecordOrNull",
+    "HostedDashboardProviderEnvironment",
+    "HostedDashboardWorkspaceRole",
+    "HostedProjectionRepairState",
+    "HostedDashboardDeviceState",
+    "HostedDashboardRecoveryState",
+    "HostedDashboardBillingPlanTier",
+    "HostedDashboardBillingStatus",
+    "HostedDashboardBillingMessageKey",
+    "HostedDashboardBillingState",
+    "HostedDashboardUsageFreshnessState",
+    "HostedProjectionMetadata",
+    "HostedDashboardAccount",
+    "HostedDashboardWorkspaceMembership",
+    "HostedDashboardBillingPortal",
+    "HostedDashboardUsageFreshness",
+    "HostedDashboardBillingSummary",
+    "HostedDashboardGetDashboardShellRequest",
+    "HostedDashboardGetDashboardShellResponse",
+    "HostedDashboardStatusAggregate",
+    "HostedDashboardDeviceSummary",
+    "HostedDashboardRecoverySummary",
+    "HostedDashboardWorkspaceRef",
+    "HostedDashboardGetWorkspaceDashboardCurrentRequest",
+    "HostedDashboardGetWorkspaceDashboardCurrentResponse",
+    "HostedDashboardDeviceRow",
+    "HostedDashboardListDashboardDevicesRequest",
+    "HostedDashboardListDashboardDevicesResponse",
+    "HostedDashboardRecoveryRow",
+    "HostedDashboardListDashboardRecoveryEnvelopesRequest",
+    "HostedDashboardListDashboardRecoveryEnvelopesResponse"
+  ],
+  "enumValues": {
+    "CommandName": [
+      "help",
+      "version",
+      "contract",
+      "mcp",
+      "update",
+      "unknown",
+      "login",
+      "logout",
+      "device approve",
+      "device deny",
+      "device revoke",
+      "recover",
+      "setup",
+      "status",
+      "device list",
+      "device request",
+      "device accept",
+      "events",
+      "history",
+      "tui",
+      "resolve",
+      "forget-local",
+      "archive",
+      "purge",
+      "work create",
+      "work review",
+      "work list",
+      "work diff",
+      "work accept",
+      "work discard",
+      "work restore",
+      "work cleanup",
+      "agent context",
+      "agent start",
+      "agent prompt",
+      "agent complete",
+      "agent cancel",
+      "agent extend",
+      "agent mcp-token",
+      "lease join",
+      "daemon start",
+      "daemon stop",
+      "daemon status",
+      "daemon install",
+      "daemon restart",
+      "daemon uninstall",
+      "diagnostics collect",
+      "connect",
+      "handoff"
+    ],
+    "DaemonRpcErrorCode": [
+      "invalid_request",
+      "unsupported_version",
+      "method_not_found",
+      "malformed_frame",
+      "frame_too_large",
+      "deadline_exceeded",
+      "cancelled",
+      "overloaded",
+      "resource_exhausted",
+      "conflict",
+      "not_found",
+      "unavailable",
+      "permission_denied",
+      "internal"
+    ],
+    "DaemonSyncCancellationOutcome": [
+      "requested",
+      "cancelled",
+      "already-completed",
+      "already-cancelled"
+    ],
+    "DaemonSyncOperationKind": [
+      "daemon-reconcile",
+      "conflict-occurrence-reconcile",
+      "work-view-overlay-sync"
+    ],
+    "DaemonSyncOperationOwnership": [
+      "unclaimed",
+      "owned-by-this-daemon",
+      "owned-by-another-daemon",
+      "lease-expired"
+    ],
+    "DaemonSyncOperationState": [
+      "queued",
+      "claimed",
+      "waiting_retry",
+      "blocked_offline",
+      "reconciliation_required",
+      "attention",
+      "completed",
+      "cancelled"
+    ],
+    "DaemonSyncRequestOutcome": [
+      "enqueued",
+      "coalesced"
+    ],
+    "DaemonSyncResourceKind": [
+      "workspace-sync",
+      "conflict-followup",
+      "post-commit"
+    ],
+    "EventName": [
+      "namespace.created",
+      "namespace.moved",
+      "namespace.deleted_or_archived",
+      "hydration.started",
+      "hydration.completed",
+      "hydration.blocked",
+      "policy.classified",
+      "policy.needs_approval",
+      "policy.changed",
+      "env.imported",
+      "env.materialized",
+      "env.revoked",
+      "setup.started",
+      "setup.completed",
+      "setup.blocked",
+      "source.stale",
+      "work.created",
+      "work.updated",
+      "work.review_ready",
+      "work.accepted",
+      "work.discarded",
+      "work.restored",
+      "work.cleanup_previewed",
+      "work.cleanup_completed",
+      "lease.created",
+      "lease.updated",
+      "lease.dispatched",
+      "lease.claimed",
+      "lease.completed",
+      "lease.cancelled",
+      "lease.extended",
+      "lease.review_ready",
+      "overlay.changed",
+      "conflict.created",
+      "conflict.bundle_created",
+      "conflict.resolution_proposed",
+      "conflict.resolution_accepted",
+      "conflict.resolution_rejected",
+      "merge.plugin_applied",
+      "daemon.degraded",
+      "daemon.recovered",
+      "device.approval_requested",
+      "device.approved",
+      "device.denied",
+      "device.revoked",
+      "recovery_key.created",
+      "recovery_key.verified",
+      "recovery_key.rotated",
+      "recovery_key.revoked",
+      "auth.login_started",
+      "auth.login_completed",
+      "sync.started",
+      "sync.completed",
+      "sync.limited",
+      "sync.degraded",
+      "sync.stat_cache_divergence",
+      "sync.recovered",
+      "watcher.degraded",
+      "watcher.recovered",
+      "network.offline",
+      "network.recovered",
+      "metadata.corrupt"
+    ],
+    "EventSeverity": [
+      "info",
+      "attention",
+      "limited"
+    ],
+    "HostedCompactEventKind": [
+      "workspace.created",
+      "workspace_ref.advanced",
+      "namespace.archived",
+      "namespace.archive_restored",
+      "namespace.purge_pending",
+      "namespace.purge_cancelled",
+      "workspace_status.published",
+      "object_pointer.added",
+      "snapshot_root.committed",
+      "device.requested",
+      "device.harness_approved",
+      "device.approval_requested",
+      "device.approved",
+      "device.denied",
+      "device.revoked",
+      "member.invited",
+      "member.joined",
+      "member.removed",
+      "workspace_key.rotated",
+      "recovery_key.created",
+      "recovery_key.verified",
+      "recovery_key.rotated",
+      "recovery_key.revoked",
+      "auth.login_started",
+      "auth.login_completed",
+      "conflict.detected",
+      "conflict.resolved",
+      "lease.created",
+      "lease.updated",
+      "lease.dispatched",
+      "lease.claimed",
+      "lease.completed",
+      "lease.review_ready",
+      "overlay.changed",
+      "work.created",
+      "work.updated",
+      "work.review_ready",
+      "work.accepted",
+      "work.discarded",
+      "work.restored",
+      "work.cleanup_previewed",
+      "work.cleanup_completed"
+    ],
+    "HostedConflictOccurrenceState": [
+      "unresolved",
+      "accepted",
+      "rejected"
+    ],
+    "HostedConflictReconcileOutcome": [
+      "applied",
+      "idempotent",
+      "superseded"
+    ],
+    "HostedDashboardBillingMessageKey": [
+      "checkout_pending",
+      "free_inside_limit",
+      "free_over_limit",
+      "pro_measure_only",
+      "usage_pending"
+    ],
+    "HostedDashboardBillingPlanTier": [
+      "free",
+      "pro",
+      "team"
+    ],
+    "HostedDashboardBillingState": [
+      "early-access"
+    ],
+    "HostedDashboardBillingStatus": [
+      "checkout_pending",
+      "free_measure_only",
+      "pro_active",
+      "pro_attention",
+      "pro_canceling"
+    ],
+    "HostedDashboardDeviceState": [
+      "pending",
+      "authorized",
+      "revoked"
+    ],
+    "HostedDashboardProviderEnvironment": [
+      "sandbox",
+      "production"
+    ],
+    "HostedDashboardRecoveryState": [
+      "active",
+      "generated-unverified",
+      "rotated",
+      "revoked"
+    ],
+    "HostedDashboardUsageFreshnessState": [
+      "current",
+      "partial",
+      "unknown"
+    ],
+    "HostedDashboardWorkspaceRole": [
+      "member",
+      "owner"
+    ],
+    "HostedDeviceRequestState": [
+      "pending",
+      "approved",
+      "denied",
+      "expired"
+    ],
+    "HostedGcDeleteSkipReason": [
+      "missing"
+    ],
+    "HostedLeaseEventKind": [
+      "lease.created",
+      "lease.updated",
+      "lease.dispatched",
+      "lease.claimed",
+      "lease.completed",
+      "lease.review_ready",
+      "overlay.changed"
+    ],
+    "HostedLeaseSessionState": [
+      "provisional",
+      "open",
+      "completed"
+    ],
+    "HostedLeaseUpdateError": [
+      "lease-missing",
+      "stale-lease"
+    ],
+    "HostedLeaseWriteTargetMode": [
+      "direct",
+      "work-view"
+    ],
+    "HostedMetadataBindingOutcome": [
+      "bound-new",
+      "existing-winner"
+    ],
+    "HostedMetadataRecordKind": [
+      "namespace-page",
+      "content-layout",
+      "segment-page"
+    ],
+    "HostedObjectKind": [
+      "source-pack",
+      "locator-index",
+      "snapshot-manifest",
+      "snapshot-metadata-page",
+      "overlay-pack",
+      "conflict-bundle"
+    ],
+    "HostedProjectionRepairState": [
+      "current",
+      "stale",
+      "unavailable",
+      "rebuilding",
+      "failed"
+    ],
+    "HostedRecoveryEnvelopeState": [
+      "generated-unverified",
+      "active",
+      "rotated",
+      "revoked"
+    ],
+    "HostedRetentionState": [
+      "pending",
+      "current",
+      "orphan-candidate",
+      "retained",
+      "delete-eligible"
+    ],
+    "HostedStatusAttention": [
+      "none",
+      "recommended",
+      "required"
+    ],
+    "HostedStatusAvailability": [
+      "ready",
+      "degraded",
+      "unavailable"
+    ],
+    "HostedStatusFactAttentionImpact": [
+      "none",
+      "recommended",
+      "required"
+    ],
+    "HostedStatusFactAvailabilityImpact": [
+      "none",
+      "degraded",
+      "unavailable"
+    ],
+    "HostedStatusFactScope": [
+      "account",
+      "workspace",
+      "project",
+      "device",
+      "session",
+      "work_view",
+      "lease",
+      "path"
+    ],
+    "HostedStatusFreshness": [
+      "fresh",
+      "stale",
+      "unknown"
+    ],
+    "HostedWorkViewLifecycleState": [
+      "active",
+      "review-ready",
+      "accepted",
+      "discarded"
+    ],
+    "HostedWorkViewOverlayCommitOutcome": [
+      "committed",
+      "stale-overlay-head"
+    ],
+    "StatusAttention": [
+      "none",
+      "recommended",
+      "required"
+    ],
+    "StatusAvailability": [
+      "ready",
+      "degraded",
+      "unavailable"
+    ],
+    "StatusFactAttentionImpact": [
+      "none",
+      "recommended",
+      "required"
+    ],
+    "StatusFactAvailabilityImpact": [
+      "none",
+      "degraded",
+      "unavailable"
+    ],
+    "StatusFactScope": [
+      "account",
+      "workspace",
+      "project",
+      "device",
+      "session",
+      "work_view",
+      "lease",
+      "path"
+    ],
+    "StatusFreshness": [
+      "fresh",
+      "stale",
+      "unknown"
+    ],
+    "WireAccessFlag": [
+      "human-readable",
+      "agent-readable",
+      "agent-hidden",
+      "lease-only"
+    ],
+    "WireCommandErrorStatus": [
+      "usage-error",
+      "unsupported",
+      "limited",
+      "failed"
+    ],
+    "WireCommandRecoverability": [
+      "retry",
+      "user-action",
+      "unsupported",
+      "none"
+    ],
+    "WireComponentState": [
+      "ready",
+      "degraded",
+      "unavailable"
+    ],
+    "WireControlPlaneSupportCapability": [
+      "device-approval",
+      "project-scoped-workspace-ref-cas",
+      "work-view",
+      "agent-lease",
+      "encrypted-object-store",
+      "recovery"
+    ],
+    "WireEventActorKind": [
+      "system",
+      "daemon",
+      "device",
+      "agent",
+      "user"
+    ],
+    "WireEventRedactionStatus": [
+      "not-needed",
+      "applied"
+    ],
+    "WireEventSubjectKind": [
+      "workspace",
+      "root",
+      "project",
+      "path",
+      "snapshot",
+      "content",
+      "pack",
+      "policy",
+      "env-record",
+      "setup-receipt",
+      "conflict",
+      "work-view",
+      "lease",
+      "overlay",
+      "device",
+      "metadata",
+      "component"
+    ],
+    "WireFreshnessAxis": [
+      "snapshot",
+      "git"
+    ],
+    "WireFreshnessVerdict": [
+      "current",
+      "behind",
+      "diverged",
+      "unknown"
+    ],
+    "WireMaterializationMode": [
+      "workspace-sync",
+      "project-env",
+      "encrypted-sync",
+      "lazy",
+      "structure-only",
+      "local-regenerate",
+      "local-cache",
+      "ignore",
+      "local-only",
+      "blocked"
+    ],
+    "WireNetworkState": [
+      "online",
+      "degraded",
+      "offline"
+    ],
+    "WirePathClassification": [
+      "workspace-sync",
+      "project-env",
+      "generated",
+      "dependency",
+      "cache",
+      "large-file",
+      "secret-looking",
+      "local-only",
+      "blocked"
+    ],
+    "WireProjectSetupReadinessState": [
+      "unknown",
+      "runnable",
+      "needs-setup",
+      "blocked"
+    ],
+    "WireSetupReceiptState": [
+      "approved",
+      "approval-required",
+      "completed",
+      "failed"
+    ],
+    "WireStatusItemKind": [
+      "continuity",
+      "policy",
+      "device",
+      "conflict",
+      "work-view",
+      "lease",
+      "watcher",
+      "env",
+      "source",
+      "setup",
+      "metadata",
+      "materialization",
+      "network",
+      "update"
+    ],
+    "WireStatusLevel": [
+      "healthy",
+      "attention",
+      "limited"
+    ],
+    "WireStatusScope": [
+      "project",
+      "workspace",
+      "lease"
+    ],
+    "WireStatusSubjectKind": [
+      "workspace",
+      "root",
+      "project",
+      "path",
+      "snapshot",
+      "env-record",
+      "policy",
+      "setup-receipt",
+      "conflict",
+      "work-view",
+      "lease",
+      "overlay",
+      "device",
+      "device-approval-request",
+      "metadata",
+      "component"
+    ]
+  },
+  "hostedEndpoints": [
+    {
+      "convex": "auth:registerAccountSession",
+      "id": "auth.registerAccountSession",
+      "kind": "action",
+      "request": "HostedAuthRegisterAccountSessionRequest",
+      "response": "HostedAuthRegisterAccountSessionResponse"
+    },
+    {
+      "convex": "conflicts:listWorkspaceConflicts",
+      "id": "conflicts.listWorkspaceConflicts",
+      "kind": "query",
+      "request": "HostedConflictsListWorkspaceConflictsRequest",
+      "response": "HostedConflictsListWorkspaceConflictsResponse"
+    },
+    {
+      "convex": "conflicts:reconcileConflictOccurrence",
+      "id": "conflicts.reconcileConflictOccurrence",
+      "kind": "mutation",
+      "request": "HostedConflictsReconcileConflictOccurrenceRequest",
+      "response": "HostedConflictReconcileResult"
+    },
+    {
+      "convex": "dashboard:getDashboardShell",
+      "id": "dashboard.getDashboardShell",
+      "kind": "query",
+      "request": "HostedDashboardGetDashboardShellRequest",
+      "response": "HostedDashboardGetDashboardShellResponse"
+    },
+    {
+      "convex": "dashboard:getWorkspaceDashboardCurrent",
+      "id": "dashboard.getWorkspaceDashboardCurrent",
+      "kind": "query",
+      "request": "HostedDashboardGetWorkspaceDashboardCurrentRequest",
+      "response": "HostedDashboardGetWorkspaceDashboardCurrentResponse"
+    },
+    {
+      "convex": "dashboard:listDashboardDevices",
+      "id": "dashboard.listDashboardDevices",
+      "kind": "query",
+      "request": "HostedDashboardListDashboardDevicesRequest",
+      "response": "HostedDashboardListDashboardDevicesResponse"
+    },
+    {
+      "convex": "dashboard:listDashboardRecoveryEnvelopes",
+      "id": "dashboard.listDashboardRecoveryEnvelopes",
+      "kind": "query",
+      "request": "HostedDashboardListDashboardRecoveryEnvelopesRequest",
+      "response": "HostedDashboardListDashboardRecoveryEnvelopesResponse"
+    },
+    {
+      "convex": "devices:approveDeviceRequest",
+      "id": "devices.approveDeviceRequest",
+      "kind": "mutation",
+      "request": "HostedDevicesApproveDeviceRequestRequest",
+      "response": "HostedDeviceApproval"
+    },
+    {
+      "convex": "devices:confirmGrantAccepted",
+      "id": "devices.confirmGrantAccepted",
+      "kind": "mutation",
+      "request": "HostedDevicesConfirmGrantAcceptedRequest",
+      "response": "HostedDeviceApproval"
+    },
+    {
+      "convex": "devices:confirmGrantAcceptedWithBootstrap",
+      "id": "devices.confirmGrantAcceptedWithBootstrap",
+      "kind": "mutation",
+      "request": "HostedDevicesConfirmGrantAcceptedWithBootstrapRequest",
+      "response": "HostedDeviceApproval"
+    },
+    {
+      "convex": "devices:createBootstrapSession",
+      "id": "devices.createBootstrapSession",
+      "kind": "mutation",
+      "request": "HostedDevicesCreateBootstrapSessionRequest",
+      "response": "HostedBootstrapSession"
+    },
+    {
+      "convex": "devices:createFirstAuthorizedDevice",
+      "id": "devices.createFirstAuthorizedDevice",
+      "kind": "mutation",
+      "request": "HostedDevicesCreateFirstAuthorizedDeviceRequest",
+      "response": "HostedAuthorizedDevice"
+    },
+    {
+      "convex": "devices:createPendingDevice",
+      "id": "devices.createPendingDevice",
+      "kind": "mutation",
+      "request": "HostedDevicesCreatePendingDeviceRequest",
+      "response": "HostedDeviceRequest"
+    },
+    {
+      "convex": "devices:createPendingDeviceWithBootstrap",
+      "id": "devices.createPendingDeviceWithBootstrap",
+      "kind": "mutation",
+      "request": "HostedDevicesCreatePendingDeviceWithBootstrapRequest",
+      "response": "HostedDeviceRequest"
+    },
+    {
+      "convex": "devices:denyDeviceRequest",
+      "id": "devices.denyDeviceRequest",
+      "kind": "mutation",
+      "request": "HostedDevicesDenyDeviceRequestRequest",
+      "response": "HostedDeviceDenial"
+    },
+    {
+      "convex": "devices:getEncryptedGrant",
+      "id": "devices.getEncryptedGrant",
+      "kind": "query",
+      "request": "HostedDevicesGetEncryptedGrantRequest",
+      "response": "HostedDeviceApprovalOrNull"
+    },
+    {
+      "convex": "devices:getEncryptedGrantWithBootstrap",
+      "id": "devices.getEncryptedGrantWithBootstrap",
+      "kind": "query",
+      "request": "HostedDevicesGetEncryptedGrantWithBootstrapRequest",
+      "response": "HostedDeviceApprovalOrNull"
+    },
+    {
+      "convex": "devices:listDeviceTrust",
+      "id": "devices.listDeviceTrust",
+      "kind": "query",
+      "request": "HostedDevicesListDeviceTrustRequest",
+      "response": "HostedDevicesListDeviceTrustResponse"
+    },
+    {
+      "convex": "devices:revokeDevice",
+      "id": "devices.revokeDevice",
+      "kind": "mutation",
+      "request": "HostedDevicesRevokeDeviceRequest",
+      "response": "HostedRevokedDevice"
+    },
+    {
+      "convex": "events:createLease",
+      "id": "events.createLease",
+      "kind": "mutation",
+      "request": "HostedEventsCreateLeaseRequest",
+      "response": "HostedEventsCreateLeaseResponse"
+    },
+    {
+      "convex": "events:listCompactEvents",
+      "id": "events.listCompactEvents",
+      "kind": "query",
+      "request": "HostedEventsListCompactEventsRequest",
+      "response": "HostedEventsListCompactEventsResponse"
+    },
+    {
+      "convex": "events:listLeases",
+      "id": "events.listLeases",
+      "kind": "query",
+      "request": "HostedEventsListLeasesRequest",
+      "response": "HostedEventsListLeasesResponse"
+    },
+    {
+      "convex": "events:updateLease",
+      "id": "events.updateLease",
+      "kind": "mutation",
+      "request": "HostedEventsUpdateLeaseRequest",
+      "response": "HostedEventsUpdateLeaseResponse"
+    },
+    {
+      "convex": "object_queries:getObjectMetadata",
+      "id": "object_queries.getObjectMetadata",
+      "kind": "query",
+      "request": "HostedObjectQueriesGetObjectMetadataRequest",
+      "response": "HostedObjectMetadataOrNull"
+    },
+    {
+      "convex": "object_queries:getSnapshotRoot",
+      "id": "object_queries.getSnapshotRoot",
+      "kind": "query",
+      "request": "HostedObjectQueriesGetSnapshotRootRequest",
+      "response": "HostedSnapshotRootRecordOrNull"
+    },
+    {
+      "convex": "object_queries:resolveMetadataBindings",
+      "id": "object_queries.resolveMetadataBindings",
+      "kind": "query",
+      "request": "HostedObjectQueriesResolveMetadataBindingsRequest",
+      "response": "HostedMetadataBindingsResponse"
+    },
+    {
+      "convex": "objects:commitMetadataBindings",
+      "id": "objects.commitMetadataBindings",
+      "kind": "action",
+      "request": "HostedObjectsCommitMetadataBindingsRequest",
+      "response": "HostedMetadataBindingsResponse"
+    },
+    {
+      "convex": "objects:commitSnapshotRoot",
+      "id": "objects.commitSnapshotRoot",
+      "kind": "action",
+      "request": "HostedObjectsCommitSnapshotRootRequest",
+      "response": "HostedSnapshotRootRecord"
+    },
+    {
+      "convex": "objects:commitUploadedObjectMetadata",
+      "id": "objects.commitUploadedObjectMetadata",
+      "kind": "action",
+      "request": "HostedObjectsCommitUploadedObjectMetadataRequest",
+      "response": "HostedObjectMetadata"
+    },
+    {
+      "convex": "objects:createDownloadIntent",
+      "id": "objects.createDownloadIntent",
+      "kind": "action",
+      "request": "HostedObjectsCreateDownloadIntentRequest",
+      "response": "HostedObjectsCreateDownloadIntentResponse"
+    },
+    {
+      "convex": "objects:createStorageGcDeleteIntent",
+      "id": "objects.createStorageGcDeleteIntent",
+      "kind": "action",
+      "request": "HostedObjectsCreateStorageGcDeleteIntentRequest",
+      "response": "HostedObjectsCreateStorageGcDeleteIntentResponse"
+    },
+    {
+      "convex": "objects:createUploadIntent",
+      "id": "objects.createUploadIntent",
+      "kind": "action",
+      "request": "HostedObjectsCreateUploadIntentRequest",
+      "response": "HostedObjectsCreateUploadIntentResponse"
+    },
+    {
+      "convex": "objects:createUploadVerificationIntent",
+      "id": "objects.createUploadVerificationIntent",
+      "kind": "action",
+      "request": "HostedObjectsCreateUploadVerificationIntentRequest",
+      "response": "HostedObjectsCreateUploadVerificationIntentResponse"
+    },
+    {
+      "convex": "objects:markObjectRetentionState",
+      "id": "objects.markObjectRetentionState",
+      "kind": "action",
+      "request": "HostedObjectsMarkObjectRetentionStateRequest",
+      "response": "HostedObjectMetadata"
+    },
+    {
+      "convex": "recovery:authorizeDeviceWithRecovery",
+      "id": "recovery.authorizeDeviceWithRecovery",
+      "kind": "mutation",
+      "request": "HostedRecoveryAuthorizeDeviceWithRecoveryRequest",
+      "response": "HostedRecoveryDeviceGrant"
+    },
+    {
+      "convex": "recovery:createRecoveryEnvelope",
+      "id": "recovery.createRecoveryEnvelope",
+      "kind": "mutation",
+      "request": "HostedRecoveryCreateRecoveryEnvelopeRequest",
+      "response": "HostedRecoveryEnvelope"
+    },
+    {
+      "convex": "recovery:getRecoveryEnvelopes",
+      "id": "recovery.getRecoveryEnvelopes",
+      "kind": "query",
+      "request": "HostedRecoveryGetRecoveryEnvelopesRequest",
+      "response": "HostedRecoveryGetRecoveryEnvelopesResponse"
+    },
+    {
+      "convex": "recovery:revokeRecoveryEnvelope",
+      "id": "recovery.revokeRecoveryEnvelope",
+      "kind": "mutation",
+      "request": "HostedRecoveryRevokeRecoveryEnvelopeRequest",
+      "response": "HostedRecoveryEnvelope"
+    },
+    {
+      "convex": "recovery:rotateRecoveryEnvelope",
+      "id": "recovery.rotateRecoveryEnvelope",
+      "kind": "mutation",
+      "request": "HostedRecoveryRotateRecoveryEnvelopeRequest",
+      "response": "HostedRecoveryEnvelope"
+    },
+    {
+      "convex": "recovery:verifyRecoveryEnvelope",
+      "id": "recovery.verifyRecoveryEnvelope",
+      "kind": "mutation",
+      "request": "HostedRecoveryVerifyRecoveryEnvelopeRequest",
+      "response": "HostedRecoveryEnvelope"
+    },
+    {
+      "convex": "refs:compareAndSwapWorkspaceRef",
+      "id": "refs.compareAndSwapWorkspaceRef",
+      "kind": "mutation",
+      "request": "HostedRefsCompareAndSwapWorkspaceRefRequest",
+      "response": "HostedRefsCompareAndSwapWorkspaceRefResponse"
+    },
+    {
+      "convex": "refs:createWorkspaceRef",
+      "id": "refs.createWorkspaceRef",
+      "kind": "mutation",
+      "request": "HostedRefsCreateWorkspaceRefRequest",
+      "response": "HostedWorkspaceRef"
+    },
+    {
+      "convex": "refs:getWorkspaceRef",
+      "id": "refs.getWorkspaceRef",
+      "kind": "query",
+      "request": "HostedRefsGetWorkspaceRefRequest",
+      "response": "HostedWorkspaceRefOrNull"
+    },
+    {
+      "convex": "refs:listWorkspaceRefHistory",
+      "id": "refs.listWorkspaceRefHistory",
+      "kind": "query",
+      "request": "HostedRefsListWorkspaceRefHistoryRequest",
+      "response": "HostedRefsListWorkspaceRefHistoryResponse"
+    },
+    {
+      "convex": "retention:deleteObjectMetadataAfterGc",
+      "id": "retention.deleteObjectMetadataAfterGc",
+      "kind": "mutation",
+      "request": "HostedRetentionDeleteObjectMetadataAfterGcRequest",
+      "response": "HostedRetentionDeleteObjectMetadataAfterGcResponse"
+    },
+    {
+      "convex": "retention:listStorageGcObjects",
+      "id": "retention.listStorageGcObjects",
+      "kind": "query",
+      "request": "HostedRetentionListStorageGcObjectsRequest",
+      "response": "HostedRetentionListStorageGcObjectsResponse"
+    },
+    {
+      "convex": "status:publishWorkspaceStatus",
+      "id": "status.publishWorkspaceStatus",
+      "kind": "mutation",
+      "request": "HostedStatusPublishWorkspaceStatusRequest",
+      "response": "HostedStatusPublishWorkspaceStatusResponse"
+    },
+    {
+      "convex": "work_views:commitOverlayPointer",
+      "id": "work_views.commitOverlayPointer",
+      "kind": "mutation",
+      "request": "HostedWorkViewsCommitOverlayPointerRequest",
+      "response": "HostedWorkViewsCommitOverlayPointerResponse"
+    },
+    {
+      "convex": "work_views:createWorkView",
+      "id": "work_views.createWorkView",
+      "kind": "mutation",
+      "request": "HostedWorkViewsCreateWorkViewRequest",
+      "response": "HostedWorkView"
+    },
+    {
+      "convex": "work_views:listWorkViews",
+      "id": "work_views.listWorkViews",
+      "kind": "query",
+      "request": "HostedWorkViewsListWorkViewsRequest",
+      "response": "HostedWorkViewsListWorkViewsResponse"
+    },
+    {
+      "convex": "work_views:restoreWorkView",
+      "id": "work_views.restoreWorkView",
+      "kind": "mutation",
+      "request": "HostedWorkViewsRestoreWorkViewRequest",
+      "response": "HostedWorkView"
+    },
+    {
+      "convex": "work_views:updateWorkViewLifecycle",
+      "id": "work_views.updateWorkViewLifecycle",
+      "kind": "mutation",
+      "request": "HostedWorkViewsUpdateWorkViewLifecycleRequest",
+      "response": "HostedWorkView"
+    }
+  ],
+  "machineContractVersion": 8,
+  "registryVersion": 1,
+  "schemaHash": "90aaff183a675d00a355085f8a588d3d135b786f9e88fb8cde5c8a153078173e"
+}

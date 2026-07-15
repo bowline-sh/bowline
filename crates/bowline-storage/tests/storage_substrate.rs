@@ -6,17 +6,18 @@ use std::{
 };
 
 use bowline_core::{
-    ids::{ContentId, ManifestId, PackId, ProjectId, SnapshotId, WorkspaceId},
-    policy::{AccessFlag, MaterializationMode, PathClassification},
+    ids::{
+        ContentId, ManifestDigest, ManifestId, NamespacePageId, PackId, ProjectId, SnapshotId,
+        WorkspaceId,
+    },
     workspace_graph::{
-        ContentLocator, HydrationState, NamespaceEntry, NamespaceEntryKind, RefKind, SnapshotKind,
-        SnapshotManifest, WorkspaceRef, workspace_content_id,
+        ContentLocator, RefKind, SnapshotKind, SnapshotManifest, WorkspaceRef, workspace_content_id,
     },
 };
 use bowline_storage::{
     ByteStore, LocalByteStore, LocalContentCache, LocatorIndexBinding, ObjectKind, PackRecordInput,
-    RangeHydrationRequest, StorageKey, open_index_pack, open_locator_index, seal_index_pack,
-    seal_locator_index, seal_snapshot_manifest, write_source_packs,
+    RangeHydrationRequest, StorageKey, open_locator_index, seal_locator_index,
+    seal_snapshot_manifest, write_source_packs,
 };
 
 #[test]
@@ -63,7 +64,7 @@ fn local_storage_substrate_packs_manifests_and_range_hydrates() {
         }
     }
 
-    let manifest = manifest_for_workload(&workspace_id, &workload, &records, &locators);
+    let manifest = manifest_for_workload(&workspace_id, &workload);
     let sealed_manifest =
         seal_snapshot_manifest(ManifestId::new("mf_0011223344556677"), &manifest, key, 1)
             .expect("manifest seals");
@@ -76,30 +77,8 @@ fn local_storage_substrate_packs_manifests_and_range_hydrates() {
         )
         .expect("manifest stored");
 
-    let index_payload = b"{\"snapshot\":\"snap_substrate\",\"path\":\"acme/web/src/file_042.ts\",\"snippet\":\"export const value42 = 42;\"}";
-    let sealed_index_pack = seal_index_pack(
-        workspace_id.clone(),
-        manifest.snapshot_id.clone(),
-        index_payload,
-        key,
-        1,
-    )
-    .expect("index pack seals");
-    store
-        .put_object(
-            sealed_index_pack.pointer.object_key.clone(),
-            ObjectKind::IndexPack,
-            &sealed_index_pack.bytes,
-            None,
-        )
-        .expect("index pack stored");
-    assert_eq!(
-        open_index_pack(&sealed_index_pack, key, &workspace_id).expect("index pack opens"),
-        index_payload
-    );
-
     let object_keys = store.list_object_keys().expect("object keys");
-    assert_eq!(object_keys.len(), packs.len() + 2);
+    assert_eq!(object_keys.len(), packs.len() + 1);
     assert!(object_keys.len() < workload.len() / 10);
     for object_key in object_keys {
         assert!(
@@ -127,24 +106,6 @@ fn local_storage_substrate_packs_manifests_and_range_hydrates() {
             "manifest leaked {forbidden}"
         );
     }
-    for forbidden in ["acme/web", "src/file_042.ts", "export const value42"] {
-        assert!(
-            !sealed_index_pack
-                .bytes
-                .windows(forbidden.len())
-                .any(|window| window == forbidden.as_bytes()),
-            "index pack leaked {forbidden}"
-        );
-        assert!(
-            !sealed_index_pack
-                .pointer
-                .object_key
-                .as_str()
-                .contains(forbidden),
-            "index pack key leaked {forbidden}"
-        );
-    }
-
     let target_index = 42;
     let target_content_id = records[target_index].content_id.clone();
     let (_pack_id, object_key, locator) = locators
@@ -159,6 +120,7 @@ fn local_storage_substrate_packs_manifests_and_range_hydrates() {
                 workspace_id: &workspace_id,
                 locator: &locator,
                 content_key: [42_u8; 32],
+                content_verification: bowline_storage::ContentVerification::WorkspaceKeyed,
                 key,
                 key_epoch: 1,
             },
@@ -254,34 +216,17 @@ fn tiny_file_workload(count: usize) -> Vec<(String, Vec<u8>)> {
 fn manifest_for_workload(
     workspace_id: &WorkspaceId,
     workload: &[(String, Vec<u8>)],
-    records: &[PackRecordInput],
-    locators: &BTreeMap<ContentId, (PackId, bowline_storage::ObjectKey, ContentLocator)>,
 ) -> SnapshotManifest {
-    let entries = workload
-        .iter()
-        .zip(records)
-        .map(|((path, bytes), record)| NamespaceEntry {
-            path: path.clone(),
-            kind: NamespaceEntryKind::File,
-            classification: PathClassification::WorkspaceSync,
-            mode: MaterializationMode::EncryptedSync,
-            access: vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
-            content_id: Some(record.content_id.clone()),
-            locator: Some(locators.get(&record.content_id).expect("locator").2.clone()),
-            symlink_target: None,
-            byte_len: Some(bytes.len() as u64),
-            hydration_state: HydrationState::Cold,
-        })
-        .collect();
-
     SnapshotManifest {
-        schema_version: 1,
+        schema_version: bowline_core::workspace_graph::SNAPSHOT_SCHEMA_VERSION,
         snapshot_id: SnapshotId::new("snap_substrate"),
         workspace_id: workspace_id.clone(),
         project_id: Some(ProjectId::new("proj_acme_web")),
         kind: SnapshotKind::WorkspaceHead,
         base_snapshot_id: None,
-        entries,
+        namespace_root_id: NamespacePageId::new(format!("nsp_{}", "11".repeat(32))),
+        semantic_manifest_digest: ManifestDigest::new(format!("md_{}", "22".repeat(32))),
+        entry_count: workload.len() as u64,
         refs: vec![WorkspaceRef {
             name: "workspace".to_string(),
             target_snapshot_id: SnapshotId::new("snap_substrate"),

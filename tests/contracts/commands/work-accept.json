@@ -1,6 +1,6 @@
 {
-  "contractVersion": 3,
-  "command": "accept",
+  "contractVersion": 8,
+  "command": "work accept",
   "generatedAt": "2026-06-25T12:00:03Z",
   "action": "accepted",
   "workView": {
@@ -24,7 +24,9 @@
     },
     "ownerDeviceId": "dev_mac",
     "followedBy": [],
-    "hostMaterializations": ["macbook"],
+    "hostMaterializations": [
+      "macbook"
+    ],
     "attention": [],
     "createdAt": "2026-06-25T12:00:00Z",
     "updatedAt": "2026-06-25T12:00:03Z"
@@ -37,8 +39,7 @@
     {
       "label": "Inspect main view diff",
       "command": "cd ~/Code/acme/web && git diff",
-      "effectCategory": "inspect",
-      "targetKind": "workspace"
+      "mutates": false
     }
   ]
 }

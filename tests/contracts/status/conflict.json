@@ -1,7 +1,29 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 8,
   "command": "status",
   "generatedAt": "2026-06-23T12:00:00Z",
+  "statusSummary": {
+    "availability": "degraded",
+    "attention": "required",
+    "primaryFactId": "conflict:ws_code:src/auth.ts",
+    "facts": [{
+      "id": "conflict:ws_code:src/auth.ts",
+      "kind": "sync.conflict_unresolved",
+      "source": "local-conflict-store",
+      "scope": "path",
+      "scopeId": "src/auth.ts",
+      "availabilityImpact": "degraded",
+      "attentionImpact": "required",
+      "summaryKey": "status.sync.conflictUnresolved",
+      "parameters": { "path": "src/auth.ts" },
+      "action": { "kind": "resolve-conflict", "targetId": "src/auth.ts" },
+      "observedAt": "2026-06-23T12:00:00Z",
+      "dedupeKey": "local-conflict-store:path:src/auth.ts"
+    }],
+    "snapshotVersion": 1,
+    "observedAt": "2026-06-23T12:00:00Z",
+    "freshness": "fresh"
+  },
   "workspaceId": "ws_code",
   "projectId": "proj_acme_web",
   "status": {
@@ -33,8 +55,8 @@
     {
       "label": "Resolve the conflict",
       "command": "bowline resolve ~/Code/acme/web",
-      "effectCategory": "inspect",
-      "targetKind": "conflict"
+      "mutates": false
     }
-  ]
+  ],
+  "freshness": "unknown"
 }

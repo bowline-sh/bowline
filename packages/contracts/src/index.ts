@@ -1,11 +1,10 @@
 export {
-  BILLING_PLAN_LIMITS,
-  BILLING_PLAN_TIERS,
   BILLING_STORAGE_UNITS,
   FREE_AUTHORIZED_MACHINE_LIMIT,
   FREE_STORAGE_BYTES,
   PRO_STORAGE_BYTES,
   billingPlanLimits,
+  billingPlanLimitsFor,
   totalStoredBytes,
   type BillingPlanLimits,
   type BillingPlanTier,
@@ -21,7 +20,7 @@ export * from "./guards";
 export * from "./ids";
 export * from "./policy";
 export * from "./resolve";
-export * from "./search";
 export * from "./snapshot";
 export * from "./status";
 export * from "./work";
+export * from "./wire";

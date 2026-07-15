@@ -1,80 +1,19 @@
 use super::*;
+use std::sync::OnceLock;
+
+use bowline_core::devices::display_matching_code;
 
 use crate::surface::style::{self, Presentation, Role};
 
-pub(super) fn render_search_human(output: &bowline_core::commands::SearchCommandOutput) -> String {
-    let pres = Presentation::detect(false);
-    let mut lines = vec![format!(
-        "{}  {} for {}",
-        style::section("Search", &pres),
-        style::count_noun(output.results.len() as u64, "result", "results"),
-        style::paint(&format!("`{}`", output.query), Role::Accent, &pres),
-    )];
-    for result in &output.results {
-        let location = result
-            .line_start
-            .map(|line| format!(":{line}"))
-            .unwrap_or_default();
-        lines.push(format!(
-            "  {}{}  {}",
-            result.path,
-            location,
-            style::paint(&format!("score {:.1}", result.score), Role::Label, &pres),
-        ));
-        if let Some(snippet) = &result.snippet {
-            lines.push(format!("    {}", style::paint(snippet, Role::Label, &pres)));
-        }
-    }
-    if output.results.is_empty() {
-        lines.push(format!(
-            "  {}",
-            style::paint("No indexed matches.", Role::Label, &pres)
-        ));
-    }
-    lines.push(String::new());
-    lines.join("\n")
-}
+const HUMAN_RENDER_JSON_MODE: bool = false;
 
-pub(super) fn render_symbols_human(output: &bowline_core::commands::SymbolCommandOutput) -> String {
-    let pres = Presentation::detect(false);
-    let mut lines = vec![format!(
-        "{}  {} for {}",
-        style::section("Symbols", &pres),
-        style::count_noun(output.symbols.len() as u64, "result", "results"),
-        style::paint(&format!("`{}`", output.query), Role::Accent, &pres),
-    )];
-    for symbol in &output.symbols {
-        lines.push(format!(
-            "  {}  {}  {}",
-            style::paint(&symbol.name, Role::Strong, &pres),
-            style::paint(
-                &format!(
-                    "{} · {}",
-                    style::kebab(&symbol.kind),
-                    style::kebab(&symbol.language)
-                ),
-                Role::Label,
-                &pres,
-            ),
-            style::paint(
-                &format!("{}:{}", symbol.path, symbol.line_start),
-                Role::Label,
-                &pres,
-            ),
-        ));
-    }
-    if output.symbols.is_empty() {
-        lines.push(format!(
-            "  {}",
-            style::paint("No indexed symbols.", Role::Label, &pres)
-        ));
-    }
-    lines.push(String::new());
-    lines.join("\n")
+fn presentation() -> Presentation {
+    static PRESENTATION: OnceLock<Presentation> = OnceLock::new();
+    *PRESENTATION.get_or_init(|| Presentation::detect(HUMAN_RENDER_JSON_MODE))
 }
 
 pub(super) fn render_login_human(output: &bowline_core::commands::LoginCommandOutput) -> String {
-    let pres = Presentation::detect(false);
+    let pres = presentation();
     let mut lines = Vec::new();
     let head = |state: &str, role: Role| {
         format!(
@@ -140,45 +79,53 @@ pub(super) fn render_logout_human(output: &bowline_core::commands::LogoutCommand
     lines.join("\n")
 }
 
-pub(super) fn render_init_human(output: &bowline_core::commands::InitCommandOutput) -> String {
-    let pres = Presentation::detect(false);
+pub(super) fn render_setup_human(output: &bowline_core::commands::SetupCommandOutput) -> String {
+    let pres = presentation();
+    let login = match output.login.status {
+        bowline_core::devices::AccountLoginStatus::AccountAuthenticated => {
+            style::paint("authenticated", Role::Ready, &pres)
+        }
+        bowline_core::devices::AccountLoginStatus::LoginPending => {
+            style::paint("waiting for browser approval", Role::Preparing, &pres)
+        }
+        bowline_core::devices::AccountLoginStatus::Expired => {
+            style::paint("expired", Role::Attention, &pres)
+        }
+        bowline_core::devices::AccountLoginStatus::NotLoggedIn => {
+            style::paint("not logged in", Role::Label, &pres)
+        }
+    };
     let mut lines = vec![
         format!(
             "{}  {}",
             style::section("Root", &pres),
             style::paint(&output.root, Role::Strong, &pres)
         ),
+        format!("{}  {login}", style::section("Login", &pres)),
         format!(
             "{}  {}",
-            style::section("State", &pres),
-            style::paint("observed locally; sync not started", Role::Preparing, &pres)
-        ),
-        format!(
-            "{}  {} · {} · {}",
-            style::section("Observed", &pres),
-            style::count_noun(output.scan_summary.repo_count, "repo", "repos"),
-            style::count_noun(
-                output.scan_summary.workspace_sync_path_count,
-                "file",
-                "files"
-            ),
-            style::count_noun(output.scan_summary.env_file_count, "env file", "env files"),
+            style::section("Workspace", &pres),
+            output.workspace_id.as_str()
         ),
     ];
-    if output.created_root {
+    if let Some(uri) = output
+        .login
+        .verification_uri_complete
+        .as_ref()
+        .or(output.login.verification_uri.as_ref())
+    {
         lines.push(format!(
-            "  {}",
-            style::paint("Created root directory.", Role::Label, &pres)
+            "{}  {}",
+            style::section("Open", &pres),
+            style::paint(uri, Role::Accent, &pres)
         ));
     }
-    if !output.non_actions.is_empty() {
-        lines.push(style::section("Did not", &pres));
-        lines.extend(
-            output
-                .non_actions
-                .iter()
-                .map(|item| format!("  {}", style::paint(item, Role::Label, &pres))),
-        );
+    if let Some(code) = &output.login.user_code {
+        lines.push(format!(
+            "{}  {}",
+            style::section("Code", &pres),
+            style::paint(code, Role::Strong, &pres)
+        ));
     }
     append_next_actions(&mut lines, &output.next_actions);
     lines.push(String::new());
@@ -188,7 +135,7 @@ pub(super) fn render_init_human(output: &bowline_core::commands::InitCommandOutp
 pub(super) fn render_devices_human(
     output: &bowline_core::commands::DevicesCommandOutput,
 ) -> String {
-    let pres = Presentation::detect(false);
+    let pres = presentation();
     let mut lines = Vec::new();
     match output.action {
         bowline_core::commands::DeviceCommandAction::List => {
@@ -229,7 +176,7 @@ pub(super) fn render_devices_human(
                     style::paint(
                         &format!(
                             "code {} ({})",
-                            request.matching_code,
+                            display_matching_code(&request.matching_code),
                             request.request_id.as_str()
                         ),
                         Role::Label,
@@ -248,7 +195,11 @@ pub(super) fn render_devices_human(
                 lines.push(format!(
                     "{}  {}",
                     style::section("Code", &pres),
-                    style::paint(&request.matching_code, Role::Strong, &pres)
+                    style::paint(
+                        &display_matching_code(&request.matching_code),
+                        Role::Strong,
+                        &pres
+                    )
                 ));
                 lines.push(style::paint(
                     "Waiting for approval on an existing trusted device.",
@@ -293,6 +244,57 @@ pub(super) fn render_devices_human(
     lines.join("\n")
 }
 
+pub(super) fn render_devices_quiet(
+    output: &bowline_core::commands::DevicesCommandOutput,
+) -> String {
+    bare_values(
+        output
+            .devices
+            .iter()
+            .map(|device| device.id.as_str())
+            .chain(
+                output
+                    .pending_requests
+                    .iter()
+                    .map(|request| request.request_id.as_str()),
+            )
+            .chain(
+                output
+                    .revoked_devices
+                    .iter()
+                    .map(|device| device.id.as_str()),
+            ),
+    )
+}
+
+pub(super) fn render_events_quiet(output: &EventsCommandOutput) -> String {
+    bare_values(output.events.iter().map(|event| event.id.as_str()))
+}
+
+pub(super) fn render_history_quiet(output: &bowline_core::history::HistoryCommandOutput) -> String {
+    if output.path_entries.is_empty() {
+        return bare_values(output.restore_points.iter().map(|point| point.id.as_str()));
+    }
+    bare_values(
+        output
+            .path_entries
+            .iter()
+            .map(|entry| entry.restore_point_id.as_str()),
+    )
+}
+
+pub(super) fn render_work_quiet(output: &bowline_core::commands::WorkListCommandOutput) -> String {
+    bare_values(output.work_views.iter().map(|view| view.id.as_str()))
+}
+
+fn bare_values<'a>(values: impl Iterator<Item = &'a str>) -> String {
+    let mut output = values.collect::<Vec<_>>().join("\n");
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output
+}
+
 fn approval_line(
     label: &str,
     device: Option<&bowline_core::devices::DeviceRecord>,
@@ -309,7 +311,7 @@ fn approval_line(
 }
 
 pub(super) fn render_recovery_human(output: &recovery::RecoveryRunOutput) -> String {
-    let pres = Presentation::detect(false);
+    let pres = presentation();
     let mut lines = Vec::new();
     match output.output.action {
         bowline_core::commands::RecoveryCommandAction::Status => {
@@ -362,7 +364,7 @@ fn append_recovery_words(lines: &mut Vec<String>, words: Option<&str>, pres: &Pr
 pub(super) fn render_bootstrap_ssh_human(
     output: &bowline_core::commands::BootstrapSshCommandOutput,
 ) -> String {
-    let pres = Presentation::detect(false);
+    let pres = presentation();
     let (trust_label, trust_role) = if output.trusted {
         ("trusted", Role::Ready)
     } else {
@@ -385,13 +387,28 @@ pub(super) fn render_bootstrap_ssh_human(
         ),
     ];
     lines.extend(output.steps.iter().map(|step| {
+        let step_name = step.name.to_string();
         format!(
             "  {}  {}",
-            style::paint(&step.name, Role::Label, &pres),
+            style::paint(&step_name, Role::Label, &pres),
             step.summary
         )
     }));
-    append_next_actions(&mut lines, &output.next_actions);
+    for action in &output.repair_actions {
+        match &action.command {
+            Some(command) => lines.push(format!(
+                "  {}  {}\n    {}",
+                style::paint("Repair", Role::Label, &pres),
+                action.label,
+                command
+            )),
+            None => lines.push(format!(
+                "  {}  {}",
+                style::paint("Repair", Role::Label, &pres),
+                action.label
+            )),
+        }
+    }
     lines.push(String::new());
     lines.join("\n")
 }
@@ -418,7 +435,7 @@ fn recovery_lifecycle_role(lifecycle: bowline_core::devices::RecoveryKeyLifecycl
     }
 }
 
-pub(super) fn append_next_actions(lines: &mut Vec<String>, next_actions: &[SafeAction]) {
-    let pres = Presentation::detect(false);
+pub(super) fn append_next_actions(lines: &mut Vec<String>, next_actions: &[RepairCommand]) {
+    let pres = presentation();
     lines.extend(style::next_actions_block(next_actions, &pres));
 }

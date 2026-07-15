@@ -1,0 +1,30 @@
+{
+  "contractVersion": 8,
+  "command": "handoff",
+  "generatedAt": "2026-06-29T12:00:00Z",
+  "outcome": "error",
+  "target": "linux-home",
+  "projectPath": "~/Code/bowline",
+  "candidates": [
+    {
+      "agent": "codex",
+      "sessionId": "sess_codex_1",
+      "sourcePath": "~/.codex/sessions/sess_codex_1.jsonl",
+      "projectPath": "~/Code/bowline",
+      "modifiedAtUnixSeconds": 1782734400,
+      "selected": false
+    }
+  ],
+  "error": {
+    "code": "tmux_missing",
+    "message": "tmux is not available on the target",
+    "recoverability": "user-action"
+  },
+  "nextActions": [
+    {
+      "label": "Inspect handoff help",
+      "command": "bowline help handoff",
+      "mutates": false
+    }
+  ]
+}

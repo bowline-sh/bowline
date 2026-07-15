@@ -7,17 +7,17 @@ import {
 } from "../billing";
 
 describe("billing plan contract", () => {
-  it("pins Free to two machines and 5 decimal GB", () => {
+  it("pins Free to three machines and 10 decimal GB", () => {
     expect(BILLING_STORAGE_UNITS).toBe("decimal-gb");
-    expect(billingPlanLimits("free")).toEqual({
-      machineLimit: 2,
-      storageBytesLimit: 5_000_000_000,
+    expect(billingPlanLimits.free).toEqual({
+      machineLimit: 3,
+      storageBytesLimit: 10_000_000_000,
       tier: "free",
     });
   });
 
   it("pins Pro storage without inventing a machine cap", () => {
-    expect(billingPlanLimits("pro")).toEqual({
+    expect(billingPlanLimits.pro).toEqual({
       machineLimit: null,
       storageBytesLimit: 250_000_000_000,
       tier: "pro",
@@ -25,7 +25,7 @@ describe("billing plan contract", () => {
   });
 
   it("keeps Team reserved", () => {
-    expect(billingPlanLimits("team")).toEqual({
+    expect(billingPlanLimits.team).toEqual({
       machineLimit: null,
       storageBytesLimit: null,
       tier: "team",

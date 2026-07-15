@@ -1,17 +1,22 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use bowline_core::{
     work_views::{WorkDiffChangeKind, WorkDiffEntry, WorkView},
-    workspace_graph::normalize_workspace_path,
+    workspace_graph::{NamespaceEntryKind, normalize_workspace_path},
 };
+use bowline_storage::LocalContentCache;
 
 use crate::metadata::{LocalWriteLogRecord, MetadataStore};
 
 use super::{
     WorkViewError,
+    content_identity::verified_content_matches_path_with_checkpoint,
     paths::{
-        file_content_hash, files_under, is_secret_bearing_work_path,
-        is_source_control_metadata_path, work_view_base_has_path,
+        cancellation_checkpoint, files_under_with_checkpoint, is_secret_bearing_work_path,
+        is_source_control_metadata_path,
     },
 };
 
@@ -64,6 +69,18 @@ impl OverlayDeltaKind {
     pub fn requires_review(&self) -> bool {
         matches!(self, Self::Unsupported { .. } | Self::Symlink | Self::Chmod)
     }
+
+    fn dedupe_key(&self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::Modify => "modify",
+            Self::Delete => "delete",
+            Self::Rename { .. } => "rename",
+            Self::Symlink => "symlink",
+            Self::Chmod => "chmod",
+            Self::Unsupported { .. } => "unsupported",
+        }
+    }
 }
 
 pub fn logged_overlay_deltas(
@@ -73,8 +90,8 @@ pub fn logged_overlay_deltas(
     let visible_prefix = normalize_workspace_path(
         &store.workspace_relative_path(&work_view.workspace_id, &work_view.visible_path)?,
     );
-    let mut deltas = Vec::new();
-    for write in store.local_write_log(&work_view.workspace_id)? {
+    let mut deltas = BTreeMap::new();
+    for write in store.local_writes_for_path_prefix(&work_view.workspace_id, &visible_prefix)? {
         let path = normalize_workspace_path(
             &store.workspace_relative_path(&work_view.workspace_id, &write.path)?,
         );
@@ -88,27 +105,58 @@ pub fn logged_overlay_deltas(
         if is_source_control_metadata_path(&relative_path) {
             continue;
         }
-        deltas.push(delta_from_write(write, relative_path));
+        let rename_from = write.source_path.as_deref().and_then(|source_path| {
+            let source_path = normalize_workspace_path(
+                &store
+                    .workspace_relative_path(&work_view.workspace_id, source_path)
+                    .ok()?,
+            );
+            relative_to_work_view(&source_path, &visible_prefix)
+                .filter(|relative| !relative.is_empty())
+                .map(PathBuf::from)
+        });
+        let delta = delta_from_write(write, relative_path, rename_from);
+        deltas.insert((delta.path.clone(), delta.kind.dedupe_key()), delta);
     }
-    deltas.sort_by(|left, right| {
-        left.path
-            .cmp(&right.path)
-            .then(left.write_id.cmp(&right.write_id))
-    });
-    deltas.dedup_by(|left, right| left.path == right.path && left.kind == right.kind);
-    Ok(deltas)
+    Ok(deltas.into_values().collect())
 }
 
-pub fn filesystem_overlay_deltas(
+pub fn filesystem_overlay_deltas_with_checkpoint(
     store: &MetadataStore,
     work_view: &WorkView,
     work_root: &Path,
+    checkpoint: &mut dyn FnMut() -> bool,
 ) -> Result<Vec<OverlayDelta>, WorkViewError> {
     let mut changes = Vec::new();
     if !work_root.exists() {
         return Ok(changes);
     }
-    for file in files_under(work_root)? {
+    let descriptor = store
+        .work_view_exposed_base(&work_view.workspace_id, &work_view.id)?
+        .ok_or_else(|| WorkViewError::SnapshotMaterialization {
+            snapshot_id: work_view.base_snapshot_id.as_str().to_string(),
+            reason: "authoritative exposed base is missing".to_string(),
+        })?;
+    let project_prefix = descriptor.project_prefix.trim_end_matches('/');
+    let exposed = super::namespace::load_exposed_snapshot(store, &descriptor)?;
+    let base_files = super::namespace::collect_prefix(
+        &exposed,
+        &bowline_core::workspace_graph::WorkspaceRelativePath::new(project_prefix),
+    )?
+    .into_iter()
+    .filter(|entry| entry.kind == NamespaceEntryKind::File)
+    .filter_map(|entry| {
+        let relative = entry
+            .path
+            .strip_prefix(project_prefix)?
+            .trim_start_matches('/')
+            .to_string();
+        (!relative.is_empty()).then_some((relative, entry))
+    })
+    .collect::<BTreeMap<_, _>>();
+    let cache = LocalContentCache::open(store.content_cache_root()?)?;
+    for file in files_under_with_checkpoint(work_root, checkpoint)? {
+        cancellation_checkpoint(checkpoint)?;
         let relative = file
             .strip_prefix(work_root)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?
@@ -117,13 +165,20 @@ pub fn filesystem_overlay_deltas(
             continue;
         }
         let relative_path = normalize_workspace_path(&relative.display().to_string());
-        let kind = match store.work_view_base_hash(
-            &work_view.workspace_id,
-            &work_view.id,
-            &relative_path,
-        )? {
-            Some(base_hash) => {
-                if file_content_hash(&file)? == base_hash {
+        let kind = match base_files.get(&relative_path) {
+            Some(base) => {
+                let content_id = base.content_id.as_ref().ok_or_else(|| {
+                    WorkViewError::SnapshotMaterialization {
+                        snapshot_id: work_view.base_snapshot_id.as_str().to_string(),
+                        reason: format!(
+                            "content-addressed exposed file `{relative_path}` has no content id"
+                        ),
+                    }
+                })?;
+                let unchanged = verified_content_matches_path_with_checkpoint(
+                    &cache, content_id, &file, checkpoint,
+                )?;
+                if unchanged {
                     continue;
                 }
                 OverlayDeltaKind::Modify
@@ -137,13 +192,14 @@ pub fn filesystem_overlay_deltas(
             write_id: None,
         });
     }
-    for (relative, _hash) in store.work_view_base_files(&work_view.workspace_id, &work_view.id)? {
+    for relative in base_files.keys() {
+        cancellation_checkpoint(checkpoint)?;
         let relative = PathBuf::from(relative);
         if is_source_control_metadata_path(&relative) {
             continue;
         }
         let work_path = work_root.join(&relative);
-        if work_view_base_has_path(store, work_view, &relative)? && !work_path.is_file() {
+        if !work_path.is_file() {
             changes.push(OverlayDelta {
                 contains_secrets: is_secret_bearing_work_path(&relative),
                 path: relative,
@@ -179,13 +235,17 @@ pub fn diff_entries_from_deltas(
     entries
 }
 
-fn delta_from_write(write: LocalWriteLogRecord, relative_path: PathBuf) -> OverlayDelta {
+fn delta_from_write(
+    write: LocalWriteLogRecord,
+    relative_path: PathBuf,
+    rename_from: Option<PathBuf>,
+) -> OverlayDelta {
     let operation = write.operation.as_str();
     let kind = match operation {
         "create" | "created" => OverlayDeltaKind::Create,
         "delete" | "deleted" => OverlayDeltaKind::Delete,
         "rename" | "renamed" => OverlayDeltaKind::Rename {
-            from: write.source_path.map(PathBuf::from).unwrap_or_default(),
+            from: rename_from.unwrap_or_default(),
         },
         "symlink" | "readlink" => OverlayDeltaKind::Symlink,
         "chmod" | "mode" => OverlayDeltaKind::Chmod,
@@ -253,6 +313,7 @@ mod tests {
                         created_at: "2026-06-27T00:00:00Z".to_string(),
                     },
                     PathBuf::from(path),
+                    source_path.map(PathBuf::from),
                 )
                 .kind
             })

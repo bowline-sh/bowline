@@ -1,0 +1,144 @@
+{
+  "corpusVersion": 1,
+  "mismatchCount": 0,
+  "model": "retired-broad-join-vs-generated-projection-boundaries",
+  "results": {
+    "large": {
+      "current": {
+        "assembledDocumentReads": 993,
+        "documentReadsByBoundary": {
+          "activity": 503,
+          "authorizedDevices": 36,
+          "current": 8,
+          "pendingDevices": 105,
+          "recovery": 105,
+          "revokedDevices": 105,
+          "shell": 131
+        },
+        "queryTimeReducerCalls": 0,
+        "responseBytes": 35505,
+        "workspaceCurrentDocumentReads": 8
+      },
+      "invalidations": {
+        "billingWebhook": ["current", "shell"],
+        "compactEvent": ["activity", "current"],
+        "deviceApproval": [
+          "activity",
+          "authorizedDevices",
+          "current",
+          "pendingDevices",
+          "revokedDevices"
+        ],
+        "selectedWorkspace": [
+          "activity",
+          "authorizedDevices",
+          "current",
+          "pendingDevices",
+          "recovery",
+          "revokedDevices",
+          "shell"
+        ],
+        "statusHeartbeat": ["current"]
+      },
+      "legacy": {
+        "assembledDocumentReads": 2317,
+        "documentReadsBySource": {
+          "authorizedDevices": 96,
+          "billingProviderRows": 2,
+          "compactEvents": 200,
+          "encryptedDeviceGrants": 128,
+          "pendingDevices": 256,
+          "recoveryEnvelopes": 512,
+          "revokedDevices": 768,
+          "statusSnapshots": 32,
+          "usageCounters": 64,
+          "workspaceAccounts": 193,
+          "workspaceMemberships": 65,
+          "workspaceRefs": 1
+        },
+        "queryTimeReducerCalls": 3,
+        "responseBytes": 37167
+      },
+      "parameters": {
+        "authorized": 32,
+        "events": 500,
+        "grants": 128,
+        "memberships": 64,
+        "pending": 128,
+        "recovery": 256,
+        "revoked": 256,
+        "statusProducers": 32,
+        "workspaces": 64
+      }
+    },
+    "small": {
+      "current": {
+        "assembledDocumentReads": 63,
+        "documentReadsByBoundary": {
+          "activity": 23,
+          "authorizedDevices": 7,
+          "current": 8,
+          "pendingDevices": 6,
+          "recovery": 6,
+          "revokedDevices": 6,
+          "shell": 7
+        },
+        "queryTimeReducerCalls": 0,
+        "responseBytes": 1544,
+        "workspaceCurrentDocumentReads": 8
+      },
+      "invalidations": {
+        "billingWebhook": ["current", "shell"],
+        "compactEvent": ["activity", "current"],
+        "deviceApproval": [
+          "activity",
+          "authorizedDevices",
+          "current",
+          "pendingDevices",
+          "revokedDevices"
+        ],
+        "selectedWorkspace": [
+          "activity",
+          "authorizedDevices",
+          "current",
+          "pendingDevices",
+          "recovery",
+          "revokedDevices",
+          "shell"
+        ],
+        "statusHeartbeat": ["current"]
+      },
+      "legacy": {
+        "assembledDocumentReads": 62,
+        "documentReadsBySource": {
+          "authorizedDevices": 9,
+          "billingProviderRows": 2,
+          "compactEvents": 20,
+          "encryptedDeviceGrants": 2,
+          "pendingDevices": 4,
+          "recoveryEnvelopes": 4,
+          "revokedDevices": 6,
+          "statusSnapshots": 2,
+          "usageCounters": 2,
+          "workspaceAccounts": 7,
+          "workspaceMemberships": 3,
+          "workspaceRefs": 1
+        },
+        "queryTimeReducerCalls": 3,
+        "responseBytes": 1354
+      },
+      "parameters": {
+        "authorized": 3,
+        "events": 20,
+        "grants": 2,
+        "memberships": 2,
+        "pending": 2,
+        "recovery": 2,
+        "revoked": 2,
+        "statusProducers": 2,
+        "workspaces": 2
+      }
+    }
+  },
+  "seed": 113006
+}

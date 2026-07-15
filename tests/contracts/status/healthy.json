@@ -1,7 +1,8 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 8,
   "command": "status",
   "generatedAt": "2026-06-23T12:00:00Z",
+  "statusSummary": { "availability": "ready", "attention": "none", "facts": [], "snapshotVersion": 1, "observedAt": "2026-06-23T12:00:00Z", "freshness": "fresh" },
   "workspaceId": "ws_code",
   "projectId": "proj_acme_web",
   "status": {
@@ -22,13 +23,6 @@
     }
   ],
   "limits": [],
-  "hydrationProgress": [
-    {
-      "bytesDone": 4096,
-      "bytesRemaining": 0,
-      "cause": "remote-import"
-    }
-  ],
   "eventWatermarks": {
     "lastScanAt": "2026-06-23T11:59:55Z",
     "lastEventId": "evt_status_healthy_001",
@@ -37,5 +31,6 @@
     "watcherState": "ready",
     "networkState": "online"
   },
-  "nextActions": []
+  "nextActions": [],
+  "freshness": "unknown"
 }

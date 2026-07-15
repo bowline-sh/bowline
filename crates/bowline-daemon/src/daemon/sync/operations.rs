@@ -1,13 +1,14 @@
 use super::*;
+use bowline_core::hosted::EMPTY_SNAPSHOT_ID;
+use bowline_core::retry::BOUNDED_SYNC_RETRY_POLICY;
+use bowline_local::metadata::SyncOperationKind;
+
+const SYNC_SUMMARY_NONE_LABEL: &str = "none";
 
 pub(in crate::daemon) fn requeue_startup_sync_claims(options: &ContinuousSyncOptions) {
     let workspace_id = options.args.workspace_id();
     let workspace_key_available = key_store()
-        .and_then(|store| {
-            store
-                .load_workspace_key(&workspace_id)
-                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
-        })
+        .and_then(|store| store.load_workspace_key(&workspace_id))
         .ok()
         .flatten()
         .is_some();
@@ -23,34 +24,34 @@ pub(in crate::daemon) fn requeue_startup_sync_claims_with_resolved_attention(
     hosted_config_available: bool,
     workspace_key_available: bool,
 ) {
-    let Ok(store) = MetadataStore::open(options.args.state_root.join(DEFAULT_DATABASE_FILE)) else {
+    let store = CachedStore::new(options.args.state_root.join(DEFAULT_DATABASE_FILE));
+    let Ok(()) = store.with_store(|store| {
+        requeue_startup_sync_claims_in_store(
+            store,
+            options,
+            hosted_config_available,
+            workspace_key_available,
+        );
+        Ok(())
+    }) else {
         return;
     };
+}
+
+fn requeue_startup_sync_claims_in_store(
+    store: &MetadataStore,
+    options: &ContinuousSyncOptions,
+    hosted_config_available: bool,
+    workspace_key_available: bool,
+) {
     let workspace_id = options.args.workspace_id();
     let device_id = DeviceId::new(options.args.device_id.clone());
     let now = current_timestamp();
-    if let Err(error) = store.requeue_claimed_sync_operations_for_device_kind(
-        &workspace_id,
-        "daemon-reconcile",
-        &device_id,
-        &now,
-    ) {
-        eprintln!("bowline-daemon store write failed (requeue_claimed_sync_operations): {error}");
-    }
-    if let Err(error) = store.requeue_waiting_retry_sync_operations_for_device_kind(
-        &workspace_id,
-        "daemon-reconcile",
-        &device_id,
-        &now,
-    ) {
-        eprintln!(
-            "bowline-daemon store write failed (requeue_waiting_retry_sync_operations): {error}"
-        );
-    }
+    let operation_kind = SyncOperationKind::Reconcile;
     if hosted_config_available
         && let Err(error) = store.requeue_attention_sync_operations_for_device_kind_with_error(
             &workspace_id,
-            "daemon-reconcile",
+            operation_kind,
             &device_id,
             "CONVEX_URL is required for daemon sync",
             &now,
@@ -63,7 +64,7 @@ pub(in crate::daemon) fn requeue_startup_sync_claims_with_resolved_attention(
     if workspace_key_available
         && let Err(error) = store.requeue_attention_sync_operations_for_device_kind_with_error(
             &workspace_id,
-            "daemon-reconcile",
+            operation_kind,
             &device_id,
             "workspace key is missing",
             &now,
@@ -85,7 +86,7 @@ pub(in crate::daemon) fn sync_event(
     now: &str,
 ) -> WorkspaceEvent {
     let mut event = WorkspaceEvent::new(
-        sync_event_id(name, operation_id, now),
+        sync_event_id(&name, operation_id, now),
         name,
         now,
         severity,
@@ -105,7 +106,7 @@ pub(in crate::daemon) fn sync_event(
     event
 }
 
-pub(in crate::daemon) fn sync_event_id(name: EventName, operation_id: &str, now: &str) -> EventId {
+pub(in crate::daemon) fn sync_event_id(name: &EventName, operation_id: &str, now: &str) -> EventId {
     EventId::new(format!(
         "evt_sync_{}_{}_{}",
         stable_token(&format!("{name:?}")),
@@ -114,66 +115,73 @@ pub(in crate::daemon) fn sync_event_id(name: EventName, operation_id: &str, now:
     ))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::daemon) enum SyncFailureAction {
-    Attention,
-    Offline,
-    Retry,
-}
-
-pub(in crate::daemon) fn sync_failure_action(message: &str) -> SyncFailureAction {
-    if message.contains("CONVEX_URL")
-        || message.contains("workspace key is missing")
-        || message.contains("trusted")
-        || message.contains("approve this device")
-    {
-        return SyncFailureAction::Attention;
-    }
-    if message.contains("offline")
-        || message.contains("network")
-        || message.contains("timed out")
-        || message.contains("connection")
-        || message.contains("snapshot manifest")
-        || message.contains("missing object")
-        || message.contains("missing metadata for object")
-        || (message.contains("R2 download for object") && message.contains("HTTP 404"))
-    {
-        return SyncFailureAction::Offline;
-    }
-    SyncFailureAction::Retry
-}
-
 pub(in crate::daemon) fn retry_delay_seconds(operation_id: &str, attempt_count: u32) -> i64 {
-    let exponent = attempt_count.saturating_sub(1).min(5);
-    let base = (SYNC_RETRY_INITIAL_SECONDS * 2_i64.pow(exponent)).min(SYNC_RETRY_MAX_SECONDS);
-    let jitter = operation_id.bytes().fold(0_u64, |state, byte| {
-        state.wrapping_mul(31).wrapping_add(byte as u64)
-    }) % (SYNC_RETRY_JITTER_SECONDS as u64 + 1);
-    (base + jitter as i64).min(SYNC_RETRY_MAX_SECONDS)
+    i64::try_from(
+        BOUNDED_SYNC_RETRY_POLICY
+            .delay(operation_id, attempt_count)
+            .as_secs(),
+    )
+    .expect("the bounded sync retry delay fits i64 seconds")
 }
 
 impl SyncOnceSummary {
+    pub(in crate::daemon) fn snapshot_root_manifest_id_label(&self) -> &str {
+        self.snapshot_root_manifest_id
+            .as_deref()
+            .unwrap_or(SYNC_SUMMARY_NONE_LABEL)
+    }
+
+    pub(in crate::daemon) fn manifest_object_key_label(&self) -> &str {
+        self.manifest_object_key
+            .as_deref()
+            .unwrap_or(SYNC_SUMMARY_NONE_LABEL)
+    }
+
+    pub(in crate::daemon) fn stale(&self) -> bool {
+        matches!(
+            self.outcome,
+            SyncSummaryOutcome::Uploaded { stale: true }
+                | SyncSummaryOutcome::Merged { stale: true }
+        )
+    }
+
+    pub(in crate::daemon) fn merged(&self) -> bool {
+        matches!(self.outcome, SyncSummaryOutcome::Merged { .. })
+    }
+
+    pub(in crate::daemon) fn has_committed_effect(&self) -> bool {
+        self.cancelled_late
+            || matches!(
+                self.outcome,
+                SyncSummaryOutcome::Imported
+                    | SyncSummaryOutcome::Uploaded { .. }
+                    | SyncSummaryOutcome::Merged { .. }
+                    | SyncSummaryOutcome::Conflicted
+            )
+    }
+
     pub(in crate::daemon) fn sync_state(&self) -> &'static str {
-        if self.conflict_count > 0 {
-            "conflicted"
-        } else if self.merged {
-            "merged"
-        } else if self.stale {
-            "stale"
-        } else if self.object_manifest_id == "none" {
-            "no-changes"
-        } else {
-            "advanced"
+        match self.outcome {
+            SyncSummaryOutcome::Conflicted => "conflicted",
+            SyncSummaryOutcome::Merged { .. } => "merged",
+            SyncSummaryOutcome::Uploaded { stale: true } => "stale",
+            SyncSummaryOutcome::NoWorkspaceRef
+            | SyncSummaryOutcome::NoChanges
+            | SyncSummaryOutcome::Imported => "no-changes",
+            SyncSummaryOutcome::Uploaded { stale: false } => "advanced",
         }
     }
 
     pub(in crate::daemon) fn daemon_state(&self) -> &'static str {
-        if self.conflict_count > 0 {
-            "attention"
-        } else if self.stale {
-            "retrying"
-        } else {
-            "idle"
+        match self.outcome {
+            SyncSummaryOutcome::Conflicted => "attention",
+            SyncSummaryOutcome::Uploaded { stale: true }
+            | SyncSummaryOutcome::Merged { stale: true } => "retrying",
+            SyncSummaryOutcome::NoWorkspaceRef
+            | SyncSummaryOutcome::NoChanges
+            | SyncSummaryOutcome::Imported
+            | SyncSummaryOutcome::Uploaded { stale: false }
+            | SyncSummaryOutcome::Merged { stale: false } => "idle",
         }
     }
 }
@@ -221,6 +229,10 @@ impl ContinuousSyncRuntime {
             "conflictCount".to_string(),
             serde_json::Value::from(summary.conflict_count),
         );
+        event.payload.insert(
+            "scan".to_string(),
+            serde_json::to_value(&summary.scan).unwrap_or_else(|_| serde_json::json!({})),
+        );
         self.store_health
             .record("append_event(sync_completed)", store.append_event(event));
         for conflict in &summary.conflicts {
@@ -238,7 +250,7 @@ impl ContinuousSyncRuntime {
         let workspace_id = self.options.args.workspace_id();
         let event_operation_id = format!("{operation_id}:{}", conflict.id);
         let mut event = WorkspaceEvent::new(
-            sync_event_id(EventName::ConflictCreated, &event_operation_id, now),
+            sync_event_id(&EventName::ConflictCreated, &event_operation_id, now),
             EventName::ConflictCreated,
             now,
             EventSeverity::Attention,
@@ -315,19 +327,13 @@ pub(in crate::daemon) fn latest_completed_daemon_reconcile(
     device_id: &DeviceId,
 ) -> Option<SyncOperationRecord> {
     store
-        .sync_operations(workspace_id)
-        .ok()?
-        .into_iter()
-        .filter(|operation| {
-            operation.kind == "daemon-reconcile"
-                && operation.state == "completed"
-                && operation.device_id.as_ref() == Some(device_id)
-        })
-        .max_by(|left, right| {
-            left.updated_at
-                .cmp(&right.updated_at)
-                .then(left.id.cmp(&right.id))
-        })
+        .latest_completed_sync_operation_for_device_kind(
+            workspace_id,
+            SyncOperationKind::Reconcile,
+            device_id,
+        )
+        .ok()
+        .flatten()
 }
 
 pub(in crate::daemon) fn local_writes_after(
@@ -337,12 +343,7 @@ pub(in crate::daemon) fn local_writes_after(
     completed_at: &str,
 ) -> bool {
     store
-        .local_write_log(workspace_id)
-        .map(|writes| {
-            writes.into_iter().any(|write| {
-                write.device_id == *device_id && write.created_at.as_str() > completed_at
-            })
-        })
+        .has_local_write_after_device(workspace_id, device_id, completed_at)
         .unwrap_or(false)
 }
 
@@ -361,7 +362,7 @@ pub(in crate::daemon) fn remote_cursor_ahead_of_local_head(
         Ok(None) => cursor
             .last_observed_snapshot_id
             .as_deref()
-            .is_some_and(|snapshot_id| snapshot_id != "empty"),
+            .is_some_and(|snapshot_id| snapshot_id != EMPTY_SNAPSHOT_ID),
         Err(_) => false,
     }
 }
@@ -393,6 +394,58 @@ impl SyncOperationCountsExt for SyncOperationCounts {
             && self.claimed == 0
             && self.waiting_retry == 0
             && self.blocked_offline == 0
+            && self.reconciliation_required == 0
             && self.attention == 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_once_summary_derives_presentation_state_labels_from_outcome() {
+        for (outcome, sync_state, daemon_state) in [
+            (SyncSummaryOutcome::NoWorkspaceRef, "no-changes", "idle"),
+            (SyncSummaryOutcome::NoChanges, "no-changes", "idle"),
+            (SyncSummaryOutcome::Imported, "no-changes", "idle"),
+            (
+                SyncSummaryOutcome::Uploaded { stale: false },
+                "advanced",
+                "idle",
+            ),
+            (
+                SyncSummaryOutcome::Uploaded { stale: true },
+                "stale",
+                "retrying",
+            ),
+            (
+                SyncSummaryOutcome::Merged { stale: false },
+                "merged",
+                "idle",
+            ),
+            (
+                SyncSummaryOutcome::Merged { stale: true },
+                "merged",
+                "retrying",
+            ),
+            (SyncSummaryOutcome::Conflicted, "conflicted", "attention"),
+        ] {
+            let summary = SyncOnceSummary {
+                workspace_id: "ws_test".to_string(),
+                snapshot_id: "snap_test".to_string(),
+                version: 1,
+                outcome,
+                snapshot_root_manifest_id: None,
+                manifest_object_key: None,
+                namespace_root_id: None,
+                conflict_count: usize::from(outcome == SyncSummaryOutcome::Conflicted),
+                conflicts: Vec::new(),
+                scan: SyncScanSummary::default(),
+                cancelled_late: false,
+            };
+            assert_eq!(summary.sync_state(), sync_state);
+            assert_eq!(summary.daemon_state(), daemon_state);
+        }
     }
 }

@@ -1,19 +1,44 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 8,
   "command": "status",
   "generatedAt": "2026-06-23T12:00:00Z",
+  "statusSummary": {
+    "availability": "ready",
+    "attention": "required",
+    "primaryFactId": "approval:device-request:ws_code:dev-mac",
+    "facts": [
+      {
+        "id": "approval:device-request:ws_code:dev-mac",
+        "kind": "device.approval_requested",
+        "source": "hosted-device-trust",
+        "scope": "workspace",
+        "scopeId": "ws_code",
+        "availabilityImpact": "none",
+        "attentionImpact": "required",
+        "summaryKey": "status.device.approval_requested",
+        "parameters": { "deviceName": "Dev-Mac" },
+        "action": {
+          "kind": "approve-device-local",
+          "targetId": "device-request:ws_code:dev-mac"
+        },
+        "observedAt": "2026-06-23T12:00:00Z",
+        "dedupeKey": "hosted-device-trust:workspace:ws_code:device-request:ws_code:dev-mac"
+      }
+    ],
+    "snapshotVersion": 1,
+    "observedAt": "2026-06-23T12:00:00Z",
+    "freshness": "fresh"
+  },
   "workspaceId": "ws_code",
   "projectId": "proj_acme_web",
   "status": {
     "level": "attention",
-    "attentionItems": [
-      "Dev-Mac is waiting for workspace approval."
-    ]
+    "attentionItems": ["Dev-Mac is waiting for workspace approval."]
   },
   "items": [
     {
       "kind": "device",
-      "summary": "Dev-Mac requested approval with matching code maple-river-4821.",
+      "summary": "Dev-Mac is waiting for approval with matching code <redacted>.",
       "subject": {
         "kind": "device-approval-request",
         "id": "device-request:ws_code:dev-mac"
@@ -33,16 +58,18 @@
   },
   "nextActions": [
     {
-      "label": "Approve Dev-Mac",
-      "command": "bowline approve --root ~/Code --request device-request:ws_code:dev-mac",
-      "effectCategory": "trust",
-      "targetKind": "device"
-    },
-    {
       "label": "Inspect workspace status",
       "command": "bowline status --root ~/Code",
-      "effectCategory": "inspect",
-      "targetKind": "workspace"
+      "mutates": false
+    }
+  ],
+  "freshness": "unknown",
+  "deviceApprovals": [
+    {
+      "requestId": "device-request:ws_code:dev-mac",
+      "deviceName": "Dev-Mac",
+      "code": "<redacted>",
+      "approveCommand": "bowline device approve --root ~/Code --code '<redacted>'"
     }
   ]
 }

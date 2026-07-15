@@ -3,7 +3,7 @@ import type {
   DeviceFingerprint,
   DeviceRecord,
 } from "./devices";
-import type { WorkspaceStatus, SafeAction } from "./status";
+import type { RepairCommand, WorkspaceStatus } from "./status";
 import type { CommandOutputBase } from "./commands";
 
 export type BootstrapStepState = "pending" | "completed" | "blocked";
@@ -26,5 +26,5 @@ export type BootstrapSshCommandOutput = CommandOutputBase<"connect"> & {
   readonly sync: "ready" | "prepared" | "blocked";
   readonly nextRequiredPhase?: number;
   readonly remoteStatus: WorkspaceStatus;
-  readonly nextActions: readonly SafeAction[];
+  readonly repairActions: readonly RepairCommand[];
 };

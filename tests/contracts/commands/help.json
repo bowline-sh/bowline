@@ -1,5 +1,5 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 8,
   "command": "help",
   "generatedAt": "2026-06-29T12:00:00Z",
   "topic": "agent start",
@@ -13,8 +13,15 @@
     {
       "group": "Agent",
       "name": "agent start",
-      "summary": "Create an agent lease and return context/prompt commands.",
-      "usage": "bowline agent start [project] --task <task> [--json] [--dry-run] [--idempotency-key <key>]",
+      "summary": "Start a local direct-write agent lease, optionally using a work view or remote host.",
+      "usage": "bowline agent start [project] --task <task> [--base <base>] [--work-view] [--force-stale] [--on <authorized-device>] [--remote <runtime>] [--remote-root <path>] [--json] [--dry-run]",
+      "positionals": [
+        {
+          "name": "project",
+          "required": false,
+          "repeatable": false
+        }
+      ],
       "options": [
         {
           "name": "--task",
@@ -22,14 +29,65 @@
           "summary": "Task description for the lease.",
           "required": true,
           "repeatable": false
+        },
+        {
+          "name": "--base",
+          "valueName": "base",
+          "summary": "Lease base, such as latest-workspace or latest:main.",
+          "required": false,
+          "repeatable": false
+        },
+        {
+          "name": "--work-view",
+          "summary": "Write through an isolated work view.",
+          "required": false,
+          "repeatable": false
+        },
+        {
+          "name": "--force-stale",
+          "summary": "Start anyway when the local freshness guardian sees a stale base.",
+          "required": false,
+          "repeatable": false
+        },
+        {
+          "name": "--on",
+          "valueName": "authorized-device",
+          "summary": "Dispatch the lease to an authorized device; unknown hosts use remote bootstrap.",
+          "required": false,
+          "repeatable": false
+        },
+        {
+          "name": "--remote",
+          "valueName": "runtime",
+          "summary": "Mint a lease-scoped bootstrap token for an outbound agent runtime.",
+          "required": false,
+          "repeatable": false
+        },
+        {
+          "name": "--remote-root",
+          "valueName": "path",
+          "summary": "Remote workspace root for the outbound runtime.",
+          "required": false,
+          "repeatable": false
+        },
+        {
+          "name": "--json",
+          "summary": "Return the command contract JSON on stdout.",
+          "required": false,
+          "repeatable": false
+        },
+        {
+          "name": "--dry-run",
+          "summary": "Preview the mutation without changing local or daemon state.",
+          "required": false,
+          "repeatable": false
         }
       ],
       "jsonOutputType": "AgentLeaseCreateCommandOutput",
       "sideEffectLevel": "mutation",
       "supportsJson": true,
       "supportsDryRun": true,
-      "supportsIdempotencyKey": true,
-      "relatedCommands": ["agent context", "agent prompt"]
+      "relatedCommands": ["connect", "lease join", "agent context"]
     }
   ]
 }

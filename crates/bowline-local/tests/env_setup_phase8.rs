@@ -1,12 +1,16 @@
 #![cfg(unix)]
 
-use std::{fs, os::unix::fs::PermissionsExt};
+use std::{
+    env, fs,
+    os::unix::fs::PermissionsExt,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
-use bowline_control_plane::FakeControlPlaneClient;
+use bowline_control_plane::{FakeControlPlaneClient, WorkspaceControlPlaneClient as _};
 use bowline_core::{
-    ids::{ContentId, DeviceId, LeaseId, ProjectId, WorkspaceId},
+    ids::{DeviceId, LeaseId, ProjectId, WorkspaceId},
     status::StatusItemKind,
-    workspace_graph::{HydrationState, NamespaceEntryKind},
 };
 use bowline_local::{
     env::{
@@ -14,9 +18,9 @@ use bowline_local::{
         EnvRecordRestriction, parse_env_text, resolve_env_provider_request,
     },
     init::{InitOptions, initialize_root},
-    metadata::{MetadataStore, ProjectedNodeRecord, SetupReceiptRecord},
+    metadata::{MetadataStore, SetupReceiptRecord},
     setup::{PackageManagerIdentity, collect_receipt_identity_inputs},
-    setup::{PrewarmOptions, PrewarmState, prewarm_project},
+    setup::{ProjectSetupOptions, ProjectSetupState, run_project_setup},
     status::{StatusOptions, compose_status},
     sync::{SyncRunner, SyncRunnerOptions, SyncTickOutcome},
     workspace::TempWorkspace,
@@ -70,13 +74,21 @@ fn two_device_phase8_env_setup_and_local_regeneration_path_just_works() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-25T10:00:00Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
     assert!(matches!(
         source_runner.tick().expect("source upload"),
         SyncTickOutcome::Uploaded(_)
     ));
+    let hosted_history = control_plane
+        .list_workspace_ref_history(&workspace_id, 10)
+        .expect("hosted history");
+    assert!(
+        !format!("{hosted_history:?}").contains("sync-me"),
+        "hosted-bound workspace-ref payloads must not carry env plaintext"
+    );
 
     let target_runner = SyncRunner::new(
         &control_plane,
@@ -90,7 +102,8 @@ fn two_device_phase8_env_setup_and_local_regeneration_path_just_works() {
             storage_key,
             key_epoch: 1,
             generated_at: "2026-06-25T10:00:01Z".to_string(),
-            sync_operation_id: None,
+            sync_claim: None,
+            scan_scope: Default::default(),
         },
     );
     assert!(matches!(
@@ -157,29 +170,29 @@ fn two_device_phase8_env_setup_and_local_regeneration_path_just_works() {
         "lease-facing provider debug output must not leak env values"
     );
 
-    let blocked = prewarm_project(PrewarmOptions {
+    let blocked = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: "app".to_string(),
         approve_setup: false,
         trigger: "lease:lease-phase8".to_string(),
         generated_at: "2026-06-25T10:00:03Z".to_string(),
     })
-    .expect("prewarm blocks for first-seen setup");
-    assert_eq!(blocked.state, PrewarmState::SetupBlocked);
+    .expect("setup blocks for first-seen setup");
+    assert_eq!(blocked.state, ProjectSetupState::SetupBlocked);
     assert!(
         !target.root().join("app/node_modules").exists(),
         "blocked setup must not create local dependency output"
     );
 
-    let approved = prewarm_project(PrewarmOptions {
+    let approved = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: "app".to_string(),
         approve_setup: true,
         trigger: "lease:lease-phase8".to_string(),
         generated_at: "2026-06-25T10:00:04Z".to_string(),
     })
-    .expect("approved prewarm runs setup");
-    assert_eq!(approved.state, PrewarmState::Hot);
+    .expect("approved setup runs setup");
+    assert_eq!(approved.state, ProjectSetupState::Hot);
     assert_eq!(
         fs::read(target.root().join("app/node_modules/react/.phase8-ready"))
             .expect("local regenerate output"),
@@ -247,7 +260,42 @@ fn env_import_records_redacted_source_pack_metadata_without_secret_locators() {
 }
 
 #[test]
-fn prewarm_failed_setup_redacts_logs_and_marks_setup_blocked() {
+fn env_machine_local_marker_is_opt_in_and_persisted_locally() {
+    let workspace = TempWorkspace::new("phase8-env-machine-local").expect("workspace");
+    workspace.create_project("app").expect("project");
+    workspace
+        .write_project_file(
+            "app",
+            ".env.local",
+            b"SHARED_TOKEN=sync-me\n# bowline:machine-local\nLOCAL_SOCKET=/tmp/app.sock\nNEXT_SHARED=still-syncs\n",
+        )
+        .expect("env");
+    let state = TempWorkspace::new("phase8-env-machine-local-state").expect("state");
+    let db_path = state.root().join("metadata.sqlite3");
+
+    initialize_root(InitOptions {
+        db_path: Some(db_path.clone()),
+        requested_root: Some(workspace.root().display().to_string()),
+        generated_at: "2026-06-25T11:35:00Z".to_string(),
+    })
+    .expect("init");
+
+    let records = MetadataStore::open(&db_path)
+        .expect("store")
+        .env_records(&WorkspaceId::new("ws_code"))
+        .expect("env records");
+    let restrictions = records
+        .iter()
+        .map(|record| (record.key_name.as_str(), record.restriction_state.as_str()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    assert_eq!(restrictions["SHARED_TOKEN"], "unrestricted");
+    assert_eq!(restrictions["LOCAL_SOCKET"], "machine-local");
+    assert_eq!(restrictions["NEXT_SHARED"], "unrestricted");
+}
+
+#[test]
+fn setup_failed_setup_redacts_logs_and_marks_setup_blocked() {
     let workspace = TempWorkspace::new("phase8-setup-failure").expect("workspace");
     workspace.create_project("app").expect("project");
     workspace
@@ -282,16 +330,16 @@ fn prewarm_failed_setup_redacts_logs_and_marks_setup_blocked() {
         generated_at: "2026-06-25T11:10:00Z".to_string(),
     })
     .expect("init");
-    let outcome = prewarm_project(PrewarmOptions {
+    let outcome = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: "app".to_string(),
         approve_setup: true,
         trigger: "lease:phase8-failure".to_string(),
         generated_at: "2026-06-25T11:10:01Z".to_string(),
     })
-    .expect("prewarm");
+    .expect("setup");
 
-    assert_eq!(outcome.state, PrewarmState::SetupBlocked);
+    assert_eq!(outcome.state, ProjectSetupState::SetupBlocked);
     assert!(
         !workspace
             .root()
@@ -375,7 +423,7 @@ fn prewarm_failed_setup_redacts_logs_and_marks_setup_blocked() {
 }
 
 #[test]
-fn prewarm_redacts_workspace_parent_env_values_from_setup_logs() {
+fn setup_redacts_workspace_parent_env_values_from_setup_logs() {
     let workspace = TempWorkspace::new("phase8-setup-parent-env").expect("workspace");
     workspace.create_project("app").expect("project");
     workspace
@@ -402,16 +450,16 @@ fn prewarm_redacts_workspace_parent_env_values_from_setup_logs() {
         generated_at: "2026-06-25T11:12:00Z".to_string(),
     })
     .expect("init");
-    let outcome = prewarm_project(PrewarmOptions {
+    let outcome = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: "app".to_string(),
         approve_setup: true,
         trigger: "lease:phase8-parent-env".to_string(),
         generated_at: "2026-06-25T11:12:01Z".to_string(),
     })
-    .expect("prewarm");
+    .expect("setup");
 
-    assert_eq!(outcome.state, PrewarmState::SetupBlocked);
+    assert_eq!(outcome.state, ProjectSetupState::SetupBlocked);
     let store = MetadataStore::open(&db_path).expect("store");
     let failed = store
         .setup_receipts(&WorkspaceId::new("ws_code"))
@@ -426,7 +474,7 @@ fn prewarm_redacts_workspace_parent_env_values_from_setup_logs() {
 }
 
 #[test]
-fn prewarm_kills_commands_that_exceed_setup_output_limit() {
+fn setup_kills_commands_that_exceed_setup_output_limit() {
     let workspace = TempWorkspace::new("phase8-setup-output-limit").expect("workspace");
     workspace.create_project("app").expect("project");
     workspace
@@ -444,16 +492,16 @@ fn prewarm_kills_commands_that_exceed_setup_output_limit() {
         generated_at: "2026-06-25T11:12:10Z".to_string(),
     })
     .expect("init");
-    let outcome = prewarm_project(PrewarmOptions {
+    let outcome = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: "app".to_string(),
         approve_setup: true,
         trigger: "lease:phase8-output-limit".to_string(),
         generated_at: "2026-06-25T11:12:11Z".to_string(),
     })
-    .expect("prewarm");
+    .expect("setup");
 
-    assert_eq!(outcome.state, PrewarmState::SetupBlocked);
+    assert_eq!(outcome.state, ProjectSetupState::SetupBlocked);
     let store = MetadataStore::open(&db_path).expect("store");
     let failed = store
         .setup_receipts(&WorkspaceId::new("ws_code"))
@@ -469,7 +517,8 @@ fn prewarm_kills_commands_that_exceed_setup_output_limit() {
 
 #[cfg(unix)]
 #[test]
-fn prewarm_output_limit_kills_noisy_descendant_processes() {
+fn setup_output_limit_kills_noisy_descendant_processes() {
+    let started_at = Instant::now();
     let workspace = TempWorkspace::new("phase8-setup-output-limit-child").expect("workspace");
     workspace.create_project("app").expect("project");
     workspace
@@ -491,16 +540,16 @@ fn prewarm_output_limit_kills_noisy_descendant_processes() {
         generated_at: "2026-06-25T11:12:15Z".to_string(),
     })
     .expect("init");
-    let outcome = prewarm_project(PrewarmOptions {
+    let outcome = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: "app".to_string(),
         approve_setup: true,
         trigger: "lease:phase8-output-limit-child".to_string(),
         generated_at: "2026-06-25T11:12:16Z".to_string(),
     })
-    .expect("prewarm");
+    .expect("setup");
 
-    assert_eq!(outcome.state, PrewarmState::SetupBlocked);
+    assert_eq!(outcome.state, ProjectSetupState::SetupBlocked);
     let failed = MetadataStore::open(&db_path)
         .expect("store")
         .setup_receipts(&WorkspaceId::new("ws_code"))
@@ -511,10 +560,14 @@ fn prewarm_output_limit_kills_noisy_descendant_processes() {
     let output =
         fs::read_to_string(failed.output_path.expect("output path")).expect("redacted setup log");
     assert!(output.contains("output exceeded the local log limit"));
+    assert!(
+        started_at.elapsed() < Duration::from_secs(5),
+        "noisy descendant cleanup exceeded its bounded runtime"
+    );
 }
 
 #[test]
-fn prewarm_runs_setup_for_root_level_project() {
+fn setup_runs_setup_for_root_level_project() {
     let workspace = TempWorkspace::new("phase8-root-project-setup").expect("workspace");
     workspace
         .write_file("package.json", br#"{"name":"root-app"}"#)
@@ -531,16 +584,16 @@ fn prewarm_runs_setup_for_root_level_project() {
         generated_at: "2026-06-25T11:12:20Z".to_string(),
     })
     .expect("init");
-    let outcome = prewarm_project(PrewarmOptions {
+    let outcome = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: ".".to_string(),
         approve_setup: true,
         trigger: "lease:phase8-root-project".to_string(),
         generated_at: "2026-06-25T11:12:21Z".to_string(),
     })
-    .expect("prewarm");
+    .expect("setup");
 
-    assert_eq!(outcome.state, PrewarmState::Hot);
+    assert_eq!(outcome.state, ProjectSetupState::Hot);
     assert_eq!(
         fs::read_to_string(workspace.root().join(".setup-ready")).expect("setup output"),
         "ready"
@@ -566,24 +619,24 @@ fn approved_setup_clears_stale_approval_required_attention() {
         generated_at: "2026-06-25T11:13:00Z".to_string(),
     })
     .expect("init");
-    let blocked = prewarm_project(PrewarmOptions {
+    let blocked = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: "app".to_string(),
         approve_setup: false,
         trigger: "lease:phase8-approval-clear".to_string(),
         generated_at: "2026-06-25T11:13:01Z".to_string(),
     })
-    .expect("blocked prewarm");
-    assert_eq!(blocked.state, PrewarmState::SetupBlocked);
-    let approved = prewarm_project(PrewarmOptions {
+    .expect("blocked setup");
+    assert_eq!(blocked.state, ProjectSetupState::SetupBlocked);
+    let approved = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: "app".to_string(),
         approve_setup: true,
         trigger: "lease:phase8-approval-clear".to_string(),
         generated_at: "2026-06-25T11:13:02Z".to_string(),
     })
-    .expect("approved prewarm");
-    assert_eq!(approved.state, PrewarmState::Hot);
+    .expect("approved setup");
+    assert_eq!(approved.state, ProjectSetupState::Hot);
 
     let status = compose_status(StatusOptions {
         db_path: Some(db_path.clone()),
@@ -664,6 +717,14 @@ fn setup_attention_scans_receipts_beyond_rendered_status_items() {
                 env_profile: "default".to_string(),
                 output_path: None,
                 redacted_summary: format!("receipt {state}"),
+                setup_identity_hash: format!("setupid_{id}"),
+                readiness_state: if state == "completed" {
+                    "runnable".to_string()
+                } else {
+                    "blocked".to_string()
+                },
+                readiness_reason: format!("receipt {state}"),
+                readiness_remedy: String::new(),
                 receipt_json: "{}".to_string(),
                 updated_at: "2026-06-25T11:14:01Z".to_string(),
             })
@@ -737,6 +798,14 @@ fn successful_setup_rerun_clears_stale_failed_receipt_attention() {
                 env_profile: "default".to_string(),
                 output_path: None,
                 redacted_summary: format!("receipt {state}"),
+                setup_identity_hash: format!("setupid_{id}"),
+                readiness_state: if state == "completed" {
+                    "runnable".to_string()
+                } else {
+                    "blocked".to_string()
+                },
+                readiness_reason: format!("receipt {state}"),
+                readiness_remedy: String::new(),
                 receipt_json: "{}".to_string(),
                 updated_at: updated_at.to_string(),
             })
@@ -809,7 +878,7 @@ fn init_refresh_purges_env_records_for_deleted_env_files() {
 }
 
 #[test]
-fn prewarm_does_not_rerun_completed_setup_receipts() {
+fn setup_does_not_rerun_completed_setup_receipts() {
     let workspace = TempWorkspace::new("phase8-setup-idempotent").expect("workspace");
     workspace.create_project("app").expect("project");
     workspace
@@ -833,15 +902,15 @@ fn prewarm_does_not_rerun_completed_setup_receipts() {
     .expect("init");
 
     for timestamp in ["2026-06-25T11:18:01Z", "2026-06-25T11:18:02Z"] {
-        let outcome = prewarm_project(PrewarmOptions {
+        let outcome = run_project_setup(ProjectSetupOptions {
             db_path: Some(db_path.clone()),
             project_path: "app".to_string(),
             approve_setup: true,
             trigger: "lease:phase8-idempotent".to_string(),
             generated_at: timestamp.to_string(),
         })
-        .expect("prewarm");
-        assert_eq!(outcome.state, PrewarmState::Hot);
+        .expect("setup");
+        assert_eq!(outcome.state, ProjectSetupState::Hot);
     }
 
     assert_eq!(
@@ -869,16 +938,16 @@ fn empty_setup_recipe_does_not_require_approval() {
         generated_at: "2026-06-25T11:18:05Z".to_string(),
     })
     .expect("init");
-    let outcome = prewarm_project(PrewarmOptions {
+    let outcome = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: "app".to_string(),
         approve_setup: false,
         trigger: "lease:phase8-empty-setup".to_string(),
         generated_at: "2026-06-25T11:18:06Z".to_string(),
     })
-    .expect("prewarm");
+    .expect("setup");
 
-    assert_eq!(outcome.state, PrewarmState::NoSetupNeeded);
+    assert_eq!(outcome.state, ProjectSetupState::NoSetupNeeded);
     let receipts = MetadataStore::open(&db_path)
         .expect("store")
         .setup_receipts(&WorkspaceId::new("ws_code"))
@@ -916,30 +985,30 @@ fn explicit_setup_reruns_after_lockfile_changes() {
         generated_at: "2026-06-25T11:18:10Z".to_string(),
     })
     .expect("init");
-    let first = prewarm_project(PrewarmOptions {
+    let first = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: "app".to_string(),
         approve_setup: true,
         trigger: "lease:phase8-explicit-lockfile".to_string(),
         generated_at: "2026-06-25T11:18:11Z".to_string(),
     })
-    .expect("first prewarm");
-    assert_eq!(first.state, PrewarmState::Hot);
+    .expect("first setup");
+    assert_eq!(first.state, ProjectSetupState::Hot);
     fs::write(
         workspace.root().join("app/pnpm-lock.yaml"),
         b"lockfileVersion: '9.0'\nsecond: true\n",
     )
     .expect("changed lockfile");
-    let second = prewarm_project(PrewarmOptions {
+    let second = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: "app".to_string(),
         approve_setup: true,
         trigger: "lease:phase8-explicit-lockfile".to_string(),
         generated_at: "2026-06-25T11:18:12Z".to_string(),
     })
-    .expect("second prewarm");
+    .expect("second setup");
 
-    assert_eq!(second.state, PrewarmState::Hot);
+    assert_eq!(second.state, ProjectSetupState::Hot);
     assert_eq!(
         fs::read_to_string(workspace.root().join("app/.setup-runs")).expect("setup runs"),
         "runrun"
@@ -986,15 +1055,15 @@ fn inferred_setup_reruns_after_lockfile_changes() {
     })
     .expect("init");
     for timestamp in ["2026-06-25T11:19:01Z", "2026-06-25T11:19:02Z"] {
-        let outcome = prewarm_project(PrewarmOptions {
+        let outcome = run_project_setup(ProjectSetupOptions {
             db_path: Some(db_path.clone()),
             project_path: "app".to_string(),
             approve_setup: true,
             trigger: "lease:phase8-inferred-lockfile".to_string(),
             generated_at: timestamp.to_string(),
         })
-        .expect("prewarm");
-        assert_eq!(outcome.state, PrewarmState::Hot);
+        .expect("setup");
+        assert_eq!(outcome.state, ProjectSetupState::Hot);
         fs::write(
             workspace.root().join("app/Cargo.lock"),
             b"# second\nversion = 4\n\n[[package]]\nname = \"bowline_phase8_fixture\"\nversion = \"0.1.0\"\n",
@@ -1037,6 +1106,10 @@ fn inferred_setup_reruns_after_toolchain_changes_without_lockfile_changes() {
     workspace
         .write_project_file("app", ".node-version", b"24\n")
         .expect("toolchain");
+    workspace
+        .write_file("bin/mise", b"#!/bin/sh\nexit 0\n")
+        .expect("mise");
+    make_executable(&workspace.root().join("bin/mise"));
     let state = TempWorkspace::new("phase8-inferred-toolchain-state").expect("state");
     let db_path = state.root().join("metadata.sqlite3");
 
@@ -1046,25 +1119,27 @@ fn inferred_setup_reruns_after_toolchain_changes_without_lockfile_changes() {
         generated_at: "2026-06-25T11:19:10Z".to_string(),
     })
     .expect("init");
-    let first = prewarm_project(PrewarmOptions {
-        db_path: Some(db_path.clone()),
-        project_path: "app".to_string(),
-        approve_setup: true,
-        trigger: "lease:phase8-inferred-toolchain".to_string(),
-        generated_at: "2026-06-25T11:19:11Z".to_string(),
-    })
-    .expect("first prewarm");
-    assert_eq!(first.state, PrewarmState::Hot);
-    fs::write(workspace.root().join("app/.node-version"), b"25\n").expect("changed toolchain");
-    let second = prewarm_project(PrewarmOptions {
-        db_path: Some(db_path.clone()),
-        project_path: "app".to_string(),
-        approve_setup: true,
-        trigger: "lease:phase8-inferred-toolchain".to_string(),
-        generated_at: "2026-06-25T11:19:12Z".to_string(),
-    })
-    .expect("second prewarm");
-    assert_eq!(second.state, PrewarmState::Hot);
+    with_path(workspace.root().join("bin"), || {
+        let first = run_project_setup(ProjectSetupOptions {
+            db_path: Some(db_path.clone()),
+            project_path: "app".to_string(),
+            approve_setup: true,
+            trigger: "lease:phase8-inferred-toolchain".to_string(),
+            generated_at: "2026-06-25T11:19:11Z".to_string(),
+        })
+        .expect("first setup");
+        assert_eq!(first.state, ProjectSetupState::Hot);
+        fs::write(workspace.root().join("app/.node-version"), b"25\n").expect("changed toolchain");
+        let second = run_project_setup(ProjectSetupOptions {
+            db_path: Some(db_path.clone()),
+            project_path: "app".to_string(),
+            approve_setup: true,
+            trigger: "lease:phase8-inferred-toolchain".to_string(),
+            generated_at: "2026-06-25T11:19:12Z".to_string(),
+        })
+        .expect("second setup");
+        assert_eq!(second.state, ProjectSetupState::Hot);
+    });
 
     let completed = MetadataStore::open(&db_path)
         .expect("store")
@@ -1141,31 +1216,35 @@ fn completed_inferred_setup_with_lifecycle_hooks_does_not_block_again() {
             env_profile: "default".to_string(),
             output_path: None,
             redacted_summary: "already completed".to_string(),
+            setup_identity_hash: "setupid_completed".to_string(),
+            readiness_state: "runnable".to_string(),
+            readiness_reason: "already completed".to_string(),
+            readiness_remedy: String::new(),
             receipt_json: "{}".to_string(),
             updated_at: "2026-06-25T11:21:01Z".to_string(),
         })
         .expect("receipt");
 
-    let outcome = prewarm_project(PrewarmOptions {
+    let outcome = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path),
         project_path: "app".to_string(),
         approve_setup: false,
         trigger: "lease:phase8-inferred-approved".to_string(),
         generated_at: "2026-06-25T11:21:02Z".to_string(),
     })
-    .expect("prewarm");
+    .expect("setup");
 
-    assert_eq!(outcome.state, PrewarmState::Hot);
+    assert_eq!(outcome.state, ProjectSetupState::Hot);
 }
 
 #[test]
-fn prewarm_infrastructure_error_leaves_project_setup_blocked() {
-    let workspace = TempWorkspace::new("phase8-prewarm-infra-error").expect("workspace");
+fn setup_infrastructure_error_leaves_project_setup_blocked() {
+    let workspace = TempWorkspace::new("phase8-setup-infra-error").expect("workspace");
     workspace.create_project("app").expect("project");
     workspace
         .write_project_file("app", "package.json", b"{ not json")
         .expect("package");
-    let state = TempWorkspace::new("phase8-prewarm-infra-error-state").expect("state");
+    let state = TempWorkspace::new("phase8-setup-infra-error-state").expect("state");
     let db_path = state.root().join("metadata.sqlite3");
 
     initialize_root(InitOptions {
@@ -1174,7 +1253,7 @@ fn prewarm_infrastructure_error_leaves_project_setup_blocked() {
         generated_at: "2026-06-25T11:20:00Z".to_string(),
     })
     .expect("init");
-    let error = prewarm_project(PrewarmOptions {
+    let error = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: "app".to_string(),
         approve_setup: true,
@@ -1189,10 +1268,10 @@ fn prewarm_infrastructure_error_leaves_project_setup_blocked() {
 
 #[cfg(unix)]
 #[test]
-fn prewarm_rejects_project_root_replaced_by_symlink() {
+fn setup_rejects_project_root_replaced_by_symlink() {
     use std::os::unix::fs::symlink;
 
-    let workspace = TempWorkspace::new("phase8-prewarm-symlink-root").expect("workspace");
+    let workspace = TempWorkspace::new("phase8-setup-symlink-root").expect("workspace");
     workspace.create_project("app").expect("project");
     workspace
         .write_project_file("app", "package.json", br#"{"name":"app"}"#)
@@ -1200,13 +1279,13 @@ fn prewarm_rejects_project_root_replaced_by_symlink() {
     workspace
         .write_project_file("app", ".bowlinesetup", b"printf should-not-run > outside\n")
         .expect("setup");
-    let outside = TempWorkspace::new("phase8-prewarm-symlink-outside").expect("outside");
+    let outside = TempWorkspace::new("phase8-setup-symlink-outside").expect("outside");
     fs::write(
         outside.root().join(".bowlinesetup"),
         b"printf owned > pwned\n",
     )
     .expect("outside setup");
-    let state = TempWorkspace::new("phase8-prewarm-symlink-state").expect("state");
+    let state = TempWorkspace::new("phase8-setup-symlink-state").expect("state");
     let db_path = state.root().join("metadata.sqlite3");
 
     initialize_root(InitOptions {
@@ -1218,7 +1297,7 @@ fn prewarm_rejects_project_root_replaced_by_symlink() {
     fs::remove_dir_all(workspace.root().join("app")).expect("remove app");
     symlink(outside.root(), workspace.root().join("app")).expect("project root symlink");
 
-    let error = prewarm_project(PrewarmOptions {
+    let error = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: "app".to_string(),
         approve_setup: true,
@@ -1233,15 +1312,15 @@ fn prewarm_rejects_project_root_replaced_by_symlink() {
 
 #[cfg(unix)]
 #[test]
-fn prewarm_rejects_symlinked_setup_recipe() {
+fn setup_rejects_symlinked_setup_recipe() {
     use std::os::unix::fs::symlink;
 
-    let workspace = TempWorkspace::new("phase8-prewarm-symlink-recipe").expect("workspace");
+    let workspace = TempWorkspace::new("phase8-setup-symlink-recipe").expect("workspace");
     workspace.create_project("app").expect("project");
     workspace
         .write_project_file("app", "package.json", br#"{"name":"app"}"#)
         .expect("package");
-    let outside = TempWorkspace::new("phase8-prewarm-symlink-recipe-outside").expect("outside");
+    let outside = TempWorkspace::new("phase8-setup-symlink-recipe-outside").expect("outside");
     fs::write(
         outside.root().join("payload.bowlinesetup"),
         b"printf owned > pwned\n",
@@ -1252,7 +1331,7 @@ fn prewarm_rejects_symlinked_setup_recipe() {
         workspace.root().join("app/.bowlinesetup"),
     )
     .expect("setup symlink");
-    let state = TempWorkspace::new("phase8-prewarm-symlink-recipe-state").expect("state");
+    let state = TempWorkspace::new("phase8-setup-symlink-recipe-state").expect("state");
     let db_path = state.root().join("metadata.sqlite3");
 
     initialize_root(InitOptions {
@@ -1261,7 +1340,7 @@ fn prewarm_rejects_symlinked_setup_recipe() {
         generated_at: "2026-06-25T11:31:00Z".to_string(),
     })
     .expect("init");
-    let error = prewarm_project(PrewarmOptions {
+    let error = run_project_setup(ProjectSetupOptions {
         db_path: Some(db_path.clone()),
         project_path: "app".to_string(),
         approve_setup: true,
@@ -1272,82 +1351,6 @@ fn prewarm_rejects_symlinked_setup_recipe() {
 
     assert!(error.to_string().contains("not a normal directory"));
     assert!(!workspace.root().join("app/pwned").exists());
-}
-
-#[test]
-fn prewarm_queues_and_settles_hot_project_prefetch_for_local_project_bytes() {
-    let workspace = TempWorkspace::new("phase8-prewarm-hot-prefetch").expect("workspace");
-    workspace.create_project("app").expect("project");
-    workspace
-        .write_project_file("app", "package.json", br#"{"name":"app"}"#)
-        .expect("package");
-    workspace
-        .write_project_file("app", "src/main.ts", b"export const value = 1;\n")
-        .expect("source");
-    let state = TempWorkspace::new("phase8-prewarm-hot-prefetch-state").expect("state");
-    let db_path = state.root().join("metadata.sqlite3");
-    initialize_root(InitOptions {
-        db_path: Some(db_path.clone()),
-        requested_root: Some(workspace.root().display().to_string()),
-        generated_at: "2026-06-26T13:00:00Z".to_string(),
-    })
-    .expect("init");
-
-    let store = MetadataStore::open(&db_path).expect("store");
-    let workspace_record = store
-        .current_workspace()
-        .expect("workspace lookup")
-        .expect("workspace");
-    let project = store
-        .current_project_by_path("app")
-        .expect("project lookup")
-        .expect("project");
-    let existing_node = store
-        .projected_node_by_path(&workspace_record.id, "app/src/main.ts")
-        .expect("node lookup")
-        .expect("projected node");
-    store
-        .upsert_projected_node(&ProjectedNodeRecord {
-            workspace_id: workspace_record.id.clone(),
-            node_id: existing_node.node_id,
-            project_id: Some(project.id.clone()),
-            parent_node_id: existing_node.parent_node_id,
-            path: "app/src/main.ts".to_string(),
-            kind: NamespaceEntryKind::File,
-            content_id: Some(ContentId::new("cid_hot_source")),
-            hydration_state: HydrationState::Cold,
-            updated_at: "2026-06-26T13:00:01Z".to_string(),
-        })
-        .expect("make source cold");
-
-    let outcome = prewarm_project(PrewarmOptions {
-        db_path: Some(db_path.clone()),
-        project_path: "app".to_string(),
-        approve_setup: false,
-        trigger: "cli-prewarm".to_string(),
-        generated_at: "2026-06-26T13:00:02Z".to_string(),
-    })
-    .expect("prewarm");
-
-    assert_eq!(outcome.state, PrewarmState::NoSetupNeeded);
-    assert!(
-        outcome
-            .redacted_summary
-            .contains("Hot project prefetch queued 1 file(s); 1 already local."),
-        "{}",
-        outcome.redacted_summary
-    );
-    assert_eq!(project_hot_state(&db_path), "hot");
-    let queue = store
-        .hydration_queue(&workspace_record.id)
-        .expect("hydration queue");
-    let hot_prefetch = queue
-        .iter()
-        .find(|record| record.path == "app/src/main.ts")
-        .expect("hot prefetch row");
-    assert_eq!(hot_prefetch.priority, "hot-project-prefetch");
-    assert_eq!(hot_prefetch.cause, "hot-project-prefetch");
-    assert_eq!(hot_prefetch.state, "completed");
 }
 
 fn provider_records_from_file(
@@ -1373,6 +1376,37 @@ fn provider_records_from_file(
             EnvLineKind::Blank | EnvLineKind::Comment | EnvLineKind::Opaque(_) => None,
         })
         .collect()
+}
+
+fn make_executable(path: &std::path::Path) {
+    let mut permissions = fs::metadata(path).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("chmod");
+}
+
+fn with_path(path: std::path::PathBuf, body: impl FnOnce()) {
+    static PATH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = PATH_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("path lock");
+    let original = env::var_os("PATH");
+    let mut paths = vec![path];
+    if let Some(original) = original.clone() {
+        paths.extend(env::split_paths(&original));
+    }
+    let joined = env::join_paths(paths).expect("joined path");
+    unsafe {
+        env::set_var("PATH", joined);
+    }
+    body();
+    unsafe {
+        if let Some(original) = original {
+            env::set_var("PATH", original);
+        } else {
+            env::remove_var("PATH");
+        }
+    }
 }
 
 fn project_hot_state(db_path: &std::path::Path) -> String {

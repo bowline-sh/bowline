@@ -1,5 +1,8 @@
+// Integration-test crate: long end-to-end scenario tests are expected here.
+#![allow(clippy::too_many_lines)]
+
 use std::fs;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -13,9 +16,10 @@ use bowline_core::{
 };
 use bowline_local::{
     metadata::{
-        CommandIdempotencyRecord, MetadataStore, Platform, SyncOperationRecord,
-        database_path_for_platform,
+        MetadataStore, Platform, SyncOperationKind, SyncOperationRecord, SyncOperationState,
+        SyncResourceKey, database_path_for_platform,
     },
+    sync::{ConflictRecord, ConflictSpan},
     workspace::{TempWorkspace, WorkspaceMutationDetector},
 };
 use serde_json::Value;
@@ -25,6 +29,10 @@ fn bowline() -> Command {
     command.env(
         "BOWLINE_SECRET_STORE_PATH",
         unique_secret_store("cli-contract").display().to_string(),
+    );
+    command.env(
+        "BOWLINE_METADATA_DB",
+        unique_db("cli-contract").display().to_string(),
     );
     command.env(
         "BOWLINE_STATE_ROOT",
@@ -46,6 +54,35 @@ fn run_bowline_with_env(args: &[&str], envs: &[(&str, String)]) -> Output {
     command.output().expect("bowline should run")
 }
 
+#[test]
+fn usage_error_stderr_renders_next_actions() {
+    let output = run_bowline(&["status", "--root", "--human"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("usage stderr should be utf8");
+    assert!(
+        stderr.contains("bowline usage error: bowline status --root requires a value"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Inspect `bowline help status --json` and retry with valid arguments."),
+        "{stderr}"
+    );
+    assert!(stderr.contains("bowline help status"), "{stderr}");
+}
+
+#[test]
+fn non_root_usage_error_points_to_help_not_root_retry() {
+    let output = run_bowline(&["status", "--root", "~/Code", "--bogus", "--human"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("usage stderr should be utf8");
+    assert!(
+        stderr.contains("bowline usage error: unknown bowline status option `--bogus`"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("bowline help status"), "{stderr}");
+    assert!(!stderr.contains("bowline status --root ~/Code"), "{stderr}");
+}
+
 fn run_bowline_with_env_removed(
     args: &[&str],
     envs: &[(&str, String)],
@@ -56,19 +93,6 @@ fn run_bowline_with_env_removed(
     for (key, value) in envs {
         command.env(key, value);
     }
-    for key in removed_envs {
-        command.env_remove(key);
-    }
-    command.output().expect("bowline should run")
-}
-
-fn run_bowline_without_env_in_dir(
-    args: &[&str],
-    removed_envs: &[&str],
-    current_dir: &Path,
-) -> Output {
-    let mut command = bowline();
-    command.args(args).current_dir(current_dir);
     for key in removed_envs {
         command.env_remove(key);
     }
@@ -92,13 +116,19 @@ fn run_bowline_with_env_in_dir(
 mod agent_daemon;
 #[path = "cli_contract/discovery_workspace.rs"]
 mod discovery_workspace;
+#[path = "cli_contract/lifecycle_errors.rs"]
+mod lifecycle_errors;
+#[path = "cli_contract/output_mode_errors.rs"]
+mod output_mode_errors;
 #[path = "cli_contract/resolve.rs"]
 mod resolve;
 #[path = "cli_contract/status_events.rs"]
 mod status_events;
 
 fn wait_for_daemon_status(socket: &Path) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // 30s, not 10s: real-daemon startup is load-sensitive when the full gate
+    // runs test binaries in parallel on the same machine.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let output = bowline()
             .args(["daemon", "status", "--json", "--socket"])
@@ -120,7 +150,8 @@ fn wait_for_daemon_status(socket: &Path) -> Value {
 }
 
 fn wait_for_daemon_stopped(socket: &Path) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // See wait_for_daemon_status on the 30s deadline.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let output = bowline()
             .args(["daemon", "status", "--json", "--socket"])
@@ -149,22 +180,16 @@ fn kill_process(pid: u32) {
         .status();
 }
 
-fn read_line(stream: &mut impl Read) -> io::Result<String> {
-    let mut bytes = Vec::new();
-    let mut one = [0_u8; 1];
-    loop {
-        match stream.read(&mut one) {
-            Ok(0) => break,
-            Ok(_) if one[0] == b'\n' => break,
-            Ok(_) => bytes.push(one[0]),
-            Err(error) => return Err(error),
-        }
-    }
-    String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-}
-
 fn unique_socket(label: &str) -> PathBuf {
-    PathBuf::from(format!("/tmp/bowline-{label}-{}.sock", unique_suffix()))
+    // prepare_socket refuses parents not owned by the current uid, so sockets
+    // must live under a per-user dir, not directly in world-writable /tmp.
+    // The label is dropped from the path because macOS caps unix socket paths
+    // at ~104 bytes and $TMPDIR is already long; uniqueness comes from the
+    // suffix.
+    let _ = label;
+    let dir = std::env::temp_dir().join(format!("bl-{}", unique_suffix()));
+    fs::create_dir_all(&dir).expect("socket dir");
+    dir.join("s.sock")
 }
 
 fn unique_db(label: &str) -> PathBuf {
@@ -232,9 +257,10 @@ fn enqueue_sync_queue_watch_change(db_path: &Path) {
     store
         .enqueue_sync_operation(&SyncOperationRecord {
             id: "watch_queue_retry".to_string(),
-            workspace_id,
-            kind: "daemon-reconcile".to_string(),
-            state: "waiting_retry".to_string(),
+            workspace_id: workspace_id.clone(),
+            kind: SyncOperationKind::Reconcile,
+            resource_key: SyncResourceKey::workspace_sync(workspace_id),
+            state: SyncOperationState::WaitingRetry,
             idempotency_key: "watch-queue-retry".to_string(),
             base_version: None,
             base_snapshot_id: None,
@@ -243,8 +269,13 @@ fn enqueue_sync_queue_watch_change(db_path: &Path) {
             payload_json: "{}".to_string(),
             attempt_count: 1,
             claimed_by: None,
+            claim_generation: 0,
             heartbeat_at: None,
+            lease_expires_at: None,
+            cancellation_requested_at: None,
             next_attempt_at: Some("2026-06-26T12:01:00Z".to_string()),
+            result_json: None,
+            last_error_code: None,
             last_error: Some("retry later".to_string()),
             created_at: "2026-06-26T12:00:01Z".to_string(),
             updated_at: "2026-06-26T12:00:01Z".to_string(),
@@ -389,21 +420,22 @@ fn create_conflict_bundle_manifest(
     fs::create_dir_all(bundle.join("local").join("apps").join("web")).expect("local dir");
     fs::create_dir_all(bundle.join("remote").join("apps").join("web")).expect("remote dir");
     fs::create_dir_all(bundle.join("resolution")).expect("resolution dir");
-    let workspace_root_field = workspace_root
-        .map(|root| {
-            format!(
-                ",\"workspaceRoot\":{}",
-                json_string(&root.display().to_string())
-            )
-        })
-        .unwrap_or_default();
-    fs::write(
-        bundle.join("manifest.json"),
-        format!(
-            "{{\"conflictId\":\"{conflict_id}\",\"affectedFiles\":[\"{affected_file}\"],\"activeView\":\"local\",\"containsSecrets\":{contains_secrets},\"ignoredValue\":\"SECRET_VALUE\"{workspace_root_field}}}"
-        ),
-    )
-    .expect("manifest");
+    let mut record = ConflictRecord::same_path(affected_file);
+    record.id = conflict_id.to_string();
+    record.bundle_path = Some(bundle.to_path_buf());
+    record.workspace_root = workspace_root.map(Path::to_path_buf);
+    record.base_snapshot_id = Some("snap_fixture_base".to_string());
+    record.remote_snapshot_id = Some("snap_fixture_remote".to_string());
+    record.contains_secrets = contains_secrets;
+    write_conflict_manifest(bundle, &record);
+    if contains_secrets {
+        for side in ["base", "local", "remote"] {
+            let path = bundle.join(side).join(affected_file);
+            fs::create_dir_all(path.parent().expect("conflict file parent"))
+                .expect("conflict file parent directory");
+            fs::write(path, b"API_TOKEN=SECRET_VALUE\n").expect("secret-bearing conflict side");
+        }
+    }
 }
 
 fn create_typed_conflict_bundle(bundle: &Path) {
@@ -413,29 +445,27 @@ fn create_typed_conflict_bundle(bundle: &Path) {
     fs::create_dir_all(bundle.join("remote").join("apps").join("web").join("src"))
         .expect("remote dir");
     fs::create_dir_all(bundle.join("resolution")).expect("resolution dir");
-    fs::write(
-        bundle.join("manifest.json"),
-        r#"{
-  "conflictId": "conflict_typed_span",
-  "conflictKind": "text",
-  "affectedFiles": ["apps/web/src/auth.ts"],
-  "activeView": "local",
-  "containsSecrets": false,
-  "state": "unresolved",
-  "spans": [
-    {
-      "path": "apps/web/src/auth.ts",
-      "baseStartLine": 14,
-      "baseEndLine": 22,
-      "localStartLine": 14,
-      "localEndLine": 22,
-      "remoteStartLine": 14,
-      "remoteEndLine": 22
-    }
-  ]
-}"#,
-    )
-    .expect("manifest");
+    let path = "apps/web/src/auth.ts";
+    let mut record = ConflictRecord::same_path_span(
+        path,
+        ConflictSpan {
+            path: path.to_string(),
+            base_start_line: 14,
+            base_end_line: 22,
+            local_start_line: 14,
+            local_end_line: 22,
+            remote_start_line: 14,
+            remote_end_line: 22,
+            base_context_hash: None,
+            local_context_hash: None,
+            remote_context_hash: None,
+        },
+    );
+    record.id = "conflict_typed_span".to_string();
+    record.bundle_path = Some(bundle.to_path_buf());
+    record.base_snapshot_id = Some("snap_fixture_base".to_string());
+    record.remote_snapshot_id = Some("snap_fixture_remote".to_string());
+    write_conflict_manifest(bundle, &record);
 }
 
 fn create_conflict_bundle_with_paths(
@@ -448,22 +478,30 @@ fn create_conflict_bundle_with_paths(
     fs::create_dir_all(bundle.join("local").join("apps").join("web")).expect("local dir");
     fs::create_dir_all(bundle.join("remote").join("apps").join("web")).expect("remote dir");
     fs::create_dir_all(bundle.join("resolution")).expect("resolution dir");
-    let affected = affected_files
+    let first_path = affected_files.first().expect("at least one conflict path");
+    let mut record = ConflictRecord::same_path(first_path);
+    record.id = conflict_id.to_string();
+    record.paths = affected_files
         .iter()
-        .map(|path| json_string(path))
-        .collect::<Vec<_>>()
-        .join(",");
+        .map(|path| (*path).to_string())
+        .collect();
+    record.bundle_path = Some(bundle.to_path_buf());
+    record.base_snapshot_id = Some("snap_fixture_base".to_string());
+    record.remote_snapshot_id = Some("snap_fixture_remote".to_string());
+    record.contains_secrets = contains_secrets;
+    write_conflict_manifest(bundle, &record);
+}
+
+fn write_conflict_manifest(bundle: &Path, record: &ConflictRecord) {
     fs::write(
         bundle.join("manifest.json"),
-        format!(
-            "{{\"conflictId\":\"{conflict_id}\",\"affectedFiles\":[{affected}],\"activeView\":\"local\",\"containsSecrets\":{contains_secrets},\"ignoredValue\":\"SECRET_VALUE\"}}"
-        ),
+        serde_json::to_vec_pretty(record).expect("conflict record serializes"),
     )
     .expect("manifest");
 }
 
 fn seed_workspace_for_work_views(db_path: &Path, code_root: &Path) {
-    let store = MetadataStore::open(db_path).expect("metadata opens");
+    let mut store = MetadataStore::open(db_path).expect("metadata opens");
     let workspace_id = WorkspaceId::new("ws_cli_phase9");
     let project_id = ProjectId::new("proj_cli_web");
     store
@@ -486,36 +524,42 @@ fn seed_workspace_for_work_views(db_path: &Path, code_root: &Path) {
             "2026-06-25T12:00:00Z",
         )
         .expect("project");
+    bowline_testkit::persist_project_snapshot_fixture(
+        &mut store,
+        &workspace_id,
+        &project_id,
+        code_root,
+        "apps/web",
+        db_path.parent().expect("metadata state root"),
+        "2026-06-25T12:00:00Z",
+    );
+}
+
+fn seed_additional_work_view_project(db_path: &Path, code_root: &Path, path: &str) {
+    let mut store = MetadataStore::open(db_path).expect("metadata opens");
+    let workspace_id = WorkspaceId::new("ws_cli_phase9");
+    let project_id = ProjectId::new(format!("proj_cli_{}", path.replace('/', "_")));
     store
-        .set_project_latest_snapshot_id(
-            &workspace_id,
+        .insert_project(
             &project_id,
-            &SnapshotId::new("snap_cli_phase9_base"),
+            &workspace_id,
+            "root_cli_phase9",
+            path,
+            "2026-07-10T12:00:00Z",
         )
-        .expect("project latest snapshot");
+        .expect("additional project");
+    bowline_testkit::persist_project_snapshot_fixture(
+        &mut store,
+        &workspace_id,
+        &project_id,
+        code_root,
+        path,
+        db_path.parent().expect("metadata state root"),
+        "2026-07-10T12:00:00Z",
+    );
 }
 
 fn parse_stdout_json(output: Output) -> Value {
     let stdout = String::from_utf8(output.stdout).expect("json should be utf8");
     serde_json::from_str(&stdout).expect("stdout should be json")
-}
-
-fn json_string(input: &str) -> String {
-    let mut escaped = String::with_capacity(input.len() + 2);
-    escaped.push('"');
-    for character in input.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            character if character.is_control() => {
-                escaped.push_str(&format!("\\u{:04x}", character as u32));
-            }
-            character => escaped.push(character),
-        }
-    }
-    escaped.push('"');
-    escaped
 }

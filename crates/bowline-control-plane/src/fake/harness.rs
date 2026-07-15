@@ -8,6 +8,8 @@ impl FakeControlPlaneClient {
             ids,
             local_device_id: None,
             state: Arc::new(Mutex::new(FakeControlPlaneState::default())),
+            #[cfg(test)]
+            signed_url_overrides: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -16,8 +18,17 @@ impl FakeControlPlaneClient {
         self
     }
 
+    pub fn with_conflict_reconcile_failure(self, error: ControlPlaneError) -> Self {
+        self.state
+            .lock()
+            .expect("fake control plane poisoned")
+            .conflict_reconcile_failures
+            .push_back(error);
+        self
+    }
+
     pub fn create_workspace(&self, workspace_id: impl Into<String>) -> WorkspaceRef {
-        self.create_workspace_ref(&workspace_id.into())
+        self.create_workspace_ref(&WorkspaceId::new(workspace_id))
             .expect("fake workspace creation is infallible")
     }
 
@@ -27,15 +38,32 @@ impl FakeControlPlaneClient {
         kind: CompactEventKind,
         subject: &str,
     ) -> CompactEvent {
-        let event = self.build_event(workspace_id, kind, subject);
+        let workspace_id = WorkspaceId::new(workspace_id);
+        let event = self.build_event(&workspace_id, kind, subject);
         self.state
             .lock()
             .expect("fake control plane poisoned")
             .events
-            .entry(workspace_id.to_string())
+            .entry(workspace_id)
             .or_default()
             .push(event.clone());
         event
+    }
+
+    pub fn set_workspace_key_epoch(&self, workspace_id: &str, key_epoch: u32) {
+        self.state
+            .lock()
+            .expect("fake control plane poisoned")
+            .workspace_key_epochs
+            .insert(WorkspaceId::new(workspace_id), key_epoch);
+    }
+
+    pub fn revoke_device_grant(&self, request_id: &DeviceApprovalRequestId) {
+        self.state
+            .lock()
+            .expect("fake control plane poisoned")
+            .revoked_grants
+            .insert(request_id.clone());
     }
 
     pub fn request_device(
@@ -44,15 +72,15 @@ impl FakeControlPlaneClient {
         device_id: &str,
         device_name: &str,
     ) -> DeviceRequest {
-        let mut input = DeviceRequestInput::new(DeviceRequestInputDraft {
-            workspace_id: workspace_id.to_string(),
-            device_id: device_id.to_string(),
+        let input = DeviceRequestInput::new(DeviceRequestInputDraft {
+            workspace_id: WorkspaceId::new(workspace_id),
+            device_id: DeviceId::new(device_id),
             device_name: device_name.to_string(),
             device_public_key: format!("age1{device_id}"),
             device_fingerprint: format!("fp_{device_id}"),
+            device_authorization_proof_verifier: format!("dapv_harness_{device_id}"),
             matching_code: "phase4-smoke".to_string(),
         });
-        input.device_authorization_proof_verifier = format!("dapv_harness_{device_id}");
         self.create_device_request(input)
             .expect("fake device request is infallible")
     }
@@ -63,8 +91,8 @@ impl FakeControlPlaneClient {
         approved_by_device_id: &str,
     ) -> Option<DeviceApproval> {
         self.approve_device_request_for_harness(DeviceApprovalInput {
-            request_id: request_id.to_string(),
-            approved_by_device_id: approved_by_device_id.to_string(),
+            request_id: DeviceApprovalRequestId::new(request_id),
+            approved_by_device_id: DeviceId::new(approved_by_device_id),
             approved_by_device_proof: String::new(),
             encrypted_grant_ciphertext: "bowline-harness-grant".to_string(),
             grant_acceptance_proof_verifier: String::new(),
@@ -77,18 +105,18 @@ impl FakeControlPlaneClient {
     pub fn create_lease_for_harness(&self, workspace_id: &str, device_id: &str) -> Lease {
         let created_at = self.clock.now();
         self.create_lease(LeaseCreate {
-            lease_id: self.ids.next_id("lease"),
-            workspace_id: workspace_id.to_string(),
-            project_id: "project-harness".to_string(),
-            device_id: device_id.to_string(),
+            lease_id: LeaseId::new(self.ids.next_id("lease")),
+            workspace_id: WorkspaceId::new(workspace_id),
+            project_id: bowline_core::ids::ProjectId::new("project-harness"),
+            device_id: DeviceId::new(device_id),
+            target_device_ref: None,
+            origin_device_ref: None,
             write_target_mode: LeaseWriteTargetMode::Direct,
             work_view_id: None,
-            base_snapshot_id: "empty".to_string(),
-            execution_state: LeaseExecutionState::Active,
-            output_state: LeaseOutputState::Empty,
-            status_code: "active".to_string(),
-            output_object: None,
-            audit_object: None,
+            base_snapshot_id: SnapshotId::new("empty"),
+            task_label: None,
+            session_state: LeaseSessionState::Open,
+            status_code: "open".to_string(),
             expires_at: crate::ControlPlaneTimestamp {
                 tick: created_at.tick + 3_600,
             },
@@ -97,30 +125,31 @@ impl FakeControlPlaneClient {
     }
 
     pub fn put_object_pointer(&self, workspace_id: &str, pointer: ObjectPointer) -> CompactEvent {
+        let workspace_id = WorkspaceId::new(workspace_id);
         let event = self.build_event(
-            workspace_id,
+            &workspace_id,
             CompactEventKind::ObjectPointerAdded,
             &pointer.object_key,
         );
         let mut state = self.state.lock().expect("fake control plane poisoned");
         state
             .object_keys
-            .insert((workspace_id.to_string(), pointer.object_key.clone()));
+            .insert((workspace_id.clone(), pointer.object_key.clone()));
         state
             .committed_object_keys
-            .insert((workspace_id.to_string(), pointer.object_key.clone()));
+            .insert((workspace_id.clone(), pointer.object_key.clone()));
         state.object_retention_states.insert(
-            (workspace_id.to_string(), pointer.object_key.clone()),
+            (workspace_id.clone(), pointer.object_key.clone()),
             RetentionState::Current,
         );
         state
             .object_pointers
-            .entry(workspace_id.to_string())
+            .entry(workspace_id.clone())
             .or_default()
             .push(pointer);
         state
             .events
-            .entry(workspace_id.to_string())
+            .entry(workspace_id)
             .or_default()
             .push(event.clone());
         event
@@ -131,9 +160,27 @@ impl FakeControlPlaneClient {
             .lock()
             .expect("fake control plane poisoned")
             .object_pointers
-            .get(workspace_id)
+            .get(&WorkspaceId::new(workspace_id))
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Arm a one-shot CAS-stale race: the next `compare_and_swap_workspace_ref`
+    /// for `workspace_id` swaps the stored ref to `current` and returns a
+    /// `StaleRef` carrying it, regardless of the caller's expected version. This
+    /// simulates a remote advance discovered at CAS time, so tests can exercise
+    /// the runtime `Upload -> Stale` arm without pre-advancing the ref (which
+    /// would instead be observed up front and planned as a stale merge).
+    pub fn make_next_workspace_ref_cas_stale_for_harness(
+        &self,
+        workspace_id: &str,
+        current: WorkspaceRef,
+    ) {
+        self.state
+            .lock()
+            .expect("fake control plane poisoned")
+            .next_workspace_ref_cas_stale
+            .insert(WorkspaceId::new(workspace_id), current);
     }
 
     pub fn make_next_overlay_commit_stale_with_same_object_for_harness(
@@ -145,11 +192,15 @@ impl FakeControlPlaneClient {
             .lock()
             .expect("fake control plane poisoned")
             .same_object_stale_overlay_commits
-            .insert((workspace_id.to_string(), work_view_id.to_string()));
+            .insert((
+                WorkspaceId::new(workspace_id),
+                WorkViewId::new(work_view_id),
+            ));
     }
 
     pub fn events(&self, workspace_id: &str) -> Vec<CompactEvent> {
-        self.list_events(workspace_id).unwrap_or_default()
+        self.list_events(&WorkspaceId::new(workspace_id))
+            .unwrap_or_default()
     }
 
     pub fn approve_device_request_for_harness(
@@ -189,20 +240,21 @@ impl FakeControlPlaneClient {
 
     pub(super) fn build_event(
         &self,
-        workspace_id: &str,
+        workspace_id: &WorkspaceId,
         kind: CompactEventKind,
-        subject: &str,
+        subject: impl AsRef<str>,
     ) -> CompactEvent {
         CompactEvent {
-            event_id: self.ids.next_id("event"),
-            workspace_id: workspace_id.to_string(),
+            event_id: bowline_core::ids::EventId::new(self.ids.next_id("event")),
+            workspace_id: workspace_id.clone(),
             at: self.clock.now(),
             kind,
-            subject: subject.to_string(),
+            subject: subject.as_ref().to_string(),
         }
     }
 
-    pub(super) fn ensure_workspace(&self, workspace_id: &str) -> ControlPlaneResult<()> {
+    pub(super) fn ensure_workspace(&self, workspace_id: &WorkspaceId) -> ControlPlaneResult<()> {
+        self.ensure_online()?;
         if self
             .state
             .lock()
@@ -213,18 +265,17 @@ impl FakeControlPlaneClient {
             Ok(())
         } else {
             Err(ControlPlaneError::WorkspaceMissing {
-                workspace_id: workspace_id.to_string(),
+                workspace_id: workspace_id.clone(),
             })
         }
     }
 
-    pub(super) fn ensure_local_device(&self, device_id: &str) -> ControlPlaneResult<()> {
+    pub(super) fn ensure_local_device(&self, device_id: &DeviceId) -> ControlPlaneResult<()> {
         match self.local_device_id.as_deref() {
-            Some(local_device_id) if local_device_id != device_id => {
-                Err(ControlPlaneError::Limited {
-                    capability: "fake-device-proof",
-                    reason: "fake operation must be performed by the configured local device",
-                })
+            Some(local_device_id) if local_device_id != device_id.as_str() => {
+                Err(device_not_trusted(
+                    "fake operation must be performed by the configured local device",
+                ))
             }
             _ => Ok(()),
         }
@@ -236,6 +287,15 @@ impl FakeControlPlaneClient {
         object_key: &str,
         range: Option<&ByteRange>,
     ) -> String {
+        #[cfg(test)]
+        if let Some(url) = self
+            .signed_url_overrides
+            .lock()
+            .expect("fake signed URL overrides poisoned")
+            .get(action)
+        {
+            return url.clone();
+        }
         match range {
             Some(range) => format!(
                 "fake://r2/{object_key}?action={action}&offset={}&length={}",
@@ -253,7 +313,9 @@ impl FakeControlPlaneClient {
     ) -> DeviceApproval {
         let granted_at = self.clock.now();
         DeviceApproval {
-            grant_id: self.ids.next_id("device-grant"),
+            grant_id: bowline_core::ids::EncryptedDeviceGrantId::new(
+                self.ids.next_id("device-grant"),
+            ),
             request_id: request.request_id.clone(),
             workspace_id: request.workspace_id.clone(),
             device_id: request.device_id.clone(),
@@ -275,7 +337,7 @@ impl FakeControlPlaneClient {
     pub(super) fn authorized_device(
         &self,
         request: &DeviceRequest,
-        approved_by_device_id: Option<String>,
+        approved_by_device_id: Option<DeviceId>,
         authorized_at: crate::ControlPlaneTimestamp,
     ) -> AuthorizedDeviceRecord {
         AuthorizedDeviceRecord {
@@ -286,31 +348,29 @@ impl FakeControlPlaneClient {
             device_fingerprint: request.device_fingerprint.clone(),
             authorized_at,
             authorized_by_device_id: approved_by_device_id,
+            device_authorization_proof_verifier: None,
             revoked_at: None,
         }
     }
 
     pub(super) fn ensure_authorized_approver(
         state: &FakeControlPlaneState,
-        workspace_id: &str,
-        device_id: &str,
+        workspace_id: &WorkspaceId,
+        device_id: &DeviceId,
         proof: &str,
         action: &str,
         subject: &str,
     ) -> ControlPlaneResult<()> {
         match state
             .authorized_devices
-            .get(&(workspace_id.to_string(), device_id.to_string()))
+            .get(&(workspace_id.clone(), device_id.clone()))
         {
             Some(device) if device.revoked_at.is_none() => {
                 let Some(verifier) = state
                     .device_authorization_proof_verifiers
-                    .get(&(workspace_id.to_string(), device_id.to_string()))
+                    .get(&(workspace_id.clone(), device_id.clone()))
                 else {
-                    return Err(ControlPlaneError::Limited {
-                        capability: "device-trust",
-                        reason: "trusted device proof is missing",
-                    });
+                    return Err(device_not_trusted("trusted device proof is missing"));
                 };
                 if device_authorization_proof_valid(
                     verifier,
@@ -322,40 +382,42 @@ impl FakeControlPlaneClient {
                 ) {
                     Ok(())
                 } else {
-                    Err(ControlPlaneError::Limited {
-                        capability: "device-trust",
-                        reason: "trusted device proof does not match",
-                    })
+                    Err(device_not_trusted("trusted device proof does not match"))
                 }
             }
-            _ => Err(ControlPlaneError::Limited {
-                capability: "device-trust",
-                reason: "approver is not a trusted non-revoked device",
-            }),
+            _ => Err(device_not_trusted(
+                "approver is not a trusted non-revoked device",
+            )),
         }
     }
 
     pub(super) fn ensure_not_revoked(
         state: &FakeControlPlaneState,
-        workspace_id: &str,
-        device_id: &str,
+        workspace_id: &WorkspaceId,
+        device_id: &DeviceId,
     ) -> ControlPlaneResult<()> {
         if state
             .revoked_devices
-            .contains_key(&(workspace_id.to_string(), device_id.to_string()))
+            .contains_key(&(workspace_id.clone(), device_id.clone()))
         {
-            return Err(ControlPlaneError::Limited {
-                capability: "device-trust",
-                reason: "revoked devices cannot receive new grants",
-            });
+            return Err(device_not_trusted(
+                "revoked devices cannot receive new grants",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn ensure_online(&self) -> ControlPlaneResult<()> {
+        if self.is_offline() {
+            return Err(Self::offline_transport_error());
         }
         Ok(())
     }
 
     pub(super) fn ensure_trusted_device_if_configured(
         state: &FakeControlPlaneState,
-        workspace_id: &str,
-        device_id: Option<&str>,
+        workspace_id: &WorkspaceId,
+        device_id: Option<&DeviceId>,
     ) -> ControlPlaneResult<()> {
         let workspace_has_trust = state
             .authorized_devices
@@ -370,27 +432,25 @@ impl FakeControlPlaneClient {
         }
 
         let Some(device_id) = device_id else {
-            return Err(ControlPlaneError::Limited {
-                capability: "device-trust",
-                reason: "trusted-device workspace access requires a local device",
-            });
+            return Err(device_not_trusted(
+                "trusted-device workspace access requires a local device",
+            ));
         };
         match state
             .authorized_devices
-            .get(&(workspace_id.to_string(), device_id.to_string()))
+            .get(&(workspace_id.clone(), device_id.clone()))
         {
             Some(device) if device.revoked_at.is_none() => Ok(()),
-            _ => Err(ControlPlaneError::Limited {
-                capability: "device-trust",
-                reason: "device is not trusted for this workspace",
-            }),
+            _ => Err(device_not_trusted(
+                "device is not trusted for this workspace",
+            )),
         }
     }
 
     pub(super) fn ensure_revocation_keeps_trust_path(
         state: &FakeControlPlaneState,
-        workspace_id: &str,
-        device_id: &str,
+        workspace_id: &WorkspaceId,
+        device_id: &DeviceId,
     ) -> ControlPlaneResult<()> {
         let another_trusted_device =
             state
@@ -403,14 +463,14 @@ impl FakeControlPlaneClient {
             return Ok(());
         }
         let active_recovery_key = state.recovery_envelopes.values().any(|envelope| {
-            envelope.workspace_id == workspace_id && envelope.state == RecoveryEnvelopeState::Active
+            &envelope.workspace_id == workspace_id
+                && envelope.state == RecoveryEnvelopeState::Active
         });
         if active_recovery_key {
             return Ok(());
         }
-        Err(ControlPlaneError::Limited {
-            capability: "device-trust",
-            reason: "cannot revoke the last trusted device without another trusted device or active Recovery Key",
-        })
+        Err(device_not_trusted(
+            "cannot revoke the last trusted device without another trusted device or active Recovery Key",
+        ))
     }
 }

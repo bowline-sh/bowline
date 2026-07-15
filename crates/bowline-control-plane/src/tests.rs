@@ -1,19 +1,26 @@
 use super::*;
+use bowline_core::ids::{DeviceId, SnapshotId, WorkspaceId};
 
 fn sample_snapshot() -> WorkspaceStatusSnapshot {
     WorkspaceStatusSnapshot {
-        workspace_id: "ws_code".to_string(),
-        snapshot_id: "snap_abc123".to_string(),
-        status_level: "attention".to_string(),
+        workspace_id: WorkspaceId::new("ws_code"),
+        snapshot_id: SnapshotId::new("snap_abc123"),
+        availability: "ready".to_string(),
+        attention: "required".to_string(),
+        primary_fact_id: None,
+        facts: Vec::new(),
+        freshness: "fresh".to_string(),
+        schema_hash: bowline_core::wire::WIRE_SCHEMA_HASH.to_string(),
+        snapshot_version: 1,
+        producer_version: "0.1.1".to_string(),
+        observed_at: "2026-06-29T12:00:00Z".to_string(),
         attention_items: vec!["device approval pending".to_string()],
-        generated_at: "2026-06-29T12:00:00Z".to_string(),
         event_watermarks: StatusEventWatermarks::default(),
         sync_queue: None,
-        index: None,
         workspace_summary: None,
         items: Vec::new(),
         limits: Vec::new(),
-        published_by_device_id: "device-daemon".to_string(),
+        published_by_device_id: DeviceId::new("device-daemon"),
     }
 }
 
@@ -22,12 +29,36 @@ fn status_publish_proof_subject_matches_convex_contract() {
     let snapshot = sample_snapshot();
     assert_eq!(
         snapshot.proof_subject(),
-        "workspaceId=ws_code\nsnapshotId=snap_abc123\nstatusLevel=attention\ngeneratedAt=2026-06-29T12:00:00Z"
+        format!(
+            "workspaceId=ws_code\nsnapshotId=snap_abc123\navailability=ready\nattention=required\nschemaHash={}\nsnapshotVersion=1\nobservedAt=2026-06-29T12:00:00Z",
+            bowline_core::wire::WIRE_SCHEMA_HASH
+        )
     );
 }
 
 #[test]
 fn publish_workspace_status_is_noop_for_in_memory_client() {
     let client = FakeControlPlaneClient::default();
-    assert!(ControlPlaneClient::publish_workspace_status(&client, &sample_snapshot()).is_ok());
+    assert!(
+        WorkspaceControlPlaneClient::publish_workspace_status(&client, &sample_snapshot()).is_ok()
+    );
+}
+
+#[test]
+fn lease_update_event_kinds_match_lifecycle_vocabulary() {
+    let expected = [
+        "lease.created",
+        "lease.updated",
+        "lease.dispatched",
+        "lease.claimed",
+        "lease.completed",
+        "lease.review_ready",
+    ];
+    let actual: std::collections::BTreeSet<_> = CompactEventKind::LEASE_UPDATE_EVENT_KINDS
+        .iter()
+        .map(|kind| kind.as_str())
+        .collect();
+    let want: std::collections::BTreeSet<_> = expected.iter().copied().collect();
+    assert_eq!(actual, want);
+    assert_eq!(CompactEventKind::OverlayChanged.as_str(), "overlay.changed");
 }

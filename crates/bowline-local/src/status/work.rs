@@ -1,14 +1,11 @@
 use super::*;
 
 pub(super) fn apply_work_view_metadata(
-    store: &MetadataStore,
-    workspace_id: &WorkspaceId,
+    work_views: &[WorkViewRecord],
     project_id: Option<&ProjectId>,
-    items: &mut Vec<StatusItem>,
-    attention_items: &mut Vec<String>,
-    level: &mut StatusLevel,
-) -> Result<(), LocalStatusError> {
-    for view in store.work_views(workspace_id, true, None)? {
+    acc: &mut StatusAccumulator,
+) {
+    for view in work_views {
         if let Some(project_id) = project_id
             && &view.project_id != project_id
         {
@@ -22,7 +19,7 @@ pub(super) fn apply_work_view_metadata(
         if !needs_attention {
             continue;
         }
-        if items.iter().any(|item| {
+        if acc.items.iter().any(|item| {
             item.kind == StatusItemKind::WorkView
                 && item
                     .subject
@@ -31,74 +28,86 @@ pub(super) fn apply_work_view_metadata(
         }) {
             continue;
         }
-        if *level == StatusLevel::Healthy {
-            *level = StatusLevel::Attention;
-        }
+        acc.observe_fact(
+            if view.sync_state == WorkViewSyncState::Conflicted {
+                "work_view.conflicted"
+            } else {
+                "work_view.review_ready"
+            },
+            format!("work-view:{}", view.id.as_str()),
+            format!("work-view:{}", view.id.as_str()),
+            StatusFactScope::WorkView,
+            Some(view.id.as_str()),
+        );
         let summary = format!("{} is review-ready; workspace remains usable.", view.name);
-        attention_items.push(summary.clone());
+        acc.attention_items.push(summary.clone());
         let mut item = base_status_item(StatusItemKind::WorkView, &summary);
         item.subject = Some(StatusSubject {
             kind: StatusSubjectKind::WorkView,
             id: view.id.as_str().to_string(),
             path: Some(view.visible_path.clone()),
         });
-        item.path = Some(view.visible_path);
-        item.project_id = Some(view.project_id);
+        item.path = Some(view.visible_path.clone());
+        item.project_id = Some(view.project_id.clone());
         item.event_name = Some(EventName::WorkReviewReady);
-        items.push(item);
+        acc.items.push(item);
     }
-    Ok(())
 }
 
 pub(super) fn apply_agent_lease_metadata(
-    store: &MetadataStore,
-    workspace_id: &WorkspaceId,
+    agent_leases: &[AgentLeaseRecord],
+    work_views: &[WorkViewRecord],
     project_id: Option<&ProjectId>,
-    generated_at: &str,
-    items: &mut Vec<StatusItem>,
-    attention_items: &mut Vec<String>,
-    level: &mut StatusLevel,
-) -> Result<(), LocalStatusError> {
-    recover_provisional_agent_leases(store, workspace_id, generated_at)
-        .map_err(agent_recovery_status_error)?;
-    for lease in store.agent_leases(workspace_id)? {
+    acc: &mut StatusAccumulator,
+) {
+    for lease in agent_leases {
         if let Some(project_id) = project_id
             && &lease.project_id != project_id
         {
             continue;
         }
         let visible = matches!(
-            lease.execution_state,
-            AgentLeaseExecutionState::Active | AgentLeaseExecutionState::Blocked
-        ) || matches!(
-            lease.output_state,
-            AgentLeaseOutputState::ReviewReady | AgentLeaseOutputState::Conflicted
+            lease.session_state,
+            AgentSessionState::Open | AgentSessionState::Provisional | AgentSessionState::Completed
         );
         if !visible {
             continue;
         }
-        let needs_attention =
-            matches!(
-                lease.output_state,
-                AgentLeaseOutputState::ReviewReady | AgentLeaseOutputState::Conflicted
-            ) || matches!(lease.execution_state, AgentLeaseExecutionState::Blocked);
-        if needs_attention && *level == StatusLevel::Healthy {
-            *level = StatusLevel::Attention;
+        let completed = matches!(lease.session_state, AgentSessionState::Completed);
+        let review_ready = completed
+            && matches!(
+                lease.write_target_mode,
+                bowline_core::commands::AgentWriteTargetMode::WorkView
+            )
+            && work_views.iter().any(|view| {
+                view.id == lease.work_view_id
+                    && matches!(
+                        view.lifecycle,
+                        WorkViewLifecycle::Active | WorkViewLifecycle::ReviewReady
+                    )
+            });
+        let needs_attention = review_ready;
+        if needs_attention {
+            acc.observe_fact(
+                "lease.review_ready",
+                format!("lease:{}", lease.id.as_str()),
+                format!("lease:{}", lease.id.as_str()),
+                StatusFactScope::Lease,
+                Some(lease.id.as_str()),
+            );
         }
-        let summary = match lease.output_state {
-            AgentLeaseOutputState::ReviewReady => {
-                format!("Agent lease {} is ready for review.", lease.id.as_str())
-            }
-            AgentLeaseOutputState::Conflicted => {
-                format!("Agent lease {} has conflicted output.", lease.id.as_str())
-            }
-            _ if lease.execution_state == AgentLeaseExecutionState::Blocked => {
-                format!("Agent lease {} needs human attention.", lease.id.as_str())
-            }
-            _ => format!("Agent lease {} is active.", lease.id.as_str()),
+        let summary = if review_ready {
+            format!("Agent session {} is review-ready.", lease.id.as_str())
+        } else if completed {
+            format!(
+                "Agent session {} completed; inspect synced project state.",
+                lease.id.as_str()
+            )
+        } else {
+            format!("Agent session {} is open.", lease.id.as_str())
         };
         if needs_attention {
-            attention_items.push(summary.clone());
+            acc.attention_items.push(summary.clone());
         }
         let mut item = base_status_item(StatusItemKind::Lease, &summary);
         item.subject = Some(StatusSubject {
@@ -106,20 +115,16 @@ pub(super) fn apply_agent_lease_metadata(
             id: lease.id.as_str().to_string(),
             path: Some(lease.work_view_path.clone()),
         });
-        item.path = Some(lease.work_view_path);
-        item.project_id = Some(lease.project_id);
-        item.lease_id = Some(lease.id);
-        item.event_name = Some(match lease.output_state {
-            AgentLeaseOutputState::ReviewReady => EventName::LeaseReviewReady,
-            AgentLeaseOutputState::Conflicted => EventName::LeaseBlocked,
-            _ if lease.execution_state == AgentLeaseExecutionState::Blocked => {
-                EventName::LeaseBlocked
-            }
-            _ => EventName::LeaseUpdated,
+        item.path = Some(lease.work_view_path.clone());
+        item.project_id = Some(lease.project_id.clone());
+        item.lease_id = Some(lease.id.clone());
+        item.event_name = Some(if review_ready {
+            EventName::LeaseReviewReady
+        } else {
+            EventName::LeaseUpdated
         });
-        items.push(item);
+        acc.items.push(item);
     }
-    Ok(())
 }
 
 pub(super) fn agent_recovery_status_error(error: AgentError) -> LocalStatusError {

@@ -41,14 +41,14 @@ pub fn run(args: RecoveryArgs, generated_at: String) -> Result<RecoveryRunOutput
         RecoveryArgs::Status => {
             let control_plane = runtime::control_plane()?;
             let envelopes = control_plane
-                .list_recovery_envelopes(workspace_id.as_str())
+                .list_recovery_envelopes(&workspace_id)
                 .map_err(|error| error.to_string())?;
             let recovery_key = current_recovery_state(envelopes);
             let next_actions = if recovery_key.lifecycle == RecoveryKeyLifecycle::Missing {
-                vec![bowline_core::status::SafeAction {
-                    label: "Create a Recovery Key".to_string(),
-                    command: Some("bowline recover create".to_string()),
-                }]
+                vec![bowline_core::status::RepairCommand::mutating(
+                    "Create a Recovery Key".to_string(),
+                    Some("bowline recover create".to_string()),
+                )]
             } else {
                 Vec::new()
             };
@@ -124,13 +124,14 @@ pub fn run(args: RecoveryArgs, generated_at: String) -> Result<RecoveryRunOutput
                 &workspace_id,
                 &local_device_id,
                 "revoke-recovery-envelope",
-                &envelope_id,
-            );
+                &grants::recovery_envelope_proof_subject(&envelope_id),
+            )
+            .map_err(|error| error.to_string())?;
             let envelope = control_plane
                 .revoke_recovery_envelope(
-                    workspace_id.as_str(),
-                    &envelope_id,
-                    local_device_id.as_str(),
+                    &workspace_id,
+                    &RecoveryEnvelopeId::new(&envelope_id),
+                    &local_device_id,
                     &revoked_by_device_proof,
                 )
                 .map_err(|error| error.to_string())?;

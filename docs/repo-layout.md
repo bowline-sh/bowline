@@ -10,6 +10,8 @@ apps/         deployable TypeScript surfaces
 packages/     TypeScript deep modules shared by apps
 crates/       Rust CLI, daemon, local engine, and storage substrate
 docs/         product, architecture, research, and repo docs
+docs/integrations/
+              integration guides for tools that compose with Bowline
 docs/implementation/
               implementation planning, phase gates, and smoke evidence
 research/     source material, Oracle output, and subagent notes
@@ -30,9 +32,6 @@ Cloudflare R2 for immutable encrypted packs and manifests.
 Use these boundaries for the TypeScript side:
 
 - `apps/web/` is the TanStack Start web and dashboard surface.
-- `apps/api-worker/` is a temporary thin Cloudflare Worker scaffold for
-  edge/status experiments. It is not the sync backend, byte proxy, or control
-  plane.
 - `packages/control-plane/` owns product-shaped control-plane contracts and
   helpers. It must not become a raw table-access layer leaked across the repo.
 - `infra/cloudflare/` owns Cloudflare deployment configuration when needed.
@@ -61,16 +60,16 @@ Use these boundaries for the TypeScript side:
 
 ## Verification
 
-Use the root command:
+Use the structured release profile in the private canonical repo:
 
 ```bash
-pnpm verify
+./scripts/verify --profile release
 ```
 
 For the generated public source repo:
 
 ```bash
-pnpm verify:public
+pnpm verify
 ```
 
 Maintainers can update a public working tree from the private repo with:
@@ -89,7 +88,7 @@ entrypoint for downloadable assets served by `install.bowline.sh`.
 For Rust-only work:
 
 ```bash
-pnpm rust:verify
+./scripts/verify --profile rust
 ```
 
 Implementation phase notes and merge rules live in
