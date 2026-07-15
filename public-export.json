@@ -57,7 +57,6 @@
     "tests/contracts",
     "tests/corpora",
     "tests/fixtures/architecture-imports",
-    "tests/fixtures/generated-artifacts",
     "tests/fixtures/public-export",
     "tests/fixtures/rust-boundaries",
     "tests/golden",
