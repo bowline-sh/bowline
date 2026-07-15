@@ -407,6 +407,14 @@ async function runReleaseAssetsProducerSmoke() {
         );
       }
     }
+    const uploadArgs = releaseAssets.releaseUploadArgs(
+      "release-bucket",
+      signedAssets[0],
+      "releases/v0.0.1-smoke/artifact",
+    );
+    if (!uploadArgs.includes("--remote")) {
+      throw new Error("release uploads must explicitly target remote R2");
+    }
     console.error("[release-authenticity-smoke] release-assets producer: pass");
   } finally {
     if (previousDistRoot === undefined) {

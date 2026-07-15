@@ -402,19 +402,24 @@ function contentType(name) {
   return "application/octet-stream";
 }
 
-function uploadAsset(bucket, asset, key, publish) {
-  const args = [
+function releaseUploadArgs(bucket, asset, key) {
+  return [
     "exec",
     "wrangler",
     "r2",
     "object",
     "put",
     `${bucket}/${key}`,
+    "--remote",
     "--file",
     asset.file,
     "--content-type",
     contentType(asset.name),
   ];
+}
+
+function uploadAsset(bucket, asset, key, publish) {
+  const args = releaseUploadArgs(bucket, asset, key);
   if (!publish) {
     step(`would upload ${asset.file} to r2://${bucket}/${key}`);
     return;
@@ -563,6 +568,7 @@ export {
   cleanGeneratedReleaseRoots,
   discoverReleaseAssets,
   releaseDist,
+  releaseUploadArgs,
   releaseUploadPlan,
   stageExternalArtifacts,
   stageInstaller,
