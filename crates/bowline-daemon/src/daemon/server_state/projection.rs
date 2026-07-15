@@ -251,11 +251,14 @@ pub(super) fn start_projection(
     instance_id: &str,
 ) -> io::Result<(StatusProjectionService, ProjectionSourceHandles)> {
     let sync_args = runtime.sync.as_ref().map(|sync| &sync.options.args);
-    let metadata = LocalStatusProjectionCollector::new(
-        sync_args.map(|args| args.state_root.join(DEFAULT_DATABASE_FILE)),
-        sync_args.map(|args| args.root.display().to_string()),
-        sync_args.is_some(),
-    )
+    let metadata = match sync_args {
+        Some(args) => LocalStatusProjectionCollector::new_for_workspace(
+            args.state_root.join(DEFAULT_DATABASE_FILE),
+            args.root.display().to_string(),
+            WorkspaceId::new(args.workspace_id.clone()),
+        ),
+        None => LocalStatusProjectionCollector::new(None, None, false),
+    }
     .map_err(|error| io::Error::other(error.to_string()))?;
     let (sync_runtime, sync_collector) =
         ready_source_collector(StatusSourceFacts::SyncRuntime(sync_runtime_facts(runtime)));

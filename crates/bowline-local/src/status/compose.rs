@@ -13,19 +13,42 @@ pub(super) fn compose_from_store(
     options: StatusOptions,
     state_root: PathBuf,
 ) -> Result<StatusCommandOutput, LocalStatusError> {
-    let workspace = workspace_for_requested_path(store, options.requested_path.as_deref())?;
-    let Some(workspace) = workspace else {
-        return Ok(missing_metadata_status(&options));
-    };
-    if store.accepted_root_count(&workspace.id)? == 0 {
+    compose_from_store_for_workspace(store, options, state_root, None)
+}
+
+pub(super) fn compose_from_store_for_workspace(
+    store: &MetadataStore,
+    options: StatusOptions,
+    state_root: PathBuf,
+    configured_workspace_id: Option<&WorkspaceId>,
+) -> Result<StatusCommandOutput, LocalStatusError> {
+    if let Some(workspace_id) = configured_workspace_id
+        && store.accepted_root_count(workspace_id)? == 0
+    {
         return Ok(missing_metadata_status(&options));
     }
+    if configured_workspace_id.is_none() {
+        let workspace = workspace_for_requested_path(store, options.requested_path.as_deref())?;
+        let Some(workspace) = workspace else {
+            return Ok(missing_metadata_status(&options));
+        };
+        if store.accepted_root_count(&workspace.id)? == 0 {
+            return Ok(missing_metadata_status(&options));
+        }
+    }
 
-    let resolved = resolve_scope(
-        store,
-        options.requested_path.as_deref(),
-        options.workspace_scope,
-    )?;
+    let resolved = match configured_workspace_id {
+        Some(workspace_id) => ResolvedScope {
+            workspace_id: Some(workspace_id.clone()),
+            project_id: None,
+            project_path: None,
+        },
+        None => resolve_scope(
+            store,
+            options.requested_path.as_deref(),
+            options.workspace_scope,
+        )?,
+    };
     let workspace_id = resolved
         .workspace_id
         .clone()

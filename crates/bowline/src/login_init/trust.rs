@@ -21,14 +21,19 @@ pub(crate) fn advance_device_trust(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DeviceTrustAttachment {
-    NoPendingApproval,
+    NotReady,
+    Ready,
     PendingApproval { request_id: String },
 }
 
 impl DeviceTrustAttachment {
+    pub(crate) fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready)
+    }
+
     pub(crate) fn pending_request_id(&self) -> Option<String> {
         match self {
-            Self::NoPendingApproval => None,
+            Self::NotReady | Self::Ready => None,
             Self::PendingApproval { request_id } => Some(request_id.clone()),
         }
     }
@@ -48,6 +53,8 @@ struct DeviceTrustContext {
     key_store: Box<dyn bowline_local::device_keys::DeviceKeyStore>,
     trust: bowline_control_plane::DeviceApprovalRequestList,
     current_device_id: DeviceId,
+    current_device_fingerprint: String,
+    current_device_platform: bowline_core::devices::DevicePlatform,
 }
 
 fn fetch_device_trust_context(output: &bowline_core::commands::RootInitOutput) -> DeviceTrustFetch {
@@ -73,11 +80,17 @@ fn fetch_device_trust_context(output: &bowline_core::commands::RootInitOutput) -
     {
         return DeviceTrustFetch::TrustUnavailable(error.to_string());
     }
+    let identity = match key_store.load_or_create_device_identity() {
+        Ok(identity) => identity,
+        Err(_) => return DeviceTrustFetch::SecretStoreUnavailable,
+    };
     DeviceTrustFetch::Ready(DeviceTrustContext {
         control_plane,
         key_store,
         trust,
         current_device_id: runtime::daemon_device_id(&output.workspace_id),
+        current_device_fingerprint: identity.fingerprint.as_str().to_string(),
+        current_device_platform: runtime::platform(),
     })
 }
 
@@ -111,25 +124,28 @@ enum DeviceTrustState {
 fn device_trust_state(
     trust: &bowline_control_plane::DeviceApprovalRequestList,
     current_device_id: &DeviceId,
+    current_device_fingerprint: &str,
+    current_device_platform: bowline_core::devices::DevicePlatform,
 ) -> DeviceTrustState {
     if trust.authorized_devices.is_empty() {
         return DeviceTrustState::BootstrapFirstTrustedDevice;
     }
-    if trust
-        .authorized_devices
-        .iter()
-        .any(|device| device.device_id == current_device_id.as_str())
-    {
+    if trust.authorized_devices.iter().any(|device| {
+        device.device_id == current_device_id.as_str()
+            && device.device_fingerprint == current_device_fingerprint
+            && device.platform == device_platform_label(current_device_platform)
+            && device.revoked_at.is_none()
+    }) {
         return DeviceTrustState::CurrentDeviceTrusted;
     }
 
     // The first device creates the workspace key locally; every later device must
     // prove user presence on an already trusted device before accepting a grant.
-    let Some(request) = trust
-        .pending_requests
-        .iter()
-        .find(|request| request.device_id == current_device_id.as_str())
-    else {
+    let Some(request) = trust.pending_requests.iter().find(|request| {
+        request.device_id == current_device_id.as_str()
+            && request.device_fingerprint == current_device_fingerprint
+            && request.platform == device_platform_label(current_device_platform)
+    }) else {
         return DeviceTrustState::RequestApprovalFromTrustedDevice;
     };
     match request.state {
@@ -150,12 +166,25 @@ fn device_trust_state(
     }
 }
 
+fn device_platform_label(platform: bowline_core::devices::DevicePlatform) -> &'static str {
+    match platform {
+        bowline_core::devices::DevicePlatform::Macos => "macos",
+        bowline_core::devices::DevicePlatform::Linux => "linux",
+        bowline_core::devices::DevicePlatform::Unknown => "unknown",
+    }
+}
+
 fn resolve_device_trust_state(
     output: &bowline_core::commands::RootInitOutput,
     generated_at: &str,
     context: DeviceTrustContext,
 ) -> DeviceTrustMessage {
-    match device_trust_state(&context.trust, &context.current_device_id) {
+    match device_trust_state(
+        &context.trust,
+        &context.current_device_id,
+        &context.current_device_fingerprint,
+        context.current_device_platform,
+    ) {
         DeviceTrustState::BootstrapFirstTrustedDevice => {
             ensure_first_trust_root(output, generated_at, &context)
         }
@@ -205,9 +234,9 @@ fn create_trust_request(
         &*context.key_store,
         bowline_local::trust::DeviceRequestOptions {
             workspace_id: output.workspace_id.clone(),
-            device_id: runtime::device_id(),
+            device_id: context.current_device_id.clone(),
             device_name: runtime::device_name(),
-            platform: runtime::platform(),
+            platform: context.current_device_platform,
             host: None,
             lease_id: None,
             root: Some(output.root.clone()),
@@ -233,9 +262,9 @@ fn ensure_first_trust_root(
         &*context.control_plane,
         &*context.key_store,
         output.workspace_id.clone(),
-        runtime::device_id(),
+        context.current_device_id.clone(),
         runtime::device_name(),
-        runtime::platform(),
+        context.current_device_platform,
         generated_at.to_string(),
     ) {
         Ok(_) => DeviceTrustMessage::CreateRecoveryKey,
@@ -268,37 +297,37 @@ fn append_device_trust_message(
         DeviceTrustMessage::LogInBeforeSync => (
             "Log in before enabling workspace sync".to_string(),
             Some("bowline login".to_string()),
-            DeviceTrustAttachment::NoPendingApproval,
+            DeviceTrustAttachment::NotReady,
             false,
         ),
         DeviceTrustMessage::CheckSecretStore => (
             "Check local secret store before enabling sync".to_string(),
             Some(status_command(&output.root)),
-            DeviceTrustAttachment::NoPendingApproval,
+            DeviceTrustAttachment::NotReady,
             false,
         ),
         DeviceTrustMessage::CheckControlPlane => (
             "Check control-plane connectivity before enabling sync".to_string(),
             Some(status_command(&output.root)),
-            DeviceTrustAttachment::NoPendingApproval,
+            DeviceTrustAttachment::NotReady,
             false,
         ),
         DeviceTrustMessage::TrustSetupUnavailable(error) => (
             format!("Trust setup unavailable: {error}"),
             Some(status_command(&output.root)),
-            DeviceTrustAttachment::NoPendingApproval,
+            DeviceTrustAttachment::NotReady,
             false,
         ),
         DeviceTrustMessage::InspectStatus => (
             "Inspect workspace status".to_string(),
             Some(status_command(&output.root)),
-            DeviceTrustAttachment::NoPendingApproval,
+            DeviceTrustAttachment::Ready,
             false,
         ),
         DeviceTrustMessage::DeviceGrantNotAccepted(error) => (
             format!("Device grant not accepted: {error}"),
             Some(status_command(&output.root)),
-            DeviceTrustAttachment::NoPendingApproval,
+            DeviceTrustAttachment::NotReady,
             false,
         ),
         DeviceTrustMessage::ApproveOnTrustedDevice {
@@ -317,19 +346,19 @@ fn append_device_trust_message(
         DeviceTrustMessage::DeviceApprovalRequestNotCreated(error) => (
             format!("Device approval request not created: {error}"),
             Some(status_command(&output.root)),
-            DeviceTrustAttachment::NoPendingApproval,
+            DeviceTrustAttachment::NotReady,
             false,
         ),
         DeviceTrustMessage::CreateRecoveryKey => (
             "Create a Recovery Key".to_string(),
             Some("bowline recover create".to_string()),
-            DeviceTrustAttachment::NoPendingApproval,
+            DeviceTrustAttachment::Ready,
             true,
         ),
         DeviceTrustMessage::TrustRootNotCreated(error) => (
             format!("Trust root not created: {error}"),
             Some(status_command(&output.root)),
-            DeviceTrustAttachment::NoPendingApproval,
+            DeviceTrustAttachment::NotReady,
             false,
         ),
     };
@@ -351,28 +380,14 @@ pub(super) fn root_command(prefix: &str, root: &str) -> String {
 }
 
 pub(crate) fn wait_for_device_grant(
-    command: CommandName,
     workspace_id: WorkspaceId,
     request_id: String,
-    generated_at: String,
-) -> ExitCode {
+) -> Result<(), String> {
     println!(
         "Waiting for approval. On a trusted device, run `bowline device approve --root <path> --request {request_id}`."
     );
-    let control_plane = match runtime::control_plane() {
-        Ok(control_plane) => control_plane,
-        Err(error) => {
-            print_runtime_error(command, generated_at, &error, false);
-            return ExitCode::from(EXIT_RUNTIME);
-        }
-    };
-    let key_store = match runtime::key_store() {
-        Ok(key_store) => key_store,
-        Err(error) => {
-            print_runtime_error(command, generated_at, &error, false);
-            return ExitCode::from(EXIT_RUNTIME);
-        }
-    };
+    let control_plane = runtime::control_plane()?;
+    let key_store = runtime::key_store()?;
     let request_id = DeviceApprovalRequestId::new(request_id);
     let deadline = Instant::now() + Duration::from_secs(300);
     loop {
@@ -383,26 +398,68 @@ pub(crate) fn wait_for_device_grant(
             &request_id,
             &runtime::device_id(),
         ) {
-            Ok(_) => {
-                println!("Device approved. Workspace is ready.");
-                return ExitCode::SUCCESS;
-            }
+            Ok(_) => return Ok(()),
             Err(bowline_local::trust::TrustError::MissingPendingRequest(_)) => {
                 if Instant::now() >= deadline {
-                    print_runtime_error(
-                        command,
-                        generated_at,
-                        "timed out waiting for device approval; run `bowline setup --root <path> --json` to leave the request pending",
-                        false,
-                    );
-                    return ExitCode::from(EXIT_RUNTIME);
+                    return Err("timed out waiting for device approval; run `bowline setup --root <path> --json` to leave the request pending".to_string());
                 }
                 thread::sleep(Duration::from_secs(2));
             }
-            Err(error) => {
-                print_runtime_error(command, generated_at, &error.to_string(), false);
-                return ExitCode::from(EXIT_RUNTIME);
-            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bowline_control_plane::{
+        AuthorizedDeviceRecord, ControlPlaneTimestamp, DeviceApprovalRequestList,
+    };
+    use bowline_core::{
+        devices::DevicePlatform,
+        ids::{DeviceId, WorkspaceId},
+    };
+
+    use super::{DeviceTrustState, device_trust_state};
+
+    #[test]
+    fn authorized_device_requires_matching_id_fingerprint_and_platform() {
+        let trust = trust_with_authorized_device("device_shared", "fp_mac", "macos");
+        let device_id = DeviceId::new("device_shared");
+
+        assert_eq!(
+            device_trust_state(&trust, &device_id, "fp_mac", DevicePlatform::Macos),
+            DeviceTrustState::CurrentDeviceTrusted
+        );
+        assert_eq!(
+            device_trust_state(&trust, &device_id, "fp_linux", DevicePlatform::Linux),
+            DeviceTrustState::RequestApprovalFromTrustedDevice
+        );
+        assert_eq!(
+            device_trust_state(&trust, &device_id, "fp_mac", DevicePlatform::Linux),
+            DeviceTrustState::RequestApprovalFromTrustedDevice
+        );
+    }
+
+    fn trust_with_authorized_device(
+        device_id: &str,
+        fingerprint: &str,
+        platform: &str,
+    ) -> DeviceApprovalRequestList {
+        DeviceApprovalRequestList {
+            pending_requests: Vec::new(),
+            authorized_devices: vec![AuthorizedDeviceRecord {
+                workspace_id: WorkspaceId::new("ws_code"),
+                device_id: DeviceId::new(device_id),
+                device_name: "Local device".to_string(),
+                platform: platform.to_string(),
+                device_fingerprint: fingerprint.to_string(),
+                authorized_at: ControlPlaneTimestamp { tick: 1 },
+                authorized_by_device_id: None,
+                device_authorization_proof_verifier: Some("dapv_local".to_string()),
+                revoked_at: None,
+            }],
+            revoked_devices: Vec::new(),
         }
     }
 }

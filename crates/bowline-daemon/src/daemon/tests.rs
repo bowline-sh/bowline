@@ -8,8 +8,8 @@ use super::{
     CachedStore, Command, ConflictSummary, ContinuousSyncOptions, ContinuousSyncRuntime,
     DEFAULT_DATABASE_FILE, DaemonRuntime, DaemonServerState, DeviceId, DispatchClaimer,
     LocalWriteLogRecord, MetadataStore, NotificationDedupe, RemoteObserverState, RemoteRefObserver,
-    STATUS_PUBLISH_INTERVAL, StatusPublishOutcome, StatusPublishPayload, StatusPublisher,
-    SyncExecutor, SyncFailureAction, SyncOnceArgs, SyncOnceError, SyncOnceSummary,
+    STATUS_PUBLISH_INTERVAL, StatusPublishOutcome, StatusPublishPayload, StatusPublishRequest,
+    StatusPublisher, SyncExecutor, SyncFailureAction, SyncOnceArgs, SyncOnceError, SyncOnceSummary,
     SyncOperationKind, SyncOperationRecord, SyncOperationState, SyncResourceKey,
     WATCHER_DRAIN_BUDGET, WATCHER_OVERFLOW_RESET_WINDOW, WATCHER_REARM_FAILURE_LIMIT,
     WatcherRecovery, WatcherRuntimeState, WatcherSignal, WorkViewOverlaySyncResult, WorkspaceId,
@@ -462,6 +462,7 @@ fn watcher_fatal_error_wakes_reconciliation_and_marks_watcher_limited() {
         next_status_publish: Instant::now() + STATUS_PUBLISH_INTERVAL,
         last_status_publish_fingerprint: None,
         last_status_publish_at: None,
+        last_status_publish_failed_at: None,
         hosted_resolver: test_hosted_context_resolver(),
         store_health: StoreHealth::new(),
         claimant_id: "daemon-test".to_string(),
@@ -1009,6 +1010,7 @@ fn completed_sync_records_remote_ref_cursor() {
         next_status_publish: Instant::now() + STATUS_PUBLISH_INTERVAL,
         last_status_publish_fingerprint: None,
         last_status_publish_at: None,
+        last_status_publish_failed_at: None,
         hosted_resolver: test_hosted_context_resolver(),
         store_health: StoreHealth::new(),
         claimant_id: "daemon-test".to_string(),
@@ -1131,6 +1133,7 @@ fn conflicted_sync_emits_conflict_created_event() {
         next_status_publish: Instant::now() + STATUS_PUBLISH_INTERVAL,
         last_status_publish_fingerprint: None,
         last_status_publish_at: None,
+        last_status_publish_failed_at: None,
         hosted_resolver: test_hosted_context_resolver(),
         store_health: StoreHealth::new(),
         claimant_id: "daemon-test".to_string(),
@@ -1653,6 +1656,7 @@ pub(super) fn watcher_test_runtime(
         next_status_publish: Instant::now() + STATUS_PUBLISH_INTERVAL,
         last_status_publish_fingerprint: None,
         last_status_publish_at: None,
+        last_status_publish_failed_at: None,
         hosted_resolver: test_hosted_context_resolver(),
         store_health: StoreHealth::new(),
         claimant_id: "daemon-test".to_string(),
@@ -1747,6 +1751,7 @@ fn fake_daemon_runtime(
         next_status_publish: Instant::now() + STATUS_PUBLISH_INTERVAL,
         last_status_publish_fingerprint: None,
         last_status_publish_at: None,
+        last_status_publish_failed_at: None,
         hosted_resolver: test_hosted_context_resolver(),
         store_health: StoreHealth::new(),
         claimant_id: "daemon-test".to_string(),
@@ -1952,6 +1957,17 @@ fn failed_hosted_projection_publish_retries_without_changing_local_sequence() {
     let start = Instant::now();
     runtime.publish_projection_status(&projection, false, start, &projection_input);
     assert_eq!(runtime.last_status_publish_fingerprint, None);
+    runtime.publish_projection_status(
+        &projection,
+        false,
+        start + Duration::from_secs(1),
+        &projection_input,
+    );
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        1,
+        "projection churn must not bypass failed-publish backoff"
+    );
     runtime.retry_projection_status_if_due(
         &projection,
         start + STATUS_PUBLISH_INTERVAL,
@@ -1962,10 +1978,49 @@ fn failed_hosted_projection_publish_retries_without_changing_local_sequence() {
     assert!(runtime.last_status_publish_fingerprint.is_some());
     assert_eq!(projection.sequence, initial_sequence);
     let metrics = projection_state.test_projection_metrics();
-    assert_eq!(metrics.hosted_serializations, 2);
+    assert_eq!(metrics.hosted_serializations, 3);
     assert_eq!(metrics.hosted_publish_attempts, 2);
     assert_eq!(metrics.hosted_publish_failures, 1);
     assert_eq!(metrics.hosted_publish_successes, 1);
+}
+
+#[test]
+fn status_publish_rejects_projection_for_a_different_workspace() {
+    let fixture = watcher_fixture(
+        "bowline-status-workspace-mismatch",
+        "ws_status_projection_source",
+    );
+    let projection_runtime = DaemonRuntime {
+        sync: Some(watcher_test_runtime(
+            fixture.root.clone(),
+            fixture.state_root.clone(),
+            fixture.workspace_id.as_str(),
+        )),
+        notify_approvals: false,
+        notification_dedupe: Arc::new(Mutex::new(NotificationDedupe::default())),
+        next_notification_poll: Instant::now(),
+        pending_notification_status: None,
+    };
+    let projection_state =
+        DaemonServerState::new(&projection_runtime).expect("projection daemon state");
+    let projection = projection_state.current_projection();
+    let mut args = watcher_test_runtime(
+        fixture.root.clone(),
+        fixture.state_root.clone(),
+        fixture.workspace_id.as_str(),
+    )
+    .options
+    .args;
+    args.workspace_id = "ws_different_configured".to_string();
+
+    let error = StatusPublishPayload::from_projection(StatusPublishRequest { args }, &projection)
+        .expect_err("workspace mismatch must be rejected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("status projection workspace does not match configured daemon workspace")
+    );
 }
 
 fn file_contains(path: &std::path::Path, needle: &str) -> bool {

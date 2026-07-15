@@ -91,8 +91,30 @@ fn subscription_projection_wakes_are_bounded_and_coalesced() {
 
 #[test]
 fn sixty_unchanged_daemon_ticks_keep_one_build_and_sequence() {
+    let state_root = crate::daemon::tests::unique_temp_dir("status-unchanged-ticks");
+    let workspace_id = WorkspaceId::new("ws_status_unchanged_ticks");
+    let root = state_root.join("Code");
+    fs::create_dir_all(&root).expect("workspace root");
+    let store =
+        crate::daemon::store_access::open_store_for_test(state_root.join(DEFAULT_DATABASE_FILE))
+            .expect("metadata opens");
+    store
+        .insert_workspace(&workspace_id, "Code", "2026-07-15T00:00:00Z")
+        .expect("workspace inserts");
+    store
+        .insert_root(
+            "root_status_unchanged_ticks",
+            &workspace_id,
+            &root.display().to_string(),
+            "2026-07-15T00:00:00Z",
+        )
+        .expect("workspace root inserts");
     let runtime = DaemonRuntime {
-        sync: None,
+        sync: Some(crate::daemon::tests::watcher_test_runtime(
+            root,
+            state_root.clone(),
+            workspace_id.as_str(),
+        )),
         notify_approvals: false,
         notification_dedupe: Arc::new(Mutex::new(NotificationDedupe::default())),
         next_notification_poll: Instant::now(),
@@ -137,6 +159,7 @@ fn sixty_unchanged_daemon_ticks_keep_one_build_and_sequence() {
             .get(&ProjectionBuildReason::SourceChanged),
         Some(&60)
     );
+    let _ = fs::remove_dir_all(state_root);
 }
 
 #[test]

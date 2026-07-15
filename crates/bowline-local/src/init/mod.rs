@@ -514,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn init_scopes_project_ids_per_workspace_when_reinitializing_same_root() {
+    fn init_rejects_a_second_workspace_for_the_same_root() {
         let temp =
             crate::workspace::TempWorkspace::new("init-reworkspace-projects").expect("workspace");
         let code_root = temp.root().join("Code");
@@ -533,7 +533,7 @@ mod tests {
             default_workspace.clone(),
         )
         .expect("default workspace init");
-        initialize_root_with_workspace(
+        let error = initialize_root_with_workspace(
             InitOptions {
                 db_path: Some(db_path.clone()),
                 requested_root: Some(code_root.display().to_string()),
@@ -541,8 +541,9 @@ mod tests {
             },
             account_workspace.clone(),
         )
-        .expect("account workspace init");
+        .expect_err("second workspace root authority must be rejected");
 
+        assert!(error.to_string().contains("already belongs to workspace"));
         let store = MetadataStore::open(db_path).expect("metadata");
         assert_eq!(
             store
@@ -554,7 +555,7 @@ mod tests {
             store
                 .project_count(&account_workspace)
                 .expect("account projects"),
-            1
+            0
         );
     }
 }

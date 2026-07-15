@@ -331,13 +331,22 @@ pub(super) fn daemon_service_launch_config_for_store(
         .ok_or_else(|| "metadata database path has no parent directory".to_string())?
         .to_path_buf();
     let workspace_id = daemon_workspace_id_for_store(store)?;
+    if workspace_id.as_str() == "ws_code" {
+        return Err(
+            "daemon service setup requires an authenticated workspace; run `bowline setup --root <path>` first"
+                .to_string(),
+        );
+    }
     let root = store
         .accepted_roots(&workspace_id)
         .map_err(|error| error.to_string())?
         .into_iter()
         .next()
-        .map(|root| Ok(expand_home_path(&root)))
-        .unwrap_or_else(|| seed_default_daemon_root(store, &workspace_id))?;
+        .map(|root| expand_home_path(&root))
+        .ok_or_else(|| {
+            "daemon service setup requires an accepted workspace root; run `bowline setup --root <path>` first"
+                .to_string()
+        })?;
     let device_id = daemon_device_id_for_launch(&state_root, &workspace_id);
     Ok(DaemonLaunchConfig {
         state_root,
@@ -347,25 +356,6 @@ pub(super) fn daemon_service_launch_config_for_store(
         socket: socket.to_path_buf(),
         device_id,
     })
-}
-
-pub(super) fn seed_default_daemon_root(
-    store: &MetadataStore,
-    workspace_id: &bowline_core::ids::WorkspaceId,
-) -> Result<PathBuf, String> {
-    let now = generated_at();
-    store
-        .insert_workspace(workspace_id, "Code", &now)
-        .map_err(|error| error.to_string())?;
-    store
-        .insert_root(
-            &format!("root_{}", workspace_id.as_str()),
-            workspace_id,
-            "~/Code",
-            &now,
-        )
-        .map_err(|error| error.to_string())?;
-    Ok(default_workspace_root())
 }
 
 pub(super) fn daemon_linux_unit_dir() -> Result<PathBuf, String> {
@@ -583,10 +573,6 @@ pub(super) fn expand_home_path(path: &str) -> PathBuf {
         return PathBuf::from(home).join(rest);
     }
     PathBuf::from(path)
-}
-
-pub(super) fn default_workspace_root() -> PathBuf {
-    expand_home_path("~/Code")
 }
 
 pub(super) fn print_daemon_status(socket: &Path, json: bool) {

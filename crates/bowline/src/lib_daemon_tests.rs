@@ -314,10 +314,49 @@ fn diagnostics_bundle_includes_requested_workspace_selection() {
 }
 
 #[test]
-fn daemon_service_launch_config_defaults_before_login() {
+fn daemon_service_launch_config_refuses_before_setup_without_mutating_metadata() {
     let temp = tempfile_dir("bowline-daemon-service-default");
     let db_path = temp.join("state").join("local.sqlite3");
     let store = bowline_local::metadata::MetadataStore::open(&db_path).expect("metadata store");
+    let daemon = temp.join("bowline-daemon");
+
+    let error = match super::daemon_service_launch_config_for_store(
+        Path::new("/tmp/bowline.sock"),
+        &db_path,
+        &store,
+        daemon.clone(),
+    ) {
+        Ok(_) => panic!("service launch config should require authenticated setup"),
+        Err(error) => error,
+    };
+
+    assert!(error.contains("run `bowline setup --root <path>` first"));
+    assert!(
+        store
+            .current_workspace()
+            .expect("current workspace")
+            .is_none()
+    );
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn daemon_service_launch_config_uses_authenticated_accepted_root() {
+    let temp = tempfile_dir("bowline-daemon-service-authenticated");
+    let db_path = temp.join("state").join("local.sqlite3");
+    let store = bowline_local::metadata::MetadataStore::open(&db_path).expect("metadata store");
+    let workspace_id = bowline_core::ids::WorkspaceId::new("ws_code_account");
+    store
+        .insert_workspace(&workspace_id, "Code", "2026-07-15T12:00:00Z")
+        .expect("workspace");
+    store
+        .insert_root(
+            "root_account",
+            &workspace_id,
+            "~/Projects/Bowline",
+            "2026-07-15T12:00:00Z",
+        )
+        .expect("root");
     let daemon = temp.join("bowline-daemon");
 
     let launch = super::daemon_service_launch_config_for_store(
@@ -326,18 +365,12 @@ fn daemon_service_launch_config_defaults_before_login() {
         &store,
         daemon.clone(),
     )
-    .expect("service launch config");
+    .expect("authenticated service launch config");
 
-    assert!(!launch.workspace_id.as_str().is_empty());
+    assert_eq!(launch.workspace_id, workspace_id);
+    assert_eq!(launch.root, super::expand_home_path("~/Projects/Bowline"));
     assert_eq!(launch.daemon, daemon);
-    assert_eq!(launch.root, super::default_workspace_root());
     assert_eq!(launch.state_root, temp.join("state"));
-    assert_eq!(
-        store
-            .accepted_roots(&launch.workspace_id)
-            .expect("accepted roots"),
-        vec!["~/Code".to_string()]
-    );
     let _ = std::fs::remove_dir_all(temp);
 }
 
@@ -347,7 +380,7 @@ fn daemon_launch_uses_persisted_device_id() {
     let state = temp.join("state");
     let db_path = state.join("local.sqlite3");
     std::fs::create_dir_all(&state).expect("state dir");
-    let workspace_id = runtime::active_workspace_id();
+    let workspace_id = bowline_core::ids::WorkspaceId::new("ws_code_account");
     std::fs::write(
             state.join("daemon.env"),
             format!(
@@ -357,6 +390,17 @@ fn daemon_launch_uses_persisted_device_id() {
         )
         .expect("daemon env");
     let store = bowline_local::metadata::MetadataStore::open(&db_path).expect("metadata store");
+    store
+        .insert_workspace(&workspace_id, "Code", "2026-07-15T12:00:00Z")
+        .expect("workspace");
+    store
+        .insert_root(
+            "root_account",
+            &workspace_id,
+            "~/Code",
+            "2026-07-15T12:00:00Z",
+        )
+        .expect("root");
     let daemon = temp.join("bowline-daemon");
 
     let launch = super::daemon_service_launch_config_for_store(

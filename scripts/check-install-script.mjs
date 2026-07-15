@@ -15,8 +15,10 @@ function run(command, args) {
 run("sh", ["-n", "scripts/install.sh"]);
 run("sh", ["-n", "scripts/package-release-binary.sh"]);
 run("sh", ["-n", "scripts/smoke-install-headless.sh"]);
+run("bash", ["-n", "scripts/macos/build-release.sh"]);
 
 const installScript = readFileSync("scripts/install.sh", "utf8");
+const macosBuildScript = readFileSync("scripts/macos/build-release.sh", "utf8");
 const headlessSmoke = readFileSync("scripts/smoke-install-headless.sh", "utf8");
 const releaseKey = readFileSync(
   "scripts/release-signing-key.pub",
@@ -69,11 +71,22 @@ for (const marker of requiredOrder) {
 }
 
 if (
-  !installScript.includes(
-    'if [ "$CLI_ONLY" = "0" ]; then\n  install_daemon\nfi\n',
-  )
+  installScript.includes("daemon install") ||
+  installScript.includes("install_daemon")
 ) {
-  throw new Error("install.sh --cli-only must not install the daemon service");
+  throw new Error(
+    "install.sh must leave daemon service installation to authenticated setup",
+  );
+}
+if (!installScript.includes('echo "Next: bowline setup --root ~/Code"')) {
+  throw new Error(
+    "install.sh must direct fresh installs through authenticated setup",
+  );
+}
+if (macosBuildScript.includes('"$BOWLINE" daemon install')) {
+  throw new Error(
+    "macOS package postinstall must leave daemon service installation to authenticated setup",
+  );
 }
 
 for (const platformCase of ["Linux:x86_64)", "Linux:aarch64 | Linux:arm64)"]) {

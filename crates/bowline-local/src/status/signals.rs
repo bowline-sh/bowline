@@ -5,13 +5,14 @@ pub(super) fn apply_event_status(
     acc: &mut StatusAccumulator,
 ) {
     let scope = event_fact_scope(event);
+    let scope_id = event_fact_scope_id(event, scope);
     if let Some(kind) = event_fact_kind(&event.name) {
         acc.observe_fact(
             kind,
             format!("event:{}", event.id.as_str()),
             status_signal_key(event).unwrap_or_else(|| format!("event:{}", event.id.as_str())),
             scope,
-            event.subject.as_ref().map(|subject| subject.id.as_str()),
+            scope_id,
         );
     } else if event.severity != EventSeverity::Info {
         let (availability, attention) = match event.severity {
@@ -29,7 +30,7 @@ pub(super) fn apply_event_status(
             format!("event:{}", event.id.as_str()),
             status_signal_key(event).unwrap_or_else(|| format!("event:{}", event.id.as_str())),
             scope,
-            event.subject.as_ref().map(|subject| subject.id.as_str()),
+            scope_id,
             availability,
             attention,
         );
@@ -52,6 +53,21 @@ pub(super) fn apply_event_status(
         item.lease_id = event.lease_id.clone();
         item.project_id = event.project_id.clone();
         acc.items.push(item);
+    }
+}
+
+fn event_fact_scope_id(
+    event: &bowline_core::events::WorkspaceEvent,
+    scope: StatusFactScope,
+) -> Option<&str> {
+    match scope {
+        StatusFactScope::Workspace => Some(event.workspace_id.as_str()),
+        StatusFactScope::Device => event
+            .device_id
+            .as_ref()
+            .map(DeviceId::as_str)
+            .or_else(|| event.subject.as_ref().map(|subject| subject.id.as_str())),
+        _ => event.subject.as_ref().map(|subject| subject.id.as_str()),
     }
 }
 

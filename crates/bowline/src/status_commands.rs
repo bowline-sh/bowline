@@ -440,7 +440,9 @@ pub(super) fn print_status_watch(
     json: bool,
 ) -> ExitCode {
     let pres = surface::style::Presentation::detect(json);
-    if let Ok(exit_code) = print_daemon_status_watch(&options, &pres, &started_at, json) {
+    if env::var_os(ENV_METADATA_DB).is_none()
+        && let Ok(exit_code) = print_daemon_status_watch(&options, &pres, &started_at, json)
+    {
         return exit_code;
     }
     let mut state = StatusWatchState::new();

@@ -61,7 +61,9 @@ impl ContinuousSyncRuntime {
             return None;
         };
         if self.should_skip_publish(now, fingerprint, heartbeat) {
-            self.next_status_publish = now + STATUS_PUBLISH_INTERVAL;
+            if self.last_status_publish_failed_at.is_none() {
+                self.next_status_publish = now + STATUS_PUBLISH_INTERVAL;
+            }
             return None;
         }
         Some(PreparedStatusPublish {
@@ -84,6 +86,12 @@ impl ContinuousSyncRuntime {
     }
 
     fn should_skip_publish(&self, now: Instant, fingerprint: &str, heartbeat: bool) -> bool {
+        if self
+            .last_status_publish_failed_at
+            .is_some_and(|_| now < self.next_status_publish)
+        {
+            return true;
+        }
         if self.last_status_publish_fingerprint.as_deref() != Some(fingerprint) {
             return false;
         }
@@ -101,10 +109,12 @@ impl ContinuousSyncRuntime {
         match completion.result {
             Ok(outcome) => {
                 projection_input.record_hosted_publish(true);
+                self.last_status_publish_failed_at = None;
                 self.record_status_publish_outcome(outcome, completion.published_at);
             }
             Err(error) => {
                 projection_input.record_hosted_publish(false);
+                self.last_status_publish_failed_at = Some(completion.published_at);
                 eprintln!("bowline-daemon status publish skipped: {error}");
             }
         }

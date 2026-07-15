@@ -20,7 +20,7 @@ Installs Bowline for the current user.
 
 Options:
   --cli-only          Install only bowline and bowline-daemon.
-  --version VERSION   Install a specific release version, for example 0.1.1.
+  --version VERSION   Install a specific release version, for example 0.1.2.
   -h, --help          Show this help.
 EOF
 }
@@ -246,12 +246,6 @@ install_macos_app() {
   ln -sf "$APP_DIR/Bowline.app/Contents/Resources/bin/bowline-daemon" "$INSTALL_DIR/bowline-daemon"
 }
 
-install_daemon() {
-  if ! "$INSTALL_DIR/bowline" daemon install; then
-    note "installed binaries, but daemon setup failed; run '$INSTALL_DIR/bowline daemon install' for details"
-  fi
-}
-
 resolve_release_base
 download "$RELEASE_BASE/checksums.txt" "$TMPDIR/checksums.txt"
 download "$RELEASE_BASE/checksums.txt.sig" "$TMPDIR/checksums.txt.sig"
@@ -263,10 +257,6 @@ if [ "$PLATFORM" = "macos" ] && [ "$CLI_ONLY" = "0" ]; then
   install_macos_app
 else
   install_cli_archive
-fi
-
-if [ "$CLI_ONLY" = "0" ]; then
-  install_daemon
 fi
 
 if [ "$PLATFORM" = "macos" ] && [ "$CLI_ONLY" = "0" ]; then
@@ -282,4 +272,4 @@ esac
 
 echo
 echo "Bowline installed."
-echo "Next: bowline login"
+echo "Next: bowline setup --root ~/Code"

@@ -147,7 +147,7 @@ fn serve_once_answers_version_handshake() {
     assert_eq!(parsed["daemon"]["socket"], socket.display().to_string());
     assert_eq!(parsed["daemon"]["protocol"], "bowline-daemon-v2");
     assert_eq!(parsed["daemon"]["version"], 2);
-    assert_eq!(parsed["daemon"]["daemonVersion"], "0.1.1");
+    assert_eq!(parsed["daemon"]["daemonVersion"], env!("CARGO_PKG_VERSION"));
     assert_eq!(parsed["snapshot"]["contractVersion"], 8);
     assert_eq!(parsed["snapshot"]["command"], "status");
     assert!(parsed["snapshot"]["status"]["level"].is_string());
@@ -322,7 +322,7 @@ fn default_serve_status_has_no_synthetic_mount_state() {
     assert_eq!(parsed["daemon"]["socket"], socket.display().to_string());
     assert_eq!(parsed["daemon"]["protocol"], "bowline-daemon-v2");
     assert_eq!(parsed["daemon"]["version"], 2);
-    assert_eq!(parsed["daemon"]["daemonVersion"], "0.1.1");
+    assert_eq!(parsed["daemon"]["daemonVersion"], env!("CARGO_PKG_VERSION"));
     assert_eq!(parsed["snapshot"]["contractVersion"], 8);
     assert_eq!(parsed["snapshot"]["command"], "status");
     assert!(parsed["snapshot"]["status"]["level"].is_string());

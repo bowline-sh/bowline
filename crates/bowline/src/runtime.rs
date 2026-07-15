@@ -15,7 +15,7 @@ use bowline_core::{
 };
 use bowline_local::{
     account::workos,
-    device_keys::{AccountTokens, DeviceKeyStore, default_device_key_store},
+    device_keys::{AccountTokens, DeviceIdentity, DeviceKeyStore, default_device_key_store},
     metadata::{MetadataStore, default_database_path},
     trust::grants,
 };
@@ -431,7 +431,9 @@ fn account_scoped_workspace_id(account_id: &str) -> String {
 }
 
 pub fn device_id() -> DeviceId {
-    DeviceId::new(configured_device_id().unwrap_or_else(default_device_id))
+    configured_device_id()
+        .map(DeviceId::new)
+        .unwrap_or_else(cryptographic_device_id)
 }
 
 pub fn daemon_device_id(workspace_id: &WorkspaceId) -> DeviceId {
@@ -447,11 +449,11 @@ pub fn daemon_device_id(workspace_id: &WorkspaceId) -> DeviceId {
     trusted_device_id_for_local_identity(workspace_id)
         .or(persisted_device_id)
         .map(DeviceId::new)
-        .unwrap_or_else(|| DeviceId::new(default_device_id()))
+        .unwrap_or_else(cryptographic_device_id)
 }
 
 pub fn device_name() -> String {
-    env::var("BOWLINE_DEVICE_NAME").unwrap_or_else(|_| default_device_id())
+    env::var("BOWLINE_DEVICE_NAME").unwrap_or_else(|_| default_device_name())
 }
 
 pub fn platform() -> DevicePlatform {
@@ -462,11 +464,23 @@ pub fn platform() -> DevicePlatform {
     }
 }
 
-fn default_device_id() -> String {
+fn default_device_name() -> String {
     env::var("HOSTNAME")
         .or_else(|_| env::var("COMPUTERNAME"))
-        .map(|value| format!("device_{value}"))
-        .unwrap_or_else(|_| "device_local".to_string())
+        .unwrap_or_else(|_| "Bowline device".to_string())
+}
+
+fn cryptographic_device_id() -> DeviceId {
+    let store = key_store().expect("device identity store must be available for device selection");
+    let identity = store
+        .load_or_create_device_identity()
+        .expect("persisted cryptographic device identity must be available for device selection");
+    device_id_for_identity(&identity)
+}
+
+fn device_id_for_identity(identity: &DeviceIdentity) -> DeviceId {
+    let hash = blake3::hash(identity.public_key.as_str().as_bytes());
+    DeviceId::new(format!("device_{}", &hash.to_hex()[..32]))
 }
 
 fn configured_device_id() -> Option<String> {
@@ -561,14 +575,47 @@ fn platform_label() -> &'static str {
 mod tests {
     use bowline_control_plane::{AuthorizedDeviceRecord, ControlPlaneTimestamp};
     use bowline_core::ids::{DeviceId, WorkspaceId};
+    use bowline_local::device_keys::{DeviceKeyStore, ServerLocalSecretStore};
 
     use super::{
         WorkspaceIdSources, account_scoped_workspace_id, configured_device_id_from,
-        keychain_secret_store_allowed_from, nonempty_env_value,
+        device_id_for_identity, keychain_secret_store_allowed_from, nonempty_env_value,
         persisted_daemon_device_id_for_workspace, persisted_daemon_env_value,
         select_authorized_device_for_identity, workos_account_id_from_access_token,
         workos_token_is_not_expired, workspace_id_from_sources,
     };
+
+    #[test]
+    fn fallback_device_id_is_stable_and_unique_per_cryptographic_identity() {
+        let temp = tempfile_dir("bowline-runtime-device-identity");
+        let first_store = ServerLocalSecretStore::new(temp.join("first.json"));
+        let reloaded_first_store = ServerLocalSecretStore::new(temp.join("first.json"));
+        let second_store = ServerLocalSecretStore::new(temp.join("second.json"));
+        let first = first_store
+            .load_or_create_device_identity()
+            .expect("first identity");
+        let reloaded_first = reloaded_first_store
+            .load_or_create_device_identity()
+            .expect("reloaded first identity");
+        let second = second_store
+            .load_or_create_device_identity()
+            .expect("second identity");
+
+        assert_eq!(
+            device_id_for_identity(&first),
+            device_id_for_identity(&reloaded_first)
+        );
+        assert_ne!(
+            device_id_for_identity(&first),
+            device_id_for_identity(&second)
+        );
+        assert!(
+            device_id_for_identity(&first)
+                .as_str()
+                .starts_with("device_")
+        );
+        std::fs::remove_dir_all(temp).expect("remove temp dir");
+    }
 
     #[test]
     fn account_scoped_workspace_ids_keep_default_code_unique_per_account() {

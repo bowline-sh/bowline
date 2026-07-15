@@ -26,7 +26,7 @@ pub(super) fn run(invocation: ParsedInvocation) -> ExitCode {
         Command::Version => run_version(cli.json),
         Command::Contract(mode) => run_contract(mode, cli.json),
         Command::Update(args) => print_update(args, cli.json),
-        Command::Login(args) => print_login(args, cli.json),
+        Command::Login(args) => print_login(args, cli.json, &cli.socket),
         Command::Logout => logout::print_logout(cli.json),
         Command::Approve(args) => print_approve(args, cli.json),
         Command::ApproveMergePlugin(args) => print_approve_merge_plugin(args, cli.json),

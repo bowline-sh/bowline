@@ -107,7 +107,7 @@ fn current_workspace_ignores_stale_workspace_without_root() {
 }
 
 #[test]
-fn current_workspace_prefers_newest_accepted_root() {
+fn normalized_root_cannot_belong_to_two_workspaces() {
     let temp =
         TempWorkspace::new("metadata-current-workspace-newest-root").expect("temp workspace");
     let db_path = temp.root().join("state").join("local.sqlite3");
@@ -129,22 +129,62 @@ fn current_workspace_prefers_newest_accepted_root() {
     store
         .insert_workspace(&account_workspace_id, "User Code", "2026-06-23T12:01:00Z")
         .expect("account workspace insert");
-    store
+    let error = store
         .insert_root(
             "root_ws_code_account",
             &account_workspace_id,
             "~/Code",
             "2026-06-23T12:01:00Z",
         )
-        .expect("account root insert");
+        .expect_err("duplicate normalized root must be rejected");
 
+    assert!(error.to_string().contains("already belongs to workspace"));
     assert_eq!(
         store
-            .current_workspace()
-            .expect("current workspace")
-            .unwrap()
+            .workspace_by_accepted_root("~/Code")
+            .expect("root lookup")
+            .expect("root owner")
             .id,
-        account_workspace_id
+        old_workspace_id
+    );
+}
+
+#[test]
+fn tilde_and_absolute_root_aliases_have_one_owner() {
+    let temp = TempWorkspace::new("metadata-root-alias-owner").expect("workspace");
+    let db_path = temp.root().join("state").join("local.sqlite3");
+    let store = MetadataStore::open(&db_path).expect("metadata opens");
+    let first = WorkspaceId::new("ws_first");
+    let second = WorkspaceId::new("ws_second");
+    let home = std::env::var("HOME").expect("HOME");
+
+    store
+        .insert_workspace(&first, "First", "2026-06-23T12:00:00Z")
+        .expect("first workspace");
+    store
+        .insert_root("root_first", &first, "~/Code", "2026-06-23T12:00:00Z")
+        .expect("first root");
+    store
+        .insert_workspace(&second, "Second", "2026-06-23T12:01:00Z")
+        .expect("second workspace");
+
+    let error = store
+        .insert_root(
+            "root_second",
+            &second,
+            &format!("{home}/Code"),
+            "2026-06-23T12:01:00Z",
+        )
+        .expect_err("absolute alias must not gain a second owner");
+
+    assert!(error.to_string().contains("already belongs to workspace"));
+    assert_eq!(
+        store
+            .workspace_by_path(&format!("{home}/Code/project/src/lib.rs"))
+            .expect("path lookup")
+            .expect("workspace")
+            .id,
+        first
     );
 }
 

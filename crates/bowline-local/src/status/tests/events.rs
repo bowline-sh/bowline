@@ -31,6 +31,34 @@ fn unmapped_non_info_events_emit_canonical_fallback_facts() {
 }
 
 #[test]
+fn component_event_workspace_fact_names_the_event_workspace() {
+    let workspace_id = WorkspaceId::new("ws_component_status");
+    let mut event = WorkspaceEvent::new(
+        EventId::new("evt_sync_degraded"),
+        EventName::SyncDegraded,
+        "2026-07-12T00:00:00Z",
+        EventSeverity::Attention,
+        "Continuous sync is degraded.",
+        workspace_id.clone(),
+    );
+    event.subject = Some(EventSubject {
+        kind: EventSubjectKind::Component,
+        id: "sync".to_string(),
+        path: None,
+    });
+    let mut acc = StatusAccumulator::new("2026-07-12T00:00:01Z");
+
+    apply_event_status(&event, &mut acc);
+
+    assert_eq!(acc.facts.len(), 1);
+    assert_eq!(acc.facts[0].scope, StatusFactScope::Workspace);
+    assert_eq!(
+        acc.facts[0].scope_id.as_deref(),
+        Some(workspace_id.as_str())
+    );
+}
+
+#[test]
 fn corrupt_metadata_event_requires_attention_and_events_command_lists_it() {
     let temp = TempWorkspace::new("status-events").expect("temp workspace");
     let db_path = temp.root().join("state").join("local.sqlite3");

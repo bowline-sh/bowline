@@ -27,6 +27,24 @@ impl MetadataStore {
         accepted_path: &str,
         now: &str,
     ) -> Result<(), MetadataError> {
+        let requested_path = normalize_path_for_matching(accepted_path);
+        let mut roots = self.connection.prepare(
+            "SELECT workspace_id, accepted_path FROM roots
+             WHERE state = 'accepted' AND workspace_id != ?1",
+        )?;
+        let existing_roots = roots
+            .query_map([workspace_id.as_str()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some((owner, _)) = existing_roots
+            .into_iter()
+            .find(|(_, path)| normalize_path_for_matching(path) == requested_path)
+        {
+            return Err(MetadataError::InvalidStorageMetadata(format!(
+                "accepted root `{accepted_path}` already belongs to workspace `{owner}`"
+            )));
+        }
         let existing_workspace = self
             .connection
             .query_row(
@@ -215,13 +233,22 @@ impl MetadataStore {
                 row.get::<_, String>(2)?,
             ))
         })?;
+        let mut matched = None;
         for row in rows {
             let (workspace, accepted_path) = row?;
             if normalize_path_for_matching(&accepted_path) == requested {
-                return Ok(Some(workspace));
+                if matched
+                    .as_ref()
+                    .is_some_and(|existing: &WorkspaceRecord| existing.id != workspace.id)
+                {
+                    return Err(MetadataError::InvalidStorageMetadata(format!(
+                        "accepted root `{root_path}` belongs to multiple workspaces"
+                    )));
+                }
+                matched = Some(workspace);
             }
         }
-        Ok(None)
+        Ok(matched)
     }
 
     pub fn workspace_by_path(&self, path: &str) -> Result<Option<WorkspaceRecord>, MetadataError> {
@@ -230,8 +257,7 @@ impl MetadataStore {
             "SELECT workspaces.id, workspaces.display_name, roots.accepted_path
              FROM roots
              JOIN workspaces ON workspaces.id = roots.workspace_id
-             WHERE roots.state = 'accepted'
-             ORDER BY length(roots.accepted_path) DESC",
+             WHERE roots.state = 'accepted'",
         )?;
         let rows = statement.query_map([], |row| {
             Ok((
@@ -242,14 +268,29 @@ impl MetadataStore {
                 row.get::<_, String>(2)?,
             ))
         })?;
+        let mut matched: Option<(WorkspaceRecord, usize, String)> = None;
         for row in rows {
             let (workspace, accepted_path) = row?;
             let root = normalize_path_for_matching(&accepted_path);
-            if strip_root_prefix(&requested, &root).is_some() {
-                return Ok(Some(workspace));
+            if strip_root_prefix(&requested, &root).is_none() {
+                continue;
+            }
+            let candidate_length = root.len();
+            match &matched {
+                Some((existing, existing_length, existing_root))
+                    if *existing_length == candidate_length
+                        && *existing_root == root
+                        && existing.id != workspace.id =>
+                {
+                    return Err(MetadataError::InvalidStorageMetadata(format!(
+                        "path `{path}` belongs to multiple accepted workspaces"
+                    )));
+                }
+                Some((_, existing_length, _)) if *existing_length >= candidate_length => {}
+                _ => matched = Some((workspace, candidate_length, root)),
             }
         }
-        Ok(None)
+        Ok(matched.map(|(workspace, _, _)| workspace))
     }
 
     pub fn workspace_root(

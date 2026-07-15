@@ -494,11 +494,28 @@ fn prepared_hosted_status_io_runs_without_the_coordinator_runtime_lock() {
         std::process::id(),
         OffsetDateTime::now_utc().unix_timestamp_nanos()
     ));
+    let workspace_id = WorkspaceId::new("ws_status_isolation");
+    let root = state_root.join("Code");
+    fs::create_dir_all(&root).expect("workspace root");
+    let store =
+        crate::daemon::store_access::open_store_for_test(state_root.join(DEFAULT_DATABASE_FILE))
+            .expect("metadata opens");
+    store
+        .insert_workspace(&workspace_id, "Code", "2026-07-15T00:00:00Z")
+        .expect("workspace inserts");
+    store
+        .insert_root(
+            "root_status_isolation",
+            &workspace_id,
+            &root.display().to_string(),
+            "2026-07-15T00:00:00Z",
+        )
+        .expect("workspace root inserts");
     let mut runtime = DaemonRuntime {
         sync: Some(crate::daemon::tests::watcher_test_runtime(
-            state_root.join("Code"),
+            root,
             state_root.clone(),
-            "ws_status_isolation",
+            workspace_id.as_str(),
         )),
         notify_approvals: false,
         notification_dedupe: Arc::new(Mutex::new(NotificationDedupe::default())),

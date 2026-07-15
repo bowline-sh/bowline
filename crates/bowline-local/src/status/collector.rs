@@ -125,7 +125,25 @@ impl LocalStatusFactCollector {
 
     pub fn collect_if_needed(
         &mut self,
+        options: StatusOptions,
+        now: Instant,
+    ) -> Result<LocalStatusCollection, LocalStatusError> {
+        self.collect_if_needed_for_workspace(options, None, now)
+    }
+
+    pub fn collect_workspace_if_needed(
+        &mut self,
+        options: StatusOptions,
+        workspace_id: &WorkspaceId,
+        now: Instant,
+    ) -> Result<LocalStatusCollection, LocalStatusError> {
+        self.collect_if_needed_for_workspace(options, Some(workspace_id), now)
+    }
+
+    fn collect_if_needed_for_workspace(
+        &mut self,
         mut options: StatusOptions,
+        workspace_id: Option<&WorkspaceId>,
         now: Instant,
     ) -> Result<LocalStatusCollection, LocalStatusError> {
         self.metrics.collector_calls = self.metrics.collector_calls.saturating_add(1);
@@ -139,7 +157,7 @@ impl LocalStatusFactCollector {
         }
         options.db_path = Some(self.db_path.clone());
         let observed_at = options.generated_at.clone();
-        let output = self.compose_current(options)?;
+        let output = self.compose_current(options, workspace_id)?;
         let fact_revision = LocalStatusRevision(self.next_fact_revision);
         self.next_fact_revision = self.next_fact_revision.saturating_add(1);
         self.metrics.full_compositions = self.metrics.full_compositions.saturating_add(1);
@@ -192,6 +210,7 @@ impl LocalStatusFactCollector {
     fn compose_current(
         &mut self,
         options: StatusOptions,
+        workspace_id: Option<&WorkspaceId>,
     ) -> Result<StatusCommandOutput, LocalStatusError> {
         let inspection = MetadataStore::inspect(&self.db_path);
         let current_identity = file_identity(std::fs::metadata(&self.db_path).ok().as_ref());
@@ -214,7 +233,7 @@ impl LocalStatusFactCollector {
                 let Some(store) = self.store.as_ref() else {
                     return Err(LocalStatusError::MetadataState(DatabaseState::Missing));
                 };
-                compose_from_store(store, options, state_root)
+                compose_from_store_for_workspace(store, options, state_root, workspace_id)
             }
             DatabaseState::Missing | DatabaseState::Empty => {
                 self.store = None;

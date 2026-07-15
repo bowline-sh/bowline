@@ -495,6 +495,54 @@ fn local_projection_adapter_matches_existing_composition() {
     assert_local_projection_parity(&current_db_path, "/tmp/bowline-parity-current");
 }
 
+#[test]
+fn local_projection_adapter_uses_configured_workspace_instead_of_requested_path() {
+    let db_path = unique_missing_db_path();
+    std::fs::create_dir_all(db_path.parent().expect("database parent"))
+        .expect("create database parent");
+    let store = MetadataStore::open(&db_path).expect("open metadata");
+    let path_workspace = WorkspaceId::new("ws_path_selected");
+    let configured_workspace = WorkspaceId::new("ws_configured");
+    store
+        .insert_workspace(&path_workspace, "Path Selected", "2026-07-15T10:00:00Z")
+        .expect("insert path workspace");
+    store
+        .insert_root(
+            "root_path_selected",
+            &path_workspace,
+            "/tmp/bowline-path-selected",
+            "2026-07-15T10:00:00Z",
+        )
+        .expect("insert path root");
+    store
+        .insert_workspace(&configured_workspace, "Configured", "2026-07-15T10:00:01Z")
+        .expect("insert configured workspace");
+    store
+        .insert_root(
+            "root_configured",
+            &configured_workspace,
+            "/tmp/bowline-configured",
+            "2026-07-15T10:00:01Z",
+        )
+        .expect("insert configured root");
+    drop(store);
+
+    let collector = LocalStatusProjectionCollector::new_for_workspace(
+        db_path,
+        "/tmp/bowline-path-selected".to_string(),
+        configured_workspace.clone(),
+    )
+    .expect("configured collector");
+    let service = service_with_collectors(Duration::from_secs(60), vec![Box::new(collector)]);
+
+    let projection = service.current().expect("current projection");
+    assert_eq!(projection.status.workspace_id, configured_workspace);
+    assert_eq!(
+        projection.status.resolved_workspace_root.as_deref(),
+        Some("/tmp/bowline-configured")
+    );
+}
+
 fn assert_local_projection_parity(db_path: &std::path::Path, requested_path: &str) {
     let collector = LocalStatusProjectionCollector::new(
         Some(db_path.to_path_buf()),

@@ -1,10 +1,10 @@
 use super::*;
 
-pub(super) fn print_login(mut args: login::LoginArgs, json: bool) -> ExitCode {
+pub(super) fn print_login(mut args: login::LoginArgs, json: bool, socket: &Path) -> ExitCode {
     let generated_at = generated_at();
     args = login_args_for_output(args, json);
     if !json && !args.no_poll && !args.headless {
-        return print_polling_login(generated_at);
+        return print_polling_login(generated_at, socket);
     }
     match login::run(args, generated_at.clone()) {
         Ok(output) if json => {
@@ -22,7 +22,7 @@ pub(super) fn print_login(mut args: login::LoginArgs, json: bool) -> ExitCode {
     }
 }
 
-pub(super) fn print_polling_login(generated_at: String) -> ExitCode {
+pub(super) fn print_polling_login(generated_at: String, socket: &Path) -> ExitCode {
     let (authorization, pending_output) = match login::start(generated_at.clone()) {
         Ok(started) => started,
         Err(error) => {
@@ -42,6 +42,7 @@ pub(super) fn print_polling_login(generated_at: String) -> ExitCode {
                 format: OutputFormat::Human,
                 login_poll: LoginPollMode::Poll,
             },
+            socket,
         ),
         Err(error) => {
             print_runtime_error(CommandName::Login, generated_at, &error, false);
@@ -173,6 +174,7 @@ fn print_machine_setup(
             },
             login_poll: LoginPollMode::Skip,
         },
+        socket,
     )
 }
 
@@ -194,6 +196,7 @@ fn print_interactive_machine_setup(
                     format: OutputFormat::Human,
                     login_poll: LoginPollMode::Poll,
                 },
+                socket,
             );
             if code == ExitCode::SUCCESS
                 && let Some(command) = result.connect_command
@@ -214,6 +217,7 @@ fn print_machine_setup_output(
     root: Option<String>,
     generated_at: String,
     print_options: MachineSetupPrintOptions,
+    socket: &Path,
 ) -> ExitCode {
     match run_machine_setup(
         root,
@@ -221,6 +225,12 @@ fn print_machine_setup_output(
         print_options.login_poll == LoginPollMode::Poll,
     ) {
         Ok(outcome) if print_options.format == OutputFormat::Json => {
+            if outcome.daemon_service_ready()
+                && let Err(error) = daemon_service_install(socket)
+            {
+                print_runtime_error(CommandName::Setup, generated_at, &error, true);
+                return ExitCode::from(EXIT_RUNTIME);
+            }
             print_json(&outcome.output);
             ExitCode::SUCCESS
         }
@@ -230,12 +240,26 @@ fn print_machine_setup_output(
             if print_options.login_poll == LoginPollMode::Poll
                 && let Some(request_id) = outcome.device_trust_attachment.pending_request_id()
             {
-                return wait_for_device_grant(
-                    CommandName::Setup,
-                    workspace_id,
-                    request_id,
-                    generated_at,
-                );
+                if let Err(error) = wait_for_device_grant(workspace_id, request_id) {
+                    print_runtime_error(CommandName::Setup, generated_at, &error, false);
+                    return ExitCode::from(EXIT_RUNTIME);
+                }
+                if !outcome.account_authenticated() {
+                    println!("Device approved. Complete account login to finish setup.");
+                    return ExitCode::SUCCESS;
+                }
+                if let Err(error) = daemon_service_install(socket) {
+                    print_runtime_error(CommandName::Setup, generated_at, &error, false);
+                    return ExitCode::from(EXIT_RUNTIME);
+                }
+                println!("Device approved. Workspace is ready.");
+                return ExitCode::SUCCESS;
+            }
+            if outcome.daemon_service_ready()
+                && let Err(error) = daemon_service_install(socket)
+            {
+                print_runtime_error(CommandName::Setup, generated_at, &error, false);
+                return ExitCode::from(EXIT_RUNTIME);
             }
             ExitCode::SUCCESS
         }
@@ -281,6 +305,16 @@ enum MachineSetupError {
 struct MachineSetupOutcome {
     output: SetupCommandOutput,
     device_trust_attachment: DeviceTrustAttachment,
+}
+
+impl MachineSetupOutcome {
+    fn account_authenticated(&self) -> bool {
+        self.output.login.status == AccountLoginStatus::AccountAuthenticated
+    }
+
+    fn daemon_service_ready(&self) -> bool {
+        self.account_authenticated() && self.device_trust_attachment.is_ready()
+    }
 }
 
 fn run_machine_setup(
@@ -359,7 +393,7 @@ fn run_pending_login_setup(
             login: login.account,
             next_actions,
         }),
-        device_trust_attachment: DeviceTrustAttachment::NoPendingApproval,
+        device_trust_attachment: DeviceTrustAttachment::NotReady,
     })
 }
 

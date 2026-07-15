@@ -72,6 +72,13 @@ impl StatusPublishPayload {
             &projection.status,
             &request.args.device_id,
         );
+        if snapshot.workspace_id.as_str() != request.args.workspace_id {
+            return Err(runtime_error(format!(
+                "status projection workspace does not match configured daemon workspace: projection={}, configured={}",
+                snapshot.workspace_id.as_str(),
+                request.args.workspace_id
+            )));
+        }
         let fingerprint = status_snapshot_fingerprint(&snapshot)?;
         Ok(Self {
             request,
@@ -129,7 +136,11 @@ fn publish_workspace_status_with_hosted(
     payload: StatusPublishPayload,
 ) -> Result<StatusPublishOutcome, Box<dyn std::error::Error>> {
     let (request, snapshot, fingerprint) = payload.into_snapshot()?;
-    let _request = request;
+    if snapshot.workspace_id.as_str() != request.args.workspace_id {
+        return Err(runtime_error(
+            "status snapshot workspace does not match configured daemon workspace",
+        ));
+    }
     hosted.client.publish_workspace_status(&snapshot)?;
     Ok(StatusPublishOutcome { fingerprint })
 }

@@ -6,6 +6,7 @@ use std::{
 
 use bowline_core::{
     commands::StatusCommandOutput,
+    ids::WorkspaceId,
     status::{StatusFact, StatusItem},
     wire::generated::DeviceApprovalAffordance,
 };
@@ -280,6 +281,7 @@ pub struct LocalStatusProjectionCollector {
     collector: LocalStatusFactCollector,
     requested_path: Option<String>,
     workspace_scope: bool,
+    configured_workspace_id: Option<WorkspaceId>,
     staged: Option<Result<StatusSourceCollection, StatusCollectorFailure>>,
 }
 
@@ -293,6 +295,21 @@ impl LocalStatusProjectionCollector {
             collector: LocalStatusFactCollector::new(db_path)?,
             requested_path,
             workspace_scope,
+            configured_workspace_id: None,
+            staged: None,
+        })
+    }
+
+    pub fn new_for_workspace(
+        db_path: PathBuf,
+        requested_path: String,
+        workspace_id: WorkspaceId,
+    ) -> Result<Self, bowline_local::status::LocalStatusError> {
+        Ok(Self {
+            collector: LocalStatusFactCollector::new(Some(db_path))?,
+            requested_path: Some(requested_path),
+            workspace_scope: true,
+            configured_workspace_id: Some(workspace_id),
             staged: None,
         })
     }
@@ -331,7 +348,14 @@ impl StatusSourceCollector for LocalStatusProjectionCollector {
             workspace_scope: self.workspace_scope,
             generated_at: observed_at.as_str().to_string(),
         };
-        let staged = match self.collector.collect_if_needed(options, now) {
+        let collection = match self.configured_workspace_id.as_ref() {
+            Some(workspace_id) => {
+                self.collector
+                    .collect_workspace_if_needed(options, workspace_id, now)
+            }
+            None => self.collector.collect_if_needed(options, now),
+        };
+        let staged = match collection {
             Ok(LocalStatusCollection::Collected(facts)) => Ok(StatusSourceCollection::Updated {
                 revision: StatusSourceRevision::new(facts.revision.get()),
                 observed_at,
