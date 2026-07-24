@@ -48,6 +48,9 @@ pub struct EngineCounters {
     /// so a churning path that keeps being deferred is visible, distinct from a
     /// lost-CAS retry.
     pub push_skips: AtomicU64,
+    /// Full-scan recovery fences successfully emitted after watcher overflow.
+    /// Counts collapsed recovery epochs, not individual native events lost.
+    pub watcher_overflow_recoveries: AtomicU64,
 }
 
 impl EngineCounters {
@@ -104,6 +107,11 @@ impl EngineCounters {
         self.push_skips.fetch_add(paths, Ordering::Relaxed);
     }
 
+    pub fn record_watcher_overflow_recovery(&self) {
+        self.watcher_overflow_recoveries
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     /// A plain-value copy for crossing the thread boundary into the daemon
     /// status/metrics surface (mirrors [`ManifestEngine::snapshot`]).
     pub fn snapshot(&self) -> CountersSnapshot {
@@ -121,6 +129,7 @@ impl EngineCounters {
             retries: self.retries.load(Ordering::Relaxed),
             apply_ops: self.apply_ops.load(Ordering::Relaxed),
             push_skips: self.push_skips.load(Ordering::Relaxed),
+            watcher_overflow_recoveries: self.watcher_overflow_recoveries.load(Ordering::Relaxed),
         }
     }
 }
@@ -142,6 +151,7 @@ pub struct CountersSnapshot {
     pub retries: u64,
     pub apply_ops: u64,
     pub push_skips: u64,
+    pub watcher_overflow_recoveries: u64,
 }
 
 impl CountersSnapshot {
@@ -162,6 +172,24 @@ impl CountersSnapshot {
             "retries": self.retries,
             "applyOps": self.apply_ops,
             "pushSkips": self.push_skips,
+            "watcherOverflowRecoveries": self.watcher_overflow_recoveries,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EngineCounters;
+
+    #[test]
+    fn watcher_overflow_recoveries_are_visible_in_metrics_json() {
+        let counters = EngineCounters::default();
+        counters.record_watcher_overflow_recovery();
+        counters.record_watcher_overflow_recovery();
+
+        assert_eq!(
+            counters.snapshot().to_json()["watcherOverflowRecoveries"],
+            2
+        );
     }
 }

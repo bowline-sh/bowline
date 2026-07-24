@@ -6,14 +6,35 @@ use bowline_local::policy::{
 };
 use notify::event::{AccessKind, AccessMode};
 
-/// A watcher-kernel signal. The manifest engine treats any lost-fidelity signal
-/// (overflow, adapter loss) as `FullScanRequired`, so signals carry no epoch or
-/// generation token.
+/// A watcher-kernel signal. The overflow lane is installed once ahead of native
+/// events, then retained by the bridge as out-of-band recovery state.
 #[derive(Debug)]
 pub(super) enum WatcherSignal {
     Changed { event: Event },
     Recoverable,
     Limited { reason: String },
+    OverflowLane(Arc<WatcherOverflowLane>),
+}
+
+/// A level-triggered overflow request shared by the native callback and bridge.
+/// The callback only sets the bit; it never waits for channel capacity.
+#[derive(Debug, Default)]
+pub(super) struct WatcherOverflowLane {
+    recovery_requested: AtomicBool,
+}
+
+impl WatcherOverflowLane {
+    pub(super) fn request_recovery(&self) {
+        self.recovery_requested.store(true, Ordering::Release);
+    }
+
+    pub(super) fn recovery_requested(&self) -> bool {
+        self.recovery_requested.load(Ordering::Acquire)
+    }
+
+    pub(super) fn take_recovery_request(&self) -> bool {
+        self.recovery_requested.swap(false, Ordering::AcqRel)
+    }
 }
 
 /// The workspace filesystem watcher kernel: a recursive notify watch on the
@@ -28,7 +49,12 @@ pub(in crate::daemon) fn start_sync_watcher(
     root: &Path,
 ) -> Result<(SyncWatcher, Receiver<WatcherSignal>), notify::Error> {
     let (change_tx, change_rx) = mpsc::sync_channel(WATCHER_DRAIN_BUDGET);
+    let overflow_lane = Arc::new(WatcherOverflowLane::default());
+    change_tx
+        .try_send(WatcherSignal::OverflowLane(Arc::clone(&overflow_lane)))
+        .expect("a new watcher channel has room for its overflow lane");
     let callback_tx = change_tx.clone();
+    let callback_overflow_lane = Arc::clone(&overflow_lane);
     let reported_root = root.to_path_buf();
     let watch_root = fs::canonicalize(root).unwrap_or_else(|_| reported_root.clone());
     let callback_watch_root = watch_root.clone();
@@ -37,7 +63,7 @@ pub(in crate::daemon) fn start_sync_watcher(
             if let Ok(event) = &mut event {
                 remap_watcher_event_root(event, &callback_watch_root, &reported_root);
             }
-            send_watcher_signal(&callback_tx, event);
+            send_watcher_signal(&callback_tx, &callback_overflow_lane, event);
         })?;
     watcher.watch(&watch_root, RecursiveMode::Recursive)?;
     Ok((SyncWatcher { _watcher: watcher }, change_rx))
@@ -53,6 +79,7 @@ fn remap_watcher_event_root(event: &mut Event, watched_root: &Path, reported_roo
 
 pub(super) fn send_watcher_signal(
     change_tx: &mpsc::SyncSender<WatcherSignal>,
+    overflow_lane: &WatcherOverflowLane,
     event: notify::Result<notify::Event>,
 ) {
     let signal = match event {
@@ -67,11 +94,10 @@ pub(super) fn send_watcher_signal(
     match change_tx.try_send(signal) {
         Ok(()) => {}
         Err(mpsc::TrySendError::Full(_)) => {
-            // One blocking overflow marker bounds retained history and makes
-            // the next consumer collapse the entire backlog to a full scan.
-            if let Err(error) = change_tx.send(WatcherSignal::Recoverable) {
-                eprintln!("bowline-daemon watcher overflow marker dropped: {error}");
-            }
+            // The native callback must never wait behind its own saturated
+            // event queue. The bridge drains the obsolete backlog before
+            // emitting the recovery fence; a later overflow re-arms the bit.
+            overflow_lane.request_recovery();
         }
         Err(mpsc::TrySendError::Disconnected(_)) => {
             eprintln!("bowline-daemon watcher signal receiver disconnected");
@@ -177,6 +203,7 @@ pub(in crate::daemon) fn watcher_signal_engine_event(
                 FullScanReason::WatcherDisconnected,
             ))
         }
+        WatcherSignal::OverflowLane(_) => None,
     }
 }
 
@@ -353,7 +380,11 @@ mod tests {
         event::{AccessKind, AccessMode, EventKind, Flag},
     };
     use std::path::Path;
-    use std::sync::mpsc;
+    use std::sync::{Arc, mpsc};
+
+    fn overflow_lane() -> Arc<super::WatcherOverflowLane> {
+        Arc::new(super::WatcherOverflowLane::default())
+    }
 
     #[test]
     fn rename_signal_forwards_source_and_destination_paths() {
@@ -478,9 +509,11 @@ mod tests {
     #[test]
     fn read_access_events_consume_no_watcher_channel_capacity() {
         let (sender, receiver) = mpsc::sync_channel(1);
+        let overflow_lane = overflow_lane();
         for _ in 0..10 {
             super::send_watcher_signal(
                 &sender,
+                &overflow_lane,
                 Ok(
                     Event::new(EventKind::Access(AccessKind::Close(AccessMode::Read)))
                         .add_path("/ws/.env".into()),
@@ -494,6 +527,7 @@ mod tests {
 
         super::send_watcher_signal(
             &sender,
+            &overflow_lane,
             Ok(
                 Event::new(EventKind::Access(AccessKind::Close(AccessMode::Write)))
                     .add_path("/ws/.env".into()),
@@ -508,8 +542,10 @@ mod tests {
     #[test]
     fn rescan_flag_takes_precedence_over_read_filtering() {
         let (sender, receiver) = mpsc::sync_channel(1);
+        let overflow_lane = overflow_lane();
         super::send_watcher_signal(
             &sender,
+            &overflow_lane,
             Ok(
                 Event::new(EventKind::Access(AccessKind::Close(AccessMode::Read)))
                     .add_path("/ws/.env".into())
@@ -521,6 +557,40 @@ mod tests {
             receiver.try_recv(),
             Ok(WatcherSignal::Changed { event, .. }) if event.need_rescan()
         ));
+    }
+
+    #[test]
+    fn saturated_watcher_callback_requests_recovery_without_blocking() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender
+            .send(WatcherSignal::Recoverable)
+            .expect("fill watcher channel");
+        let overflow_lane = overflow_lane();
+        let callback_lane = Arc::clone(&overflow_lane);
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            super::send_watcher_signal(
+                &sender,
+                &callback_lane,
+                Ok(
+                    Event::new(EventKind::Modify(notify::event::ModifyKind::Any))
+                        .add_path("/ws/follow-up.txt".into()),
+                ),
+            );
+            done_tx.send(()).expect("completion");
+        });
+
+        let completed_without_capacity = done_rx.recv_timeout(std::time::Duration::from_secs(1));
+        if completed_without_capacity.is_err() {
+            let _ = receiver.recv();
+        }
+        worker.join().expect("callback worker");
+
+        assert!(
+            completed_without_capacity.is_ok(),
+            "a saturated native callback must return without channel capacity"
+        );
+        assert!(overflow_lane.recovery_requested());
     }
 
     #[test]

@@ -6,6 +6,8 @@ use crate::daemon::protocol::WatcherBridge;
 #[cfg(target_os = "linux")]
 use crate::daemon::send_watcher_signal;
 use crate::daemon::start_sync_watcher;
+#[cfg(target_os = "linux")]
+use crate::daemon::watcher::WatcherOverflowLane;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use bowline_local::sync::manifest_engine::{EngineEvent, WorkspacePath};
 #[cfg(target_os = "linux")]
@@ -117,8 +119,10 @@ fn linux_close_after_write_reaches_engine() {
     let env_path = fixture.root.join(".env");
     fs::write(&env_path, "TOKEN=changed\n").expect("env file");
     let (signal_tx, signal_rx) = mpsc::sync_channel(1);
+    let overflow_lane = WatcherOverflowLane::default();
     send_watcher_signal(
         &signal_tx,
+        &overflow_lane,
         Ok(Event::new(EventKind::Access(AccessKind::Close(AccessMode::Write))).add_path(env_path)),
     );
     drop(signal_tx);

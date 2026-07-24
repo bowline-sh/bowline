@@ -96,6 +96,15 @@ function run(command, args, options = {}) {
   return result.stdout?.trim() ?? "";
 }
 
+export function releaseCargoTargetDir(
+  publicRepo,
+  configuredTarget = process.env.CARGO_TARGET_DIR,
+) {
+  return configuredTarget
+    ? path.resolve(publicRepo, configuredTarget)
+    : path.join(publicRepo, "target");
+}
+
 function git(root, args) {
   return execFileSync("git", ["-C", root, ...args], {
     encoding: "utf8",
@@ -182,6 +191,7 @@ function signFile(file, keyFile) {
 async function buildArchive(publicRepo, version) {
   const dist = releaseDist(version);
   const stage = path.join(dist, "stage");
+  const cargoTargetDir = releaseCargoTargetDir(publicRepo);
   step(`build release archive in ${dist}`);
   await rm(stage, { recursive: true, force: true });
   await mkdir(stage, { recursive: true });
@@ -195,7 +205,7 @@ async function buildArchive(publicRepo, version) {
   );
   for (const name of ["bowline", "bowline-daemon"]) {
     await copyFile(
-      path.join(publicRepo, "target", "release", name),
+      path.join(cargoTargetDir, "release", name),
       path.join(stage, name),
     );
   }

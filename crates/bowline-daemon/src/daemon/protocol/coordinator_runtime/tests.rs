@@ -1,8 +1,9 @@
-use super::watcher_bridge::WatcherBridgeStartError;
+use super::watcher_bridge::{WatcherBridgeStartError, forward_watcher_signals};
 use super::*;
 use bowline_local::metadata::MetadataStore;
 
-use bowline_local::sync::manifest_engine::{EngineEvent, WorkspacePath};
+use crate::daemon::watcher::WatcherOverflowLane;
+use bowline_local::sync::manifest_engine::{EngineCounters, EngineEvent, WorkspacePath};
 
 fn watcher_changed(event: Event) -> WatcherSignal {
     WatcherSignal::Changed { event }
@@ -122,6 +123,13 @@ fn watcher_bridge_forwards_overflow_as_full_scan() {
     fs::create_dir_all(&state_root).expect("state root");
     let (mut runtime, signal_tx, recorded) =
         runtime_with_recording_driver(root, state_root, "workspace-engine-overflow");
+    let counters = Arc::clone(
+        &runtime
+            .sync
+            .as_ref()
+            .expect("sync runtime")
+            .manifest_counters,
+    );
     let bridge = WatcherBridge::start(&mut runtime)
         .expect("bridge starts")
         .expect("watcher receiver configured");
@@ -133,9 +141,294 @@ fn watcher_bridge_forwards_overflow_as_full_scan() {
         matches!(event, EngineEvent::FullScanRequired(_))
     });
     assert!(matches!(event, EngineEvent::FullScanRequired(_)));
+    assert_eq!(
+        counters.snapshot().watcher_overflow_recoveries,
+        1,
+        "native recoverable signals count successful watcher-overflow fences"
+    );
 
     drop(signal_tx);
     drop(bridge);
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn watcher_overflow_collapses_backlog_and_preserves_follow_up_edit() {
+    let temp = crate::daemon::tests::unique_temp_dir("watcher-overflow-collapse");
+    let root = temp.join("Code");
+    fs::create_dir_all(&root).expect("workspace root");
+    let overflow_lane = Arc::new(WatcherOverflowLane::default());
+    let (signal_tx, signal_rx) = mpsc::sync_channel(64);
+    signal_tx
+        .send(WatcherSignal::OverflowLane(Arc::clone(&overflow_lane)))
+        .expect("overflow lane");
+    for index in 0..10_000 {
+        crate::daemon::watcher::send_watcher_signal(
+            &signal_tx,
+            &overflow_lane,
+            Ok(Event::new(EventKind::Modify(ModifyKind::Any))
+                .add_path(root.join(format!("backlog-{index}.txt")))),
+        );
+    }
+    assert!(overflow_lane.recovery_requested());
+
+    let (engine_tx, engine_rx) = mpsc::channel();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let worker_shutdown = Arc::clone(&shutdown);
+    let worker_root = root.clone();
+    let counters = EngineCounters::shared();
+    let worker_counters = Arc::clone(&counters);
+    let worker = std::thread::spawn(move || {
+        forward_watcher_signals(
+            signal_rx,
+            engine_tx,
+            worker_root,
+            worker_shutdown,
+            worker_counters,
+        );
+    });
+
+    assert!(matches!(
+        engine_rx.recv_timeout(Duration::from_secs(1)),
+        Ok(EngineEvent::FullScanRequired(
+            bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
+        ))
+    ));
+    assert!(
+        engine_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "the saturated pre-overflow backlog collapses into one recovery fence"
+    );
+    assert_eq!(counters.snapshot().watcher_overflow_recoveries, 1);
+
+    // Model another native loss while the engine may still be executing the
+    // first scan. A level-triggered lane must re-arm a second fence; clearing
+    // the first request cannot erase this later loss.
+    overflow_lane.request_recovery();
+    assert!(matches!(
+        engine_rx.recv_timeout(Duration::from_secs(1)),
+        Ok(EngineEvent::FullScanRequired(
+            bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
+        ))
+    ));
+    assert!(
+        engine_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "one re-armed loss produces exactly one additional fence"
+    );
+    assert_eq!(counters.snapshot().watcher_overflow_recoveries, 2);
+
+    let follow_up = root.join("follow-up.txt");
+    fs::write(&follow_up, b"after overflow").expect("follow-up edit");
+    signal_tx
+        .send(watcher_changed(
+            Event::new(EventKind::Modify(ModifyKind::Any)).add_path(follow_up),
+        ))
+        .expect("follow-up signal");
+    let event = engine_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("follow-up survives recovery fence");
+    let EngineEvent::Paths(paths) = event else {
+        panic!("expected follow-up Paths event, got {event:?}");
+    };
+    assert!(paths.contains(&WorkspacePath::new("follow-up.txt")));
+
+    drop(signal_tx);
+    worker.join().expect("bridge worker");
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn watcher_overflow_latch_wakes_bridge_after_source_channel_drains() {
+    let temp = crate::daemon::tests::unique_temp_dir("watcher-overflow-latched-wake");
+    let root = temp.join("Code");
+    fs::create_dir_all(&root).expect("workspace root");
+    let overflow_lane = Arc::new(WatcherOverflowLane::default());
+    let (signal_tx, signal_rx) = mpsc::sync_channel(4);
+    signal_tx
+        .send(WatcherSignal::OverflowLane(Arc::clone(&overflow_lane)))
+        .expect("overflow lane");
+    let observed_path = root.join("observed.txt");
+    fs::write(&observed_path, b"observed").expect("observed file");
+    signal_tx
+        .send(watcher_changed(
+            Event::new(EventKind::Modify(ModifyKind::Any)).add_path(observed_path),
+        ))
+        .expect("ordinary signal");
+    let (engine_tx, engine_rx) = mpsc::channel();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let worker_shutdown = Arc::clone(&shutdown);
+    let worker_root = root.clone();
+    let counters = EngineCounters::shared();
+    let worker_counters = Arc::clone(&counters);
+    let worker = std::thread::spawn(move || {
+        forward_watcher_signals(
+            signal_rx,
+            engine_tx,
+            worker_root,
+            worker_shutdown,
+            worker_counters,
+        );
+    });
+    assert!(matches!(
+        engine_rx.recv_timeout(Duration::from_secs(1)),
+        Ok(EngineEvent::Paths(_))
+    ));
+    assert_eq!(
+        counters.snapshot().watcher_overflow_recoveries,
+        0,
+        "ordinary watcher traffic does not increment overflow recovery"
+    );
+
+    // No channel send accompanies this latch. The bridge must discover it from
+    // the timeout path after the ordinary source queue is already empty.
+    overflow_lane.request_recovery();
+    assert!(matches!(
+        engine_rx.recv_timeout(Duration::from_secs(1)),
+        Ok(EngineEvent::FullScanRequired(
+            bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
+        ))
+    ));
+    assert_eq!(counters.snapshot().watcher_overflow_recoveries, 1);
+
+    drop(signal_tx);
+    worker.join().expect("bridge worker");
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn continuously_replenished_overflow_emits_fence_and_stops_promptly() {
+    let temp = crate::daemon::tests::unique_temp_dir("watcher-overflow-live-producer");
+    let root = temp.join("Code");
+    fs::create_dir_all(&root).expect("workspace root");
+    let overflow_lane = Arc::new(WatcherOverflowLane::default());
+    let (signal_tx, signal_rx) = mpsc::sync_channel(8);
+    signal_tx
+        .send(WatcherSignal::OverflowLane(Arc::clone(&overflow_lane)))
+        .expect("overflow lane");
+    for index in 0..7 {
+        signal_tx
+            .send(watcher_changed(
+                Event::new(EventKind::Modify(ModifyKind::Any))
+                    .add_path(root.join(format!("stale-{index}.txt"))),
+            ))
+            .expect("initial stale backlog");
+    }
+    overflow_lane.request_recovery();
+    let producer_stop = Arc::new(AtomicBool::new(false));
+    let producer_stopped = Arc::clone(&producer_stop);
+    let producer_lane = Arc::clone(&overflow_lane);
+    let producer_tx = signal_tx.clone();
+    let producer_root = root.clone();
+    let producer = std::thread::spawn(move || {
+        let mut index = 0u64;
+        while !producer_stopped.load(Ordering::Acquire) {
+            let signal = watcher_changed(
+                Event::new(EventKind::Modify(ModifyKind::Any))
+                    .add_path(producer_root.join(format!("live-{index}.txt"))),
+            );
+            match producer_tx.try_send(signal) {
+                Ok(()) => index = index.saturating_add(1),
+                Err(mpsc::TrySendError::Full(_)) => producer_lane.request_recovery(),
+                Err(mpsc::TrySendError::Disconnected(_)) => break,
+            }
+        }
+    });
+
+    let (engine_tx, engine_rx) = mpsc::channel();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let worker_shutdown = Arc::clone(&shutdown);
+    let worker_root = root.clone();
+    let counters = EngineCounters::shared();
+    let worker_counters = Arc::clone(&counters);
+    let worker = std::thread::spawn(move || {
+        forward_watcher_signals(
+            signal_rx,
+            engine_tx,
+            worker_root,
+            worker_shutdown,
+            worker_counters,
+        );
+    });
+    assert!(matches!(
+        engine_rx.recv_timeout(Duration::from_secs(1)),
+        Ok(EngineEvent::FullScanRequired(
+            bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
+        ))
+    ));
+
+    shutdown.store(true, Ordering::Release);
+    let (joined_tx, joined_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        worker.join().expect("bridge worker");
+        joined_tx.send(()).expect("join completion");
+    });
+    assert!(
+        joined_rx.recv_timeout(Duration::from_secs(1)).is_ok(),
+        "shutdown joins while the source is continuously replenished"
+    );
+    producer_stop.store(true, Ordering::Release);
+    producer.join().expect("producer");
+    drop(signal_tx);
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn watcher_bridge_drop_joins_under_live_production() {
+    let temp = crate::daemon::tests::unique_temp_dir("watcher-overflow-drop-live");
+    let root = temp.join("Code");
+    let state_root = temp.join("state");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::create_dir_all(&state_root).expect("state root");
+    let (mut runtime, signal_tx, _recorded) =
+        runtime_with_recording_driver(root.clone(), state_root, "workspace-drop-live");
+    let bridge = WatcherBridge::start(&mut runtime)
+        .expect("bridge starts")
+        .expect("watcher receiver configured");
+    let overflow_lane = Arc::new(WatcherOverflowLane::default());
+    signal_tx
+        .send(WatcherSignal::OverflowLane(Arc::clone(&overflow_lane)))
+        .expect("overflow lane");
+    let producer_stop = Arc::new(AtomicBool::new(false));
+    let producer_stopped = Arc::clone(&producer_stop);
+    let producer_tx = signal_tx.clone();
+    let producer_root = root.clone();
+    let producer_lane = Arc::clone(&overflow_lane);
+    let (started_tx, started_rx) = mpsc::channel();
+    let producer = std::thread::spawn(move || {
+        started_tx.send(()).expect("producer started");
+        let mut index = 0u64;
+        while !producer_stopped.load(Ordering::Acquire) {
+            producer_lane.request_recovery();
+            if producer_tx
+                .send(watcher_changed(
+                    Event::new(EventKind::Modify(ModifyKind::Any))
+                        .add_path(producer_root.join(format!("live-{index}.txt"))),
+                ))
+                .is_err()
+            {
+                break;
+            }
+            index = index.saturating_add(1);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("live producer active");
+
+    let (dropped_tx, dropped_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        drop(bridge);
+        dropped_tx.send(()).expect("drop completion");
+    });
+    assert!(
+        dropped_rx.recv_timeout(Duration::from_secs(1)).is_ok(),
+        "WatcherBridge::drop joins under live production"
+    );
+
+    producer_stop.store(true, Ordering::Release);
+    producer.join().expect("producer");
+    drop(signal_tx);
+    drop(runtime);
     let _ = fs::remove_dir_all(temp);
 }
 
