@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, path::Path};
+use std::{error::Error, fmt};
 
 pub use bowline_core::shell::quote_word as shell_quote;
 
@@ -20,23 +20,6 @@ pub struct BootstrapSshOptions {
 pub struct RemoteBootstrapProbe {
     pub stdout: String,
     pub stderr: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CodexLaunchPlatform {
-    Macos,
-    Linux,
-    Other,
-}
-
-impl CodexLaunchPlatform {
-    pub fn from_os_name(os_name: &str) -> Self {
-        match os_name {
-            "macos" | "darwin" => Self::Macos,
-            "linux" => Self::Linux,
-            _ => Self::Other,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -164,8 +147,13 @@ where
     let workspace_db = remote_shell_path(&format!(
         "~/.local/share/bowline/workspaces/{workspace_id}/local.sqlite3"
     ));
+    let workspace_state =
+        remote_shell_path(&format!("~/.local/share/bowline/workspaces/{workspace_id}"));
+    let daemon_env = remote_shell_path(&format!(
+        "~/.local/share/bowline/workspaces/{workspace_id}/daemon.env"
+    ));
     let command = format!(
-        "set -e; case \"$(uname -s)\" in Darwin) dir=\"$HOME/Library/Application Support/bowline\" ;; Linux) dir=\"${{XDG_STATE_HOME:-$HOME/.local/state}}/bowline\" ;; *) dir=\"$HOME/.bowline\" ;; esac; mkdir -p \"$dir\"; ln -sfn {workspace_db} \"$dir/local.sqlite3\"; umask 077; cat > \"$dir/daemon.env\"; chmod 600 \"$dir/daemon.env\""
+        "set -e; case \"$(uname -s)\" in Darwin) dir=\"$HOME/Library/Application Support/bowline\" ;; Linux) dir=\"${{XDG_STATE_HOME:-$HOME/.local/state}}/bowline\" ;; *) dir=\"$HOME/.bowline\" ;; esac; mkdir -p \"$dir\" {workspace_state}; ln -sfn {workspace_db} \"$dir/local.sqlite3\"; umask 077; cat > {daemon_env}; chmod 600 {daemon_env}"
     );
     let output = run_remote_shell_with_stdin(runner, options, &command, &daemon_env_file(options))?;
     Ok(RemoteBootstrapProbe {
@@ -174,28 +162,14 @@ where
     })
 }
 
-pub fn start_remote_daemon<R>(
+pub fn install_remote_daemon_service<R>(
     runner: &R,
     options: &BootstrapSshOptions,
 ) -> Result<RemoteBootstrapProbe, BootstrapSshError>
 where
     R: ProcessRunner,
 {
-    let output = run_remote_bowline(runner, options, "daemon start --json")?;
-    Ok(RemoteBootstrapProbe {
-        stdout: output.stdout,
-        stderr: output.stderr,
-    })
-}
-
-pub fn stop_remote_daemon<R>(
-    runner: &R,
-    options: &BootstrapSshOptions,
-) -> Result<RemoteBootstrapProbe, BootstrapSshError>
-where
-    R: ProcessRunner,
-{
-    let output = run_remote_bowline(runner, options, "daemon stop --json")?;
+    let output = run_remote_bowline(runner, options, "daemon install --json")?;
     Ok(RemoteBootstrapProbe {
         stdout: output.stdout,
         stderr: output.stderr,
@@ -237,202 +211,6 @@ where
     })
 }
 
-pub fn create_remote_agent_lease<R>(
-    runner: &R,
-    options: &BootstrapSshOptions,
-    project: &str,
-    task: &str,
-) -> Result<RemoteBootstrapProbe, BootstrapSshError>
-where
-    R: ProcessRunner,
-{
-    let output = run_remote_bowline_in_root(
-        runner,
-        options,
-        &format!(
-            "agent start {} --task {} --base latest-workspace --json",
-            shell_quote(project),
-            shell_quote(task),
-        ),
-    )?;
-    Ok(RemoteBootstrapProbe {
-        stdout: output.stdout,
-        stderr: output.stderr,
-    })
-}
-
-pub fn launch_remote_codex_agent<R>(
-    runner: &R,
-    options: &BootstrapSshOptions,
-    lease_id: &str,
-    write_target_path: &str,
-) -> Result<RemoteBootstrapProbe, BootstrapSshError>
-where
-    R: ProcessRunner,
-{
-    let bowline_command = options
-        .remote_binary
-        .as_ref()
-        .map(|binary| remote_shell_path(binary))
-        .unwrap_or_else(|| "bowline".to_string());
-    let platform = options
-        .remote_platform
-        .as_deref()
-        .map(CodexLaunchPlatform::from_os_name)
-        .unwrap_or(CodexLaunchPlatform::Other);
-    let bowline_with_env = format!(
-        "{}{}",
-        remote_env_prefix(&options.remote_env),
-        bowline_command
-    );
-    let login_command = format!(
-        "{}{}",
-        remote_state_prefix(options),
-        codex_launch_command(&bowline_with_env, lease_id, write_target_path, platform),
-    );
-    let output = run_remote_login_shell_with_stdin(
-        runner,
-        options,
-        &login_command,
-        &remote_stdin_env_stdin(options),
-    )?;
-    Ok(RemoteBootstrapProbe {
-        stdout: output.stdout,
-        stderr: output.stderr,
-    })
-}
-
-pub fn codex_launch_command(
-    bowline_bin: &str,
-    lease_id: &str,
-    cwd: &str,
-    platform: CodexLaunchPlatform,
-) -> String {
-    let mut add_dirs = vec![
-        "~/.local/share/bowline".to_string(),
-        "~/.local/state/bowline".to_string(),
-    ];
-    if platform == CodexLaunchPlatform::Macos {
-        add_dirs.push("\"$HOME/Library/Application Support/bowline\"".to_string());
-    }
-    let add_dir_args = add_dirs
-        .into_iter()
-        .map(|path| format!("--add-dir {path}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!(
-        "export PATH=\"$HOME/.local/bin:$PATH\"; {} agent prompt --lease {} | codex exec --cd {} --sandbox workspace-write {add_dir_args} --skip-git-repo-check -",
-        bowline_bin,
-        shell_quote(lease_id),
-        remote_shell_path(cwd),
-    )
-}
-
-pub fn complete_remote_agent_lease<R>(
-    runner: &R,
-    options: &BootstrapSshOptions,
-    lease_id: &str,
-) -> Result<RemoteBootstrapProbe, BootstrapSshError>
-where
-    R: ProcessRunner,
-{
-    let output = run_remote_bowline(
-        runner,
-        options,
-        &format!("agent complete --lease {} --json", shell_quote(lease_id)),
-    )?;
-    Ok(RemoteBootstrapProbe {
-        stdout: output.stdout,
-        stderr: output.stderr,
-    })
-}
-
-pub fn accept_remote_work_view<R>(
-    runner: &R,
-    options: &BootstrapSshOptions,
-    work_view_id: &str,
-) -> Result<RemoteBootstrapProbe, BootstrapSshError>
-where
-    R: ProcessRunner,
-{
-    let output = run_remote_bowline(
-        runner,
-        options,
-        &format!("work accept {} --json", shell_quote(work_view_id)),
-    )?;
-    Ok(RemoteBootstrapProbe {
-        stdout: output.stdout,
-        stderr: output.stderr,
-    })
-}
-
-pub fn install_handoff_bundle<R>(
-    runner: &R,
-    options: &BootstrapSshOptions,
-    target: &str,
-    transfer_key: &str,
-    envelope_json: &str,
-) -> Result<RemoteBootstrapProbe, BootstrapSshError>
-where
-    R: ProcessRunner,
-{
-    let mut options = options.clone();
-    options
-        .remote_env
-        .push(("BOWLINE_HANDOFF_TARGET".to_string(), target.to_string()));
-    options.remote_secret_env.push((
-        "BOWLINE_HANDOFF_TRANSFER_KEY".to_string(),
-        transfer_key.to_string(),
-    ));
-    let output = run_remote_bowline_with_prefix_and_stdin(
-        runner,
-        &options,
-        "internal handoff install-bundle --json",
-        "",
-        envelope_json,
-    )?;
-    Ok(RemoteBootstrapProbe {
-        stdout: output.stdout,
-        stderr: output.stderr,
-    })
-}
-
-pub fn launch_handoff_tmux<R>(
-    runner: &R,
-    options: &BootstrapSshOptions,
-    launch_command: &str,
-    has_session_command: &str,
-) -> Result<RemoteBootstrapProbe, BootstrapSshError>
-where
-    R: ProcessRunner,
-{
-    let command = format!("{launch_command} && {has_session_command}");
-    let output = run_remote_login_shell_with_stdin(runner, options, &command, "")?;
-    Ok(RemoteBootstrapProbe {
-        stdout: output.stdout,
-        stderr: output.stderr,
-    })
-}
-
-pub fn remove_handoff_prompt_file<R>(
-    runner: &R,
-    options: &BootstrapSshOptions,
-    prompt_file: &Path,
-) -> Result<RemoteBootstrapProbe, BootstrapSshError>
-where
-    R: ProcessRunner,
-{
-    let command = format!(
-        "rm -f {}",
-        remote_shell_path(&prompt_file.display().to_string())
-    );
-    let output = run_remote_login_shell_with_stdin(runner, options, &command, "")?;
-    Ok(RemoteBootstrapProbe {
-        stdout: output.stdout,
-        stderr: output.stderr,
-    })
-}
-
 fn run_remote_bowline<R>(
     runner: &R,
     options: &BootstrapSshOptions,
@@ -442,22 +220,6 @@ where
     R: ProcessRunner,
 {
     run_remote_bowline_with_prefix(runner, options, bowline_args, "")
-}
-
-fn run_remote_bowline_in_root<R>(
-    runner: &R,
-    options: &BootstrapSshOptions,
-    bowline_args: &str,
-) -> Result<crate::bootstrap::process::ProcessOutput, BootstrapSshError>
-where
-    R: ProcessRunner,
-{
-    run_remote_bowline_with_prefix(
-        runner,
-        options,
-        bowline_args,
-        &format!("cd {} && ", remote_shell_path(options.root.as_str())),
-    )
 }
 
 fn run_remote_bowline_with_prefix<R>(
@@ -521,49 +283,6 @@ where
         return Err(BootstrapSshError::RemoteFailed {
             status_code: output.status_code,
             stderr: remote_failure_detail(&output.stdout, &output.stderr),
-        });
-    }
-    Ok(output)
-}
-
-fn run_remote_login_shell_with_stdin<R>(
-    runner: &R,
-    options: &BootstrapSshOptions,
-    login_command: &str,
-    stdin: &str,
-) -> Result<crate::bootstrap::process::ProcessOutput, BootstrapSshError>
-where
-    R: ProcessRunner,
-{
-    validate_ssh_host(options.host.as_str()).map_err(|reason| {
-        BootstrapSshError::InvalidHost(format!("invalid SSH host `{}`: {reason}", options.host))
-    })?;
-    let remote_command = format!(
-        "{}bash -lc {}",
-        remote_stdin_env_prefix(options),
-        shell_quote(login_command)
-    );
-    let args = vec![
-        "-o".to_string(),
-        "BatchMode=yes".to_string(),
-        "-o".to_string(),
-        "ConnectTimeout=10".to_string(),
-        "-o".to_string(),
-        "ServerAliveInterval=15".to_string(),
-        "-o".to_string(),
-        "ServerAliveCountMax=2".to_string(),
-        options.host.clone(),
-        remote_command,
-    ];
-    let output = if stdin.is_empty() {
-        runner.run("ssh", &args)?
-    } else {
-        runner.run_with_stdin("ssh", &args, stdin)?
-    };
-    if output.status_code != 0 {
-        return Err(BootstrapSshError::RemoteFailed {
-            status_code: output.status_code,
-            stderr: output.stderr,
         });
     }
     Ok(output)
@@ -738,7 +457,6 @@ fn valid_remote_env_key(key: &str) -> bool {
             | "BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN"
             | "BOWLINE_WORKOS_ACCESS_TOKEN"
             | "BOWLINE_CONTROL_PLANE_TOKEN"
-            | "BOWLINE_HANDOFF_TRANSFER_KEY"
     )
 }
 

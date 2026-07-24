@@ -1,15 +1,15 @@
-use std::{env, thread, time::Duration};
+use std::env;
 
 use bowline_control_plane::{BootstrapSessionInput, ControlPlaneClient};
 use bowline_core::{
     commands::{
-        AgentWriteTargetMode, BootstrapSecretStore, BootstrapSshCommandOutput, BootstrapStep,
-        BootstrapStepName, BootstrapStepState, BootstrapSyncState, CONTRACT_VERSION,
-        DevicesCommandOutput, StatusCommandOutput,
+        BootstrapSecretStore, BootstrapSshCommandOutput, BootstrapStep, BootstrapStepName,
+        BootstrapStepState, BootstrapSyncState, CONTRACT_VERSION, DevicesCommandOutput,
+        StatusCommandOutput,
     },
     devices::{DeviceApprovalRequest, DeviceFingerprint, DeviceRecord, DeviceTrustState},
     ids::DeviceId,
-    status::{StatusItem, StatusItemKind, StatusLevel, WorkspaceStatus},
+    status::{StatusItem, StatusLevel, WorkspaceStatus},
 };
 use bowline_local::bootstrap::{
     install::{self, BootstrapInstallOptions, RemoteBowlineInstall},
@@ -25,9 +25,6 @@ pub struct BootstrapSshArgs {
     pub host: String,
     pub root: String,
     pub artifact: Option<String>,
-    pub project: Option<String>,
-    pub task: Option<String>,
-    pub agent: Option<String>,
 }
 
 struct BootstrapOutputBase {
@@ -37,14 +34,6 @@ struct BootstrapOutputBase {
     generated_at: String,
     steps: Vec<BootstrapStep>,
     remote_status_items: Vec<StatusItem>,
-}
-
-struct RemoteAgentHandoffLease {
-    lease_id: String,
-    write_target_mode: AgentWriteTargetMode,
-    write_target_path: String,
-    work_view_id: Option<String>,
-    work_view_path: Option<String>,
 }
 
 pub fn run(args: BootstrapSshArgs, generated_at: String) -> BootstrapSshCommandOutput {
@@ -139,12 +128,19 @@ pub fn run(args: BootstrapSshArgs, generated_at: String) -> BootstrapSshCommandO
 
 fn normalize_remote_root(mut args: BootstrapSshArgs) -> BootstrapSshArgs {
     if let Ok(home) = env::var("HOME") {
-        args.root = normalize_remote_root_for_home(&args.root, &home);
+        // Empty HOME makes `format!("{home}/")` become "/" and rewrites every
+        // absolute path to ~/…, which lands under the remote user's home.
+        if !home.is_empty() {
+            args.root = normalize_remote_root_for_home(&args.root, &home);
+        }
     }
     args
 }
 
 fn normalize_remote_root_for_home(root: &str, home: &str) -> String {
+    if home.is_empty() {
+        return root.to_string();
+    }
     if root == home {
         return "~".to_string();
     }
@@ -154,7 +150,6 @@ fn normalize_remote_root_for_home(root: &str, home: &str) -> String {
 }
 
 mod after_install;
-mod agent_handoff;
 mod output;
 mod remote;
 
@@ -162,6 +157,5 @@ mod remote;
 mod tests;
 
 use after_install::*;
-use agent_handoff::*;
 use output::*;
 use remote::*;

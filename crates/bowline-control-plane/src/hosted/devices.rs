@@ -38,7 +38,7 @@ impl DeviceControlPlaneClient for HostedControlPlaneClient {
                 expires_in_ticks: Some(input.expires_in_ticks),
                 host: input.host.clone(),
                 lease_handoff_digest: None,
-                lease_id: input.lease_id.as_ref().map(|id| id.as_str().to_string()),
+                lease_id: None,
                 matching_code: input.matching_code.clone(),
                 platform: input.platform.clone(),
                 request_id: None,
@@ -63,8 +63,8 @@ impl DeviceControlPlaneClient for HostedControlPlaneClient {
             expires_at: None,
             expires_in_ticks: Some(input.expires_in_ticks),
             host: input.host.clone(),
-            lease_handoff_digest: input.lease_handoff_digest.clone(),
-            lease_id: input.lease_id.as_ref().map(|id| id.as_str().to_string()),
+            lease_handoff_digest: None,
+            lease_id: None,
             matching_code: input.matching_code.clone(),
             platform: input.platform.clone(),
             request_id: None,
@@ -106,8 +106,8 @@ impl DeviceControlPlaneClient for HostedControlPlaneClient {
             created_by_device_proof,
             expires_in_ticks: Some(input.expires_in_ticks),
             host: input.host.clone(),
-            lease_handoff_digest: input.lease_handoff_digest.clone(),
-            lease_id: input.lease_id.as_ref().map(|id| id.as_str().to_string()),
+            lease_handoff_digest: None,
+            lease_id: None,
             root: input.root.clone(),
             runtime: input.runtime.clone(),
             setup_receipts_digest: input.setup_receipts_digest.clone(),
@@ -257,8 +257,6 @@ impl TryFrom<HostedDeviceRequest> for DeviceRequest {
             matching_code: dto.matching_code,
             account_id: dto.account_id.map(AccountId::new),
             host: dto.host,
-            lease_handoff_digest: dto.lease_handoff_digest,
-            lease_id: dto.lease_id.map(LeaseId::new),
             root: dto.root,
             runtime: dto.runtime,
             setup_receipts_digest: dto.setup_receipts_digest,
@@ -391,8 +389,6 @@ fn bootstrap_session_from_dto(
         session_id: BootstrapSessionId::new(dto.session_id),
         workspace_id: WorkspaceId::new(dto.workspace_id),
         token,
-        lease_id: dto.lease_id.map(LeaseId::new),
-        lease_handoff_digest: dto.lease_handoff_digest,
         runtime: dto.runtime,
         setup_receipts_digest: dto.setup_receipts_digest,
         expires_at: parse_control_timestamp(&dto.expires_at)
@@ -465,11 +461,6 @@ mod tests {
             record.account_id.as_ref().map(|id| id.as_str()),
             Some("account_1")
         );
-        assert_eq!(
-            record.lease_id.as_ref().map(|id| id.as_str()),
-            Some("lease_remote_1")
-        );
-        assert_eq!(record.lease_handoff_digest, None);
         assert_eq!(record.requested_at.tick, 1_730_000_000_000);
         assert_eq!(record.expires_at.tick, 1_730_000_001_000);
         assert_eq!(record.state, DeviceRequestState::Pending);
@@ -596,10 +587,6 @@ mod tests {
         .expect("session");
         assert_eq!(session.session_id.as_str(), "bootstrap-session-1");
         assert_eq!(session.token, "token-secret");
-        assert_eq!(
-            session.lease_id.as_ref().map(|id| id.as_str()),
-            Some("lease_remote_1")
-        );
         assert_eq!(session.runtime.as_deref(), Some("codex-cloud"));
     }
 

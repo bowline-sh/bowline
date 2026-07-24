@@ -1,28 +1,21 @@
 use bowline_core::{
-    commands::AgentLeaseBase,
     events::{EventName, EventSeverity, EventSubject, EventSubjectKind, WorkspaceEvent},
-    ids::{DeviceId, EventId, ProjectId, SnapshotId, WorkspaceId},
+    ids::{DeviceId, EventId, ProjectId, SnapshotId, WorkViewId, WorkspaceId},
     policy::{AccessFlag, MaterializationMode, PathClassification},
     status::{
         FreshnessAxis, FreshnessVerdict, LimitedCapability, ProjectSetupReadinessState,
         StatusAttention, StatusAvailability, StatusFact, StatusFactScope, StatusItemKind,
         StatusLevel,
     },
-    work_views::WorkViewLifecycle,
-    workspace_graph::NamespaceEntryKind,
+    work_views::{
+        OVERLAY_HEAD_EMPTY, WorkView, WorkViewLifecycle, WorkViewRetention, WorkViewRetentionState,
+        WorkViewSyncState, WorkViewVisibility,
+    },
 };
 
 use crate::{
-    agents::{AgentLeaseCreateOptions, create_agent_lease},
-    metadata::{
-        MaterializationFailureKind, MaterializationPriorityClass, MaterializationTaskId,
-        MaterializationTaskRecord, MaterializationTaskState, MetadataStore, ObservedLocalPath,
-        PostCommitSyncComponent, SetupReceiptRecord, SyncOperationKind, SyncOperationRecord,
-        SyncOperationState, WorkspaceSyncHeadRecord,
-    },
+    metadata::{MetadataStore, ObservedLocalPath, SetupReceiptRecord},
     status::StatusOptions,
-    sync::conflicts::{ConflictFile, ConflictRecord, create_conflict_bundle},
-    work_views::{WorkCreateOptions, create_work_view},
     workspace::TempWorkspace,
 };
 
@@ -45,48 +38,6 @@ fn seed_workspace_root(store: &MetadataStore, workspace_id: &WorkspaceId) {
     store
         .insert_root("root_code", workspace_id, "~/Code", "2026-06-23T12:00:00Z")
         .expect("root insert");
-}
-
-fn sync_operation_record(
-    id: &str,
-    workspace_id: &WorkspaceId,
-    state: &str,
-    idempotency_key: &str,
-) -> SyncOperationRecord {
-    SyncOperationRecord {
-        id: id.to_string(),
-        workspace_id: workspace_id.clone(),
-        kind: SyncOperationKind::Reconcile,
-        resource_key: crate::metadata::SyncResourceKey::workspace_sync(workspace_id.clone()),
-        state: match state {
-            "queued" => SyncOperationState::Queued,
-            "claimed" => SyncOperationState::Claimed,
-            "waiting_retry" => SyncOperationState::WaitingRetry,
-            "blocked_offline" => SyncOperationState::BlockedOffline,
-            "reconciliation_required" => SyncOperationState::ReconciliationRequired,
-            "attention" => SyncOperationState::Attention,
-            "completed" => SyncOperationState::Completed,
-            other => panic!("unsupported sync operation state in test helper: {other}"),
-        },
-        idempotency_key: idempotency_key.to_string(),
-        base_version: Some(1),
-        base_snapshot_id: Some("snap_base".to_string()),
-        target_snapshot_id: Some("snap_target".to_string()),
-        device_id: Some(DeviceId::new("device-test")),
-        payload_json: "{}".to_string(),
-        attempt_count: 0,
-        claimed_by: None,
-        claim_generation: 0,
-        heartbeat_at: None,
-        lease_expires_at: None,
-        cancellation_requested_at: None,
-        next_attempt_at: None,
-        result_json: None,
-        last_error_code: None,
-        last_error: None,
-        created_at: "2026-06-23T12:00:00Z".to_string(),
-        updated_at: "2026-06-23T12:00:00Z".to_string(),
-    }
 }
 
 fn seed_project(

@@ -97,8 +97,8 @@ mod tests {
 
     use super::{InputOutcome, OnboardingInputOutcome, apply_key, apply_onboarding_key};
     use crate::surface::tui::{
-        TuiAction, TuiModel, TuiTone,
-        model::{OnboardingModel, OnboardingStep},
+        TuiModel,
+        model::{OnboardingModel, OnboardingStep, TuiAction, TuiTone},
     };
 
     fn enter() -> KeyEvent {
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn non_mutating_action_confirms_immediately() {
-        let mut model = TuiModel::from_resolve(
+        let mut model = TuiModel::from_parts(
             "Attention".to_string(),
             TuiTone::Attention,
             vec![TuiAction {
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn mutating_action_requires_second_enter() {
-        let mut model = TuiModel::from_resolve(
+        let mut model = TuiModel::from_parts(
             "Attention".to_string(),
             TuiTone::Attention,
             vec![TuiAction {
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn action_without_command_cannot_be_confirmed() {
-        let mut model = TuiModel::from_resolve(
+        let mut model = TuiModel::from_parts(
             "Attention".to_string(),
             TuiTone::Attention,
             vec![TuiAction {
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn enter_without_actions_stays_in_tui() {
-        let mut model = TuiModel::from_resolve(
+        let mut model = TuiModel::from_parts(
             "Healthy".to_string(),
             TuiTone::Healthy,
             Vec::new(),
@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn confirmation_mode_ignores_selection_moves() {
-        let mut model = TuiModel::from_resolve(
+        let mut model = TuiModel::from_parts(
             "Attention".to_string(),
             TuiTone::Attention,
             vec![
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn home_and_end_jump_between_action_boundaries() {
-        let mut model = TuiModel::from_resolve(
+        let mut model = TuiModel::from_parts(
             "Attention".to_string(),
             TuiTone::Attention,
             vec![
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn home_and_end_are_noops_without_actions() {
-        let mut model = TuiModel::from_resolve(
+        let mut model = TuiModel::from_parts(
             "Healthy".to_string(),
             TuiTone::Healthy,
             Vec::new(),

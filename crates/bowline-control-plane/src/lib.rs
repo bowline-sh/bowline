@@ -23,9 +23,7 @@ pub use device_proofs::{
     recovery_envelope_payload_proof_subject, recovery_envelope_payload_proof_subject_parts,
     recovery_envelope_proof_subject,
 };
-pub use errors::{
-    Capability, CompareAndSwapError, ControlPlaneError, RejectionCode, WorkViewUpdateError,
-};
+pub use errors::{Capability, CompareAndSwapError, ControlPlaneError, RejectionCode};
 pub use fake::FakeControlPlaneClient;
 pub use gc::{ControlPlaneGcSweepReport, sweep_storage_gc};
 pub use primitives::{ControlPlaneTimestamp, DeterministicClock, DeterministicIdGenerator};
@@ -36,7 +34,8 @@ pub(crate) use validation::validate_object_key;
 #[cfg(feature = "hosted-convex")]
 pub use hosted::{
     HostedControlPlaneClient, HostedFunctionCallCount, WorkspaceRefStreamCancellation,
-    WorkspaceRefStreamShutdown, hosted_function_call_counts, workspace_ref_stream_shutdown_pair,
+    WorkspaceRefStreamConnectionState, WorkspaceRefStreamEvent, WorkspaceRefStreamShutdown,
+    hosted_function_call_counts, workspace_ref_stream_shutdown_pair,
 };
 #[cfg(feature = "hosted-convex")]
 pub use transfer::{SignedUrlByteStore, SignedUrlHttpClient};

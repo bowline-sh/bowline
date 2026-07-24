@@ -2,71 +2,38 @@
   "contractVersion": 8,
   "command": "help",
   "generatedAt": "2026-06-29T12:00:00Z",
-  "topic": "agent start",
+  "topic": "work create",
   "groups": [
     {
-      "name": "Agent",
-      "commands": ["agent start"]
+      "name": "Work",
+      "commands": [
+        "work create"
+      ]
     }
   ],
   "commands": [
     {
-      "group": "Agent",
-      "name": "agent start",
-      "summary": "Start a local direct-write agent lease, optionally using a work view or remote host.",
-      "usage": "bowline agent start [project] --task <task> [--base <base>] [--work-view] [--force-stale] [--on <authorized-device>] [--remote <runtime>] [--remote-root <path>] [--json] [--dry-run]",
+      "group": "Work",
+      "name": "work create",
+      "summary": "Create or reuse a named work view for a project.",
+      "usage": "bowline work create [project] <name> [--from <restore-point>] [--json] [--dry-run]",
       "positionals": [
         {
-          "name": "project",
+          "name": "name-or-project",
+          "required": true,
+          "repeatable": false
+        },
+        {
+          "name": "name",
           "required": false,
           "repeatable": false
         }
       ],
       "options": [
         {
-          "name": "--task",
-          "valueName": "task",
-          "summary": "Task description for the lease.",
-          "required": true,
-          "repeatable": false
-        },
-        {
-          "name": "--base",
-          "valueName": "base",
-          "summary": "Lease base, such as latest-workspace or latest:main.",
-          "required": false,
-          "repeatable": false
-        },
-        {
-          "name": "--work-view",
-          "summary": "Write through an isolated work view.",
-          "required": false,
-          "repeatable": false
-        },
-        {
-          "name": "--force-stale",
-          "summary": "Start anyway when the local freshness guardian sees a stale base.",
-          "required": false,
-          "repeatable": false
-        },
-        {
-          "name": "--on",
-          "valueName": "authorized-device",
-          "summary": "Dispatch the lease to an authorized device; unknown hosts use remote bootstrap.",
-          "required": false,
-          "repeatable": false
-        },
-        {
-          "name": "--remote",
-          "valueName": "runtime",
-          "summary": "Mint a lease-scoped bootstrap token for an outbound agent runtime.",
-          "required": false,
-          "repeatable": false
-        },
-        {
-          "name": "--remote-root",
-          "valueName": "path",
-          "summary": "Remote workspace root for the outbound runtime.",
+          "name": "--from",
+          "valueName": "restore-point",
+          "summary": "Use a restore point or snapshot id as the work view base.",
           "required": false,
           "repeatable": false
         },
@@ -81,13 +48,23 @@
           "summary": "Preview the mutation without changing local or daemon state.",
           "required": false,
           "repeatable": false
+        },
+        {
+          "name": "--human",
+          "summary": "Render human-readable output.",
+          "required": false,
+          "repeatable": false
         }
       ],
-      "jsonOutputType": "AgentLeaseCreateCommandOutput",
+      "jsonOutputType": "WorkCreateCommandOutput",
       "sideEffectLevel": "mutation",
       "supportsJson": true,
       "supportsDryRun": true,
-      "relatedCommands": ["connect", "lease join", "agent context"]
+      "relatedCommands": [
+        "work review",
+        "work accept",
+        "work discard"
+      ]
     }
   ]
 }

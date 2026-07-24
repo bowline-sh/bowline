@@ -153,6 +153,8 @@ fn run_connection_worker(work: Receiver<ConnectionTask>, completions: Sender<()>
                 Err(_) => eprintln!("bowline-daemon isolated a panicked connection handler"),
             }
         }
-        let _receiver_gone = completions.send(());
+        // Non-blocking: a full or disconnected completions channel must not
+        // pin worker threads during accept-loop exit / shutdown.
+        let _ = completions.try_send(());
     }
 }

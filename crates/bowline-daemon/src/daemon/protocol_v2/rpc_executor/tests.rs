@@ -68,9 +68,9 @@ fn reserved_status_worker_survives_query_and_mutation_floods() {
     let router_query_gate = Arc::clone(&query_gate);
     let router_mutation_gate = Arc::clone(&mutation_gate);
     let router: Arc<RequestRouter> = Arc::new(move |_context, request| {
-        if request.method == "agent.tool.invoke" {
+        if request.method == "daemon.info" {
             router_query_gate.block();
-        } else if request.method == "sync.request" {
+        } else if request.method == "work.accept" {
             router_mutation_gate.block();
         }
         success(request.request_id)
@@ -83,7 +83,7 @@ fn reserved_status_worker_survives_query_and_mutation_floods() {
     submit(
         &executor,
         query_connection,
-        request("query", "agent.tool.invoke"),
+        request("query", "daemon.info"),
         Arc::clone(&router),
         &sender,
     )
@@ -91,7 +91,7 @@ fn reserved_status_worker_survives_query_and_mutation_floods() {
     submit(
         &executor,
         mutation_connection,
-        request("mutation", "sync.request"),
+        request("mutation", "work.accept"),
         Arc::clone(&router),
         &sender,
     )
@@ -147,7 +147,7 @@ fn mutation_queue_round_robins_connections() {
     submit(
         &executor,
         connection_a,
-        request("a1", "sync.request"),
+        request("a1", "work.accept"),
         Arc::clone(&router),
         &sender,
     )
@@ -157,7 +157,7 @@ fn mutation_queue_round_robins_connections() {
         submit(
             &executor,
             connection_a,
-            request(request_id, "sync.request"),
+            request(request_id, "work.accept"),
             Arc::clone(&router),
             &sender,
         )
@@ -166,7 +166,7 @@ fn mutation_queue_round_robins_connections() {
     submit(
         &executor,
         connection_b,
-        request("b1", "sync.request"),
+        request("b1", "work.accept"),
         router,
         &sender,
     )
@@ -204,7 +204,7 @@ fn queue_caps_are_global_lane_and_connection_bounded() {
     submit(
         &executor,
         connection_a,
-        request("active", "sync.request"),
+        request("active", "work.accept"),
         Arc::clone(&router),
         &sender,
     )
@@ -213,7 +213,7 @@ fn queue_caps_are_global_lane_and_connection_bounded() {
     submit(
         &executor,
         connection_a,
-        request("a-queued", "sync.request"),
+        request("a-queued", "work.accept"),
         Arc::clone(&router),
         &sender,
     )
@@ -222,7 +222,7 @@ fn queue_caps_are_global_lane_and_connection_bounded() {
         submit(
             &executor,
             connection_a,
-            request("a-over", "sync.request"),
+            request("a-over", "work.accept"),
             Arc::clone(&router),
             &sender,
         ),
@@ -231,7 +231,7 @@ fn queue_caps_are_global_lane_and_connection_bounded() {
     submit(
         &executor,
         connection_b,
-        request("b-queued", "sync.request"),
+        request("b-queued", "work.accept"),
         Arc::clone(&router),
         &sender,
     )
@@ -240,7 +240,7 @@ fn queue_caps_are_global_lane_and_connection_bounded() {
         submit(
             &executor,
             connection_c,
-            request("global-over", "sync.request"),
+            request("global-over", "work.accept"),
             router,
             &sender,
         ),
@@ -339,7 +339,7 @@ fn mutation_worker_survives_panicked_handler() {
         submit(
             &executor,
             connection,
-            request(request_id, "sync.request"),
+            request(request_id, "work.accept"),
             Arc::clone(&router),
             &sender,
         )
@@ -383,7 +383,7 @@ fn configured_worker_bounds_hold_across_32_connections_by_16_requests() {
             let method = match request_index % 3 {
                 0 => "status.getSnapshot",
                 1 => "daemon.info",
-                _ => "sync.request",
+                _ => "work.accept",
             };
             let request_id = format!("c{connection_index}-r{request_index}");
             match submit(
@@ -466,7 +466,7 @@ fn strict_shutdown_records_forced_recovery_and_joins_blocked_worker() {
     submit(
         &executor,
         connection,
-        request("blocked", "sync.request"),
+        request("blocked", "work.accept"),
         router,
         &sender,
     )

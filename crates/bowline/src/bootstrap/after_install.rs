@@ -44,7 +44,6 @@ enum RemoteTrustStage {
 struct SyncProbe {
     remote_status: Option<WorkspaceStatus>,
     remote_status_items: Vec<StatusItem>,
-    sync_ready: bool,
 }
 
 type StageResult<T> = Result<T, Box<BootstrapSshCommandOutput>>;
@@ -76,7 +75,7 @@ where
     if let Err(output) = publish_default_metadata(&mut context, &trusted_remote) {
         return *output;
     }
-    if let Err(output) = start_remote_daemon(&mut context, &trusted_remote) {
+    if let Err(output) = activate_remote_daemon_service(&mut context, &trusted_remote) {
         return *output;
     }
     let sync_probe = match probe_final_remote_status(&mut context, &trusted_remote) {
@@ -99,8 +98,6 @@ where
             .create_bootstrap_session(BootstrapSessionInput {
                 workspace_id: input.workspace_id.clone(),
                 host: Some(input.args.host.clone()),
-                lease_handoff_digest: None,
-                lease_id: None,
                 root: Some(input.args.root.clone()),
                 runtime: None,
                 setup_receipts_digest: None,
@@ -484,72 +481,19 @@ where
     }
 }
 
-fn start_remote_daemon<R>(
+fn activate_remote_daemon_service<R>(
     context: &mut AfterInstallContext<'_, R>,
     trusted: &TrustedRemoteDevice,
 ) -> StageResult<()>
 where
     R: ProcessRunner,
 {
-    let mut stop_error = None;
-    for attempt in 0..3 {
-        match ssh::stop_remote_daemon(context.runner, &context.options) {
-            Ok(_) => {
-                stop_error = None;
-                break;
-            }
-            Err(error) => {
-                stop_error = Some(error);
-                if attempt < 2 {
-                    thread::sleep(Duration::from_millis(100));
-                }
-            }
-        }
-    }
-    if let Some(error) = stop_error {
-        context.steps.push(step(
-            BootstrapStepName::DaemonStart,
-            BootstrapStepState::Blocked,
-            format!("Remote daemon stop before update failed: {error}"),
-        ));
-        return Err(context.trusted_output(trusted, true, None));
-    }
-    let mut stopped = false;
-    for attempt in 0..30 {
-        match ssh::daemon_status_remote(context.runner, &context.options) {
-            Ok(probe) if remote_daemon_is_stopped(&probe.stdout) => {
-                stopped = true;
-                break;
-            }
-            Ok(_) => {}
-            Err(error) => {
-                context.steps.push(step(
-                    BootstrapStepName::DaemonStart,
-                    BootstrapStepState::Blocked,
-                    format!("Remote daemon stop verification failed: {error}"),
-                ));
-                return Err(context.trusted_output(trusted, true, None));
-            }
-        }
-        if attempt < 29 {
-            thread::sleep(Duration::from_millis(100));
-        }
-    }
-    if !stopped {
-        context.steps.push(step(
-            BootstrapStepName::DaemonStart,
-            BootstrapStepState::Blocked,
-            "Remote daemon did not stop after the installed binary changed.",
-        ));
-        return Err(context.trusted_output(trusted, true, None));
-    }
-
-    match ssh::start_remote_daemon(context.runner, &context.options) {
+    match ssh::install_remote_daemon_service(context.runner, &context.options) {
         Ok(_) => {
             context.steps.push(step(
                 BootstrapStepName::DaemonStart,
                 BootstrapStepState::Completed,
-                "Remote daemon restarted with the installed binary for the accepted root.",
+                "Remote daemon service installed and activated for the accepted root.",
             ));
             Ok(())
         }
@@ -557,7 +501,7 @@ where
             context.steps.push(step(
                 BootstrapStepName::DaemonStart,
                 BootstrapStepState::Blocked,
-                format!("Remote daemon start failed: {error}"),
+                format!("Remote daemon service activation failed: {error}"),
             ));
             Err(context.trusted_output(trusted, true, None))
         }
@@ -582,7 +526,6 @@ where
         return Ok(SyncProbe {
             remote_status: Some(WorkspaceStatus::healthy()),
             remote_status_items: Vec::new(),
-            sync_ready: true,
         });
     }
 
@@ -643,7 +586,6 @@ where
             SyncProbe {
                 remote_status: Some(status),
                 remote_status_items: Vec::new(),
-                sync_ready: false,
             }
         }
     }
@@ -672,7 +614,6 @@ where
             SyncProbe {
                 remote_status: Some(output.status),
                 remote_status_items: output.items,
-                sync_ready,
             }
         }
         Err(error) => {
@@ -690,28 +631,19 @@ where
             SyncProbe {
                 remote_status: Some(status),
                 remote_status_items: Vec::new(),
-                sync_ready: false,
             }
         }
     }
 }
 
 fn finish_after_install<R>(
-    mut context: AfterInstallContext<'_, R>,
+    context: AfterInstallContext<'_, R>,
     trusted: TrustedRemoteDevice,
     sync_probe: SyncProbe,
 ) -> BootstrapSshCommandOutput
 where
     R: ProcessRunner,
 {
-    if sync_probe.sync_ready {
-        create_agent_handoff_if_requested(
-            context.runner,
-            &context.options,
-            &context.args,
-            &mut context.steps,
-        );
-    }
     let mut base = output_base(&context.args, &context.generated_at, context.steps);
     base.remote_status_items = sync_probe.remote_status_items;
 

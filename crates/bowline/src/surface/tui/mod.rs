@@ -5,4 +5,4 @@ pub mod render;
 pub mod terminal;
 
 pub use app::{run_app, run_onboarding_app};
-pub use model::{OnboardingModel, TuiAction, TuiModel, TuiTone};
+pub use model::{OnboardingModel, TuiModel};

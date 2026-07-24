@@ -48,14 +48,197 @@ pub fn write_atomic_with<T>(
         ));
     }
 
+    let (staged, value) = stage_atomic_with(final_path, options, write)?;
+    if options.replace_existing {
+        staged.commit_replace()?;
+    } else {
+        staged.commit_no_replace()?;
+    }
+    Ok(value)
+}
+
+/// A fully written and fsynced file waiting for an atomic namespace commit.
+///
+/// Dropping an uncommitted value removes its private sibling. Callers that
+/// need to preserve a displaced preimage can therefore stage once, perform
+/// their authority checks, and select the appropriate commit primitive.
+#[derive(Debug)]
+pub struct StagedAtomicFile {
+    temp_path: PathBuf,
+    final_path: PathBuf,
+    committed: bool,
+}
+
+impl StagedAtomicFile {
+    pub fn staged_path(&self) -> &Path {
+        &self.temp_path
+    }
+
+    pub fn final_path(&self) -> &Path {
+        &self.final_path
+    }
+
+    pub fn commit_replace(mut self) -> io::Result<()> {
+        fs::rename(&self.temp_path, &self.final_path)?;
+        self.committed = true;
+        sync_parent_for_path(&self.final_path)
+    }
+
+    /// Atomically installs the staged file only while the destination is
+    /// absent. A concurrently created path is never replaced.
+    pub fn commit_no_replace(mut self) -> io::Result<()> {
+        let final_path = self.final_path.clone();
+        self.commit_no_replace_inner(&final_path)
+    }
+
+    /// Installs at a separately selected destination without replacing it.
+    /// Cross-device staging is copied into a fsynced destination sibling only
+    /// after the destination parent is confirmed to remain an existing,
+    /// non-symlink directory.
+    pub fn commit_no_replace_at(mut self, final_path: &Path) -> io::Result<()> {
+        self.commit_no_replace_inner(final_path)
+    }
+
+    fn commit_no_replace_inner(&mut self, final_path: &Path) -> io::Result<()> {
+        self.commit_no_replace_inner_with(final_path, |source, destination| {
+            fs::hard_link(source, destination)
+        })
+    }
+
+    fn commit_no_replace_inner_with(
+        &mut self,
+        final_path: &Path,
+        link: impl FnOnce(&Path, &Path) -> io::Result<()>,
+    ) -> io::Result<()> {
+        match link(&self.temp_path, final_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
+                self.commit_cross_device_no_replace(final_path)?;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        }
+        fs::remove_file(&self.temp_path)?;
+        sync_parent_for_path(&self.temp_path)?;
+        self.committed = true;
+        sync_parent_for_path(final_path)
+    }
+
+    fn commit_cross_device_no_replace(&mut self, final_path: &Path) -> io::Result<()> {
+        match fs::symlink_metadata(final_path) {
+            Ok(_) => return Err(io::Error::from(io::ErrorKind::AlreadyExists)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let metadata = fs::symlink_metadata(&self.temp_path)?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cross-device atomic source is not a regular file",
+            ));
+        }
+        #[cfg(unix)]
+        let unix_mode = {
+            use std::os::unix::fs::PermissionsExt;
+            Some(metadata.permissions().mode() & 0o777)
+        };
+        #[cfg(not(unix))]
+        let unix_mode = None;
+        let mut source = fs::File::open(&self.temp_path)?;
+        let (destination_staged, ()) = stage_atomic_with_existing_parent(
+            final_path,
+            AtomicWriteOptions {
+                unix_mode,
+                reject_symlink: true,
+                replace_existing: false,
+            },
+            |destination| {
+                io::copy(&mut source, destination)?;
+                Ok(())
+            },
+        )?;
+        destination_staged.commit_no_replace()?;
+        fs::remove_file(&self.temp_path)?;
+        sync_parent_for_path(&self.temp_path)?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for StagedAtomicFile {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _cleanup_attempt = fs::remove_file(&self.temp_path);
+        }
+    }
+}
+
+pub fn stage_atomic(
+    final_path: &Path,
+    bytes: &[u8],
+    options: AtomicWriteOptions,
+) -> io::Result<StagedAtomicFile> {
+    stage_atomic_with(final_path, options, |file| file.write_all(bytes)).map(|(staged, ())| staged)
+}
+
+pub fn stage_atomic_with<T>(
+    final_path: &Path,
+    options: AtomicWriteOptions,
+    write: impl FnOnce(&mut fs::File) -> io::Result<T>,
+) -> io::Result<(StagedAtomicFile, T)> {
+    stage_atomic_with_parent_policy(final_path, options, true, write)
+}
+
+pub fn stage_atomic_existing_parent(
+    final_path: &Path,
+    bytes: &[u8],
+    options: AtomicWriteOptions,
+) -> io::Result<StagedAtomicFile> {
+    stage_atomic_with_existing_parent(final_path, options, |file| file.write_all(bytes))
+        .map(|(staged, ())| staged)
+}
+
+fn stage_atomic_with_existing_parent<T>(
+    final_path: &Path,
+    options: AtomicWriteOptions,
+    write: impl FnOnce(&mut fs::File) -> io::Result<T>,
+) -> io::Result<(StagedAtomicFile, T)> {
+    stage_atomic_with_parent_policy(final_path, options, false, write)
+}
+
+fn stage_atomic_with_parent_policy<T>(
+    final_path: &Path,
+    options: AtomicWriteOptions,
+    create_parent: bool,
+    write: impl FnOnce(&mut fs::File) -> io::Result<T>,
+) -> io::Result<(StagedAtomicFile, T)> {
+    if options.reject_symlink
+        && fs::symlink_metadata(final_path)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "atomic write destination is a symlink",
+        ));
+    }
     let parent = final_path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "atomic write destination has no parent directory",
         )
     })?;
-    fs::create_dir_all(parent)?;
-
+    if create_parent {
+        fs::create_dir_all(parent)?;
+    } else {
+        let metadata = fs::symlink_metadata(parent)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "atomic destination parent is not a directory",
+            ));
+        }
+    }
     let temp_path = temp_sibling(final_path)?;
     remove_file_if_present(&temp_path)?;
     let result = (|| {
@@ -63,27 +246,29 @@ pub fn write_atomic_with<T>(
         let value = write(&mut file)?;
         file.sync_all()?;
         drop(file);
-        commit_temp_file(&temp_path, final_path, options)?;
-        sync_parent_dir(parent)?;
-        Ok(value)
+        Ok((
+            StagedAtomicFile {
+                temp_path: temp_path.clone(),
+                final_path: final_path.to_path_buf(),
+                committed: false,
+            },
+            value,
+        ))
     })();
-
     if result.is_err() {
-        let _ = fs::remove_file(&temp_path);
+        let _cleanup_attempt = fs::remove_file(temp_path);
     }
     result
 }
 
-fn commit_temp_file(
-    temp_path: &Path,
-    final_path: &Path,
-    options: AtomicWriteOptions,
-) -> io::Result<()> {
-    if options.replace_existing {
-        return fs::rename(temp_path, final_path);
-    }
-    fs::hard_link(temp_path, final_path)?;
-    fs::remove_file(temp_path)
+pub fn sync_parent_for_path(path: &Path) -> io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "atomic path has no parent directory",
+        )
+    })?;
+    sync_parent_dir(parent)
 }
 
 fn temp_sibling(final_path: &Path) -> io::Result<PathBuf> {
@@ -150,7 +335,7 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    use super::{AtomicWriteOptions, write_atomic, write_atomic_with};
+    use super::{AtomicWriteOptions, stage_atomic, write_atomic, write_atomic_with};
 
     #[test]
     fn write_atomic_commits_complete_file_and_removes_temp() {
@@ -178,6 +363,87 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::Other);
         assert_eq!(fs::read(&path).expect("read original"), b"original");
         assert_no_temp_siblings(temp.path());
+    }
+
+    #[test]
+    fn staged_no_replace_preserves_concurrently_created_destination() {
+        let temp = TempDir::new("fs-atomic-no-replace-race");
+        let path = temp.path().join("state.json");
+        let staged = stage_atomic(&path, b"daemon target", AtomicWriteOptions::default())
+            .expect("stage target");
+
+        fs::write(&path, b"newer user bytes").expect("concurrent destination");
+        let error = staged
+            .commit_no_replace()
+            .expect_err("newer destination wins");
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            fs::read(&path).expect("read concurrent destination"),
+            b"newer user bytes"
+        );
+        assert_no_temp_siblings(temp.path());
+    }
+
+    #[test]
+    fn cross_device_no_replace_fallback_preserves_bytes_and_race_authority() {
+        let staging = TempDir::new("fs-atomic-cross-device-staging");
+        let destination = TempDir::new("fs-atomic-cross-device-destination");
+        let staged_path = staging.path().join("state.json");
+        let final_path = destination.path().join("state.json");
+        let mut staged = stage_atomic(
+            &staged_path,
+            b"daemon target",
+            AtomicWriteOptions {
+                unix_mode: Some(0o600),
+                reject_symlink: true,
+                replace_existing: false,
+            },
+        )
+        .expect("stage target");
+
+        staged
+            .commit_no_replace_inner_with(&final_path, |_source, _destination| {
+                Err(io::Error::from(io::ErrorKind::CrossesDevices))
+            })
+            .expect("fallback commit");
+
+        assert_eq!(
+            fs::read(&final_path).expect("read target"),
+            b"daemon target"
+        );
+        assert!(!staged_path.exists());
+
+        let mut second = stage_atomic(
+            &staged_path,
+            b"must not overwrite",
+            AtomicWriteOptions::default(),
+        )
+        .expect("stage second target");
+        let error = second
+            .commit_no_replace_inner_with(&final_path, |_source, _destination| {
+                Err(io::Error::from(io::ErrorKind::CrossesDevices))
+            })
+            .expect_err("existing destination wins");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            fs::read(&final_path).expect("read winner"),
+            b"daemon target"
+        );
+    }
+
+    #[test]
+    fn dropping_staged_file_removes_uncommitted_bytes() {
+        let temp = TempDir::new("fs-atomic-staged-drop");
+        let path = temp.path().join("state.json");
+        let staged = stage_atomic(&path, b"uncommitted", AtomicWriteOptions::default())
+            .expect("stage target");
+        let staged_path = staged.staged_path().to_path_buf();
+
+        drop(staged);
+
+        assert!(!staged_path.exists());
+        assert!(!path.exists());
     }
 
     #[cfg(unix)]

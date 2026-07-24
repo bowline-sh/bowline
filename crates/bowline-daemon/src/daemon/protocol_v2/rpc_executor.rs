@@ -50,14 +50,9 @@ impl RpcLane {
     pub(super) fn for_method(method: &str) -> Option<Self> {
         Some(match method {
             "daemon.ping" | "status.getSnapshot" => Self::Status,
-            "daemon.info" | "daemon.metrics" | "sync.getOperation" | "agent.tool.invoke" => {
-                Self::Query
-            }
-            "daemon.wakeDurableWork"
-            | "sync.request"
-            | "sync.cancelOperation"
-            | "device.approve"
-            | "device.deny" => Self::Mutation,
+            "daemon.info" | "daemon.metrics" | "sync.barrier" => Self::Query,
+            "device.approve" | "device.deny" => Self::Mutation,
+            "work.create" | "work.review" | "work.accept" => Self::Mutation,
             _ => return None,
         })
     }

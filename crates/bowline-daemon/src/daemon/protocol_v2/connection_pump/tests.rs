@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     mpsc,
 };
-use std::{fs, path::PathBuf, thread};
+use std::thread;
 
 #[test]
 fn slow_request_does_not_block_status_heartbeat_or_second_response() {
@@ -31,7 +31,7 @@ fn slow_request_does_not_block_status_heartbeat_or_second_response() {
     let router_started = Arc::clone(&slow_started);
     let router_release = Arc::clone(&slow_release);
     let router: Arc<RequestRouter> = Arc::new(move |_context, request| {
-        if request.method == "agent.tool.invoke" {
+        if request.method == "daemon.info" {
             let (started, changed) = &*router_started;
             *started.lock().expect("slow started lock") = true;
             changed.notify_one();
@@ -73,7 +73,7 @@ fn slow_request_does_not_block_status_heartbeat_or_second_response() {
     assert_eq!(subscribe["requestId"], "subscribe");
     assert!(subscribe["result"]["subscriptionId"].is_string());
 
-    write_request(&codec, &mut client_stream, "slow", "agent.tool.invoke");
+    write_request(&codec, &mut client_stream, "slow", "daemon.info");
     wait_until_started(&slow_started);
     write_request(&codec, &mut client_stream, "ping", "daemon.ping");
 
@@ -171,12 +171,7 @@ fn cooperative_cancellation_reaches_handler_checkpoint_once() {
     let (mut client, server) = start_connection(&state, &executor, router);
     let codec = FrameCodec::default();
 
-    write_request(
-        &codec,
-        &mut client,
-        "cancel-at-checkpoint",
-        "agent.tool.invoke",
-    );
+    write_request(&codec, &mut client, "cancel-at-checkpoint", "daemon.info");
     wait_until_started(&started);
     write_cancel(&codec, &mut client, "cancel-at-checkpoint");
     let cancelled = read_until_request(&codec, &mut client, "cancel-at-checkpoint");
@@ -222,7 +217,7 @@ fn queued_deadline_prevents_handler_execution_and_responds_once() {
     let (mut client, server) = start_connection(&state, &executor, router);
     let codec = FrameCodec::default();
 
-    write_request(&codec, &mut client, "blocker", "agent.tool.invoke");
+    write_request(&codec, &mut client, "blocker", "daemon.info");
     wait_until_started(&blocker);
     write_request_with_deadline(&codec, &mut client, "deadline-target", "daemon.info", 25);
     let deadline = read_until_request(&codec, &mut client, "deadline-target");
@@ -268,7 +263,7 @@ fn running_deadline_reaches_next_handler_checkpoint() {
         &codec,
         &mut client,
         "deadline-at-checkpoint",
-        "agent.tool.invoke",
+        "daemon.info",
         25,
     );
     wait_until_started(&started);
@@ -318,12 +313,12 @@ fn stale_completion_cannot_answer_reused_request_id() {
     let (mut client, server) = start_connection(&state, &executor, router);
     let codec = FrameCodec::default();
 
-    write_request(&codec, &mut client, "reused", "agent.tool.invoke");
+    write_request(&codec, &mut client, "reused", "daemon.info");
     wait_until_started(&first_started);
     write_cancel(&codec, &mut client, "reused");
     let cancelled = read_until_request(&codec, &mut client, "reused");
     assert_eq!(cancelled["error"]["code"], "cancelled");
-    write_request(&codec, &mut client, "reused", "agent.tool.invoke");
+    write_request(&codec, &mut client, "reused", "daemon.info");
     release(&first_release);
     let replacement = read_until_request(&codec, &mut client, "reused");
     assert_eq!(replacement["result"], json!({"call": 2}));
@@ -360,7 +355,7 @@ fn cancellation_after_commit_fence_returns_real_completion() {
     let (mut client, server) = start_connection(&state, &executor, router);
     let codec = FrameCodec::default();
 
-    write_request(&codec, &mut client, "committed", "sync.request");
+    write_request(&codec, &mut client, "committed", "work.accept");
     wait_until_started(&committed);
     write_cancel(&codec, &mut client, "committed");
     release(&completion_release);
@@ -392,10 +387,10 @@ fn global_queue_overflow_is_structured_retryable_busy() {
     let (mut client, server) = start_connection(&state, &executor, router);
     let codec = FrameCodec::default();
 
-    write_request(&codec, &mut client, "active", "sync.request");
+    write_request(&codec, &mut client, "active", "work.accept");
     wait_until_started(&blocker);
-    write_request(&codec, &mut client, "queued", "sync.request");
-    write_request(&codec, &mut client, "busy", "sync.request");
+    write_request(&codec, &mut client, "queued", "work.accept");
+    write_request(&codec, &mut client, "busy", "work.accept");
     let busy = read_until_request(&codec, &mut client, "busy");
     assert_eq!(busy["error"]["code"], "overloaded");
     assert_eq!(busy["error"]["retryable"], true);
@@ -412,78 +407,6 @@ fn global_queue_overflow_is_structured_retryable_busy() {
     }
 
     close_connection(client, server, &executor);
-}
-
-#[test]
-fn enqueue_survives_disconnect_after_durable_commit_fence() {
-    let state_root = unique_state_root("enqueue-disconnect");
-    let sync = crate::daemon::tests::watcher_test_runtime(
-        state_root.join("Code"),
-        state_root.clone(),
-        "ws_enqueue_disconnect",
-    );
-    let state = Arc::new(
-        DaemonServerState::new(&DaemonRuntime {
-            sync: Some(sync),
-            notify_approvals: false,
-            notification_dedupe: Arc::new(Mutex::new(NotificationDedupe::default())),
-            next_notification_poll: Instant::now(),
-            pending_notification_status: None,
-        })
-        .expect("daemon state"),
-    );
-    let executor = test_executor();
-    let committed = Arc::new((Mutex::new(false), Condvar::new()));
-    let response_release = Arc::new((Mutex::new(false), Condvar::new()));
-    let operation_id = Arc::new(Mutex::new(None::<String>));
-    let router_state = Arc::clone(&state);
-    let router_committed = Arc::clone(&committed);
-    let router_release = Arc::clone(&response_release);
-    let router_operation_id = Arc::clone(&operation_id);
-    let router: Arc<RequestRouter> = Arc::new(move |context, request| {
-        context.begin_commit_fence().expect("commit fence begins");
-        let (operation, _) = router_state
-            .enqueue_sync("disconnect-after-enqueue")
-            .expect("durable enqueue succeeds");
-        *router_operation_id.lock().expect("operation id lock") = Some(operation.id.clone());
-        signal(&router_committed);
-        wait_until_released(&router_release);
-        DaemonRpcResponse {
-            request_id: request.request_id,
-            result: Some(json!({"operationId": operation.id})),
-            error: None,
-        }
-    });
-    let (mut client, server) = start_connection(&state, &executor, router);
-    let codec = FrameCodec::default();
-
-    write_request(&codec, &mut client, "enqueue", "sync.request");
-    wait_until_started(&committed);
-    drop(client);
-    server
-        .join()
-        .expect("connection thread joins")
-        .expect("disconnect cleanup succeeds");
-    let operation_id = operation_id
-        .lock()
-        .expect("operation id lock")
-        .clone()
-        .expect("operation id recorded");
-    assert!(
-        state
-            .sync_operation(&operation_id)
-            .expect("operation reads")
-            .is_some(),
-        "disconnect cannot roll back the durable enqueue"
-    );
-    let (retry, coalesced) = state
-        .enqueue_sync("disconnect-after-enqueue")
-        .expect("idempotent retry reads durable enqueue");
-    assert!(coalesced);
-    assert_eq!(retry.id, operation_id);
-    release(&response_release);
-    executor.shutdown_and_join().expect("executor joins");
-    let _ = fs::remove_dir_all(state_root);
 }
 
 #[test]
@@ -508,7 +431,7 @@ fn disconnect_removes_queued_work_and_releases_connection_capacity() {
     let (mut client, server) = start_connection(&state, &executor, router);
     let codec = FrameCodec::default();
 
-    write_request(&codec, &mut client, "active", "agent.tool.invoke");
+    write_request(&codec, &mut client, "active", "daemon.info");
     wait_until_started(&active_started);
     write_request(&codec, &mut client, "queued", "daemon.info");
     drop(client);
@@ -545,14 +468,14 @@ fn seventeenth_in_flight_request_hits_connection_cap() {
     let (mut client, server) = start_connection(&state, &executor, router);
     let codec = FrameCodec::default();
 
-    write_request(&codec, &mut client, "request-0", "sync.request");
+    write_request(&codec, &mut client, "request-0", "work.accept");
     wait_until_started(&active_started);
     for index in 1..=MAX_IN_FLIGHT_REQUESTS {
         write_request(
             &codec,
             &mut client,
             &format!("request-{index}"),
-            "sync.request",
+            "work.accept",
         );
     }
     let overloaded = read_until_request(&codec, &mut client, "request-16");
@@ -725,12 +648,4 @@ fn success_response(request_id: String) -> DaemonRpcResponse {
         result: Some(json!({"ok": true})),
         error: None,
     }
-}
-
-fn unique_state_root(label: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "bowline-p110-{label}-{}-{}",
-        std::process::id(),
-        time::OffsetDateTime::now_utc().unix_timestamp_nanos()
-    ))
 }

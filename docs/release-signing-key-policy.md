@@ -10,7 +10,7 @@ Bowline release roots are signed with an OpenSSH Ed25519 key using SSHSIG
 The committed public key is the only trust anchor the installer accepts:
 
 ```text
-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEMlaBX6Fk+MIYmevcaxgXpsoSdToCQHGmfK0v8Yq3ig bowline-release-2026-07-15
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF4Nfjn9iT+NwvF2JpRj9GQAwkjv0Cpp16LXmA+AzBwP bowline-release-2026-07-23
 ```
 
 `scripts/check-install-script.mjs` fails if the key embedded in
@@ -70,7 +70,7 @@ Manual verification uses the OpenSSH allowed-signers format:
 
 ```bash
 cat > allowed-signers <<'EOF'
-bowline-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEMlaBX6Fk+MIYmevcaxgXpsoSdToCQHGmfK0v8Yq3ig bowline-release-2026-07-15
+bowline-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF4Nfjn9iT+NwvF2JpRj9GQAwkjv0Cpp16LXmA+AzBwP bowline-release-2026-07-23
 EOF
 
 ssh-keygen -Y verify -f allowed-signers -I bowline-release -n bowline-release \

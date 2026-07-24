@@ -12,6 +12,18 @@ use bowline_core::{
 
 use crate::metadata::MetadataStore;
 
+/// Local aliases for the manifest-engine aux-index surface, disambiguated from
+/// this module's same-named wire types.
+mod aux_cli {
+    pub(super) use crate::sync::manifest_engine::aux_index::{
+        WorkViewId as AuxWorkViewId, WorkViewLifecycle as AuxWorkViewLifecycle,
+    };
+    pub(super) use crate::sync::manifest_engine::manifest::ManifestKey as AuxManifestKey;
+    pub(super) use crate::sync::manifest_engine::work_view_cli::{
+        read_aux_index_file, write_aux_index_file,
+    };
+}
+
 use super::{
     WorkSelectorOptions, WorkViewError,
     paths::{
@@ -20,137 +32,6 @@ use super::{
     },
     status_all_command,
 };
-
-#[cfg(test)]
-use super::{
-    accept_operation::resolve_accept_paths,
-    advance_partial_exposed_base_from_live_tree,
-    snapshot_accept::{SnapshotAcceptOutcome, accept_snapshot},
-};
-
-#[cfg(test)]
-pub(crate) fn accept_work_view(
-    options: WorkSelectorOptions,
-) -> Result<WorkLifecycleCommandOutput, WorkViewError> {
-    let store = open_store(options.db_path.as_deref())?;
-    let mut work_view = resolve_work_view(&store, &options.selector)?;
-    if !matches!(
-        work_view.lifecycle,
-        WorkViewLifecycle::Active | WorkViewLifecycle::ReviewReady
-    ) {
-        return Err(WorkViewError::InactiveWorkView {
-            name: work_view.name,
-        });
-    }
-    let partial = !options.paths.is_empty();
-    let accepted_paths = resolve_accept_paths(&store, &work_view, &options.paths)?;
-    let cache_root = options
-        .db_path
-        .as_deref()
-        .and_then(std::path::Path::parent)
-        .map(|state_root| state_root.join("cache"));
-    let conflicts =
-        match accept_snapshot(&store, &work_view, &accepted_paths, cache_root.as_deref())? {
-            SnapshotAcceptOutcome::Clean => Vec::new(),
-            SnapshotAcceptOutcome::Conflicted(conflicts) => conflicts,
-            SnapshotAcceptOutcome::PolicyDrift(records) => records
-                .into_iter()
-                .map(|record| format!("policy-drift:{}", record.reason.code()))
-                .collect(),
-        };
-    if !conflicts.is_empty() {
-        work_view.lifecycle = WorkViewLifecycle::ReviewReady;
-        work_view.sync_state = WorkViewSyncState::Attention;
-        work_view.attention = conflicts
-            .iter()
-            .map(|path| format!("Manual review needed before accepting {path}."))
-            .collect();
-        work_view.updated_at = options.generated_at.clone();
-        store.upsert_work_view(&work_view)?;
-        append_work_event(
-            &store,
-            EventName::WorkReviewReady,
-            &work_view,
-            &options.generated_at,
-        );
-        let next_actions = vec![RepairCommand::inspect(
-            "Inspect work-view diff".to_string(),
-            Some(format!("bowline work review {}", options.selector)),
-        )];
-        return Ok(WorkLifecycleCommandOutput {
-            contract_version: CONTRACT_VERSION,
-            command: CommandName::Accept,
-            generated_at: options.generated_at,
-            action: WorkCommandAction::ReviewReady,
-            paths: Vec::new(),
-            partial: false,
-            work_view,
-            status: WorkspaceStatus {
-                level: bowline_core::status::StatusLevel::Attention,
-                attention_items: vec![
-                    "Accept needs review before touching the main view.".to_string(),
-                ],
-            },
-            next_actions,
-        });
-    }
-
-    if partial {
-        work_view = advance_partial_exposed_base_from_live_tree(
-            &store,
-            &work_view,
-            &accepted_paths,
-            &options.generated_at,
-        )?;
-        return Ok(WorkLifecycleCommandOutput {
-            contract_version: CONTRACT_VERSION,
-            command: CommandName::Accept,
-            generated_at: options.generated_at,
-            action: WorkCommandAction::Accepted,
-            paths: accepted_paths.into_iter().collect(),
-            partial: true,
-            work_view,
-            status: WorkspaceStatus::healthy(),
-            next_actions: vec![RepairCommand::inspect(
-                "Review remaining work-view changes".to_string(),
-                Some(format!("bowline work review {}", options.selector)),
-            )],
-        });
-    }
-
-    work_view.lifecycle = WorkViewLifecycle::Accepted;
-    work_view.visibility = WorkViewVisibility::Hidden;
-    work_view.sync_state = WorkViewSyncState::Synced;
-    work_view.attention.clear();
-    work_view.retention = WorkViewRetention {
-        state: WorkViewRetentionState::Retained,
-        retain_until: None,
-        restorable: true,
-    };
-    work_view.updated_at = options.generated_at.clone();
-    store.upsert_work_view(&work_view)?;
-    append_work_event(
-        &store,
-        EventName::WorkAccepted,
-        &work_view,
-        &options.generated_at,
-    );
-    let status_command = status_all_command(&store, &work_view.workspace_id)?;
-    Ok(WorkLifecycleCommandOutput {
-        contract_version: CONTRACT_VERSION,
-        command: CommandName::Accept,
-        generated_at: options.generated_at,
-        action: WorkCommandAction::Accepted,
-        paths: Vec::new(),
-        partial: false,
-        work_view,
-        status: WorkspaceStatus::healthy(),
-        next_actions: vec![RepairCommand::inspect(
-            "Inspect workspace status".to_string(),
-            Some(status_command),
-        )],
-    })
-}
 
 pub fn discard_work_view(
     options: WorkSelectorOptions,
@@ -172,7 +53,6 @@ pub fn discard_work_view(
                 restorable: true,
             },
             event_name: EventName::WorkDiscarded,
-            reject_active_accept: true,
         },
     )
 }
@@ -199,7 +79,6 @@ pub fn restore_work_view(
                 restorable: false,
             },
             event_name: EventName::WorkRestored,
-            reject_active_accept: false,
         },
     )
 }
@@ -211,7 +90,138 @@ struct WorkViewTransition {
     visibility: WorkViewVisibility,
     retention: WorkViewRetention,
     event_name: EventName,
-    reject_active_accept: bool,
+}
+
+/// Mirror a lifecycle transition into the manifest-engine aux index, the synced
+/// engine truth for work views (Plan 112). The aux file may legitimately have
+/// no record for a metadata-only row (created before the manifest rewire or in
+/// a metadata-seeded test); there is no engine state to transition then.
+fn sync_aux_lifecycle(
+    store: &MetadataStore,
+    work_view: &WorkView,
+    target: aux_cli::AuxWorkViewLifecycle,
+    generated_at: &str,
+) -> Result<(), WorkViewError> {
+    let Some(root) = store.current_workspace_root()? else {
+        return Ok(());
+    };
+    let root = expand_display_path(&root);
+    let mut aux = aux_cli::read_aux_index_file(&root)?;
+    let id = aux_cli::AuxWorkViewId::new(work_view.id.as_str());
+    let Some(record) = aux.work_views.get_mut(&id) else {
+        return Ok(());
+    };
+    record.lifecycle = target;
+    record.updated_at = generated_at.to_string();
+    aux_cli::write_aux_index_file(&root, &aux)?;
+    Ok(())
+}
+
+/// The metadata + aux updates a successful daemon-side accept applies. A full
+/// accept retires the view; a partial accept advances the view's base to the
+/// published head (so remaining changes diff cleanly) and keeps it active.
+pub struct WorkAcceptTransition {
+    pub paths: Vec<String>,
+    /// Paths whose overlay deletion the workspace overrode (see
+    /// [`WorkLifecycleCommandOutput::discarded_deletions`]); surfaced in the
+    /// output so the user learns the deletion did not land.
+    pub discarded_deletions: Vec<String>,
+    pub partial: bool,
+    /// The overlay key the daemon captured before merging.
+    pub captured_overlay: String,
+    /// Project-scoped accepted state used as the next partial-review base.
+    pub accepted_base: Option<String>,
+}
+
+/// Apply the accepted-state transition after the daemon has merged + published
+/// the overlay (Plan 112 rewire: the CLI owns work-view state, the daemon owns
+/// the engine operation).
+pub fn apply_accept_success(
+    store: MetadataStore,
+    mut work_view: WorkView,
+    generated_at: String,
+    transition: WorkAcceptTransition,
+) -> Result<WorkLifecycleCommandOutput, WorkViewError> {
+    sync_aux_accept(&store, &work_view, &transition, &generated_at)?;
+    if transition.partial {
+        work_view.updated_at = generated_at.clone();
+        store.upsert_work_view(&work_view)?;
+        append_work_event(&store, EventName::WorkAccepted, &work_view, &generated_at);
+        let next_actions = vec![RepairCommand::inspect(
+            "Review remaining work-view changes".to_string(),
+            Some(format!("bowline work review {}", work_view.name)),
+        )];
+        return Ok(WorkLifecycleCommandOutput {
+            contract_version: CONTRACT_VERSION,
+            command: CommandName::Accept,
+            generated_at,
+            action: WorkCommandAction::Accepted,
+            paths: transition.paths,
+            discarded_deletions: transition.discarded_deletions,
+            partial: true,
+            work_view,
+            status: WorkspaceStatus::healthy(),
+            next_actions,
+        });
+    }
+    work_view.lifecycle = WorkViewLifecycle::Accepted;
+    work_view.visibility = WorkViewVisibility::Hidden;
+    work_view.sync_state = WorkViewSyncState::Synced;
+    work_view.attention.clear();
+    work_view.retention = WorkViewRetention {
+        state: WorkViewRetentionState::Retained,
+        retain_until: None,
+        restorable: true,
+    };
+    work_view.updated_at = generated_at.clone();
+    store.upsert_work_view(&work_view)?;
+    append_work_event(&store, EventName::WorkAccepted, &work_view, &generated_at);
+    let status_command = status_all_command(&store, &work_view.workspace_id)?;
+    Ok(WorkLifecycleCommandOutput {
+        contract_version: CONTRACT_VERSION,
+        command: CommandName::Accept,
+        generated_at,
+        action: WorkCommandAction::Accepted,
+        paths: Vec::new(),
+        discarded_deletions: transition.discarded_deletions,
+        partial: false,
+        work_view,
+        status: WorkspaceStatus::healthy(),
+        next_actions: vec![RepairCommand::inspect(
+            "Inspect workspace status".to_string(),
+            Some(status_command),
+        )],
+    })
+}
+
+/// Advance the aux record for an accept: full accept retires it; partial accept
+/// re-bases it on the published head and keeps it active.
+fn sync_aux_accept(
+    store: &MetadataStore,
+    work_view: &WorkView,
+    transition: &WorkAcceptTransition,
+    generated_at: &str,
+) -> Result<(), WorkViewError> {
+    let Some(root) = store.current_workspace_root()? else {
+        return Ok(());
+    };
+    let root = expand_display_path(&root);
+    let mut aux = aux_cli::read_aux_index_file(&root)?;
+    let id = aux_cli::AuxWorkViewId::new(work_view.id.as_str());
+    let Some(record) = aux.work_views.get_mut(&id) else {
+        return Ok(());
+    };
+    record.overlay_manifest_key = aux_cli::AuxManifestKey::new(transition.captured_overlay.clone());
+    if transition.partial {
+        if let Some(base) = &transition.accepted_base {
+            record.base_manifest_key = aux_cli::AuxManifestKey::new(base.clone());
+        }
+    } else {
+        record.lifecycle = aux_cli::AuxWorkViewLifecycle::Accepted;
+    }
+    record.updated_at = generated_at.to_string();
+    aux_cli::write_aux_index_file(&root, &aux)?;
+    Ok(())
 }
 
 fn transition_work_view_with_store(
@@ -220,22 +230,22 @@ fn transition_work_view_with_store(
     generated_at: String,
     transition: WorkViewTransition,
 ) -> Result<WorkLifecycleCommandOutput, WorkViewError> {
+    sync_aux_lifecycle(
+        &store,
+        &work_view,
+        match transition.lifecycle {
+            WorkViewLifecycle::Discarded => aux_cli::AuxWorkViewLifecycle::Discarded,
+            _ => aux_cli::AuxWorkViewLifecycle::Active,
+        },
+        &generated_at,
+    )?;
     work_view.lifecycle = transition.lifecycle;
     work_view.visibility = transition.visibility;
     work_view.sync_state = WorkViewSyncState::LocalOnly;
     work_view.attention.clear();
     work_view.retention = transition.retention;
     work_view.updated_at = generated_at.clone();
-    if transition.reject_active_accept {
-        if let Some(operation) = store.upsert_work_view_unless_accept_active(&work_view)? {
-            return Err(WorkViewError::AcceptOperationPending {
-                operation_id: operation.id,
-                state: operation.state,
-            });
-        }
-    } else {
-        store.upsert_work_view(&work_view)?;
-    }
+    store.upsert_work_view(&work_view)?;
     append_work_event(&store, transition.event_name, &work_view, &generated_at);
     let status_command = status_all_command(&store, &work_view.workspace_id)?;
     Ok(WorkLifecycleCommandOutput {
@@ -244,6 +254,7 @@ fn transition_work_view_with_store(
         generated_at,
         action: transition.action,
         paths: Vec::new(),
+        discarded_deletions: Vec::new(),
         partial: false,
         work_view,
         status: WorkspaceStatus::healthy(),

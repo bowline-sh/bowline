@@ -21,7 +21,7 @@ time = { version = "0.3", features = ["formatting"] }
 uds = "0.4"
 
 [dev-dependencies]
-bowline-testkit = { path = "../bowline-testkit" }
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 [lib]
 path = "src/lib.rs"

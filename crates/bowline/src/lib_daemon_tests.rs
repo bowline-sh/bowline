@@ -215,14 +215,227 @@ fn daemon_start_removes_socket_only_after_connection_refused() {
     super::remove_stale_daemon_socket_after_connect_error(
         &socket,
         &std::io::Error::from(std::io::ErrorKind::TimedOut),
-    );
+    )
+    .expect("non-refused errors do not mutate the socket");
     assert!(socket.exists());
     super::remove_stale_daemon_socket_after_connect_error(
         &socket,
         &std::io::Error::from(std::io::ErrorKind::ConnectionRefused),
-    );
+    )
+    .expect("refused stale socket is removable");
     assert!(!socket.exists());
 
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn managed_service_takeover_tolerates_missing_and_stale_daemon_sockets() {
+    let temp = tempfile_dir("bowline-service-takeover");
+    let socket = temp.join("daemon.sock");
+
+    super::stop_unmanaged_daemon(&socket).expect("missing daemon is already stopped");
+
+    {
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind stale socket");
+    }
+    assert!(socket.exists());
+
+    super::stop_unmanaged_daemon(&socket).expect("stale socket is removed");
+
+    assert!(!socket.exists());
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn managed_service_reinstall_stops_supervisor_before_socket_takeover() {
+    let temp = tempfile_dir("bowline-service-reinstall");
+    let socket = temp.join("daemon.sock");
+    let listener = std::cell::RefCell::new(Some(
+        std::os::unix::net::UnixListener::bind(&socket).expect("bind managed socket"),
+    ));
+    let restarted = std::cell::Cell::new(false);
+
+    let outcome = super::install_daemon_service_with_takeover(
+        &socket,
+        true,
+        || {
+            drop(listener.borrow_mut().take());
+            std::fs::remove_file(&socket).map_err(|error| error.to_string())
+        },
+        || Ok("installed"),
+        || {
+            restarted.set(true);
+            Ok(())
+        },
+    )
+    .expect("the supervisor stops its managed daemon before takeover");
+
+    assert_eq!(outcome, "installed");
+    assert!(!socket.exists());
+    assert!(!restarted.get());
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn managed_service_reinstall_restores_active_service_after_takeover_failure() {
+    let temp = tempfile_dir("bowline-service-restore-after-takeover");
+    let socket = temp.join("daemon.sock");
+    std::fs::write(&socket, b"unsafe target").expect("unsafe target");
+    let stopped = std::cell::Cell::new(false);
+    let restarted = std::cell::Cell::new(false);
+
+    let error = super::install_daemon_service_with_takeover(
+        &socket,
+        true,
+        || {
+            stopped.set(true);
+            Ok(())
+        },
+        || Ok("must not install"),
+        || {
+            restarted.set(true);
+            Ok(())
+        },
+    )
+    .expect_err("unsafe target blocks takeover");
+
+    assert!(stopped.get());
+    assert!(restarted.get());
+    assert!(!error.contains("could not restore"));
+    assert_eq!(
+        std::fs::read(&socket).expect("target remains"),
+        b"unsafe target"
+    );
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn managed_service_reinstall_restores_active_service_after_install_failure() {
+    let temp = tempfile_dir("bw-reinstall-install");
+    let socket = temp.join("daemon.sock");
+    let restarted = std::cell::Cell::new(false);
+
+    let error = super::install_daemon_service_with_takeover(
+        &socket,
+        true,
+        || Ok(()),
+        || Err::<(), _>("install failed".to_string()),
+        || {
+            restarted.set(true);
+            Ok(())
+        },
+    )
+    .expect_err("failed install restores prior service");
+
+    assert_eq!(error, "install failed");
+    assert!(restarted.get());
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn managed_service_reinstall_restores_active_service_after_stop_failure() {
+    let temp = tempfile_dir("bw-reinstall-stop");
+    let socket = temp.join("daemon.sock");
+    let restarted = std::cell::Cell::new(false);
+
+    let error = super::install_daemon_service_with_takeover(
+        &socket,
+        true,
+        || Err("stop failed after mutation".to_string()),
+        || Ok("must not install"),
+        || {
+            restarted.set(true);
+            Ok(())
+        },
+    )
+    .expect_err("failed stop restores prior service");
+
+    assert_eq!(error, "stop failed after mutation");
+    assert!(restarted.get());
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn managed_service_install_refuses_uncertain_supervisor_state() {
+    let status = super::DaemonServiceStatus {
+        state: "unavailable".to_string(),
+        unit_path: PathBuf::from("bowline.service"),
+        unavailable_because: Some("systemd user manager is unavailable".to_string()),
+    };
+
+    let error = super::daemon_service_active_from_status(Some(status))
+        .expect_err("uncertain supervisor ownership blocks mutation");
+
+    assert_eq!(error, "systemd user manager is unavailable");
+}
+
+#[test]
+fn managed_service_install_allows_linux_repair_with_missing_definition() {
+    let temp = tempfile_dir("bowline-service-missing-definition");
+
+    let definition = super::previous_active_service_definition(true, &temp.join("missing.service"))
+        .expect("missing definition is repairable");
+
+    assert!(definition.is_none());
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn managed_service_takeover_rejects_an_unsafe_socket_path() {
+    let temp = tempfile_dir("bowline-service-takeover-unsafe");
+    let socket = temp.join("daemon.sock");
+    std::fs::write(&socket, b"not a socket").expect("write unsafe path");
+
+    let _error = super::stop_unmanaged_daemon(&socket)
+        .expect_err("a non-socket path must not be silently replaced");
+
+    assert_eq!(
+        std::fs::read(&socket).expect("unsafe path remains"),
+        b"not a socket"
+    );
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn managed_service_takeover_requires_stable_socket_absence() {
+    let temp = tempfile_dir("bowline-service-takeover-race");
+    let socket = temp.join("daemon.sock");
+    let racing_socket = socket.clone();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(racing_socket, b"late owner").expect("create racing socket path");
+    });
+
+    let error = super::wait_for_stable_socket_absence(
+        &socket,
+        Duration::from_millis(100),
+        Duration::from_millis(10),
+    )
+    .expect_err("a path appearing during the stable-absence window blocks takeover");
+
+    writer.join().expect("racing writer");
+    assert!(error.contains("cannot be safely replaced"));
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn daemon_stop_waits_for_socket_ownership_to_be_released() {
+    let temp = tempfile_dir("bowline-daemon-stop-wait");
+    let socket = temp.join("daemon.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind socket");
+
+    assert!(
+        !super::wait_for_daemon_socket_to_stop(&socket, Duration::from_millis(20)),
+        "a failed or absent handshake is insufficient while the socket path remains owned"
+    );
+
+    drop(listener);
+    std::fs::remove_file(&socket).expect("release socket path");
+
+    assert!(super::wait_for_daemon_socket_to_stop(
+        &socket,
+        Duration::from_millis(20)
+    ));
     let _ = std::fs::remove_dir_all(temp);
 }
 
@@ -343,7 +556,8 @@ fn daemon_service_launch_config_refuses_before_setup_without_mutating_metadata()
 #[test]
 fn daemon_service_launch_config_uses_authenticated_accepted_root() {
     let temp = tempfile_dir("bowline-daemon-service-authenticated");
-    let db_path = temp.join("state").join("local.sqlite3");
+    let state = temp.join("state");
+    let db_path = state.join("local.sqlite3");
     let store = bowline_local::metadata::MetadataStore::open(&db_path).expect("metadata store");
     let workspace_id = bowline_core::ids::WorkspaceId::new("ws_code_account");
     store
@@ -357,6 +571,11 @@ fn daemon_service_launch_config_uses_authenticated_accepted_root() {
             "2026-07-15T12:00:00Z",
         )
         .expect("root");
+    std::fs::write(
+        state.join("daemon.env"),
+        "BOWLINE_WORKSPACE_ID=ws_code_account\nBOWLINE_DEVICE_ID=device_fixture\n",
+    )
+    .expect("persisted daemon identity");
     let daemon = temp.join("bowline-daemon");
 
     let launch = super::daemon_service_launch_config_for_store(
@@ -370,7 +589,60 @@ fn daemon_service_launch_config_uses_authenticated_accepted_root() {
     assert_eq!(launch.workspace_id, workspace_id);
     assert_eq!(launch.root, super::expand_home_path("~/Projects/Bowline"));
     assert_eq!(launch.daemon, daemon);
-    assert_eq!(launch.state_root, temp.join("state"));
+    assert_eq!(
+        launch.state_root,
+        std::fs::canonicalize(state).expect("canonical state root")
+    );
+    assert_eq!(launch.device_id.as_str(), "device_fixture");
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[cfg(unix)]
+#[test]
+fn daemon_service_launch_config_follows_the_workspace_database_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile_dir("bowline-daemon-service-symlink");
+    let default_state = temp.join("default");
+    let workspace_state = temp.join("workspace");
+    std::fs::create_dir_all(&default_state).expect("default state");
+    std::fs::create_dir_all(&workspace_state).expect("workspace state");
+    let workspace_db = workspace_state.join("local.sqlite3");
+    let store =
+        bowline_local::metadata::MetadataStore::open(&workspace_db).expect("metadata store");
+    let workspace_id = bowline_core::ids::WorkspaceId::new("ws_code_account");
+    store
+        .insert_workspace(&workspace_id, "Code", "2026-07-15T12:00:00Z")
+        .expect("workspace");
+    store
+        .insert_root(
+            "root_account",
+            &workspace_id,
+            "~/Code",
+            "2026-07-15T12:00:00Z",
+        )
+        .expect("root");
+    std::fs::write(
+        workspace_state.join("daemon.env"),
+        "BOWLINE_WORKSPACE_ID=ws_code_account\nBOWLINE_DEVICE_ID=device_remote\nBOWLINE_ACCOUNT_SESSION_ID=session_remote\n",
+    )
+    .expect("daemon env");
+    let default_db = default_state.join("local.sqlite3");
+    symlink(&workspace_db, &default_db).expect("default database symlink");
+
+    let launch = super::daemon_service_launch_config_for_store(
+        Path::new("/tmp/bowline.sock"),
+        &default_db,
+        &store,
+        temp.join("bowline-daemon"),
+    )
+    .expect("service launch config");
+
+    assert_eq!(
+        launch.state_root,
+        std::fs::canonicalize(&workspace_state).expect("canonical workspace state")
+    );
+    assert_eq!(launch.device_id.as_str(), "device_remote");
     let _ = std::fs::remove_dir_all(temp);
 }
 

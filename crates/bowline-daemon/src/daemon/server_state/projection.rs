@@ -2,7 +2,6 @@ use super::*;
 
 pub(super) struct ProjectionSourceHandles {
     pub(super) sync_runtime: SharedStatusSourceHandle,
-    pub(super) store_health: SharedStatusSourceHandle,
     pub(super) device_trust: SharedStatusSourceHandle,
     _update_availability: SharedStatusSourceHandle,
     _notification_state: SharedStatusSourceHandle,
@@ -98,11 +97,6 @@ impl DaemonServerState {
         self.send_projection_event(input);
     }
 
-    pub(in crate::daemon) fn record_runtime_change(&self, runtime: &DaemonRuntime) {
-        self.observe_runtime_sources(runtime);
-        self.send_projection_event(StatusInputEvent::RefreshAll);
-    }
-
     pub(in crate::daemon) fn complete_notification_poll(
         &self,
         runtime: &mut DaemonRuntime,
@@ -146,21 +140,19 @@ impl DaemonServerState {
         if observe_due {
             self.observe_runtime_sources(runtime);
             self.send_projection_event(StatusInputEvent::SourceChanged(StatusSource::Metadata));
+            self.send_projection_event(StatusInputEvent::SourceChanged(StatusSource::Convergence));
         }
     }
 
     fn observe_runtime_sources(&self, runtime: &DaemonRuntime) {
+        let adapters = runtime_adapter_facts(runtime);
         self.update_projection_source(
             &self.projection_sources.sync_runtime,
-            StatusSourceFacts::SyncRuntime(sync_runtime_facts(runtime)),
-        );
-        self.update_projection_source(
-            &self.projection_sources.store_health,
-            StatusSourceFacts::StoreHealth(store_health_facts(runtime)),
+            StatusSourceFacts::SyncRuntime(adapters.observer),
         );
         self.update_projection_source(
             &self.projection_sources.service_runtime,
-            StatusSourceFacts::ServiceRuntime(service_runtime_facts(runtime)),
+            StatusSourceFacts::ServiceRuntime(adapters.watcher),
         );
     }
 
@@ -214,7 +206,9 @@ impl DaemonServerState {
         self.publish_finder_projection(projection);
         if let Ok(subscriptions) = self.subscriptions.lock() {
             for subscription in subscriptions.values() {
-                subscription.publish(next.clone());
+                if let Some(scoped) = self.apply_status_scope(next.clone(), subscription.scope()) {
+                    subscription.publish(scoped);
+                }
             }
         }
     }
@@ -234,7 +228,7 @@ impl DaemonServerState {
         let roots = self
             .sync_options
             .as_ref()
-            .map(|options| vec![options.args.root.clone()])
+            .map(|args| vec![args.root.clone()])
             .unwrap_or_default();
         match super::finder_status::write_snapshot(destination, &roots, projection, delivered_at) {
             Ok(()) => self.projection_input.record_finder_snapshot(true),
@@ -250,7 +244,7 @@ pub(super) fn start_projection(
     runtime: &DaemonRuntime,
     instance_id: &str,
 ) -> io::Result<(StatusProjectionService, ProjectionSourceHandles)> {
-    let sync_args = runtime.sync.as_ref().map(|sync| &sync.options.args);
+    let sync_args = runtime.sync.as_ref().map(|sync| &sync.args);
     let metadata = match sync_args {
         Some(args) => LocalStatusProjectionCollector::new_for_workspace(
             args.state_root.join(DEFAULT_DATABASE_FILE),
@@ -260,10 +254,9 @@ pub(super) fn start_projection(
         None => LocalStatusProjectionCollector::new(None, None, false),
     }
     .map_err(|error| io::Error::other(error.to_string()))?;
+    let adapters = runtime_adapter_facts(runtime);
     let (sync_runtime, sync_collector) =
-        ready_source_collector(StatusSourceFacts::SyncRuntime(sync_runtime_facts(runtime)));
-    let (store_health, store_collector) =
-        ready_source_collector(StatusSourceFacts::StoreHealth(store_health_facts(runtime)));
+        ready_source_collector(StatusSourceFacts::SyncRuntime(adapters.observer));
     let (device_trust, device_collector) = SharedStatusSourceCollector::new(
         StatusSourceFacts::DeviceTrustDetails(DeviceTrustStatusFacts {
             state: ready_source_state(),
@@ -276,18 +269,26 @@ pub(super) fn start_projection(
         ready_source_collector(StatusSourceFacts::UpdateAvailability(ready_source_state()));
     let (notification_state, notification_collector) =
         ready_source_collector(StatusSourceFacts::NotificationState(ready_source_state()));
-    let (service_runtime, service_collector) = ready_source_collector(
-        StatusSourceFacts::ServiceRuntime(service_runtime_facts(runtime)),
-    );
-    let collectors: Vec<Box<dyn StatusSourceCollector>> = vec![
-        Box::new(metadata),
-        Box::new(sync_collector),
-        Box::new(store_collector),
-        Box::new(device_collector),
-        Box::new(update_collector),
-        Box::new(notification_collector),
-        Box::new(service_collector),
-    ];
+    let (service_runtime, service_collector) =
+        ready_source_collector(StatusSourceFacts::ServiceRuntime(adapters.watcher));
+    let mut collectors: Vec<Box<dyn StatusSourceCollector>> = vec![Box::new(metadata)];
+    // The manifest engine's live snapshot is the convergence source. The handle
+    // carries live engine snapshots when the driver is up and a `limited`
+    // host-status snapshot while the driver is waiting to (re)build. It is absent
+    // only for status-only daemons with no configured workspace, where readiness
+    // consumers fail closed on the missing field.
+    if let Some(handle) = runtime
+        .sync
+        .as_ref()
+        .map(|sync| sync.manifest_snapshot_handle())
+    {
+        collectors.push(Box::new(EngineStatusCollector::new(handle)));
+    }
+    collectors.push(Box::new(sync_collector));
+    collectors.push(Box::new(device_collector));
+    collectors.push(Box::new(update_collector));
+    collectors.push(Box::new(notification_collector));
+    collectors.push(Box::new(service_collector));
     let config =
         ProjectionServiceConfig::new(DaemonInstanceId::new(instance_id), STATUS_PUBLISH_INTERVAL)
             .and_then(|config| {
@@ -301,7 +302,6 @@ pub(super) fn start_projection(
         service,
         ProjectionSourceHandles {
             sync_runtime,
-            store_health,
             device_trust,
             _update_availability: update_availability,
             _notification_state: notification_state,
@@ -323,49 +323,36 @@ fn ready_source_state() -> StatusSourceStateFacts {
     }
 }
 
-fn sync_runtime_facts(runtime: &DaemonRuntime) -> StatusSourceStateFacts {
+pub(super) struct RuntimeAdapterFacts {
+    pub(super) observer: StatusSourceStateFacts,
+    pub(super) watcher: StatusSourceStateFacts,
+}
+
+pub(super) fn runtime_adapter_facts(runtime: &DaemonRuntime) -> RuntimeAdapterFacts {
     let Some(sync) = runtime.sync.as_ref() else {
-        return ready_source_state();
+        return RuntimeAdapterFacts {
+            observer: ready_source_state(),
+            watcher: ready_source_state(),
+        };
     };
-    let counts = sync.queue_counts();
-    StatusSourceStateFacts {
-        state: if sync.remote_observer_is_unavailable() || sync.store_health.is_degraded() {
-            StatusSourceState::Degraded
-        } else {
-            StatusSourceState::Ready
-        },
-        // The reducer overlays this value onto the queued lane; claimed work
-        // remains authoritative in the metadata snapshot until it completes.
-        pending_count: counts.queued,
+    // Remote readiness requires an initial Convex subscription value, not merely
+    // a running driver thread. The watcher kernel is armed while it holds its
+    // notify watch (the engine recovers any lost fidelity with a full stat walk).
+    RuntimeAdapterFacts {
+        observer: adapter_source_state(sync.manifest_observer_is_live()),
+        watcher: adapter_source_state(sync.watcher.is_some()),
     }
 }
 
-fn store_health_facts(runtime: &DaemonRuntime) -> StatusSourceStateFacts {
+fn adapter_source_state(healthy: bool) -> StatusSourceStateFacts {
     StatusSourceStateFacts {
-        state: if runtime
-            .sync
-            .as_ref()
-            .is_some_and(|sync| sync.store_health.is_degraded())
-        {
-            StatusSourceState::Degraded
-        } else {
-            StatusSourceState::Ready
-        },
-        pending_count: 0,
-    }
-}
-
-fn service_runtime_facts(runtime: &DaemonRuntime) -> StatusSourceStateFacts {
-    StatusSourceStateFacts {
-        state: if runtime
-            .sync
-            .as_ref()
-            .is_none_or(|sync| sync.watcher_component_state() == "ready")
-        {
+        state: if healthy {
             StatusSourceState::Ready
         } else {
             StatusSourceState::Degraded
         },
+        // The engine snapshot is the sole queue authority. Runtime adapter
+        // health must never overlay a second queued-work count.
         pending_count: 0,
     }
 }

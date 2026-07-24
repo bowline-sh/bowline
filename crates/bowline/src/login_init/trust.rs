@@ -75,23 +75,69 @@ fn fetch_device_trust_context(output: &bowline_core::commands::RootInitOutput) -
         Ok(trust) => trust,
         Err(error) => return DeviceTrustFetch::TrustUnavailable(error.to_string()),
     };
-    if trust.authorized_devices.is_empty()
-        && let Err(error) = control_plane.create_workspace_ref(&output.workspace_id)
-    {
-        return DeviceTrustFetch::TrustUnavailable(error.to_string());
-    }
     let identity = match key_store.load_or_create_device_identity() {
         Ok(identity) => identity,
         Err(_) => return DeviceTrustFetch::SecretStoreUnavailable,
     };
+    let current_device_id = runtime::daemon_device_id(&output.workspace_id);
+    let current_device_platform = runtime::platform();
+    if let Err(error) = establish_workspace_ref_if_allowed(
+        &*control_plane,
+        &output.workspace_id,
+        &trust,
+        &current_device_id,
+        identity.fingerprint.as_str(),
+        current_device_platform,
+    ) {
+        return DeviceTrustFetch::TrustUnavailable(error.to_string());
+    }
     DeviceTrustFetch::Ready(DeviceTrustContext {
         control_plane,
         key_store,
         trust,
-        current_device_id: runtime::daemon_device_id(&output.workspace_id),
+        current_device_id,
         current_device_fingerprint: identity.fingerprint.as_str().to_string(),
-        current_device_platform: runtime::platform(),
+        current_device_platform,
     })
+}
+
+fn workspace_ref_establishment_allowed(
+    trust: &bowline_control_plane::DeviceApprovalRequestList,
+    current_device_id: &DeviceId,
+    current_device_fingerprint: &str,
+    current_device_platform: bowline_core::devices::DevicePlatform,
+) -> bool {
+    trust.authorized_devices.is_empty()
+        || trust.authorized_devices.iter().any(|device| {
+            device.device_id == current_device_id.as_str()
+                && device.device_fingerprint == current_device_fingerprint
+                && device.platform == device_platform_label(current_device_platform)
+                && device.revoked_at.is_none()
+        })
+}
+
+fn establish_workspace_ref_if_allowed(
+    control_plane: &dyn bowline_control_plane::ControlPlaneClient,
+    workspace_id: &WorkspaceId,
+    trust: &bowline_control_plane::DeviceApprovalRequestList,
+    current_device_id: &DeviceId,
+    current_device_fingerprint: &str,
+    current_device_platform: bowline_core::devices::DevicePlatform,
+) -> bowline_control_plane::ControlPlaneResult<()> {
+    if workspace_ref_establishment_allowed(
+        trust,
+        current_device_id,
+        current_device_fingerprint,
+        current_device_platform,
+    ) {
+        // The manifest engine's first publish CASes against a headless version-0
+        // ref. The idempotent endpoint also repairs an interrupted first run for
+        // an already-trusted current device. A joining device must not read and
+        // verify an existing signed head before it has accepted its trust grant.
+        control_plane.create_workspace_ref(workspace_id).map(drop)
+    } else {
+        Ok(())
+    }
 }
 
 fn account_auth_available(key_store: &dyn bowline_local::device_keys::DeviceKeyStore) -> bool {
@@ -238,7 +284,6 @@ fn create_trust_request(
             device_name: runtime::device_name(),
             platform: context.current_device_platform,
             host: None,
-            lease_id: None,
             root: Some(output.root.clone()),
             runtime: None,
             generated_at: generated_at.to_string(),
@@ -413,14 +458,122 @@ pub(crate) fn wait_for_device_grant(
 #[cfg(test)]
 mod tests {
     use bowline_control_plane::{
-        AuthorizedDeviceRecord, ControlPlaneTimestamp, DeviceApprovalRequestList,
+        AuthorizedDeviceRecord, ControlPlaneTimestamp, DeterministicClock,
+        DeterministicIdGenerator, DeviceApprovalRequestList, FakeControlPlaneClient,
+        WorkspaceControlPlaneClient,
     };
     use bowline_core::{
         devices::DevicePlatform,
         ids::{DeviceId, WorkspaceId},
     };
 
-    use super::{DeviceTrustState, device_trust_state};
+    use super::{
+        DeviceTrustState, device_trust_state, establish_workspace_ref_if_allowed,
+        workspace_ref_establishment_allowed,
+    };
+
+    #[test]
+    fn fresh_setup_establishes_headless_genesis_before_device_trust() {
+        let control_plane = FakeControlPlaneClient::new(
+            DeterministicClock::new(1),
+            DeterministicIdGenerator::new("fresh-setup-genesis"),
+        );
+        let workspace_id = WorkspaceId::new("workspace-fresh-setup-genesis");
+
+        assert_eq!(
+            control_plane
+                .get_workspace_ref(&workspace_id)
+                .expect("fresh control plane is readable"),
+            None
+        );
+
+        let trust = DeviceApprovalRequestList {
+            pending_requests: Vec::new(),
+            authorized_devices: Vec::new(),
+            revoked_devices: Vec::new(),
+        };
+        establish_workspace_ref_if_allowed(
+            &control_plane,
+            &workspace_id,
+            &trust,
+            &DeviceId::new("device_first"),
+            "fp_first",
+            DevicePlatform::Macos,
+        )
+        .expect("fresh setup establishes the workspace");
+
+        let genesis = control_plane
+            .get_workspace_ref(&workspace_id)
+            .expect("workspace ref is readable")
+            .expect("genesis ref exists");
+        assert_eq!(genesis.version, 0);
+        assert_eq!(genesis.snapshot_id, None);
+
+        establish_workspace_ref_if_allowed(
+            &control_plane,
+            &workspace_id,
+            &trust,
+            &DeviceId::new("device_first"),
+            "fp_first",
+            DevicePlatform::Macos,
+        )
+        .expect("setup retry remains idempotent");
+        assert_eq!(
+            control_plane
+                .get_workspace_ref(&workspace_id)
+                .expect("workspace ref is readable")
+                .expect("genesis ref still exists"),
+            genesis
+        );
+    }
+
+    #[test]
+    fn workspace_establishment_never_reads_an_existing_head_before_joining_trust() {
+        let control_plane = FakeControlPlaneClient::new(
+            DeterministicClock::new(1),
+            DeterministicIdGenerator::new("joining-device-no-head-read"),
+        );
+        let workspace_id = WorkspaceId::new("workspace-joining-device");
+        let trust = trust_with_authorized_device("device_trusted", "fp_trusted", "macos");
+
+        assert!(workspace_ref_establishment_allowed(
+            &DeviceApprovalRequestList {
+                pending_requests: Vec::new(),
+                authorized_devices: Vec::new(),
+                revoked_devices: Vec::new(),
+            },
+            &DeviceId::new("device_first"),
+            "fp_first",
+            DevicePlatform::Macos,
+        ));
+        assert!(workspace_ref_establishment_allowed(
+            &trust,
+            &DeviceId::new("device_trusted"),
+            "fp_trusted",
+            DevicePlatform::Macos,
+        ));
+        assert!(!workspace_ref_establishment_allowed(
+            &trust,
+            &DeviceId::new("device_joining"),
+            "fp_joining",
+            DevicePlatform::Linux,
+        ));
+        establish_workspace_ref_if_allowed(
+            &control_plane,
+            &workspace_id,
+            &trust,
+            &DeviceId::new("device_joining"),
+            "fp_joining",
+            DevicePlatform::Linux,
+        )
+        .expect("joining device skips pre-trust head establishment");
+        assert_eq!(
+            control_plane
+                .get_workspace_ref(&workspace_id)
+                .expect("control plane is readable"),
+            None
+        );
+    }
 
     #[test]
     fn authorized_device_requires_matching_id_fingerprint_and_platform() {

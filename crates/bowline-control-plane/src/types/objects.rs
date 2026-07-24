@@ -1,12 +1,31 @@
 use std::fmt;
 
-use bowline_core::ids::{ContentId, DeviceId, ManifestId, SnapshotId, WorkspaceId};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use bowline_core::ids::{ContentId, DeviceId, WorkspaceId};
+use sha2::{Digest, Sha256};
 
 use crate::{ControlPlaneTimestamp, ObjectKind, ObjectPointer};
 
 pub type ByteRange = bowline_storage::ByteRange;
 
 pub const CURRENT_SNAPSHOT_AUTHORITY_FORMAT_VERSION: u16 = 2;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sha256Checksum(String);
+
+impl Sha256Checksum {
+    pub fn for_bytes(bytes: &[u8]) -> Self {
+        Self(STANDARD.encode(Sha256::digest(bytes)))
+    }
+
+    pub fn from_digest(digest: [u8; 32]) -> Self {
+        Self(STANDARD.encode(digest))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct SignedUrlIntent {
@@ -29,16 +48,23 @@ pub struct UploadIntentRequest {
     pub workspace_id: WorkspaceId,
     pub object_kind: ObjectKind,
     pub byte_len: u64,
+    pub checksum_sha256: Sha256Checksum,
     pub content_id: Option<ContentId>,
     pub object_key: Option<String>,
 }
 
 impl UploadIntentRequest {
-    pub fn new(workspace_id: impl Into<String>, object_kind: ObjectKind, byte_len: u64) -> Self {
+    pub fn new(
+        workspace_id: impl Into<String>,
+        object_kind: ObjectKind,
+        byte_len: u64,
+        checksum_sha256: Sha256Checksum,
+    ) -> Self {
         Self {
             workspace_id: WorkspaceId::new(workspace_id),
             object_kind,
             byte_len,
+            checksum_sha256,
             content_id: None,
             object_key: None,
         }
@@ -147,93 +173,9 @@ pub struct DeleteIntent {
     pub signed_url: SignedUrlIntent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MetadataRecordKind {
-    NamespacePage,
-    ContentLayout,
-    SegmentPage,
-}
-
-impl MetadataRecordKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::NamespacePage => "namespace-page",
-            Self::ContentLayout => "content-layout",
-            Self::SegmentPage => "segment-page",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MetadataSidecar {
-    pub child_logical_ids: Vec<String>,
-    pub direct_object_keys: Vec<String>,
-    pub digest: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MetadataBindingInput {
-    pub logical_id: String,
-    pub record_kind: MetadataRecordKind,
-    pub object: ObjectPointer,
-    pub sidecar: MetadataSidecar,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MetadataBindingCommit {
-    pub workspace_id: WorkspaceId,
-    pub bindings: Vec<MetadataBindingInput>,
-    pub committed_by_device_id: DeviceId,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectMetadataCommit {
     pub workspace_id: WorkspaceId,
     pub object: ObjectPointer,
     pub committed_by_device_id: DeviceId,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MetadataBindingOutcome {
-    BoundNew,
-    ExistingWinner,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MetadataBindingRecord {
-    pub logical_id: String,
-    pub record_kind: MetadataRecordKind,
-    pub object: ObjectPointer,
-    pub sidecar: MetadataSidecar,
-    pub outcome: Option<MetadataBindingOutcome>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MetadataBindingBatch {
-    pub workspace_id: WorkspaceId,
-    pub bindings: Vec<MetadataBindingRecord>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SnapshotRootCommit {
-    pub workspace_id: WorkspaceId,
-    pub snapshot_id: SnapshotId,
-    pub manifest_id: ManifestId,
-    pub manifest_object: ObjectPointer,
-    pub namespace_root_id: String,
-    pub extra_root_logical_ids: Vec<String>,
-    pub committed_by_device_id: DeviceId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SnapshotRootRecord {
-    pub workspace_id: WorkspaceId,
-    pub snapshot_id: SnapshotId,
-    pub manifest_id: ManifestId,
-    pub manifest_object: ObjectPointer,
-    pub namespace_root_id: String,
-    pub extra_root_logical_ids: Vec<String>,
-    pub complete: bool,
-    pub committed_by_device_id: DeviceId,
-    pub committed_at: ControlPlaneTimestamp,
 }

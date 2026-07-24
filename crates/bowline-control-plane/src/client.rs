@@ -1,27 +1,26 @@
 use std::collections::BTreeSet;
 
 use bowline_core::ids::{
-    DeviceApprovalRequestId, DeviceId, RecoveryEnvelopeId, SnapshotId, WorkViewId, WorkspaceId,
+    DeviceApprovalRequestId, DeviceId, RecoveryEnvelopeId, SnapshotId, WorkspaceId,
 };
 
 use crate::{
     AuthorizedDeviceRecord, BootstrapSession, BootstrapSessionInput, Capability, CompactEvent,
-    CompareAndSwapError, ConflictMetadataRecord, ConflictOccurrenceReconcile,
-    ConflictReconcileResult, ControlPlaneError, DeleteIntent, DeviceApproval, DeviceApprovalInput,
+    CompareAndSwapError, ControlPlaneError, DeleteIntent, DeviceApproval, DeviceApprovalInput,
     DeviceApprovalRequestList, DeviceDenial, DeviceDenialInput, DeviceRequest, DeviceRequestInput,
     DeviceRevocationInput, DownloadIntent, DownloadIntentRequest, FirstAuthorizedDeviceInput,
-    GrantAcceptanceInput, Lease, LeaseCreate, LeaseUpdate, MetadataBindingBatch,
-    MetadataBindingCommit, ObjectMetadataCommit, ObjectRetentionStateUpdate,
+    GrantAcceptanceInput, ObjectMetadataCommit, ObjectRetentionStateUpdate,
     RecoveryDeviceAuthorizationInput, RecoveryEnvelopeInput, RecoveryEnvelopeRecord,
-    RevokedDeviceRecord, SnapshotRootCommit, SnapshotRootRecord, UploadIntent, UploadIntentRequest,
-    UploadVerificationIntentRequest, WorkViewCreate, WorkViewLifecycleUpdate,
-    WorkViewOverlayCommit, WorkViewRecord, WorkViewUpdateError, WorkspaceRef,
-    WorkspaceRefHistoryRecord, WorkspaceStatusSnapshot,
+    RevokedDeviceRecord, UploadIntent, UploadIntentRequest, UploadVerificationIntentRequest,
+    WorkspaceRef, WorkspaceRefHistoryRecord, WorkspaceStatusSnapshot,
 };
 
 pub type ControlPlaneResult<T> = Result<T, ControlPlaneError>;
 
 pub trait WorkspaceControlPlaneClient {
+    /// Establish the workspace by seeding a version-0 genesis ref with no head.
+    /// Pure establishment: no snapshot precondition and no head. The first real
+    /// head (version >= 1) is published later by a genesis compare-and-swap.
     fn create_workspace_ref(&self, workspace_id: &WorkspaceId) -> ControlPlaneResult<WorkspaceRef>;
 
     fn get_workspace_ref(
@@ -73,17 +72,6 @@ pub trait WorkspaceControlPlaneClient {
             reason: "workspace ref history requires a hosted control-plane implementation.",
         })
     }
-
-    fn reconcile_conflict_occurrence(
-        &self,
-        input: ConflictOccurrenceReconcile,
-    ) -> ControlPlaneResult<ConflictReconcileResult>;
-
-    fn list_workspace_conflicts(
-        &self,
-        workspace_id: &WorkspaceId,
-        requested_by_device_id: &DeviceId,
-    ) -> ControlPlaneResult<Vec<ConflictMetadataRecord>>;
 
     /// Publish a redacted live status snapshot for the workspace. In-memory and
     /// offline control planes treat this as a no-op; the hosted client forwards
@@ -162,103 +150,6 @@ pub trait ObjectControlPlaneClient {
         Err(ControlPlaneError::Limited {
             capability: Capability::ObjectMetadata,
             reason: "committing uploaded object metadata requires a hosted control-plane implementation.",
-        })
-    }
-
-    fn commit_metadata_bindings(
-        &self,
-        commit: MetadataBindingCommit,
-    ) -> ControlPlaneResult<MetadataBindingBatch>;
-
-    fn resolve_metadata_bindings(
-        &self,
-        workspace_id: &WorkspaceId,
-        logical_ids: &[String],
-    ) -> ControlPlaneResult<MetadataBindingBatch>;
-
-    fn commit_snapshot_root(
-        &self,
-        commit: SnapshotRootCommit,
-    ) -> ControlPlaneResult<SnapshotRootRecord>;
-
-    fn get_snapshot_root(
-        &self,
-        workspace_id: &WorkspaceId,
-        snapshot_id: &SnapshotId,
-    ) -> ControlPlaneResult<Option<SnapshotRootRecord>>;
-}
-
-pub trait WorkViewControlPlaneClient {
-    fn create_work_view(&self, _input: WorkViewCreate) -> ControlPlaneResult<WorkViewRecord> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::WorkViews,
-            reason: "work views require a hosted control-plane implementation.",
-        })
-    }
-
-    fn list_work_views(
-        &self,
-        _workspace_id: &WorkspaceId,
-        _include_all: bool,
-    ) -> ControlPlaneResult<Vec<WorkViewRecord>> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::WorkViews,
-            reason: "work view listing requires a hosted control-plane implementation.",
-        })
-    }
-
-    fn update_work_view_lifecycle(
-        &self,
-        _input: WorkViewLifecycleUpdate,
-    ) -> ControlPlaneResult<WorkViewRecord> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::WorkViews,
-            reason: "work view lifecycle updates require a hosted control-plane implementation.",
-        })
-    }
-
-    fn restore_work_view(
-        &self,
-        _workspace_id: &WorkspaceId,
-        _work_view_id: &WorkViewId,
-        _restored_by_device_id: &DeviceId,
-    ) -> ControlPlaneResult<WorkViewRecord> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::WorkViews,
-            reason: "work view restore requires a hosted control-plane implementation.",
-        })
-    }
-
-    fn commit_work_view_overlay(
-        &self,
-        _input: WorkViewOverlayCommit,
-    ) -> Result<WorkViewRecord, WorkViewUpdateError> {
-        Err(WorkViewUpdateError::Unsupported {
-            capability: Capability::WorkViews,
-            reason: "work view overlay commits require a hosted control-plane implementation.",
-        })
-    }
-}
-
-pub trait LeaseControlPlaneClient {
-    fn create_lease(&self, _input: LeaseCreate) -> ControlPlaneResult<Lease> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::AgentLeases,
-            reason: "agent lease metadata requires a hosted control-plane implementation.",
-        })
-    }
-
-    fn update_lease(&self, _input: LeaseUpdate) -> ControlPlaneResult<Lease> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::AgentLeases,
-            reason: "agent lease metadata updates require a hosted control-plane implementation.",
-        })
-    }
-
-    fn list_leases(&self, _workspace_id: &WorkspaceId) -> ControlPlaneResult<Vec<Lease>> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::AgentLeases,
-            reason: "agent lease listing requires a hosted control-plane implementation.",
         })
     }
 }
@@ -426,8 +317,6 @@ pub trait CapabilityReporting {
 pub trait ControlPlaneClient:
     WorkspaceControlPlaneClient
     + ObjectControlPlaneClient
-    + WorkViewControlPlaneClient
-    + LeaseControlPlaneClient
     + DeviceControlPlaneClient
     + RecoveryControlPlaneClient
     + CapabilityReporting
@@ -437,8 +326,6 @@ pub trait ControlPlaneClient:
 impl<T> ControlPlaneClient for T where
     T: WorkspaceControlPlaneClient
         + ObjectControlPlaneClient
-        + WorkViewControlPlaneClient
-        + LeaseControlPlaneClient
         + DeviceControlPlaneClient
         + RecoveryControlPlaneClient
         + CapabilityReporting

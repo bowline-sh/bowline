@@ -11,7 +11,11 @@ fn spawn_daemon_info_server(
     status: Option<Value>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        // Harness accept-wait only, not a responsiveness assertion: under a
+        // fully loaded gate run, spawning the freshly linked CLI binary can
+        // stall well past 10s and the fake server must not give up first.
+        // Solo the connect takes ~0.2s; every functional assertion is below.
+        let deadline = Instant::now() + Duration::from_secs(60);
         let mut stream =
             accept_test_client(&listener, deadline).expect("RPC client should connect");
         let codec = FrameCodec::default();
@@ -298,33 +302,6 @@ fn approve_without_yes_in_human_mode_does_not_mutate_from_noninteractive_shell()
 }
 
 #[test]
-fn agent_start_json_reports_missing_workspace() {
-    let db_path = unique_db("agent-start-missing-workspace");
-    let output = run_bowline_with_env(
-        &[
-            "agent",
-            "start",
-            "/tmp/project",
-            "--task",
-            "fix auth callback race",
-            "--json",
-        ],
-        &[("BOWLINE_METADATA_DB", db_path.display().to_string())],
-    );
-
-    assert_eq!(output.status.code(), Some(4));
-    let json = parse_stdout_json(output);
-    assert_eq!(json["command"], "agent start");
-    assert_eq!(json["status"], "failed");
-    assert_eq!(json["error"]["code"], "agent_requires_action");
-    assert_eq!(json["error"]["recoverability"], "user-action");
-    assert_eq!(
-        json["error"]["message"],
-        "no bowline workspace is initialized"
-    );
-}
-
-#[test]
 fn connect_uses_configured_metadata_db_active_root_by_default() {
     let temp = TempWorkspace::new("connect-active-root").expect("temp workspace");
     let code_root = temp.root().join("Code Projects");
@@ -542,6 +519,21 @@ fn daemon_stop_shuts_down_started_daemon() {
     assert_eq!(stop_json["daemon"]["state"], "stopping");
     let stopped = wait_for_daemon_stopped(&socket);
     assert_eq!(stopped["daemon"]["state"], "stopped");
+}
+
+#[test]
+fn daemon_stop_is_idempotent_before_the_first_start() {
+    let socket = unique_socket("daemon-never-started");
+    let stop = bowline()
+        .args(["daemon", "stop", "--json", "--socket"])
+        .arg(&socket)
+        .output()
+        .expect("bowline daemon stop should run");
+
+    assert!(stop.status.success(), "{stop:?}");
+    let stop_json = parse_stdout_json(stop);
+    assert_eq!(stop_json["command"], "daemon stop");
+    assert_eq!(stop_json["daemon"]["state"], "stopped");
 }
 
 struct ProcessKillGuard(u32);

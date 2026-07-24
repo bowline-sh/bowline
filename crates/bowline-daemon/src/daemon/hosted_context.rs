@@ -14,19 +14,18 @@ pub(super) struct HostedContext {
     pub(super) http: SignedUrlHttpClient,
 }
 
-pub(super) type HostedContextResolver = Arc<
-    dyn Fn(&SyncOnceArgs) -> Result<Arc<HostedContext>, Box<dyn std::error::Error>> + Send + Sync,
->;
+pub(super) type HostedContextResolver =
+    Arc<dyn Fn(&SyncArgs) -> Result<Arc<HostedContext>, Box<dyn std::error::Error>> + Send + Sync>;
 
 pub(super) fn hosted_context_resolver(cache: Arc<HostedContextCache>) -> HostedContextResolver {
     Arc::new(move |args| Ok(cache.get_or_build(args)?))
 }
 
 pub(in crate::daemon) trait HostedContextFactory: Send + Sync {
-    fn resolve(&self, args: &SyncOnceArgs) -> Result<ResolvedHostedContext, HostedSetupError>;
+    fn resolve(&self, args: &SyncArgs) -> Result<ResolvedHostedContext, HostedSetupError>;
     fn build(
         &self,
-        args: &SyncOnceArgs,
+        args: &SyncArgs,
         resolved: ResolvedHostedContext,
     ) -> Result<
         (
@@ -40,77 +39,15 @@ pub(in crate::daemon) trait HostedContextFactory: Send + Sync {
 
 struct ProductionHostedContextFactory;
 
-#[cfg(test)]
-pub(in crate::daemon) struct CountingHostedContextFactory {
-    pub generation: std::sync::atomic::AtomicUsize,
-    pub hosted: std::sync::atomic::AtomicUsize,
-    pub runtimes: std::sync::atomic::AtomicUsize,
-    pub http: std::sync::atomic::AtomicUsize,
-    pub identity: bowline_local::device_keys::DeviceIdentity,
-}
-
-#[cfg(test)]
-impl HostedContextFactory for CountingHostedContextFactory {
-    fn resolve(&self, _args: &SyncOnceArgs) -> Result<ResolvedHostedContext, HostedSetupError> {
-        Ok(ResolvedHostedContext {
-            credentials: crate::daemon::control_plane::DaemonCredentials {
-                deployment_url: "https://example.convex.cloud".to_string(),
-                control_plane_token: Some(format!(
-                    "token-{}",
-                    self.generation.load(std::sync::atomic::Ordering::SeqCst)
-                )),
-                account_session_id: None,
-                workos_access_token: None,
-            },
-            identity: self.identity.clone(),
-            verifiers: Vec::new(),
-        })
-    }
-
-    fn build(
-        &self,
-        _args: &SyncOnceArgs,
-        resolved: ResolvedHostedContext,
-    ) -> Result<
-        (
-            Arc<HostedContext>,
-            ResolvedHostedContext,
-            Vec<DeviceProofVerifier>,
-        ),
-        HostedSetupError,
-    > {
-        use std::sync::atomic::Ordering;
-        self.hosted.fetch_add(1, Ordering::SeqCst);
-        self.runtimes.fetch_add(1, Ordering::SeqCst);
-        let client = HostedControlPlaneClient::try_new_with_token(
-            resolved.credentials.deployment_url.clone(),
-            resolved
-                .credentials
-                .control_plane_token
-                .clone()
-                .unwrap_or_default(),
-        )?;
-        self.http.fetch_add(1, Ordering::SeqCst);
-        Ok((
-            Arc::new(HostedContext {
-                client: Arc::new(client),
-                http: SignedUrlByteStore::<HostedControlPlaneClient>::build_http_client(),
-            }),
-            resolved,
-            Vec::new(),
-        ))
-    }
-}
-
 impl HostedContextFactory for ProductionHostedContextFactory {
-    fn resolve(&self, args: &SyncOnceArgs) -> Result<ResolvedHostedContext, HostedSetupError> {
+    fn resolve(&self, args: &SyncArgs) -> Result<ResolvedHostedContext, HostedSetupError> {
         let key_store = key_store()?;
-        resolve_hosted_context(&*key_store, &args.workspace_id())
+        resolve_hosted_context(&*key_store, &WorkspaceId::new(args.workspace_id.clone()))
     }
 
     fn build(
         &self,
-        args: &SyncOnceArgs,
+        args: &SyncArgs,
         resolved: ResolvedHostedContext,
     ) -> Result<
         (
@@ -123,7 +60,7 @@ impl HostedContextFactory for ProductionHostedContextFactory {
         let key_store = key_store()?;
         let built = build_hosted_control_plane(
             &*key_store,
-            args.workspace_id(),
+            WorkspaceId::new(args.workspace_id.clone()),
             DeviceId::new(args.device_id.clone()),
             resolved,
         )?;
@@ -131,7 +68,8 @@ impl HostedContextFactory for ProductionHostedContextFactory {
             client: Arc::new(built.client),
             http: SignedUrlByteStore::<HostedControlPlaneClient>::build_http_client(),
         });
-        let final_resolved = resolve_hosted_context(&*key_store, &args.workspace_id())?;
+        let final_resolved =
+            resolve_hosted_context(&*key_store, &WorkspaceId::new(args.workspace_id.clone()))?;
         Ok((context, final_resolved, built.installed_verifiers))
     }
 }
@@ -155,19 +93,11 @@ impl HostedContextCache {
         }
     }
 
-    #[cfg(test)]
-    pub(in crate::daemon) fn with_factory(factory: Arc<dyn HostedContextFactory>) -> Self {
-        Self {
-            inner: Mutex::new(None),
-            factory,
-        }
-    }
-
     pub(super) fn get_or_build(
         &self,
-        args: &SyncOnceArgs,
+        args: &SyncArgs,
     ) -> Result<Arc<HostedContext>, HostedSetupError> {
-        let workspace_id = args.workspace_id();
+        let workspace_id = WorkspaceId::new(args.workspace_id.clone());
         let device_id = DeviceId::new(args.device_id.clone());
         for _ in 0..3 {
             let resolved = self.factory.resolve(args)?;

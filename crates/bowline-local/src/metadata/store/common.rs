@@ -1,54 +1,28 @@
 use super::*;
 
-impl MetadataStore {
-    pub(crate) fn database_path(&self) -> Result<PathBuf, MetadataError> {
-        let path = self.connection.query_row(
-            "SELECT file FROM pragma_database_list WHERE name = 'main'",
-            [],
-            |row| row.get::<_, String>(0),
-        )?;
-        if path.is_empty() {
-            return Err(MetadataError::InvalidStorageMetadata(
-                "metadata database has no filesystem path".into(),
-            ));
-        }
-        Ok(PathBuf::from(path))
-    }
-
-    pub(crate) fn content_cache_root(&self) -> Result<PathBuf, MetadataError> {
-        self.database_path()?
-            .parent()
-            .map(|root| root.join("cache"))
-            .ok_or_else(|| {
-                MetadataError::InvalidStorageMetadata(
-                    "metadata database path has no state root".into(),
-                )
-            })
-    }
-}
 use crate::metadata::sqlite::current_schema_version;
 
+// Two seconds absorbs short commits without hiding a writer that is holding the database too long.
+const CONNECTION_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
+
 pub(super) fn configure_connection(connection: &Connection) -> Result<(), MetadataError> {
+    // Install contention policy before any pragma that may need SQLite's schema lock.
+    connection.busy_timeout(CONNECTION_BUSY_TIMEOUT)?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
-    connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "NORMAL")?;
-    connection.busy_timeout(std::time::Duration::from_millis(2000))?;
     Ok(())
 }
 
-pub(super) fn random_hex_token(context: &str) -> Result<String, MetadataError> {
-    let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes).map_err(|error| {
-        MetadataError::Io(io::Error::other(format!(
-            "{context} token generation failed: {error}"
-        )))
-    })?;
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        use std::fmt::Write as _;
-        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    Ok(encoded)
+pub(super) fn configure_read_only_connection(
+    connection: &Connection,
+    _role: MetadataReadRole,
+) -> Result<(), MetadataError> {
+    connection.busy_timeout(CONNECTION_BUSY_TIMEOUT)?;
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    // The open flags enforce the filesystem capability; query_only also prevents a future
+    // read-oriented caller from accidentally relying on a writable in-memory attachment.
+    connection.pragma_update(None, "query_only", "ON")?;
+    Ok(())
 }
 
 pub(super) fn initialize_schema(connection: &mut Connection) -> Result<(), MetadataError> {
@@ -73,6 +47,9 @@ pub(super) fn initialize_schema(connection: &mut Connection) -> Result<(), Metad
         return Err(MetadataError::UnsupportedSchema);
     }
     if existing_version == 0 {
+        // Journal mode is database state, so establish it once with the new schema instead of
+        // turning every future handle open into a competing write-like operation.
+        connection.pragma_update(None, "journal_mode", "WAL")?;
         apply_current_schema_batches(connection)?;
         connection.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
         return Ok(());
@@ -103,17 +80,86 @@ pub(super) fn user_schema_has_tables(connection: &Connection) -> Result<bool, Me
 }
 
 fn user_schema_matches_current(connection: &Connection) -> Result<bool, MetadataError> {
+    // Greenfield metadata has one exact schema. Extra or altered objects are
+    // drift, not a compatibility surface.
+    Ok(
+        schema_tables(connection)? == TABLES.iter().copied().map(String::from).collect()
+            && schema_objects(connection)? == canonical_current_schema_objects()?,
+    )
+}
+
+type SchemaObject = (String, String, String, String);
+
+fn canonical_current_schema_objects()
+-> Result<std::collections::BTreeSet<SchemaObject>, MetadataError> {
+    let connection = Connection::open_in_memory()?;
+    apply_current_schema_batches(&connection)?;
+    schema_objects(&connection)
+}
+
+fn schema_objects(
+    connection: &Connection,
+) -> Result<std::collections::BTreeSet<SchemaObject>, MetadataError> {
+    let mut statement = connection.prepare(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master
+         WHERE type IN ('table', 'index', 'trigger', 'view') AND sql IS NOT NULL
+         ORDER BY type, name",
+    )?;
+    let objects = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                normalize_schema_sql(&row.get::<_, String>(3)?),
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(objects.into_iter().collect())
+}
+
+fn normalize_schema_sql(sql: &str) -> String {
+    let mut normalized = String::with_capacity(sql.len());
+    let mut characters = sql.chars().peekable();
+    let mut in_literal = false;
+    while let Some(character) = characters.next() {
+        if character == '\'' {
+            normalized.push(character);
+            if in_literal && characters.peek() == Some(&'\'') {
+                normalized.push('\'');
+                characters.next();
+            } else {
+                in_literal = !in_literal;
+            }
+        } else if !in_literal && character.is_ascii_whitespace() {
+            continue;
+        } else if in_literal {
+            normalized.push(character);
+        } else {
+            normalized.push(character.to_ascii_lowercase());
+        }
+    }
+    for prefix in ["createtable", "createindex", "createtrigger"] {
+        let with_guard = format!("{prefix}ifnotexists");
+        if normalized.starts_with(&with_guard) {
+            return normalized.replacen(&with_guard, prefix, 1);
+        }
+    }
+    normalized
+}
+
+fn schema_tables(
+    connection: &Connection,
+) -> Result<std::collections::BTreeSet<String>, MetadataError> {
     let mut statement = connection.prepare(
         "SELECT name FROM sqlite_master
          WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
          ORDER BY name",
     )?;
-    let actual = statement
+    statement
         .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut expected = TABLES.to_vec();
-    expected.sort_unstable();
-    Ok(actual == expected)
+        .collect::<Result<_, _>>()
+        .map_err(Into::into)
 }
 
 pub(super) fn inspect_open_connection(connection: &Connection) -> DatabaseState {
@@ -169,17 +215,6 @@ pub(super) fn normalize_path_for_matching(path: &str) -> String {
         normalized = normalized.replace("//", "/");
     }
     normalized.trim_end_matches('/').to_string()
-}
-
-pub(super) fn escape_like(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
-
-pub(super) fn sql_limit(limit: Option<u64>) -> i64 {
-    i64::try_from(limit.unwrap_or(i64::MAX as u64)).unwrap_or(i64::MAX)
 }
 
 pub(super) fn parse_git_observer_state(value: String) -> Result<GitObserverState, rusqlite::Error> {
@@ -293,12 +328,6 @@ pub(super) fn setup_receipt_from_row(
     })
 }
 
-pub(super) fn agent_lease_from_row(
-    row: &rusqlite::Row<'_>,
-) -> Result<AgentLeaseRecord, rusqlite::Error> {
-    serde_json::from_str(&row.get::<_, String>(0)?).map_err(json_to_sql_read_error)
-}
-
 pub(super) fn work_view_from_row(
     row: &rusqlite::Row<'_>,
 ) -> Result<WorkViewRecord, rusqlite::Error> {
@@ -372,187 +401,11 @@ where
         .ok_or_else(|| rusqlite::Error::ToSqlConversionFailure("expected string enum".into()))
 }
 
-pub(super) fn validate_pack_kind(kind: &str) -> Result<(), MetadataError> {
-    if matches!(kind, "source-pack" | "overlay-pack" | "agent-overlay") {
-        Ok(())
-    } else {
-        Err(MetadataError::InvalidStorageMetadata(format!(
-            "unsupported pack kind `{kind}`"
-        )))
-    }
-}
-
-pub(super) fn validate_pack_state(state: &str) -> Result<(), MetadataError> {
-    if matches!(
-        state,
-        "pending" | "current" | "orphan-candidate" | "retained" | "delete-eligible"
-    ) {
-        Ok(())
-    } else {
-        Err(MetadataError::InvalidStorageMetadata(format!(
-            "unsupported pack state `{state}`"
-        )))
-    }
-}
-
-pub(super) fn validate_locator_shape(locator: &ContentLocator) -> Result<(), MetadataError> {
-    match locator.storage {
-        ContentStorage::Packed => {
-            if locator.pack_id.is_some() && locator.offset.is_some() && locator.length.is_some() {
-                Ok(())
-            } else {
-                Err(MetadataError::InvalidStorageMetadata(
-                    "packed locators require pack_id, offset, and length".to_string(),
-                ))
-            }
-        }
-        ContentStorage::Inline => {
-            if locator.pack_id.is_none() && locator.offset.is_none() && locator.length.is_none() {
-                Ok(())
-            } else {
-                Err(MetadataError::InvalidStorageMetadata(
-                    "non-packed locators must not carry pack ranges".to_string(),
-                ))
-            }
-        }
-    }
-}
-
-pub(super) fn ensure_pack_exists(
-    connection: &Connection,
-    workspace_id: &WorkspaceId,
-    pack_id: &PackId,
-) -> Result<(), MetadataError> {
-    let exists = connection
-        .query_row(
-            "SELECT 1 FROM packs WHERE workspace_id = ?1 AND id = ?2",
-            params![workspace_id.as_str(), pack_id.as_str()],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
-
-    if exists {
-        Ok(())
-    } else {
-        Err(MetadataError::InvalidStorageMetadata(format!(
-            "packed locator references missing pack `{}`",
-            pack_id.as_str()
-        )))
-    }
-}
-
 pub(super) fn deserialize_json_variant<T>(value: String) -> Result<T, rusqlite::Error>
 where
     T: serde::de::DeserializeOwned,
 {
     serde_json::from_value(serde_json::Value::String(value)).map_err(json_to_sql_error)
-}
-
-pub(super) fn content_locator_from_row(
-    row: &rusqlite::Row<'_>,
-) -> Result<ContentLocator, rusqlite::Error> {
-    let scalar = ContentLocator {
-        content_id: ContentId::new(row.get::<_, String>(1)?),
-        storage: deserialize_json_variant::<ContentStorage>(row.get::<_, String>(2)?)?,
-        raw_size: row.get(3)?,
-        pack_id: row.get::<_, Option<String>>(4)?.map(PackId::new),
-        offset: row.get(5)?,
-        length: row.get(6)?,
-    };
-    let canonical: ContentLocator =
-        serde_json::from_str(&row.get::<_, String>(7)?).map_err(json_to_sql_read_error)?;
-
-    if canonical.content_id != scalar.content_id
-        || canonical.storage != scalar.storage
-        || canonical.raw_size != scalar.raw_size
-        || canonical.pack_id != scalar.pack_id
-        || canonical.offset != scalar.offset
-        || canonical.length != scalar.length
-    {
-        return Err(rusqlite::Error::FromSqlConversionFailure(
-            7,
-            rusqlite::types::Type::Text,
-            Box::new(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "locator_json drifted from indexed locator columns",
-            )),
-        ));
-    }
-
-    Ok(canonical)
-}
-
-pub(super) fn snapshot_record_from_row(
-    row: &rusqlite::Row<'_>,
-) -> Result<SnapshotRecord, rusqlite::Error> {
-    Ok(SnapshotRecord {
-        id: SnapshotId::new(row.get::<_, String>(0)?),
-        workspace_id: WorkspaceId::new(row.get::<_, String>(1)?),
-        project_id: row.get::<_, Option<String>>(2)?.map(ProjectId::new),
-        kind: deserialize_json_variant::<SnapshotKind>(row.get::<_, String>(3)?)?,
-        base_snapshot_id: row.get::<_, Option<String>>(4)?.map(SnapshotId::new),
-        root_id: NamespacePageId::new(row.get::<_, String>(5)?),
-        semantic_manifest_digest: ManifestDigest::new(row.get::<_, String>(6)?),
-        entry_count: row.get(7)?,
-        refs: serde_json::from_str(&row.get::<_, String>(8)?).map_err(json_to_sql_read_error)?,
-        created_at: row.get(9)?,
-    })
-}
-
-pub(super) fn sync_operation_from_row(
-    row: &rusqlite::Row<'_>,
-) -> Result<SyncOperationRecord, rusqlite::Error> {
-    let workspace_id = WorkspaceId::new(row.get::<_, String>(1)?);
-    let kind = deserialize_json_variant::<SyncOperationKind>(row.get::<_, String>(2)?)?;
-    let resource_key =
-        SyncResourceKey::from_stored(kind, &workspace_id, row.get(3)?).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                3,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })?;
-    Ok(SyncOperationRecord {
-        id: row.get(0)?,
-        workspace_id,
-        kind,
-        resource_key,
-        state: deserialize_json_variant::<SyncOperationState>(row.get::<_, String>(4)?)?,
-        idempotency_key: row.get(5)?,
-        base_version: row.get(6)?,
-        base_snapshot_id: row.get(7)?,
-        target_snapshot_id: row.get(8)?,
-        device_id: row.get::<_, Option<String>>(9)?.map(DeviceId::new),
-        payload_json: row.get(10)?,
-        attempt_count: row.get(11)?,
-        claimed_by: row.get(12)?,
-        claim_generation: row.get(13)?,
-        heartbeat_at: row.get(14)?,
-        lease_expires_at: row.get(15)?,
-        cancellation_requested_at: row.get(16)?,
-        next_attempt_at: row.get(17)?,
-        result_json: row.get(18)?,
-        last_error_code: row.get(19)?,
-        last_error: row.get(20)?,
-        created_at: row.get(21)?,
-        updated_at: row.get(22)?,
-    })
-}
-
-pub(super) fn sync_operation_checkpoint_from_row(
-    row: &rusqlite::Row<'_>,
-) -> Result<SyncOperationCheckpointRecord, rusqlite::Error> {
-    Ok(SyncOperationCheckpointRecord {
-        id: row.get(0)?,
-        workspace_id: WorkspaceId::new(row.get::<_, String>(1)?),
-        operation_id: row.get(2)?,
-        step: row.get(3)?,
-        state: row.get(4)?,
-        payload_json: row.get(5)?,
-        created_at: row.get(6)?,
-        updated_at: row.get(7)?,
-    })
 }
 
 pub(super) fn json_to_sql_error(error: serde_json::Error) -> rusqlite::Error {

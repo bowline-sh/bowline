@@ -51,7 +51,7 @@ const GIT_WORKTREE_LOCAL_ROOT_NAMES: &[&str] =
     &["gitdir", "commondir", "locked", "config.worktree"];
 
 pub fn classify_git_path(path: &str) -> Option<GitPathClass> {
-    if path == ".git" || path.ends_with("/.git") {
+    if is_git_directory_path(path) {
         return Some(GitPathClass::DerivableVolatile);
     }
     let tail_path = git_tail_path(path)?;
@@ -64,6 +64,13 @@ pub fn classify_git_path(path: &str) -> Option<GitPathClass> {
     }
 
     classify_git_tail(&components)
+}
+
+/// Whether `path` names the root directory of a Git repository inside a
+/// workspace. The directory entry itself is derivable, but walkers must still
+/// descend through it to reach the opaque state that syncs.
+pub fn is_git_directory_path(path: &str) -> bool {
+    path == ".git" || path.ends_with("/.git")
 }
 
 pub fn is_git_derivable_volatile_path(path: &str) -> bool {
@@ -216,7 +223,7 @@ fn is_nested_module_volatile_dir_suffix(tail: &[&str]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{GitPathClass, classify_git_path};
+    use super::{GitPathClass, classify_git_path, is_git_directory_path};
 
     #[test]
     fn classifies_git_path_shapes() {
@@ -357,5 +364,13 @@ mod tests {
             GitPathClass::ImmutableObject.apply_rank() < GitPathClass::OrdinaryState.apply_rank()
         );
         assert!(GitPathClass::OrdinaryState.apply_rank() < GitPathClass::PointerState.apply_rank());
+    }
+
+    #[test]
+    fn identifies_only_git_directory_roots() {
+        assert!(is_git_directory_path(".git"));
+        assert!(is_git_directory_path("repo/.git"));
+        assert!(!is_git_directory_path("repo/.git/HEAD"));
+        assert!(!is_git_directory_path("repo.git"));
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use bowline_local::metadata::MetadataStore;
 
 struct FailingNotificationSender;
 
@@ -44,7 +45,7 @@ fn snapshot(sequence: u64) -> CachedDaemonStatus {
 
 #[test]
 fn slow_subscription_keeps_only_newest_snapshot_and_marks_gap() {
-    let subscription = StatusSubscription::new("subscription-test".to_string(), None);
+    let subscription = StatusSubscription::new("subscription-test".to_string(), None, None);
     subscription.publish(snapshot(2));
     subscription.publish(snapshot(3));
 
@@ -56,7 +57,7 @@ fn slow_subscription_keeps_only_newest_snapshot_and_marks_gap() {
 
 #[test]
 fn cancelled_subscription_drops_pending_and_future_snapshots() {
-    let subscription = StatusSubscription::new("subscription-test".to_string(), None);
+    let subscription = StatusSubscription::new("subscription-test".to_string(), None, None);
     subscription.publish(snapshot(2));
     subscription.cancel();
     subscription.publish(snapshot(3));
@@ -68,7 +69,7 @@ fn cancelled_subscription_drops_pending_and_future_snapshots() {
 #[test]
 fn subscription_projection_wakes_are_bounded_and_coalesced() {
     let (wake, woke) = crossbeam_channel::bounded(1);
-    let subscription = StatusSubscription::new("subscription-test".to_string(), Some(wake));
+    let subscription = StatusSubscription::new("subscription-test".to_string(), Some(wake), None);
 
     subscription.publish(snapshot(2));
     subscription.publish(snapshot(3));
@@ -96,8 +97,7 @@ fn sixty_unchanged_daemon_ticks_keep_one_build_and_sequence() {
     let root = state_root.join("Code");
     fs::create_dir_all(&root).expect("workspace root");
     let store =
-        crate::daemon::store_access::open_store_for_test(state_root.join(DEFAULT_DATABASE_FILE))
-            .expect("metadata opens");
+        MetadataStore::open(state_root.join(DEFAULT_DATABASE_FILE)).expect("metadata opens");
     store
         .insert_workspace(&workspace_id, "Code", "2026-07-15T00:00:00Z")
         .expect("workspace inserts");
@@ -204,8 +204,6 @@ fn pending_device_trust_adds_canonical_status_and_local_action_affordances() {
             matching_code: "bowline-0123456789abcdef".to_string(),
             account_id: None,
             host: None,
-            lease_handoff_digest: None,
-            lease_id: None,
             root: None,
             runtime: None,
             setup_receipts_digest: None,
@@ -280,11 +278,11 @@ fn pending_device_projection_is_identical_across_rpc_hosted_and_notifications() 
     };
     let state = DaemonServerState::new(&runtime).expect("daemon state");
     let first = state
-        .subscribe_with_snapshot(None)
+        .subscribe_with_snapshot(None, None)
         .expect("first subscription")
         .0;
     let second = state
-        .subscribe_with_snapshot(None)
+        .subscribe_with_snapshot(None, None)
         .expect("second subscription")
         .0;
     let trust = DeviceApprovalRequestList {
@@ -300,8 +298,6 @@ fn pending_device_projection_is_identical_across_rpc_hosted_and_notifications() 
             matching_code: "bowline-89abcdef01234567".to_string(),
             account_id: None,
             host: None,
-            lease_handoff_digest: None,
-            lease_id: None,
             root: None,
             runtime: None,
             setup_receipts_digest: None,
@@ -404,4 +400,67 @@ fn requested_scope_accepts_absolute_and_home_relative_workspace_roots() {
         &configured
     ));
     assert!(!requested_root_matches("~/Different", &configured));
+}
+
+#[test]
+fn project_scope_resolves_the_git_root_component_wise() {
+    let state_root = crate::daemon::tests::unique_temp_dir("project-status-scope");
+    let workspace = state_root.join("Code");
+    let project = workspace.join("projects/app");
+    let nested = project.join("src");
+    fs::create_dir_all(project.join(".git")).expect("git metadata");
+    fs::create_dir_all(&nested).expect("nested project directory");
+
+    let scope = resolve_project_status_scope(
+        &workspace,
+        nested.to_str().expect("test path is Unicode"),
+        None,
+    )
+    .expect("project scope");
+
+    assert_eq!(
+        scope.root,
+        fs::canonicalize(&project).expect("project root")
+    );
+    assert_eq!(
+        scope.requested,
+        fs::canonicalize(&nested).expect("requested")
+    );
+    assert_eq!(scope.prefix.as_str(), "projects/app");
+    let missing_file = nested.join("deleted.rs");
+    let missing_scope = resolve_project_status_scope(
+        &workspace,
+        project.to_str().expect("project path is Unicode"),
+        Some(missing_file.to_str().expect("missing path is Unicode")),
+    )
+    .expect("missing file still resolves through its Git ancestor");
+    assert_eq!(missing_scope.root, scope.root);
+    assert_eq!(missing_scope.prefix.as_str(), "projects/app");
+
+    let future_project = workspace.join("projects/future");
+    let future_scope = resolve_project_status_scope(
+        &workspace,
+        future_project
+            .to_str()
+            .expect("future project path is Unicode"),
+        None,
+    )
+    .expect("not-yet-materialized project scope");
+    assert_eq!(
+        future_scope.root,
+        fs::canonicalize(&workspace)
+            .expect("canonical workspace")
+            .join("projects/future")
+    );
+    assert_eq!(future_scope.prefix.as_str(), "projects/future");
+    assert!(
+        resolve_project_status_scope(
+            &workspace,
+            workspace.to_str().expect("test path is Unicode"),
+            None,
+        )
+        .is_err(),
+        "the workspace root cannot silently masquerade as a project"
+    );
+    let _ = fs::remove_dir_all(state_root);
 }

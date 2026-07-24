@@ -9,7 +9,7 @@ APP_DIR="${BOWLINE_APP_DIR:-$HOME/Applications}"
 RELEASE_SIGNING_IDENTITY="bowline-release"
 RELEASE_SIGNING_NAMESPACE="bowline-release"
 # Pinned release key; scripts/check-install-script.mjs enforces pubkey parity.
-RELEASE_SIGNING_PUBKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEMlaBX6Fk+MIYmevcaxgXpsoSdToCQHGmfK0v8Yq3ig bowline-release-2026-07-15"
+RELEASE_SIGNING_PUBKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF4Nfjn9iT+NwvF2JpRj9GQAwkjv0Cpp16LXmA+AzBwP bowline-release-2026-07-23"
 RELEASE_MANIFEST=""
 
 usage() {

@@ -1,4 +1,68 @@
+//! Watcher-to-engine bridge (Plan 111 Step 1b). The daemon's watcher kernel
+//! produces [`WatcherSignal`]s; this bridge consumes them on a dedicated thread
+//! and forwards read-filtered [`EngineEvent`]s into the manifest engine's inbox.
+//! It replaces the old convergence-journal cause recorder: the manifest engine
+//! keeps its dirty set in memory, so no durable cause table is written here.
+
 use super::*;
+use bowline_local::sync::manifest_engine::EngineEvent;
+
+type WatcherBridgeWorker = Box<dyn FnOnce() + Send + 'static>;
+const WATCHER_BRIDGE_SOURCE_FIELD: &str = "sync.change_rx";
+const WATCHER_BRIDGE_WORKER_FIELD: &str = "worker";
+const WATCHER_FORWARD_POLL: Duration = Duration::from_millis(100);
+
+#[derive(Debug)]
+pub(in crate::daemon) enum WatcherBridgeStartError {
+    SourceHandoff {
+        field: &'static str,
+    },
+    ThreadSpawn {
+        field: &'static str,
+        source: io::Error,
+    },
+    WorkerPanicked {
+        field: &'static str,
+    },
+}
+
+impl WatcherBridgeStartError {
+    pub(super) fn into_io_error(self) -> io::Error {
+        let kind = match &self {
+            Self::ThreadSpawn { source, .. } => source.kind(),
+            Self::SourceHandoff { .. } | Self::WorkerPanicked { .. } => io::ErrorKind::Other,
+        };
+        io::Error::new(kind, self)
+    }
+}
+
+impl fmt::Display for WatcherBridgeStartError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SourceHandoff { field } => {
+                write!(formatter, "watcher bridge could not hand off {field}")
+            }
+            Self::ThreadSpawn { field, source } => {
+                write!(
+                    formatter,
+                    "watcher bridge could not spawn {field}: {source}"
+                )
+            }
+            Self::WorkerPanicked { field } => {
+                write!(formatter, "watcher bridge {field} panicked during startup")
+            }
+        }
+    }
+}
+
+impl Error for WatcherBridgeStartError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ThreadSpawn { source, .. } => Some(source),
+            Self::SourceHandoff { .. } | Self::WorkerPanicked { .. } => None,
+        }
+    }
+}
 
 pub(super) fn stop_and_join_watcher(
     runtime: &Arc<Mutex<DaemonRuntime>>,
@@ -16,138 +80,123 @@ pub(super) fn stop_and_join_watcher(
     Ok(())
 }
 
-pub(super) struct WatcherBridge {
+pub(in crate::daemon) struct WatcherBridge {
     worker: Option<std::thread::JoinHandle<()>>,
-    wake_state: WatcherWakeState,
-    scope: DirtyScopeKey,
-}
-
-#[derive(Clone, Default)]
-pub(super) struct WatcherWakeState {
-    wake_pending: Arc<AtomicBool>,
-    overflow_pending: Arc<AtomicBool>,
-    delivery_failed: Arc<AtomicBool>,
-}
-
-impl WatcherWakeState {
-    pub(super) fn record_overflow(&self) {
-        self.overflow_pending.store(true, Ordering::Release);
-    }
-
-    pub(super) fn begin_wake(&self) -> bool {
-        let acquired = self
-            .wake_pending
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok();
-        if acquired {
-            self.delivery_failed.store(false, Ordering::Release);
-        }
-        acquired
-    }
-
-    pub(super) fn reset_for_dirty_ready(&self) -> bool {
-        self.wake_pending.store(false, Ordering::Release);
-        self.delivery_failed.store(false, Ordering::Release);
-        self.overflow_pending.swap(false, Ordering::AcqRel)
-    }
-
-    pub(super) fn record_delivery_failure(&self) {
-        self.delivery_failed.store(true, Ordering::Release);
-    }
-
-    pub(super) fn delivery_failed(&self) -> bool {
-        self.delivery_failed.load(Ordering::Acquire)
-    }
-
-    pub(super) fn overflow_is_pending(&self) -> bool {
-        self.overflow_pending.load(Ordering::Acquire)
-    }
+    shutdown: Arc<AtomicBool>,
 }
 
 impl WatcherBridge {
-    pub(super) fn start(
+    pub(in crate::daemon) fn start(
         runtime: &mut DaemonRuntime,
-        coordinator: CoordinatorHandle,
-    ) -> io::Result<Option<Self>> {
+    ) -> Result<Option<Self>, WatcherBridgeStartError> {
+        Self::start_with_spawner(runtime, |worker| {
+            std::thread::Builder::new()
+                .name("bowline-watcher-engine-bridge".to_string())
+                .spawn(worker)
+        })
+    }
+
+    pub(super) fn start_with_spawner(
+        runtime: &mut DaemonRuntime,
+        spawn_worker: impl FnOnce(WatcherBridgeWorker) -> io::Result<std::thread::JoinHandle<()>>,
+    ) -> Result<Option<Self>, WatcherBridgeStartError> {
+        // Only bridge when both the watcher kernel and the manifest engine are
+        // live; otherwise there is nothing to forward to.
+        let Some(events) = runtime.manifest_event_sender() else {
+            return Ok(None);
+        };
         let Some(sync) = runtime.sync.as_mut() else {
             return Ok(None);
         };
-        let Some(source) = sync.change_rx.take() else {
+        if sync.change_rx.is_none() {
             return Ok(None);
-        };
-        // Keep one forwarded signal buffered and apply backpressure until the
-        // coordinator drains it. The notify-facing channel already owns the
-        // bounded overflow contract; treating this internal handoff becoming
-        // full as a second overflow threshold loses ordinary startup events.
-        let (forward_tx, forward_rx) = mpsc::sync_channel(1);
-        sync.change_rx = Some(forward_rx);
-        let scope = DirtyScopeKey::new(sync.options.args.workspace_id.clone());
-        let worker_scope = scope.clone();
-        let wake_state = WatcherWakeState::default();
-        let worker_wake = wake_state.clone();
-        let worker = std::thread::Builder::new()
-            .name("bowline-watcher-coordinator-wake".to_string())
-            .spawn(move || {
-                while let Ok(signal) = source.recv() {
-                    let overflow = matches!(
-                        &signal,
-                        WatcherSignal::Changed(event) if event.need_rescan()
-                    ) || matches!(&signal, WatcherSignal::Recoverable);
-                    if !overflow && forward_tx.send(signal).is_err() {
-                        break;
-                    }
-                    if overflow {
-                        worker_wake.record_overflow();
-                    }
-                    if !worker_wake.begin_wake() {
-                        continue;
-                    }
-                    let event = if worker_wake.overflow_is_pending() {
-                        CoordinatorEvent::WatcherOverflow(worker_scope.clone())
-                    } else {
-                        CoordinatorEvent::FilesystemDirty(FilesystemDirty::one(
-                            worker_scope.clone(),
-                            DirtyPath::new("watcher-event"),
-                        ))
-                    };
-                    if let Err(error) = coordinator.try_send(event) {
-                        if error.kind == CoordinatorEventSendErrorKind::Disconnected {
-                            break;
-                        }
-                        worker_wake.record_delivery_failure();
-                    }
-                }
-            })?;
+        }
+        let root = sync.args.root.clone();
+        let (source_tx, source_rx) = mpsc::sync_channel(1);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let worker_shutdown = shutdown.clone();
+        let worker = spawn_worker(Box::new(move || {
+            let Ok(source) = source_rx.recv() else {
+                return;
+            };
+            forward_watcher_signals(source, events, root, worker_shutdown);
+        }))
+        .map_err(|source| WatcherBridgeStartError::ThreadSpawn {
+            field: WATCHER_BRIDGE_WORKER_FIELD,
+            source,
+        })?;
+        let source = sync
+            .change_rx
+            .take()
+            .expect("watcher signal receiver remains owned until worker spawn succeeds");
+        if let Err(error) = source_tx.send(source) {
+            sync.change_rx = Some(error.0);
+            worker
+                .join()
+                .map_err(|_| WatcherBridgeStartError::WorkerPanicked {
+                    field: WATCHER_BRIDGE_WORKER_FIELD,
+                })?;
+            return Err(WatcherBridgeStartError::SourceHandoff {
+                field: WATCHER_BRIDGE_SOURCE_FIELD,
+            });
+        }
         Ok(Some(Self {
             worker: Some(worker),
-            wake_state,
-            scope,
+            shutdown,
         }))
     }
 
-    pub(super) fn wake_state(&self) -> WatcherWakeState {
-        self.wake_state.clone()
-    }
-
-    pub(super) fn scope(&self) -> DirtyScopeKey {
-        self.scope.clone()
-    }
-
-    pub(super) fn join(mut self) -> io::Result<()> {
+    pub(in crate::daemon) fn join(mut self) -> io::Result<()> {
+        // The caller disconnects the native producer first; the forwarding loop
+        // then drains any queued signals and exits when the channel closes.
         self.worker
             .take()
             .expect("watcher bridge remains owned until strict join")
             .join()
-            .map_err(|_| io::Error::other("watcher coordinator wake bridge panicked"))
+            .map_err(|_| io::Error::other("watcher engine bridge panicked"))
+    }
+
+    /// True when the bridge worker has exited (engine death, channel close, or
+    /// panic). Used by the scheduler to drop a stale bridge before rebuild.
+    pub(in crate::daemon) fn is_finished(&self) -> bool {
+        self.worker
+            .as_ref()
+            .is_none_or(std::thread::JoinHandle::is_finished)
+    }
+}
+
+/// Consume watcher signals and forward read-filtered engine events until the
+/// producer disconnects or shutdown is requested.
+fn forward_watcher_signals(
+    source: mpsc::Receiver<WatcherSignal>,
+    events: std::sync::mpsc::Sender<EngineEvent>,
+    root: PathBuf,
+    shutdown: Arc<AtomicBool>,
+) {
+    let mut policy_cache = HashMap::new();
+    while !shutdown.load(Ordering::Acquire) {
+        let signal = match source.recv_timeout(WATCHER_FORWARD_POLL) {
+            Ok(signal) => signal,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        if let Some(event) =
+            crate::daemon::watcher::watcher_signal_engine_event(&root, &signal, &mut policy_cache)
+            && events.send(event).is_err()
+        {
+            // The engine thread has stopped; nothing left to forward to.
+            break;
+        }
     }
 }
 
 impl Drop for WatcherBridge {
     fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take()
             && worker.join().is_err()
         {
-            eprintln!("bowline-daemon watcher coordinator bridge panicked during ownership drop");
+            eprintln!("bowline-daemon watcher engine bridge panicked during ownership drop");
         }
     }
 }

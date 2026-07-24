@@ -38,7 +38,7 @@ pub(super) fn resolve_daemon_credentials(
     let control_plane_token = daemon_env_var("BOWLINE_CONTROL_PLANE_TOKEN");
     let has_control_plane_token = control_plane_token.is_some();
     let account_session_id = account_session_id(key_store).or_else(|| {
-        ensure_durable_account_session(key_store, workspace_id)
+        ensure_persistent_account_session(key_store, workspace_id)
             .ok()
             .flatten()
     });
@@ -337,7 +337,7 @@ impl From<DeviceKeyError> for HostedSetupError {
 
 pub(super) fn account_session_id(key_store: &dyn DeviceKeyStore) -> Option<String> {
     daemon_env_var("BOWLINE_ACCOUNT_SESSION_ID")
-        .filter(|session_id| durable_account_session_id(session_id))
+        .filter(|session_id| persistent_account_session_id(session_id))
         .filter(|_| {
             daemon_env_var("BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN")
                 .is_some_and(|token| token.starts_with("bowline_revoke_"))
@@ -348,15 +348,15 @@ pub(super) fn account_session_id(key_store: &dyn DeviceKeyStore) -> Option<Strin
                 .ok()
                 .flatten()
                 .and_then(|tokens| tokens.account_session.map(|session| session.session_id))
-                .filter(|session_id| durable_account_session_id(session_id))
+                .filter(|session_id| persistent_account_session_id(session_id))
         })
 }
 
-pub(super) fn durable_account_session_id(session_id: &str) -> bool {
+pub(super) fn persistent_account_session_id(session_id: &str) -> bool {
     session_id.starts_with("bowline_session_")
 }
 
-pub(super) fn ensure_durable_account_session(
+pub(super) fn ensure_persistent_account_session(
     key_store: &dyn DeviceKeyStore,
     workspace_id: &WorkspaceId,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {

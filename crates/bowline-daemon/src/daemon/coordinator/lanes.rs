@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::VecDeque,
     fmt, io,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Condvar, Mutex},
@@ -8,20 +8,14 @@ use std::{
 };
 
 use super::{
-    CoordinatorEvent, CoordinatorHandle, CoordinatorJobId, CoordinatorLane, CoordinatorMetrics,
-    CoordinatorResourceKey, CoordinatorWorkerCompletion, CoordinatorWorkerLoss,
+    COORDINATOR_LANE_COUNT, CoordinatorEvent, CoordinatorHandle, CoordinatorJobId, CoordinatorLane,
+    CoordinatorMetrics, CoordinatorWorkerCompletion, CoordinatorWorkerLoss,
     CoordinatorWorkerOutcome,
 };
 
-pub(super) const MUTATION_WORKERS: usize = 4;
-pub(super) const QUERY_WORKERS: usize = 8;
-pub(super) const SYNC_WORKERS: usize = 2;
 pub(super) const CONTROL_PLANE_WORKERS: usize = 4;
 pub(super) const NOTIFICATION_WORKERS: usize = 1;
 
-const MUTATION_QUEUE_CAPACITY: usize = 32;
-const QUERY_QUEUE_CAPACITY: usize = 64;
-const SYNC_QUEUE_CAPACITY: usize = 32;
 const CONTROL_PLANE_QUEUE_CAPACITY: usize = 32;
 const NOTIFICATION_QUEUE_CAPACITY: usize = 16;
 
@@ -33,7 +27,7 @@ pub(in crate::daemon) struct CoordinatorLaneConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::daemon) struct CoordinatorExecutorConfig {
-    lanes: [CoordinatorLaneConfig; 5],
+    lanes: [CoordinatorLaneConfig; COORDINATOR_LANE_COUNT],
 }
 
 impl Default for CoordinatorExecutorConfig {
@@ -41,19 +35,7 @@ impl Default for CoordinatorExecutorConfig {
         let mut lanes = [CoordinatorLaneConfig {
             workers: 1,
             queue_capacity: 1,
-        }; 5];
-        lanes[CoordinatorLane::Mutation.index()] = CoordinatorLaneConfig {
-            workers: MUTATION_WORKERS,
-            queue_capacity: MUTATION_QUEUE_CAPACITY,
-        };
-        lanes[CoordinatorLane::Query.index()] = CoordinatorLaneConfig {
-            workers: QUERY_WORKERS,
-            queue_capacity: QUERY_QUEUE_CAPACITY,
-        };
-        lanes[CoordinatorLane::Sync.index()] = CoordinatorLaneConfig {
-            workers: SYNC_WORKERS,
-            queue_capacity: SYNC_QUEUE_CAPACITY,
-        };
+        }; COORDINATOR_LANE_COUNT];
         lanes[CoordinatorLane::ControlPlane.index()] = CoordinatorLaneConfig {
             workers: CONTROL_PLANE_WORKERS,
             queue_capacity: CONTROL_PLANE_QUEUE_CAPACITY,
@@ -72,7 +54,10 @@ impl CoordinatorExecutorConfig {
     }
 
     #[cfg(test)]
-    pub(in crate::daemon) fn testing(workers: [usize; 5], queue_capacity: usize) -> Self {
+    pub(in crate::daemon) fn testing(
+        workers: [usize; COORDINATOR_LANE_COUNT],
+        queue_capacity: usize,
+    ) -> Self {
         Self {
             lanes: std::array::from_fn(|index| CoordinatorLaneConfig {
                 workers: workers[index],
@@ -84,7 +69,6 @@ impl CoordinatorExecutorConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::daemon) enum CoordinatorWorkFailureCode {
-    ExecutionFailed,
     OwnershipLost,
 }
 
@@ -107,7 +91,6 @@ impl CoordinatorWorkFailure {
 }
 
 type CoordinatorTask = Box<dyn FnOnce() -> Result<(), CoordinatorWorkFailure> + Send + 'static>;
-type CoordinatorDispatchFailure = Box<dyn FnOnce(CoordinatorSubmitErrorKind) + Send + 'static>;
 type CoordinatorCompletionDeliveryFailure =
     Box<dyn FnOnce(CoordinatorWorkerCompletion) + Send + 'static>;
 type CoordinatorWorkerLossDeliveryFailure = Box<dyn FnOnce(CoordinatorWorkerLoss) + Send + 'static>;
@@ -115,9 +98,7 @@ type CoordinatorWorkerLossDeliveryFailure = Box<dyn FnOnce(CoordinatorWorkerLoss
 pub(in crate::daemon) struct CoordinatorJob {
     pub(in crate::daemon) id: CoordinatorJobId,
     pub(in crate::daemon) lane: CoordinatorLane,
-    pub(in crate::daemon) resource: Option<CoordinatorResourceKey>,
     task: Option<CoordinatorTask>,
-    dispatch_failure: Option<CoordinatorDispatchFailure>,
     completion_delivery_failure: Option<CoordinatorCompletionDeliveryFailure>,
     worker_loss_delivery_failure: Option<CoordinatorWorkerLossDeliveryFailure>,
     enqueued_at: Instant,
@@ -129,7 +110,6 @@ impl fmt::Debug for CoordinatorJob {
             .debug_struct("CoordinatorJob")
             .field("id", &self.id)
             .field("lane", &self.lane)
-            .field("resource", &self.resource)
             .finish_non_exhaustive()
     }
 }
@@ -138,63 +118,12 @@ impl CoordinatorJob {
     pub(in crate::daemon) fn new(
         id: CoordinatorJobId,
         lane: CoordinatorLane,
-        resource: Option<CoordinatorResourceKey>,
         task: impl FnOnce() -> Result<(), CoordinatorWorkFailure> + Send + 'static,
     ) -> Self {
         Self {
             id,
             lane,
-            resource,
             task: Some(Box::new(task)),
-            dispatch_failure: None,
-            completion_delivery_failure: None,
-            worker_loss_delivery_failure: None,
-            enqueued_at: Instant::now(),
-        }
-    }
-
-    pub(in crate::daemon) fn recoverable<W>(
-        id: CoordinatorJobId,
-        lane: CoordinatorLane,
-        resource: Option<CoordinatorResourceKey>,
-        work: W,
-        execute: impl FnOnce(W) -> Result<(), CoordinatorWorkFailure> + Send + 'static,
-        recover: impl FnOnce(W, CoordinatorSubmitErrorKind) + Send + 'static,
-    ) -> Self
-    where
-        W: Send + 'static,
-    {
-        let pending = Arc::new(Mutex::new(Some(work)));
-        let execution_pending = Arc::clone(&pending);
-        let recovery_pending = Arc::clone(&pending);
-        let task = move || {
-            let work = execution_pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-                .ok_or_else(|| {
-                    CoordinatorWorkFailure::new(
-                        CoordinatorWorkFailureCode::OwnershipLost,
-                        "coordinator work ownership was lost before execution",
-                    )
-                })?;
-            execute(work)
-        };
-        let dispatch_failure = move |kind| {
-            if let Some(work) = recovery_pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-            {
-                recover(work, kind);
-            }
-        };
-        Self {
-            id,
-            lane,
-            resource,
-            task: Some(Box::new(task)),
-            dispatch_failure: Some(Box::new(dispatch_failure)),
             completion_delivery_failure: None,
             worker_loss_delivery_failure: None,
             enqueued_at: Instant::now(),
@@ -227,17 +156,6 @@ impl CoordinatorJob {
         task()
     }
 
-    fn recover_dispatch_failure(
-        mut self,
-        kind: CoordinatorSubmitErrorKind,
-    ) -> Result<(), Box<Self>> {
-        let Some(recovery) = self.dispatch_failure.take() else {
-            return Err(Box::new(self));
-        };
-        recovery(kind);
-        Ok(())
-    }
-
     fn take_completion_delivery_failure(&mut self) -> Option<CoordinatorCompletionDeliveryFailure> {
         self.completion_delivery_failure.take()
     }
@@ -261,93 +179,27 @@ pub(in crate::daemon) struct CoordinatorSubmitError {
     pub(in crate::daemon) job: Box<CoordinatorJob>,
 }
 
-impl CoordinatorSubmitError {
-    pub(in crate::daemon) fn recover(self) -> Result<(), Box<CoordinatorJob>> {
-        (*self.job).recover_dispatch_failure(self.kind)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum FairKey {
-    Resource(CoordinatorResourceKey),
-    Unscoped(CoordinatorJobId),
-}
-
 #[derive(Default)]
-struct FairLaneQueue {
-    by_key: HashMap<FairKey, VecDeque<CoordinatorJob>>,
-    ready: VecDeque<FairKey>,
-    len: usize,
+struct LaneQueue {
+    jobs: VecDeque<CoordinatorJob>,
 }
 
-impl FairLaneQueue {
-    fn push(&mut self, job: CoordinatorJob) {
-        let key = job
-            .resource
-            .clone()
-            .map(FairKey::Resource)
-            .unwrap_or_else(|| FairKey::Unscoped(job.id.clone()));
-        let queue = self.by_key.entry(key.clone()).or_default();
-        if queue.is_empty() {
-            self.ready.push_back(key);
-        }
-        queue.push_back(job);
-        self.len += 1;
-    }
-
-    fn pop_eligible(
-        &mut self,
-        active_resources: &HashSet<CoordinatorResourceKey>,
-    ) -> Option<CoordinatorJob> {
-        let candidates = self.ready.len();
-        for _ in 0..candidates {
-            let key = self.ready.pop_front()?;
-            let blocked = self
-                .by_key
-                .get(&key)
-                .and_then(|queue| queue.front())
-                .and_then(|job| job.resource.as_ref())
-                .is_some_and(|resource| active_resources.contains(resource));
-            if blocked {
-                self.ready.push_back(key);
-                continue;
-            }
-            let queue = self.by_key.get_mut(&key)?;
-            let job = queue.pop_front()?;
-            self.len = self.len.saturating_sub(1);
-            if queue.is_empty() {
-                self.by_key.remove(&key);
-            } else {
-                self.ready.push_back(key);
-            }
-            return Some(job);
-        }
-        None
-    }
-
-    fn drain(&mut self) -> Vec<CoordinatorJob> {
-        let mut jobs = Vec::with_capacity(self.len);
-        while let Some(key) = self.ready.pop_front() {
-            if let Some(mut queue) = self.by_key.remove(&key) {
-                jobs.extend(queue.drain(..));
-            }
-        }
-        self.len = 0;
-        jobs
+impl LaneQueue {
+    fn len(&self) -> usize {
+        self.jobs.len()
     }
 }
 
 #[derive(Default)]
 struct ExecutorState {
-    lanes: [FairLaneQueue; 5],
-    active_resources: HashSet<CoordinatorResourceKey>,
+    lanes: [LaneQueue; COORDINATOR_LANE_COUNT],
     shutting_down: bool,
 }
 
 struct ExecutorShared {
     config: CoordinatorExecutorConfig,
     state: Mutex<ExecutorState>,
-    ready: [Condvar; 5],
+    ready: [Condvar; COORDINATOR_LANE_COUNT],
     coordinator: CoordinatorHandle,
     metrics: Arc<CoordinatorMetrics>,
 }
@@ -412,7 +264,7 @@ impl CoordinatorExecutor {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let rejection = if state.shutting_down {
             Some(CoordinatorSubmitErrorKind::ShuttingDown)
-        } else if state.lanes[lane.index()].len >= self.shared.config.lane(lane).queue_capacity {
+        } else if state.lanes[lane.index()].len() >= self.shared.config.lane(lane).queue_capacity {
             Some(CoordinatorSubmitErrorKind::LaneQueueFull)
         } else {
             None
@@ -424,8 +276,8 @@ impl CoordinatorExecutor {
                 job: Box::new(job),
             });
         }
-        state.lanes[lane.index()].push(job);
-        let queued = state.lanes[lane.index()].len;
+        state.lanes[lane.index()].jobs.push_back(job);
+        let queued = state.lanes[lane.index()].len();
         self.shared.metrics.record_enqueued(lane, queued);
         drop(state);
         self.shared.ready[lane.index()].notify_one();
@@ -444,14 +296,11 @@ impl CoordinatorExecutor {
     }
 
     pub(in crate::daemon) fn shutdown_and_join(&self) -> io::Result<()> {
+        // Side-lane jobs (status publish, notification, trust refresh) are safe
+        // to drop unexecuted at shutdown: each is a periodic, idempotent poll.
         let queued = stop_workers(&self.shared);
-        for job in queued {
-            if job
-                .recover_dispatch_failure(CoordinatorSubmitErrorKind::ShuttingDown)
-                .is_ok()
-            {
-                self.shared.metrics.record_shutdown_recovery();
-            }
+        for _job in queued {
+            self.shared.metrics.record_shutdown_recovery();
         }
         let workers = self
             .workers
@@ -491,7 +340,7 @@ fn stop_workers(shared: &ExecutorShared) -> Vec<CoordinatorJob> {
         state.shutting_down = true;
         let mut queued = Vec::new();
         for lane in CoordinatorLane::ALL {
-            queued.extend(state.lanes[lane.index()].drain());
+            queued.extend(state.lanes[lane.index()].jobs.drain(..));
             shared.metrics.record_dequeued(lane, 0);
         }
         queued
@@ -531,8 +380,6 @@ fn spawn_lane_workers(
         let worker_shared = Arc::clone(shared);
         let active_job_id = Arc::new(Mutex::new(None::<CoordinatorJobId>));
         let worker_active_job_id = Arc::clone(&active_job_id);
-        let active_resource = Arc::new(Mutex::new(None::<CoordinatorResourceKey>));
-        let worker_active_resource = Arc::clone(&active_resource);
         let active_loss_recovery =
             Arc::new(Mutex::new(None::<CoordinatorWorkerLossDeliveryFailure>));
         let worker_active_loss_recovery = Arc::clone(&active_loss_recovery);
@@ -548,19 +395,13 @@ fn spawn_lane_workers(
                             &worker_shared,
                             lane,
                             &worker_active_job_id,
-                            &worker_active_resource,
                             &worker_active_loss_recovery,
                         );
                     }));
                     if result.is_ok() {
                         break;
                     }
-                    let resource = worker_active_resource
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .take();
-                    let active_resources = release_resource(&worker_shared, resource.as_ref());
-                    worker_shared.metrics.record_worker_loss(active_resources);
+                    worker_shared.metrics.record_worker_loss();
                     let active_job_id = worker_active_job_id
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -610,7 +451,6 @@ fn run_lane_worker(
     shared: &ExecutorShared,
     lane: CoordinatorLane,
     active_job_id: &Mutex<Option<CoordinatorJobId>>,
-    active_resource: &Mutex<Option<CoordinatorResourceKey>>,
     active_loss_recovery: &Mutex<Option<CoordinatorWorkerLossDeliveryFailure>>,
 ) {
     while let Some(mut job) = take_job(shared, lane) {
@@ -622,38 +462,24 @@ fn run_lane_worker(
             .record_queue_delay(lane, job.enqueued_at.elapsed());
         let started_at = Instant::now();
         let job_id = job.id.clone();
-        let resource = job.resource.clone();
-        *active_resource
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = resource.clone();
         let completion_delivery_failure = job.take_completion_delivery_failure();
         *active_loss_recovery
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             job.take_worker_loss_delivery_failure();
-        let active_resources = active_resource_count(shared);
-        shared.metrics.record_worker_started(lane, active_resources);
+        shared.metrics.record_worker_started(lane);
         let result = catch_unwind(AssertUnwindSafe(|| job.execute()));
         let (outcome, failed, panicked) = match result {
             Ok(Ok(())) => (CoordinatorWorkerOutcome::Succeeded, false, false),
             Ok(Err(error)) => (CoordinatorWorkerOutcome::Failed(error), true, false),
             Err(_) => (CoordinatorWorkerOutcome::Panicked, true, true),
         };
-        let active_resources = release_resource(shared, resource.as_ref());
-        *active_resource
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-        shared.metrics.record_worker_finished(
-            lane,
-            started_at.elapsed(),
-            failed,
-            panicked,
-            active_resources,
-        );
+        shared
+            .metrics
+            .record_worker_finished(lane, started_at.elapsed(), failed, panicked);
         let completion = CoordinatorWorkerCompletion {
             job_id,
             lane,
-            resource,
             outcome,
         };
         if shared
@@ -683,13 +509,8 @@ fn take_job(shared: &ExecutorShared, lane: CoordinatorLane) -> Option<Coordinato
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     loop {
-        let active_resources = state.active_resources.clone();
-        if let Some(job) = state.lanes[lane.index()].pop_eligible(&active_resources) {
-            if let Some(resource) = &job.resource {
-                let inserted = state.active_resources.insert(resource.clone());
-                debug_assert!(inserted, "eligible resource must not already be active");
-            }
-            let queued = state.lanes[lane.index()].len;
+        if let Some(job) = state.lanes[lane.index()].jobs.pop_front() {
+            let queued = state.lanes[lane.index()].len();
             shared.metrics.record_dequeued(lane, queued);
             return Some(job);
         }
@@ -700,29 +521,4 @@ fn take_job(shared: &ExecutorShared, lane: CoordinatorLane) -> Option<Coordinato
             .wait(state)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
-}
-
-fn active_resource_count(shared: &ExecutorShared) -> usize {
-    shared
-        .state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .active_resources
-        .len()
-}
-
-fn release_resource(shared: &ExecutorShared, resource: Option<&CoordinatorResourceKey>) -> usize {
-    let mut state = shared
-        .state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(resource) = resource {
-        state.active_resources.remove(resource);
-    }
-    let active_resources = state.active_resources.len();
-    drop(state);
-    for ready in &shared.ready {
-        ready.notify_all();
-    }
-    active_resources
 }

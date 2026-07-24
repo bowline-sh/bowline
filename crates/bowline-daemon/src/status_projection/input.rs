@@ -11,13 +11,23 @@ use super::{
     types::{StatusInputEvent, StatusProjectionError, StatusSource},
 };
 
-const STATUS_SOURCE_COUNT: usize = 7;
-
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct PendingInputState {
     pub(crate) dirty: BTreeSet<StatusSource>,
     pub(crate) refresh_all: bool,
     pub(crate) shutdown: bool,
+    source_count: usize,
+}
+
+impl PendingInputState {
+    pub(crate) fn new(source_count: usize) -> Self {
+        Self {
+            dirty: BTreeSet::new(),
+            refresh_all: false,
+            shutdown: false,
+            source_count,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -72,7 +82,7 @@ impl StatusProjectionInput {
                 }
             };
             let pending_sources = if pending.refresh_all {
-                STATUS_SOURCE_COUNT
+                pending.source_count
             } else {
                 pending.dirty.len()
             };

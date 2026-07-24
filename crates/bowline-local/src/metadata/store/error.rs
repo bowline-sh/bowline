@@ -2,6 +2,34 @@ use std::{error::Error, fmt, io};
 
 use super::MetadataError;
 
+impl MetadataError {
+    pub(crate) fn sqlite_is_recoverable(error: &rusqlite::Error) -> bool {
+        match error {
+            rusqlite::Error::SqliteFailure(error, _) => matches!(
+                error.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            ),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_recoverable(&self) -> bool {
+        match self {
+            Self::Io(error) => matches!(
+                error.kind(),
+                io::ErrorKind::Interrupted | io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ),
+            Self::Sqlite(error) => Self::sqlite_is_recoverable(error),
+            Self::InvalidStorageMetadata(_)
+            | Self::InvalidCurrentNamespaceProjection { .. }
+            | Self::ImmutableBindingConflict { .. }
+            | Self::IncompleteSnapshotRoot { .. }
+            | Self::FutureIncompatible { .. }
+            | Self::UnsupportedSchema => false,
+        }
+    }
+}
+
 impl fmt::Display for MetadataError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

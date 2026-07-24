@@ -1,16 +1,14 @@
 use std::{error::Error, fmt};
 
-use bowline_core::ids::{DeviceApprovalRequestId, LeaseId, WorkViewId, WorkspaceId};
+use bowline_core::ids::{DeviceApprovalRequestId, WorkspaceId};
 
-use crate::{StaleWorkViewOverlayHead, StaleWorkspaceRef};
+use crate::StaleWorkspaceRef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Capability {
     WorkspaceRefHistory,
     StorageGc,
     ObjectMetadata,
-    WorkViews,
-    AgentLeases,
     DeviceBootstrap,
     DeviceTrust,
     RecoveryKey,
@@ -21,8 +19,6 @@ impl Capability {
         Capability::WorkspaceRefHistory,
         Capability::StorageGc,
         Capability::ObjectMetadata,
-        Capability::WorkViews,
-        Capability::AgentLeases,
         Capability::DeviceBootstrap,
         Capability::DeviceTrust,
         Capability::RecoveryKey,
@@ -33,8 +29,6 @@ impl Capability {
             Self::WorkspaceRefHistory => "workspace-ref-history",
             Self::StorageGc => "storage-gc",
             Self::ObjectMetadata => "object-metadata",
-            Self::WorkViews => "work-views",
-            Self::AgentLeases => "agent-leases",
             Self::DeviceBootstrap => "device-bootstrap",
             Self::DeviceTrust => "device-trust",
             Self::RecoveryKey => "recovery-key",
@@ -143,12 +137,6 @@ pub enum ControlPlaneError {
     WorkspaceMissing {
         workspace_id: WorkspaceId,
     },
-    WorkViewMissing {
-        work_view_id: WorkViewId,
-    },
-    LeaseMissing {
-        lease_id: LeaseId,
-    },
     CompareAndSwap(CompareAndSwapError),
     InvalidObjectKey {
         reason: &'static str,
@@ -196,16 +184,6 @@ impl fmt::Display for ControlPlaneError {
                     workspace_id.as_str()
                 )
             }
-            Self::WorkViewMissing { work_view_id } => {
-                write!(
-                    formatter,
-                    "work view `{}` does not exist",
-                    work_view_id.as_str()
-                )
-            }
-            Self::LeaseMissing { lease_id } => {
-                write!(formatter, "lease `{}` does not exist", lease_id.as_str())
-            }
             Self::CompareAndSwap(error) => error.fmt(formatter),
             Self::InvalidObjectKey { reason } => {
                 write!(formatter, "object key is invalid: {reason}")
@@ -245,8 +223,6 @@ impl Error for ControlPlaneError {
             | Self::Transport { .. }
             | Self::Rejected { .. }
             | Self::WorkspaceMissing { .. }
-            | Self::WorkViewMissing { .. }
-            | Self::LeaseMissing { .. }
             | Self::InvalidObjectKey { .. }
             | Self::ObjectMissing { .. }
             | Self::DeviceRequestMissing { .. }
@@ -254,21 +230,6 @@ impl Error for ControlPlaneError {
             | Self::Unsupported { .. }
             | Self::Conflict { .. }
             | Self::Storage(_) => None,
-        }
-    }
-}
-
-#[cfg(test)]
-mod rejection_code_tests {
-    use super::RejectionCode;
-
-    #[test]
-    fn workspace_access_codes_round_trip_the_canonical_wire_values() {
-        for code in [
-            RejectionCode::WorkspaceMembershipRequired,
-            RejectionCode::WorkspaceOwnerRequired,
-        ] {
-            assert_eq!(RejectionCode::from_wire(code.as_wire()), code);
         }
     }
 }
@@ -283,54 +244,17 @@ impl From<CompareAndSwapError> for ControlPlaneError {
         }
     }
 }
+#[cfg(test)]
+mod rejection_code_tests {
+    use super::RejectionCode;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkViewUpdateError {
-    WorkViewMissing {
-        work_view_id: WorkViewId,
-    },
-    StaleOverlayHead(Box<StaleWorkViewOverlayHead>),
-    Storage(String),
-    Unsupported {
-        capability: Capability,
-        reason: &'static str,
-    },
-}
-
-impl fmt::Display for WorkViewUpdateError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::WorkViewMissing { work_view_id } => {
-                write!(
-                    formatter,
-                    "work view `{}` does not exist",
-                    work_view_id.as_str()
-                )
-            }
-            Self::StaleOverlayHead(stale) => write!(
-                formatter,
-                "work view `{}` overlay is at version {}, not expected version {}",
-                stale.current.work_view_id.as_str(),
-                stale.current.overlay_version,
-                stale.expected_overlay_version
-            ),
-            Self::Storage(error) => write!(formatter, "control-plane storage failed: {error}"),
-            Self::Unsupported { capability, reason } => {
-                write!(formatter, "{capability} is unsupported: {reason}")
-            }
-        }
-    }
-}
-
-impl Error for WorkViewUpdateError {}
-
-impl From<ControlPlaneError> for WorkViewUpdateError {
-    fn from(error: ControlPlaneError) -> Self {
-        match error {
-            ControlPlaneError::WorkViewMissing { work_view_id } => {
-                Self::WorkViewMissing { work_view_id }
-            }
-            error => Self::Storage(error.to_string()),
+    #[test]
+    fn workspace_access_codes_round_trip_the_canonical_wire_values() {
+        for code in [
+            RejectionCode::WorkspaceMembershipRequired,
+            RejectionCode::WorkspaceOwnerRequired,
+        ] {
+            assert_eq!(RejectionCode::from_wire(code.as_wire()), code);
         }
     }
 }

@@ -53,7 +53,10 @@ pub(crate) struct ResolvedDefinition {
 pub(crate) enum DefinitionTarget {
     Public(CommandName),
     DebugClassify,
-    HandoffInstallBundle,
+    SyncWait,
+    SyncAttention,
+    SyncRetry,
+    SyncDismiss,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,21 +69,12 @@ pub(crate) struct DefinitionFailure {
 
 pub(crate) fn resolve_definition(args: &[String]) -> Result<ResolvedDefinition, DefinitionFailure> {
     let default_command = ["help".to_string()];
-    let effective_args = if args.is_empty() {
-        &default_command
+    let normalized_args = normalize_discovery_aliases(args);
+    let effective_args: &[String] = if normalized_args.is_empty() {
+        default_command.as_slice()
     } else {
-        args
+        normalized_args.as_slice()
     };
-    if effective_args.first().map(String::as_str) == Some("handoff")
-        && effective_args.get(1).map(String::as_str) == Some("install-bundle")
-    {
-        return Err(DefinitionFailure {
-            json: output_flag_present(effective_args, "--json"),
-            human: output_flag_present(effective_args, "--human"),
-            quiet: false,
-            error: ParseError::Unknown("handoff install-bundle".to_string()),
-        });
-    }
     let Some((spec, path_len)) = all_command_specs()
         .filter_map(|spec| {
             command_path_matches(effective_args, spec.name)
@@ -115,10 +109,54 @@ pub(crate) fn resolve_definition(args: &[String]) -> Result<ResolvedDefinition, 
         })
 }
 
-fn output_flag_present(args: &[String], flag: &str) -> bool {
-    args.iter()
+fn normalize_discovery_aliases(args: &[String]) -> Vec<String> {
+    if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
+        return discovery_invocation("version", std::iter::empty(), args);
+    }
+
+    let Some(help_index) = args
+        .iter()
         .take_while(|argument| argument.as_str() != "--")
-        .any(|argument| argument == flag)
+        .position(|argument| matches!(argument.as_str(), "--help" | "-h"))
+    else {
+        return args.to_vec();
+    };
+    let prefix = &args[..help_index];
+    let known_topic = all_command_specs()
+        .filter_map(|spec| {
+            command_path_matches(prefix, spec.name)
+                .then_some((spec.name, spec.name.split_whitespace().count()))
+        })
+        .max_by_key(|(_, path_len)| *path_len)
+        .map(|(name, _)| {
+            name.split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        });
+    let topic: Vec<String> = known_topic.unwrap_or_else(|| {
+        prefix
+            .iter()
+            .take_while(|argument| !argument.starts_with('-'))
+            .cloned()
+            .collect()
+    });
+    discovery_invocation("help", topic, args)
+}
+
+fn discovery_invocation(
+    command: &str,
+    topic: impl IntoIterator<Item = String>,
+    args: &[String],
+) -> Vec<String> {
+    let mut normalized = vec![command.to_string()];
+    normalized.extend(topic);
+    normalized.extend(
+        args.iter()
+            .take_while(|argument| argument.as_str() != "--")
+            .filter(|argument| matches!(argument.as_str(), "--json" | "--human"))
+            .cloned(),
+    );
+    normalized
 }
 
 pub(super) fn parse_definition_arguments(
@@ -361,5 +399,40 @@ mod tests {
         .expect_err("repeated root must fail");
 
         assert!(matches!(error, ParseError::Usage { .. }));
+    }
+
+    #[test]
+    fn conventional_discovery_aliases_resolve_to_canonical_commands() {
+        assert_eq!(
+            normalize_discovery_aliases(&["--help".to_string(), "--json".to_string()]),
+            ["help", "--json"]
+        );
+        assert_eq!(
+            normalize_discovery_aliases(&[
+                "work".to_string(),
+                "create".to_string(),
+                "ignored-project".to_string(),
+                "-h".to_string(),
+                "--human".to_string(),
+            ]),
+            ["help", "work", "create", "--human"]
+        );
+        assert_eq!(
+            normalize_discovery_aliases(&["sync".to_string(), "--help".to_string()]),
+            ["help", "sync"]
+        );
+        assert_eq!(
+            normalize_discovery_aliases(&["-V".to_string(), "--json".to_string()]),
+            ["version", "--json"]
+        );
+        assert_eq!(
+            normalize_discovery_aliases(&[
+                "help".to_string(),
+                "--".to_string(),
+                "--help".to_string(),
+                "--json".to_string(),
+            ]),
+            ["help", "--", "--help", "--json"]
+        );
     }
 }

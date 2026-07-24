@@ -54,10 +54,7 @@
   "eventWatermarks": {
     "lastScanAt": "2026-07-07T11:59:58Z",
     "lastEventId": "evt_offline_degraded_001",
-    "eventLagMs": 2000,
-    "syncState": "degraded",
-    "watcherState": "ready",
-    "networkState": "offline"
+    "eventLagMs": 2000
   },
   "nextActions": [
     {

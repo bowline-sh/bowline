@@ -11,12 +11,10 @@ fn help_groups_commands_by_intent() {
         include_str!("../../../../tests/golden/cli/help.txt")
     );
     assert!(stdout.contains("Workspace:"));
-    assert!(stdout.contains("bowline resolve [path] [--tui] [--copy-prompt] [--diff <conflict>]"));
     assert!(stdout.contains("bowline tui [--root <path>] [--project <path>]"));
     assert!(stdout.contains("Trust:"));
     assert!(stdout.contains("Remote:"));
     assert!(stdout.contains("Work:"));
-    assert!(stdout.contains("Agent:"));
     assert!(stdout.contains("Daemon:"));
     assert!(stdout.contains("Support:"));
     assert!(stdout.contains("bowline diagnostics collect"));
@@ -31,8 +29,19 @@ fn discovery_commands_emit_machine_contracts() {
     assert_eq!(version_json["contractVersion"], 8);
     assert_eq!(version_json["protocol"], "bowline-daemon-v2");
 
-    let short_version = run_bowline(&["--version", "--human"]);
-    assert_eq!(short_version.status.code(), Some(2));
+    for args in [&["--version", "--human"][..], &["-V", "--json"][..]] {
+        let short_version = run_bowline(args);
+        assert!(short_version.status.success(), "{args:?}");
+        if args.contains(&"--json") {
+            assert_eq!(parse_stdout_json(short_version)["command"], "version");
+        } else {
+            assert!(
+                String::from_utf8(short_version.stdout)
+                    .expect("version output should be utf8")
+                    .contains("bowline")
+            );
+        }
+    }
 
     let contract = run_bowline(&["contract", "--json"]);
     assert!(contract.status.success());
@@ -53,10 +62,30 @@ fn discovery_commands_emit_machine_contracts() {
 }
 
 #[test]
+fn conventional_help_flags_work_globally_and_for_command_topics() {
+    for args in [
+        &["--help", "--json"][..],
+        &["-h", "--json"][..],
+        &["status", "--help", "--json"][..],
+        &["work", "create", "-h", "--json"][..],
+        &["daemon", "--help", "--json"][..],
+    ] {
+        let output = run_bowline(args);
+        assert!(output.status.success(), "{args:?}");
+        let json = parse_stdout_json(output);
+        assert_eq!(json["command"], "help");
+        assert!(
+            !json["commands"].as_array().expect("commands").is_empty(),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
 fn topic_help_json_works_for_canonical_command_paths() {
     for args in [
         &["help", "status", "--json"][..],
-        &["help", "agent", "start", "--json"][..],
+        &["help", "work", "create", "--json"][..],
         &["help", "daemon", "install", "--json"][..],
     ] {
         let output = run_bowline(args);
@@ -176,27 +205,6 @@ fn work_cleanup_dry_run_points_to_applying_cleanup() {
 }
 
 #[test]
-fn lease_commands_accept_advertised_dry_run_contract() {
-    let join = run_bowline(&[
-        "lease",
-        "join",
-        "--root",
-        "/tmp/bowline-remote",
-        "--dry-run",
-        "--json",
-    ]);
-    assert!(join.status.success(), "{join:?}");
-    let join_json = parse_stdout_json(join);
-    assert_eq!(join_json["command"], "lease join");
-    assert_eq!(join_json["status"], "dry-run");
-
-    // `lease run` was removed with the agent-supervisor stack; only `lease join`
-    // survives and the parser rejects the removed subcommand.
-    let run = run_bowline(&["lease", "run", "--lease", "lease_remote"]);
-    assert!(!run.status.success(), "{run:?}");
-}
-
-#[test]
 fn work_create_dry_run_reports_apply_command_without_mutating() {
     let temp = TempWorkspace::new("cli-agent-use-work_create").expect("temp workspace");
     let raw_code_root = temp.root().join("Code");
@@ -240,10 +248,18 @@ fn work_create_resolves_relative_project_from_active_workspace_root() {
     let db_path = temp.root().join(".state/local.sqlite3");
     seed_workspace_for_work_views(&db_path, &code_root);
     seed_additional_work_view_project(&db_path, &code_root, "acme/web");
+    let socket = unique_socket("work-active-root");
+    let _ = fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).expect("work daemon socket binds");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let server = spawn_work_create_server(listener, 1);
     let envs = [
         ("BOWLINE_METADATA_DB", db_path.display().to_string()),
         ("BOWLINE_GENERATED_AT", "2026-07-10T12:00:00Z".to_string()),
         ("BOWLINE_DEVICE_ID", "dev_cli_active_root".to_string()),
+        ("BOWLINE_CONTROL_SOCKET", socket.display().to_string()),
     ];
 
     let created = run_bowline_with_env_in_dir(
@@ -251,6 +267,7 @@ fn work_create_resolves_relative_project_from_active_workspace_root() {
         &envs,
         &unrelated_cwd,
     );
+    server.join().expect("work daemon server completes");
 
     assert!(created.status.success(), "{created:?}");
     let created_json = parse_stdout_json(created);
@@ -271,10 +288,18 @@ fn explicit_dot_project_paths_stay_relative_to_shell_cwd() {
     let db_path = temp.root().join(".state/local.sqlite3");
     seed_workspace_for_work_views(&db_path, &code_root);
     seed_additional_work_view_project(&db_path, &code_root, "acme/web");
+    let socket = unique_socket("work-dot-project");
+    let _ = fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).expect("work daemon socket binds");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let server = spawn_work_create_server(listener, 2);
     let envs = [
         ("BOWLINE_METADATA_DB", db_path.display().to_string()),
         ("BOWLINE_GENERATED_AT", "2026-07-10T12:00:00Z".to_string()),
         ("BOWLINE_DEVICE_ID", "dev_cli_explicit_dot".to_string()),
+        ("BOWLINE_CONTROL_SOCKET", socket.display().to_string()),
     ];
 
     for (selector, name) in [(".", "dot-work"), ("./src", "dot-child-work")] {
@@ -287,166 +312,7 @@ fn explicit_dot_project_paths_stay_relative_to_shell_cwd() {
         let json = parse_stdout_json(output);
         assert_eq!(json["workView"]["projectPath"], "acme/web");
     }
-
-    for selector in [".", "./src"] {
-        let task = format!("dot path {selector}");
-        let output = run_bowline_with_env_in_dir(
-            &["agent", "start", selector, "--task", &task, "--json"],
-            &envs,
-            &project_path,
-        );
-        assert!(output.status.success(), "{selector}: {output:?}");
-        let json = parse_stdout_json(output);
-        assert_eq!(
-            json["lease"]["writeTargetPath"],
-            project_path.display().to_string()
-        );
-    }
-}
-
-#[test]
-fn agent_sessions_complete_for_direct_and_isolated_targets() {
-    let temp = TempWorkspace::new("cli-agent-complete").expect("temp workspace");
-    let code_root = temp.root().join("Code");
-    let project_path = code_root.join("acme/web");
-    let unrelated_cwd = temp.root().join("shell-cwd");
-    fs::create_dir_all(project_path.join("src")).expect("project src");
-    fs::create_dir_all(&unrelated_cwd).expect("unrelated cwd");
-    fs::write(project_path.join("src/index.ts"), "console.log('base')").expect("source");
-    let code_root = code_root.canonicalize().expect("canonical code root");
-    let db_path = temp.root().join(".state/local.sqlite3");
-    seed_workspace_for_work_views(&db_path, &code_root);
-    seed_additional_work_view_project(&db_path, &code_root, "acme/web");
-    let envs = [
-        ("BOWLINE_METADATA_DB", db_path.display().to_string()),
-        ("BOWLINE_GENERATED_AT", "2026-07-10T12:00:00Z".to_string()),
-        ("BOWLINE_DEVICE_ID", "dev_cli_agent_complete".to_string()),
-    ];
-
-    let direct = run_bowline_with_env_in_dir(
-        &[
-            "agent",
-            "start",
-            "acme/web",
-            "--task",
-            "direct task",
-            "--json",
-        ],
-        &envs,
-        &unrelated_cwd,
-    );
-    assert!(direct.status.success(), "{direct:?}");
-    let direct_json = parse_stdout_json(direct);
-    let direct_lease = direct_json["lease"]["id"]
-        .as_str()
-        .expect("direct lease id");
-    let direct_completed = run_bowline_with_env(
-        &["agent", "complete", "--lease", direct_lease, "--json"],
-        &envs,
-    );
-    assert!(direct_completed.status.success(), "{direct_completed:?}");
-    let direct_completed = parse_stdout_json(direct_completed);
-    assert_eq!(direct_completed["command"], "agent complete");
-    assert_eq!(direct_completed["lease"]["sessionState"], "completed");
-    assert_eq!(direct_completed["status"]["level"], "healthy");
-    assert_eq!(
-        direct_completed["nextActions"][0]["command"],
-        format!(
-            "bowline status --root {} --project acme/web",
-            code_root.display()
-        )
-    );
-    let direct_status = run_bowline_with_env(
-        &[
-            "status",
-            "--root",
-            code_root.to_str().expect("code root"),
-            "--project",
-            "acme/web",
-            "--json",
-        ],
-        &envs,
-    );
-    assert!(direct_status.status.success(), "{direct_status:?}");
-    let direct_status = parse_stdout_json(direct_status);
-    assert_eq!(direct_status["status"]["level"], "healthy");
-    let direct_attention = direct_status["status"]["attentionItems"]
-        .as_array()
-        .expect("attention items");
-    assert!(direct_attention.is_empty());
-    assert!(direct_status["items"].as_array().is_some_and(|items| {
-        items.iter().any(|item| {
-            item["summary"]
-                .as_str()
-                .is_some_and(|summary| summary.contains("completed; inspect synced project state"))
-        })
-    }));
-
-    let isolated = run_bowline_with_env_in_dir(
-        &[
-            "agent",
-            "start",
-            "acme/web",
-            "--task",
-            "isolated task",
-            "--work-view",
-            "--json",
-        ],
-        &envs,
-        &unrelated_cwd,
-    );
-    assert!(isolated.status.success(), "{isolated:?}");
-    let isolated_json = parse_stdout_json(isolated);
-    let isolated_target = isolated_json["lease"]["writeTargetPath"]
-        .as_str()
-        .expect("isolated target")
-        .to_string();
-    let isolated_lease = isolated_json["lease"]["id"]
-        .as_str()
-        .expect("isolated lease id");
-    let isolated_completed = run_bowline_with_env(
-        &["agent", "complete", "--lease", isolated_lease, "--json"],
-        &envs,
-    );
-    assert!(
-        isolated_completed.status.success(),
-        "{isolated_completed:?}"
-    );
-    let isolated_completed = parse_stdout_json(isolated_completed);
-    assert_eq!(isolated_completed["lease"]["sessionState"], "completed");
-    assert_eq!(isolated_completed["status"]["level"], "attention");
-    assert!(
-        isolated_completed["status"]["attentionItems"]
-            .as_array()
-            .is_some_and(|items| items.iter().any(|item| item
-                .as_str()
-                .is_some_and(|item| item.contains("review-ready"))))
-    );
-    assert_eq!(
-        isolated_completed["nextActions"][0]["command"],
-        format!("bowline work review {isolated_target}")
-    );
-    let discarded = run_bowline_with_env(&["work", "discard", &isolated_target, "--json"], &envs);
-    assert!(discarded.status.success(), "{discarded:?}");
-    let after_discard = run_bowline_with_env(
-        &[
-            "status",
-            "--root",
-            code_root.to_str().expect("code root"),
-            "--project",
-            "acme/web",
-            "--json",
-        ],
-        &envs,
-    );
-    assert!(after_discard.status.success(), "{after_discard:?}");
-    let after_discard = parse_stdout_json(after_discard);
-    assert_eq!(after_discard["status"]["level"], "healthy");
-    assert!(
-        after_discard["status"]["attentionItems"]
-            .as_array()
-            .is_some_and(Vec::is_empty)
-    );
+    server.join().expect("work daemon server completes");
 }
 
 #[test]
@@ -936,13 +802,37 @@ fn work_view_cli_creates_lists_restores_and_cleans_without_copying_source() {
     let project_path = code_root.join("apps/web");
     fs::create_dir_all(project_path.join("src")).expect("project src");
     fs::write(project_path.join("src/index.ts"), "console.log('base')").expect("source");
+    fs::create_dir_all(project_path.join(".git")).expect("git metadata");
+    fs::write(project_path.join(".git/HEAD"), "ref: refs/heads/main\n").expect("git head");
+    fs::write(
+        project_path.join(".git/config"),
+        "[core]\n\trepositoryformatversion = 0\n",
+    )
+    .expect("git config");
     let db_path = temp.root().join(".state/local.sqlite3");
     seed_workspace_for_work_views(&db_path, &code_root);
+    MetadataStore::open(&db_path)
+        .expect("metadata opens")
+        .replace_projects(
+            &WorkspaceId::new("ws_cli_phase9"),
+            "root_cli_phase9",
+            &[],
+            "2026-06-25T12:00:00Z",
+        )
+        .expect("simulate scanner metadata lag");
+    let socket = unique_socket("work-journey");
+    let _ = fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).expect("work daemon socket binds");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let server = spawn_work_create_server(listener, 2);
     let project_arg = project_path.display().to_string();
     let envs = [
         ("BOWLINE_METADATA_DB", db_path.display().to_string()),
         ("BOWLINE_GENERATED_AT", "2026-06-25T12:00:00Z".to_string()),
         ("BOWLINE_DEVICE_ID", "dev_cli_phase9".to_string()),
+        ("BOWLINE_CONTROL_SOCKET", socket.display().to_string()),
     ];
 
     let created = run_bowline_with_env(
@@ -953,14 +843,45 @@ fn work_view_cli_creates_lists_restores_and_cleans_without_copying_source() {
     let created_json = parse_stdout_json(created);
     assert_eq!(created_json["command"], "work create");
     assert_eq!(created_json["workView"]["name"], "auth-fix");
+    assert_eq!(
+        created_json["workView"]["baseSnapshotId"],
+        "m_cli_contract_base"
+    );
+    assert_eq!(created_json["workView"]["overlayHead"], "overlay_empty");
     let materialized = code_root.join(".work/apps/web/auth-fix");
     assert!(materialized.is_dir());
     assert!(materialized.join("src/index.ts").exists());
+    // The synced aux index carries the engine record for the view.
+    let aux_file = code_root.join(".bowline-meta/aux-index");
+    assert!(aux_file.is_file());
+    let aux_json: Value =
+        serde_json::from_str(&fs::read_to_string(&aux_file).expect("aux index reads"))
+            .expect("aux index is json");
+    assert_eq!(aux_json["workViews"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        aux_json["workViews"][0]["baseManifestKey"],
+        "m_cli_contract_base"
+    );
+    assert_eq!(aux_json["workViews"][0]["lifecycle"], "active");
+    assert_eq!(aux_json["workViews"][0]["projectPath"], "apps/web");
+    assert_eq!(aux_json["workViews"][0]["name"], "auth-fix");
+
+    MetadataStore::open(&db_path)
+        .expect("metadata opens")
+        .replace_projects(
+            &WorkspaceId::new("ws_cli_phase9"),
+            "root_cli_phase9",
+            &[],
+            "2026-06-25T12:00:00Z",
+        )
+        .expect("simulate peer with aux state but no local naming rows");
+    fs::remove_dir_all(&materialized).expect("simulate peer without local materialization");
 
     let reused = run_bowline_with_env(
         &["work", "create", &project_arg, "auth-fix", "--json"],
         &envs,
     );
+    server.join().expect("work daemon server completes");
     assert!(reused.status.success(), "{reused:?}");
     let reused_json = parse_stdout_json(reused);
     assert_eq!(reused_json["action"], "reused");
@@ -968,26 +889,58 @@ fn work_view_cli_creates_lists_restores_and_cleans_without_copying_source() {
         reused_json["workView"]["id"],
         created_json["workView"]["id"]
     );
+    assert!(
+        materialized.join("src/index.ts").is_file(),
+        "the aux-backed view rematerializes on the peer",
+    );
 
     let listed = run_bowline_with_env(&["work", "list", "--json"], &envs);
     assert!(listed.status.success());
     let listed_json = parse_stdout_json(listed);
     assert_eq!(listed_json["workViews"].as_array().unwrap().len(), 1);
 
-    let discarded = run_bowline_with_env(&["work", "discard", "auth-fix", "--json"], &envs);
+    let discard_envs = [
+        ("BOWLINE_METADATA_DB", db_path.display().to_string()),
+        ("BOWLINE_GENERATED_AT", "2026-06-25T12:01:00Z".to_string()),
+        ("BOWLINE_DEVICE_ID", "dev_cli_phase9".to_string()),
+        ("BOWLINE_CONTROL_SOCKET", socket.display().to_string()),
+    ];
+    let discarded = run_bowline_with_env(&["work", "discard", "auth-fix", "--json"], &discard_envs);
     assert!(discarded.status.success());
     let discarded_json = parse_stdout_json(discarded);
     assert_eq!(discarded_json["workView"]["lifecycle"], "discarded");
+    let aux_json: Value =
+        serde_json::from_str(&fs::read_to_string(&aux_file).expect("aux index reads"))
+            .expect("aux index is json");
+    assert_eq!(aux_json["workViews"][0]["lifecycle"], "discarded");
+    assert_eq!(
+        aux_json["workViews"][0]["updatedAt"],
+        "2026-06-25T12:01:00Z"
+    );
 
-    let hidden_list = run_bowline_with_env(&["work", "list", "--json"], &envs);
+    let hidden_list = run_bowline_with_env(&["work", "list", "--json"], &discard_envs);
     assert!(hidden_list.status.success());
     let hidden_json = parse_stdout_json(hidden_list);
     assert!(hidden_json["workViews"].as_array().unwrap().is_empty());
 
-    let restored = run_bowline_with_env(&["work", "restore", "auth-fix", "--json"], &envs);
+    let restore_envs = [
+        ("BOWLINE_METADATA_DB", db_path.display().to_string()),
+        ("BOWLINE_GENERATED_AT", "2026-06-25T12:02:00Z".to_string()),
+        ("BOWLINE_DEVICE_ID", "dev_cli_phase9".to_string()),
+        ("BOWLINE_CONTROL_SOCKET", socket.display().to_string()),
+    ];
+    let restored = run_bowline_with_env(&["work", "restore", "auth-fix", "--json"], &restore_envs);
     assert!(restored.status.success());
     let restored_json = parse_stdout_json(restored);
     assert_eq!(restored_json["workView"]["lifecycle"], "active");
+    let aux_json: Value =
+        serde_json::from_str(&fs::read_to_string(&aux_file).expect("aux index reads"))
+            .expect("aux index is json");
+    assert_eq!(aux_json["workViews"][0]["lifecycle"], "active");
+    assert_eq!(
+        aux_json["workViews"][0]["updatedAt"],
+        "2026-06-25T12:02:00Z"
+    );
 
     let discarded = run_bowline_with_env(&["work", "discard", "auth-fix", "--json"], &envs);
     assert!(discarded.status.success());
@@ -1000,6 +953,42 @@ fn work_view_cli_creates_lists_restores_and_cleans_without_copying_source() {
     let cleanup_json = parse_stdout_json(cleanup);
     assert_eq!(cleanup_json["deletedPaths"].as_array().unwrap().len(), 1);
     assert!(!materialized.exists());
+
+    let after_cleanup = run_bowline_with_env(&["work", "list", "--all", "--json"], &envs);
+    assert!(after_cleanup.status.success());
+    let after_cleanup_json = parse_stdout_json(after_cleanup);
+    assert_eq!(
+        after_cleanup_json["workViews"][0]["retention"]["state"],
+        "delete-eligible"
+    );
+    let second_preview = run_bowline_with_env(&["work", "cleanup", "--json"], &envs);
+    assert!(second_preview.status.success());
+    assert!(
+        parse_stdout_json(second_preview)["previewedPaths"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // A peer restore is authoritative over this host's terminal cleanup marker.
+    let mut restored_aux: Value =
+        serde_json::from_str(&fs::read_to_string(&aux_file).expect("aux index reads"))
+            .expect("aux index is json");
+    restored_aux["workViews"][0]["lifecycle"] = Value::String("active".to_string());
+    restored_aux["workViews"][0]["updatedAt"] = Value::String("2026-06-25T12:03:00Z".to_string());
+    fs::write(
+        &aux_file,
+        serde_json::to_vec_pretty(&restored_aux).expect("aux index serializes"),
+    )
+    .expect("peer restore writes");
+    let peer_restored = run_bowline_with_env(&["work", "list", "--all", "--json"], &envs);
+    assert!(peer_restored.status.success());
+    let peer_restored_json = parse_stdout_json(peer_restored);
+    assert_eq!(peer_restored_json["workViews"][0]["lifecycle"], "active");
+    assert_eq!(
+        peer_restored_json["workViews"][0]["retention"]["state"],
+        "current"
+    );
 }
 
 #[test]
@@ -1021,6 +1010,13 @@ fn work_view_cli_uses_default_metadata_path_without_env_override() {
     };
     let db_path = database_path_for_platform(platform, &home, Some(&xdg_state_home));
     seed_workspace_for_work_views(&db_path, &code_root);
+    let socket = unique_socket("work-default-db");
+    let _ = fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).expect("work daemon socket binds");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let server = spawn_work_create_server(listener, 1);
 
     let project_arg = project_path.display().to_string();
     let envs = [
@@ -1028,6 +1024,7 @@ fn work_view_cli_uses_default_metadata_path_without_env_override() {
         ("XDG_STATE_HOME", xdg_state_home.display().to_string()),
         ("BOWLINE_GENERATED_AT", "2026-06-25T12:00:00Z".to_string()),
         ("BOWLINE_DEVICE_ID", "dev_cli_default_db".to_string()),
+        ("BOWLINE_CONTROL_SOCKET", socket.display().to_string()),
     ];
 
     let created = run_bowline_with_env_removed(
@@ -1035,6 +1032,7 @@ fn work_view_cli_uses_default_metadata_path_without_env_override() {
         &envs,
         &["BOWLINE_METADATA_DB"],
     );
+    server.join().expect("work daemon server completes");
     assert!(created.status.success(), "{created:?}");
     let created_json = parse_stdout_json(created);
     assert_eq!(created_json["command"], "work create");
@@ -1150,4 +1148,92 @@ fn setup_and_status_observe_existing_code_root() {
     );
     let status_text = serde_json::to_string(&status_json).expect("status json string");
     assert!(status_text.contains("local branches ahead of their tracking refs"));
+}
+
+#[test]
+fn work_review_and_accept_follow_manifest_engine_contract() {
+    let temp = TempWorkspace::new("cli-work-review-accept").expect("temp workspace");
+    let code_root = temp.root().join("Code");
+    let project_path = code_root.join("apps/web");
+    fs::create_dir_all(project_path.join("src")).expect("project src");
+    fs::write(project_path.join("src/index.ts"), "console.log('base')").expect("source");
+    let db_path = temp.root().join(".state/local.sqlite3");
+    seed_workspace_for_work_views(&db_path, &code_root);
+    let socket = unique_socket("work-review-accept");
+    let _ = fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).expect("work daemon socket binds");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    // Three RPC connections: create, review, accept.
+    let server = spawn_work_rpc_server(listener, 3);
+    let project_arg = project_path.display().to_string();
+    let envs = [
+        ("BOWLINE_METADATA_DB", db_path.display().to_string()),
+        ("BOWLINE_GENERATED_AT", "2026-06-25T12:00:00Z".to_string()),
+        ("BOWLINE_DEVICE_ID", "dev_cli_review_accept".to_string()),
+        ("BOWLINE_CONTROL_SOCKET", socket.display().to_string()),
+    ];
+
+    let created = run_bowline_with_env(
+        &["work", "create", &project_arg, "auth-fix", "--json"],
+        &envs,
+    );
+    assert!(created.status.success(), "{created:?}");
+
+    let reviewed = run_bowline_with_env(&["work", "review", "auth-fix", "--json"], &envs);
+    assert!(reviewed.status.success(), "{reviewed:?}");
+    let reviewed_json = parse_stdout_json(reviewed);
+    assert_eq!(reviewed_json["command"], "work review");
+    assert_eq!(reviewed_json["action"], "diffed");
+    assert_eq!(
+        reviewed_json["workView"]["overlayHead"],
+        "m_cli_contract_overlay"
+    );
+    assert_eq!(reviewed_json["workView"]["overlayVersion"], 1);
+    let changes = reviewed_json["changes"].as_array().expect("changes array");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0]["path"], "apps/web/src/feature.ts");
+    assert_eq!(changes[0]["kind"], "added");
+    assert_eq!(changes[0]["containsSecrets"], false);
+    assert_eq!(changes[0]["summary"], "created in work view auth-fix");
+
+    let accept_envs = [
+        ("BOWLINE_METADATA_DB", db_path.display().to_string()),
+        ("BOWLINE_GENERATED_AT", "2026-06-25T12:03:00Z".to_string()),
+        ("BOWLINE_DEVICE_ID", "dev_cli_review_accept".to_string()),
+        ("BOWLINE_CONTROL_SOCKET", socket.display().to_string()),
+    ];
+    let accepted = run_bowline_with_env(&["work", "accept", "auth-fix", "--json"], &accept_envs);
+    assert!(accepted.status.success(), "{accepted:?}");
+    let accepted_json = parse_stdout_json(accepted);
+    assert_eq!(accepted_json["command"], "work accept");
+    assert_eq!(accepted_json["action"], "accepted");
+    assert_eq!(accepted_json["workView"]["lifecycle"], "accepted");
+    assert_eq!(
+        accepted_json["workView"]["overlayHead"],
+        "m_cli_contract_overlay"
+    );
+    server.join().expect("work daemon server completes");
+
+    // The synced aux index carries the retired record with its final overlay.
+    let aux_file = code_root.join(".bowline-meta/aux-index");
+    let aux_json: Value =
+        serde_json::from_str(&fs::read_to_string(&aux_file).expect("aux index reads"))
+            .expect("aux index is json");
+    assert_eq!(aux_json["workViews"][0]["lifecycle"], "accepted");
+    assert_eq!(
+        aux_json["workViews"][0]["overlayManifestKey"],
+        "m_cli_contract_overlay"
+    );
+    assert_eq!(
+        aux_json["workViews"][0]["updatedAt"],
+        "2026-06-25T12:03:00Z"
+    );
+
+    // Accepted views leave the default list.
+    let listed = run_bowline_with_env(&["work", "list", "--json"], &accept_envs);
+    assert!(listed.status.success());
+    let listed_json = parse_stdout_json(listed);
+    assert!(listed_json["workViews"].as_array().unwrap().is_empty());
 }

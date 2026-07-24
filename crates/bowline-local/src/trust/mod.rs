@@ -10,7 +10,7 @@ use bowline_core::{
         DeviceApprovalRequest, DeviceApprovalRequestState, DeviceFingerprint, DevicePlatform,
         DeviceRecord, DeviceTrustState, EncryptedDeviceGrant, RecoveryKeyState,
     },
-    ids::{DeviceApprovalRequestId, DeviceId, EncryptedDeviceGrantId, LeaseId, WorkspaceId},
+    ids::{DeviceApprovalRequestId, DeviceId, EncryptedDeviceGrantId, WorkspaceId},
     status::RepairCommand,
 };
 
@@ -150,7 +150,6 @@ pub struct DeviceRequestOptions {
     pub device_name: String,
     pub platform: DevicePlatform,
     pub host: Option<String>,
-    pub lease_id: Option<String>,
     pub root: Option<String>,
     pub runtime: Option<String>,
     pub generated_at: String,
@@ -185,7 +184,6 @@ where
     });
     input.platform = platform_string(options.platform).to_string();
     input.host = options.host;
-    input.lease_id = options.lease_id.map(LeaseId::new);
     input.root = options.root;
     input.runtime = options.runtime;
     let request = control_plane.create_device_request(input)?;
@@ -482,8 +480,8 @@ pub(crate) fn core_request_from_control_plane(
             }
         },
         host: request.host,
-        lease_id: request.lease_id.map(String::from),
-        lease_handoff_digest: request.lease_handoff_digest,
+        // The hosted device request no longer carries agent-lease coupling
+        // (Plan 111); the core fields die with the next core sweep.
         root: request.root,
         setup_receipts_digest: request.setup_receipts_digest,
     }
@@ -769,7 +767,6 @@ mod tests {
                 device_name: "Fresh Linux".to_string(),
                 platform: DevicePlatform::Linux,
                 host: None,
-                lease_id: None,
                 root: Some("~/Remote Code".to_string()),
                 runtime: None,
                 generated_at: "t000000000002".to_string(),
@@ -829,7 +826,6 @@ mod tests {
                 device_name: "Fresh Linux".to_string(),
                 platform: DevicePlatform::Linux,
                 host: None,
-                lease_id: None,
                 root: Some("~/Code".to_string()),
                 runtime: None,
                 generated_at: "t000000000002".to_string(),

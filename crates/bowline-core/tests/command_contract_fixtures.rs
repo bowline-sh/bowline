@@ -4,9 +4,8 @@
 use std::collections::BTreeSet;
 
 use bowline_core::commands::{
-    AgentContextCommandOutput, AgentLeaseCreateCommandOutput, AgentPromptCommandOutput,
-    CommandName, ContractCommandOutput, ContractSummaryCommandOutput, DryRunCommandOutput,
-    DryRunStatus, HelpCommandOutput, HistoryCommandOutput, ScopedContractCommandOutput,
+    CommandName, ContractCommandOutput, ContractSummaryCommandOutput, DoctorCommandOutput,
+    DryRunCommandOutput, DryRunStatus, HelpCommandOutput, ScopedContractCommandOutput,
     SetupCommandOutput, SetupProjectOutput, VersionCommandOutput, WorkCreateCommandOutput,
     WorkDiffCommandOutput, WorkLifecycleCommandOutput,
 };
@@ -42,15 +41,6 @@ fn rust_command_manifest_decoders_match_shared_contract_fixtures() {
         assert_eq!(fixture.format, "json");
         let expected = contract_fixtures::fixture_json(&fixture.path);
         match fixture.kind.as_str() {
-            "AgentContextCommandOutput" => {
-                round_trip_command::<AgentContextCommandOutput>(&fixture, expected)
-            }
-            "AgentLeaseCreateCommandOutput" => {
-                round_trip_command::<AgentLeaseCreateCommandOutput>(&fixture, expected)
-            }
-            "AgentPromptCommandOutput" => {
-                round_trip_command::<AgentPromptCommandOutput>(&fixture, expected)
-            }
             "ContractCommandOutput" => {
                 round_trip_command::<ContractCommandOutput>(&fixture, expected)
             }
@@ -65,11 +55,9 @@ fn rust_command_manifest_decoders_match_shared_contract_fixtures() {
                     expected
                 );
             }
+            "DoctorCommandOutput" => round_trip_command::<DoctorCommandOutput>(&fixture, expected),
             "DryRunCommandOutput" => round_trip_command::<DryRunCommandOutput>(&fixture, expected),
             "HelpCommandOutput" => round_trip_command::<HelpCommandOutput>(&fixture, expected),
-            "HistoryCommandOutput" => {
-                round_trip_command::<HistoryCommandOutput>(&fixture, expected)
-            }
             "SetupProjectOutput" => round_trip_command::<SetupProjectOutput>(&fixture, expected),
             "SetupCommandOutput" => round_trip_command::<SetupCommandOutput>(&fixture, expected),
             "ScopedContractCommandOutput" => {
@@ -104,17 +92,6 @@ fn rust_setup_json_matches_shared_contract_fixture() {
         actual, expected,
         "setup-blocked fixture changed on round trip"
     );
-}
-
-#[test]
-fn rust_history_json_matches_shared_contract_fixture() {
-    let expected = fixture_json("history");
-    let output: HistoryCommandOutput =
-        serde_json::from_value(expected.clone()).expect("fixture parses as history output");
-    let actual = serde_json::to_value(&output).expect("history output serializes");
-
-    assert_eq!(output.command, CommandName::History);
-    assert_eq!(actual, expected, "history fixture changed on round trip");
 }
 
 #[test]
@@ -160,36 +137,6 @@ fn rust_work_view_json_matches_shared_contract_fixtures() {
             expected
         );
     }
-}
-
-#[test]
-fn rust_agent_json_matches_shared_contract_fixtures() {
-    let lease_expected = fixture_json("agent-lease-create");
-    let lease: AgentLeaseCreateCommandOutput = serde_json::from_value(lease_expected.clone())
-        .expect("fixture parses as agent start output");
-    assert_eq!(lease.command, CommandName::AgentStart);
-    assert_eq!(
-        serde_json::to_value(&lease).expect("agent start serializes"),
-        lease_expected
-    );
-
-    let context_expected = fixture_json("agent-context");
-    let context: AgentContextCommandOutput = serde_json::from_value(context_expected.clone())
-        .expect("fixture parses as agent context output");
-    assert_eq!(context.command, CommandName::AgentContext);
-    assert_eq!(
-        serde_json::to_value(&context).expect("agent context serializes"),
-        context_expected
-    );
-
-    let prompt_expected = fixture_json("agent-prompt");
-    let prompt: AgentPromptCommandOutput = serde_json::from_value(prompt_expected.clone())
-        .expect("fixture parses as agent prompt output");
-    assert_eq!(prompt.command, CommandName::AgentPrompt);
-    assert_eq!(
-        serde_json::to_value(&prompt).expect("agent prompt serializes"),
-        prompt_expected
-    );
 }
 
 #[test]

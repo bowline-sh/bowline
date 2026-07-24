@@ -77,36 +77,6 @@ fn command_args_for_apply(command: &Command) -> Option<Vec<String>> {
             }
             Some(argv)
         }
-        Command::ApproveMergePlugin(args) => {
-            let mut argv = vec![
-                "device".to_string(),
-                "approve".to_string(),
-                "--merge-plugin".to_string(),
-                "--root".to_string(),
-                args.selection.root.clone(),
-            ];
-            if let Some(project) = &args.selection.project {
-                argv.extend(["--project".to_string(), project.clone()]);
-            }
-            argv.extend([
-                "--id".to_string(),
-                args.id.clone(),
-                "--plugin-version".to_string(),
-                args.version.clone(),
-                "--digest".to_string(),
-                args.digest.clone(),
-            ]);
-            if let Some(matcher_version) = &args.matcher_version {
-                argv.extend(["--matcher-version".to_string(), matcher_version.clone()]);
-            }
-            if let Some(validator_version) = &args.validator_version {
-                argv.extend(["--validator-version".to_string(), validator_version.clone()]);
-            }
-            if args.yes {
-                argv.push("--yes".to_string());
-            }
-            Some(argv)
-        }
         Command::Deny(args) => {
             let mut argv = vec![
                 "device".to_string(),
@@ -165,15 +135,6 @@ fn command_args_for_apply(command: &Command) -> Option<Vec<String>> {
             if let Some(artifact) = &args.artifact {
                 argv.extend(["--binary".to_string(), artifact.clone()]);
             }
-            if let Some(project) = &args.project {
-                argv.extend(["--project".to_string(), project.clone()]);
-            }
-            if let Some(task) = &args.task {
-                argv.extend(["--task".to_string(), task.clone()]);
-            }
-            if let Some(agent) = &args.agent {
-                argv.extend(["--agent".to_string(), agent.clone()]);
-            }
             Some(argv)
         }
         Command::WorkCreate(_)
@@ -202,83 +163,6 @@ fn command_args_for_apply(command: &Command) -> Option<Vec<String>> {
             }
             if let Some(grace_days) = args.grace_days {
                 argv.extend(["--grace".to_string(), grace_days.to_string()]);
-            }
-            Some(argv)
-        }
-        Command::AgentLeaseCreate(args) => {
-            let mut argv = vec![
-                "agent".to_string(),
-                "start".to_string(),
-                args.project_path.clone(),
-                "--task".to_string(),
-                args.task.clone(),
-                "--base".to_string(),
-                agent_base_token(args.base).to_string(),
-            ];
-            if args.work_view {
-                argv.push("--work-view".to_string());
-            }
-            if args.force_stale {
-                argv.push("--force-stale".to_string());
-            }
-            if let Some(on_device) = &args.on_device {
-                argv.push("--on".to_string());
-                argv.push(on_device.clone());
-            }
-            if let Some(remote_runtime) = &args.remote_runtime {
-                argv.push("--remote".to_string());
-                argv.push(remote_runtime.clone());
-            }
-            if let Some(remote_root) = &args.remote_root {
-                argv.push("--remote-root".to_string());
-                argv.push(remote_root.clone());
-            }
-            Some(argv)
-        }
-        Command::AgentComplete(args) => Some(vec![
-            "agent".to_string(),
-            "complete".to_string(),
-            "--lease".to_string(),
-            args.lease_id.clone(),
-        ]),
-        Command::AgentCancel(args) => Some(vec![
-            "agent".to_string(),
-            "cancel".to_string(),
-            "--lease".to_string(),
-            args.lease_id.clone(),
-        ]),
-        Command::AgentExtend(args) => Some(vec![
-            "agent".to_string(),
-            "extend".to_string(),
-            "--lease".to_string(),
-            args.lease_id.clone(),
-            "--hours".to_string(),
-            args.hours.to_string(),
-        ]),
-        Command::LeaseJoin(args) => {
-            let mut argv = vec![
-                "lease".to_string(),
-                "join".to_string(),
-                "--root".to_string(),
-                args.root.clone(),
-                "--lease-json-env".to_string(),
-                args.lease_json_env.clone(),
-            ];
-            if let Some(lease_id) = &args.lease_id {
-                argv.push("--lease".to_string());
-                argv.push(lease_id.clone());
-            }
-            if let Some(runtime) = &args.runtime {
-                argv.push("--runtime".to_string());
-                argv.push(runtime.clone());
-            }
-            if let Some(request_id) = &args.request_id {
-                argv.push("--request".to_string());
-                argv.push(request_id.clone());
-            }
-            if let Some(token_env) = &args.token_env {
-                argv.push("--token-env".to_string());
-                argv.push(token_env.clone());
             }
             Some(argv)
         }
@@ -344,12 +228,6 @@ pub(super) fn dry_run_plan(
             vec!["approve a pending device trust request".to_string()],
             "trust-change".to_string(),
         )),
-        Command::ApproveMergePlugin(args) => Some((
-            CommandName::Approve,
-            format!("{} {}", args.id, args.version),
-            vec!["approve a merge plugin identity for this device".to_string()],
-            "policy-change".to_string(),
-        )),
         Command::Deny(args) => Some((
             CommandName::Deny,
             trust_selector_label(&args.selector),
@@ -397,7 +275,7 @@ pub(super) fn dry_run_plan(
             args.host.clone(),
             vec![
                 "install or update remote bowline binaries".to_string(),
-                "optionally create a remote agent handoff".to_string(),
+                "establish device trust so the remote host materializes the workspace".to_string(),
             ],
             "remote-mutation".to_string(),
         )),
@@ -467,46 +345,6 @@ pub(super) fn dry_run_plan(
             },
             "remote-destruction-scheduled".to_string(),
         )),
-        Command::AgentLeaseCreate(args) => Some((
-            CommandName::AgentStart,
-            args.project_path.clone(),
-            vec![
-                "create an agent lease".to_string(),
-                "optionally create a work view".to_string(),
-            ],
-            "workspace-metadata".to_string(),
-        )),
-        Command::AgentComplete(args) => Some((
-            CommandName::AgentComplete,
-            args.lease_id.clone(),
-            vec!["mark the agent session completed".to_string()],
-            "workspace-metadata".to_string(),
-        )),
-        Command::AgentCancel(args) => Some((
-            CommandName::AgentCancel,
-            args.lease_id.clone(),
-            vec!["cancel the agent session and revoke its authority".to_string()],
-            "workspace-metadata".to_string(),
-        )),
-        Command::AgentExtend(args) => Some((
-            CommandName::AgentExtend,
-            args.lease_id.clone(),
-            vec![format!(
-                "extend the agent lease to at least {} hours from now",
-                args.hours
-            )],
-            "workspace-metadata".to_string(),
-        )),
-        Command::LeaseJoin(args) => Some((
-            CommandName::LeaseJoin,
-            args.root.clone(),
-            vec![
-                "initialize the sandbox root".to_string(),
-                "create or accept a bootstrap-backed device request".to_string(),
-                "import the agent lease handoff when present".to_string(),
-            ],
-            "trust-change".to_string(),
-        )),
         Command::Daemon(DaemonCommand::Install) => Some((
             CommandName::DaemonInstall,
             "local OS service".to_string(),
@@ -535,13 +373,6 @@ fn trust_selector_argv(selector: &TrustRequestSelector) -> Vec<String> {
             vec!["--request".to_string(), request_id.clone()]
         }
         TrustRequestSelector::Code(code) => vec!["--code".to_string(), code.clone()],
-    }
-}
-
-fn agent_base_token(base: bowline_core::commands::AgentLeaseBase) -> &'static str {
-    match base {
-        bowline_core::commands::AgentLeaseBase::LatestWorkspace => "latest-workspace",
-        bowline_core::commands::AgentLeaseBase::LatestMain => "latest:main",
     }
 }
 

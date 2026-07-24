@@ -150,14 +150,13 @@ deny a pending device only after explicit inline confirmation, using the same
 `bowline device approve --request <id> --yes --json` and
 `bowline device deny --request <id> --json` trust paths as the CLI. CLI and TUI
 remain the durable surfaces for all other actions and repair through
-`bowline status --json`, `bowline tui [path]`, and
-`bowline resolve <project> --tui`. Headless hosts must be able to complete the
-same decisions through CLI prompts, JSON output, and copy-prompt repair.
-Conflicts stay passive but visible; the app must not steal focus or auto-launch
-repair. Native notifications are allowed only for pending device approvals,
-blocking degraded state with active work at risk, or review-ready agent work the
-user started, followed, or is already viewing. Other review-ready agent work
-stays passive in status.
+`bowline status --json` and `bowline tui [path]`. Headless hosts must be able to
+complete the same decisions through CLI prompts, JSON output, and copy-prompt
+repair. Conflicts stay passive but visible; the app must not steal focus or
+auto-launch repair. Native notifications are allowed only for pending device
+approvals, blocking degraded state with active work at risk, or review-ready
+agent work the user started, followed, or is already viewing. Other review-ready
+agent work stays passive in status.
 
 ## Agent obligations
 

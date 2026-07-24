@@ -8,16 +8,14 @@ use crate::{
         RecoveryKeyState, RevokedDevice,
     },
     events::WorkspaceEvent,
-    ids::{
-        DeviceId, EventId, LeaseId, PolicyVersion, ProjectId, SnapshotId, WorkViewId, WorkspaceId,
-    },
+    ids::{EventId, ProjectId, WorkspaceId},
+    introspection::{AuthenticationIntrospection, ServiceIntrospection, SyncIntrospection},
     status::{
         DeviceApprovalAffordance, EventWatermarks, FreshnessVerdict, RepairCommand,
         StaleBaseStatus, StatusScope, SyncQueueStatus, WorkspaceStatus, WorkspaceSummary,
     },
 };
 
-pub use crate::history::*;
 pub use crate::wire::generated::CommandName;
 pub use crate::work_views::{
     WorkCleanupCommandOutput, WorkCreateCommandOutput, WorkDiffCommandOutput,
@@ -29,8 +27,12 @@ pub const CONTRACT_VERSION: u16 = crate::wire::MACHINE_CONTRACT_VERSION;
 mod agent;
 pub use agent::BootstrapStepName;
 pub use agent::*;
-mod handoff;
-pub use handoff::*;
+
+mod doctor;
+pub use doctor::{
+    DoctorCheck, DoctorCheckId, DoctorCheckStatus, DoctorCommandOutput, DoctorEngine, DoctorReason,
+    DoctorSummary,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,6 +128,15 @@ pub struct VersionCommandOutput {
     pub command: CommandName,
     pub generated_at: String,
     pub cli_version: String,
+    // Machine-readable introspection (contract: version --json). Populated on the
+    // live CLI surface; absent on fixtures/hosted round-trips where they are not
+    // derived. `daemon_version` is omitted when the local daemon is unreachable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<String>,
     pub protocol: String,
     pub protocol_version: u32,
     pub default_socket: String,
@@ -371,11 +382,15 @@ pub struct StatusCommandOutput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_workspace_root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_project_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_summary: Option<WorkspaceSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup_readiness: Option<crate::status::ProjectSetupReadiness>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_queue: Option<SyncQueueStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub convergence: Option<crate::status::ConvergenceStatusSummary>,
     #[serde(default)]
     pub freshness: FreshnessVerdict,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -390,6 +405,15 @@ pub struct StatusCommandOutput {
     // trusted local status surfaces and must never reach hosted/persisted payloads.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub device_approvals: Vec<DeviceApprovalAffordance>,
+    // Machine-readable introspection (contract: status --json). Derived on the
+    // live CLI surface only; absent on fixtures and hosted projections that do
+    // not populate them, keeping the hosted wire shape unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<ServiceIntrospection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<AuthenticationIntrospection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<SyncIntrospection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

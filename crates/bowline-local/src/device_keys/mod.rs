@@ -4,6 +4,7 @@ use age::secrecy::ExposeSecret;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use bowline_core::{
     devices::{DeviceFingerprint, PublicDeviceKey},
+    fs_atomic::{AtomicWriteOptions, write_atomic},
     ids::{AccountId, DeviceId, WorkspaceId},
 };
 use serde::{Deserialize, Serialize};
@@ -13,7 +14,10 @@ const DEVICE_IDENTITY_SECRET: &str = "device-identity-v1";
 const ACCOUNT_TOKENS_SECRET: &str = "account-tokens-v1";
 const DEVICE_PROOF_VERIFIERS_SECRET: &str = "device-proof-verifiers-v1";
 const SECRET_FILE_NAME: &str = "secrets.v1";
+mod daemon_env;
+mod encoding;
 mod replacement;
+use encoding::{decode_signing_seed, fingerprint_for_public_key};
 #[cfg(test)]
 pub(crate) use replacement::transaction_entered;
 use replacement::{secret_temp_path, with_verifier_transaction};
@@ -68,6 +72,28 @@ pub fn default_device_key_store() -> Result<Box<dyn DeviceKeyStore>, DeviceKeyEr
     Ok(Box::new(ServerLocalSecretStore::new(
         ServerLocalSecretStore::default_path()?,
     )))
+}
+
+pub fn clear_account_session_from_daemon_env(state_root: &std::path::Path) -> io::Result<bool> {
+    let path = state_root.join("daemon.env");
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let Some(updated) = daemon_env::without_account_session(&contents) else {
+        return Ok(false);
+    };
+    write_atomic(
+        &path,
+        updated.as_bytes(),
+        AtomicWriteOptions {
+            unix_mode: Some(0o600),
+            reject_symlink: true,
+            replace_existing: true,
+        },
+    )?;
+    Ok(true)
 }
 
 pub fn workspace_key_bytes(bytes: &[u8]) -> Result<[u8; 32], DeviceKeyError> {
@@ -670,19 +696,6 @@ fn upsert_device_proof_verifier(
         existing.workspace_id != verifier.workspace_id || existing.device_id != verifier.device_id
     });
     verifiers.push(verifier);
-}
-
-fn fingerprint_for_public_key(public_key: &str) -> DeviceFingerprint {
-    let hash = blake3::hash(public_key.as_bytes());
-    DeviceFingerprint::new(format!("fp_{}", &hash.to_hex()[..16]))
-}
-
-fn decode_signing_seed(value: &str) -> Result<[u8; 32], DeviceKeyError> {
-    BASE64
-        .decode(value)
-        .map_err(|error| DeviceKeyError::CorruptSecret(error.to_string()))?
-        .try_into()
-        .map_err(|_| DeviceKeyError::CorruptSecret("signing seed must be 32 bytes".to_string()))
 }
 
 #[cfg(unix)]

@@ -171,9 +171,9 @@ impl LifecycleErrorKind {
             NamespaceLifecycleError::InvalidState(_) => Self::InvalidState,
             NamespaceLifecycleError::ProjectMissing(_) => Self::ProjectMissing,
             NamespaceLifecycleError::EventAppend(_) => Self::AuditAppendFailed,
-            NamespaceLifecycleError::Metadata(_)
-            | NamespaceLifecycleError::ConflictBundle(_)
-            | NamespaceLifecycleError::Io(_) => Self::RuntimeFailure,
+            NamespaceLifecycleError::Metadata(_) | NamespaceLifecycleError::Io(_) => {
+                Self::RuntimeFailure
+            }
         }
     }
 
@@ -229,7 +229,7 @@ fn lifecycle_error_output(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bowline_local::{metadata::MetadataError, sync::conflicts::ConflictBundleError};
+    use bowline_local::metadata::MetadataError;
 
     #[test]
     fn lifecycle_error_variants_map_to_contract_exit_codes() {
@@ -248,9 +248,6 @@ mod tests {
         let retryable_errors = [
             NamespaceLifecycleError::Metadata(MetadataError::InvalidStorageMetadata(
                 "corrupt metadata".to_string(),
-            )),
-            NamespaceLifecycleError::ConflictBundle(ConflictBundleError::UnsafePath(
-                "../escape".to_string(),
             )),
             NamespaceLifecycleError::Io(std::io::Error::other("disk unavailable")),
             NamespaceLifecycleError::EventAppend("event store unavailable".to_string()),

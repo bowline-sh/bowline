@@ -73,7 +73,7 @@ fn hydration_blocked_without_newer_success_remains_visible() {
     );
     let mut acc = StatusAccumulator::new("2026-07-15T18:00:01Z");
 
-    apply_status_signal_events(&[blocked], &empty_watermarks(), &BTreeSet::new(), &mut acc);
+    apply_status_signal_events(&[blocked], &BTreeSet::new(), &mut acc);
 
     assert!(
         acc.facts
@@ -103,12 +103,7 @@ fn newer_sync_completion_clears_older_hydration_block_across_subjects() {
     );
     let mut acc = StatusAccumulator::new("2026-07-15T18:00:02Z");
 
-    apply_status_signal_events(
-        &[completed, blocked],
-        &empty_watermarks(),
-        &BTreeSet::new(),
-        &mut acc,
-    );
+    apply_status_signal_events(&[completed, blocked], &BTreeSet::new(), &mut acc);
 
     assert!(acc.facts.is_empty());
 }
@@ -134,12 +129,7 @@ fn older_sync_completion_does_not_clear_newer_hydration_block() {
     );
     let mut acc = StatusAccumulator::new("2026-07-15T18:00:02Z");
 
-    apply_status_signal_events(
-        &[blocked, completed],
-        &empty_watermarks(),
-        &BTreeSet::new(),
-        &mut acc,
-    );
+    apply_status_signal_events(&[blocked, completed], &BTreeSet::new(), &mut acc);
 
     assert_eq!(
         acc.facts
@@ -171,12 +161,7 @@ fn newer_hydration_completion_still_clears_older_hydration_block() {
     );
     let mut acc = StatusAccumulator::new("2026-07-15T18:00:02Z");
 
-    apply_status_signal_events(
-        &[completed, blocked],
-        &empty_watermarks(),
-        &BTreeSet::new(),
-        &mut acc,
-    );
+    apply_status_signal_events(&[completed, blocked], &BTreeSet::new(), &mut acc);
 
     assert!(acc.facts.is_empty());
 }
@@ -778,19 +763,12 @@ fn recovered_component_events_do_not_keep_status_unhealthy() {
 }
 
 #[test]
-fn post_commit_followup_degraded_event_stays_visible_in_status() {
-    let temp = TempWorkspace::new("status-post-commit-followup-degraded").expect("temp workspace");
+fn uncleared_sync_degraded_event_stays_visible_in_status() {
+    let temp = TempWorkspace::new("status-sync-degraded-event").expect("temp workspace");
     let db_path = temp.root().join("state").join("local.sqlite3");
     let workspace_id = WorkspaceId::new("ws_code");
     let store = MetadataStore::open(&db_path).expect("metadata opens");
     seed_workspace_root(&store, &workspace_id);
-    store
-        .set_component_state(
-            PostCommitSyncComponent::WorkViewOverlaySync.as_str(),
-            "degraded",
-            "2026-07-05T12:31:00Z",
-        )
-        .expect("sync state");
     store
         .append_event(WorkspaceEvent::new(
             EventId::new("evt_sync_post_commit_degraded"),
@@ -823,41 +801,6 @@ fn post_commit_followup_degraded_event_stays_visible_in_status() {
             .attention_items
             .iter()
             .any(|item| item == "Work-view overlay sync is behind.")
-    );
-}
-
-#[test]
-fn component_degradation_always_reports_limited_capability() {
-    let temp = TempWorkspace::new("status-components").expect("temp workspace");
-    let db_path = temp.root().join("state").join("local.sqlite3");
-    let workspace_id = WorkspaceId::new("ws_code");
-    let store = MetadataStore::open(&db_path).expect("metadata opens");
-    seed_workspace_root(&store, &workspace_id);
-    store
-        .set_component_state("sync", "degraded", "2026-06-23T12:00:00Z")
-        .expect("sync state");
-    store
-        .set_component_state("watcher", "unavailable", "2026-06-23T12:00:00Z")
-        .expect("watcher state");
-    store
-        .set_component_state("network", "offline", "2026-06-23T12:00:00Z")
-        .expect("network state");
-
-    let output = compose_status(StatusOptions {
-        db_path: Some(db_path),
-        requested_path: None,
-        workspace_scope: true,
-        generated_at: "2026-06-23T12:00:00Z".to_string(),
-    })
-    .expect("status composes");
-
-    assert_eq!(output.status.level, StatusLevel::Limited);
-    assert!(!output.limits.is_empty());
-    assert!(
-        output
-            .limits
-            .iter()
-            .all(|limit| !limit.still_works.is_empty())
     );
 }
 

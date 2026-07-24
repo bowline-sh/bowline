@@ -204,11 +204,11 @@ pub(super) fn print_daemon_start(socket: &Path, json: bool) -> ExitCode {
             }
             DaemonStartHandshakeStatus::WorkspaceMismatch => {
                 let _ = request_shutdown(socket);
-                wait_for_daemon_socket_to_stop(socket, Duration::from_secs(3));
+                let _ = wait_for_daemon_socket_to_stop(socket, Duration::from_secs(3));
             }
         },
         Err(error) => {
-            remove_stale_daemon_socket_after_connect_error(socket, &error);
+            let _ = remove_stale_daemon_socket_after_connect_error(socket, &error);
         }
     }
 
@@ -236,21 +236,28 @@ pub(super) fn print_daemon_start(socket: &Path, json: bool) -> ExitCode {
     }
 }
 
-pub(super) fn remove_stale_daemon_socket_after_connect_error(socket: &Path, error: &io::Error) {
+pub(super) fn remove_stale_daemon_socket_after_connect_error(
+    socket: &Path,
+    error: &io::Error,
+) -> io::Result<bool> {
     if error.kind() != io::ErrorKind::ConnectionRefused {
-        return;
+        return Ok(false);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileTypeExt;
 
-        if std::fs::symlink_metadata(socket)
-            .map(|metadata| metadata.file_type().is_socket())
-            .unwrap_or(false)
-        {
-            let _ = std::fs::remove_file(socket);
+        match std::fs::symlink_metadata(socket) {
+            Ok(metadata) if metadata.file_type().is_socket() => {
+                std::fs::remove_file(socket)?;
+                return Ok(true);
+            }
+            Ok(_) => {}
+            Err(metadata_error) if metadata_error.kind() == io::ErrorKind::NotFound => {}
+            Err(metadata_error) => return Err(metadata_error),
         }
     }
+    Ok(false)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,14 +318,15 @@ fn json_string_field(input: &str, field: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-pub(super) fn wait_for_daemon_socket_to_stop(socket: &Path, timeout: Duration) {
+pub(super) fn wait_for_daemon_socket_to_stop(socket: &Path, timeout: Duration) -> bool {
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if handshake(socket).is_err() {
-            return;
+        if !socket.exists() {
+            return true;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    false
 }
 
 pub(super) fn print_daemon_stop(socket: &Path, json: bool) -> ExitCode {
@@ -403,7 +411,7 @@ pub(super) fn diagnostics_bundle_text(
     let state_root = db_path
         .as_ref()
         .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .and_then(|path| runtime::metadata_state_root(path))
         .unwrap_or_else(|| PathBuf::from("unavailable"));
     let db_path = db_path
         .map(|path| path.display().to_string())

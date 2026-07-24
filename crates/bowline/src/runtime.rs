@@ -21,11 +21,22 @@ use bowline_local::{
 };
 
 mod account_session;
+#[cfg(test)]
+mod account_session_tests;
 pub use account_session::{
-    AccountSessionRevocation, account_session_id, ensure_durable_account_session,
-    environment_account_session_revocation, revoke_account_session,
+    AccountSessionRevocation, account_session_id, clear_persisted_account_session,
+    ensure_durable_account_session, environment_account_session_revocation,
+    persisted_account_session_revocation, revoke_account_session,
     stored_account_session_revocation,
 };
+
+#[cfg(test)]
+fn tempfile_dir(name: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).expect("temp dir");
+    path
+}
 
 pub fn control_plane() -> Result<Box<dyn ControlPlaneClient>, String> {
     let bootstrap_token = env::var("BOWLINE_BOOTSTRAP_TOKEN")
@@ -175,7 +186,7 @@ pub fn key_store() -> Result<Box<dyn DeviceKeyStore>, String> {
 }
 
 pub fn passive_secret_store_probe_allowed() -> bool {
-    true
+    !cfg!(test)
 }
 
 fn nonempty_env_value(value: Option<String>) -> Option<String> {
@@ -393,6 +404,15 @@ pub fn selected_metadata_database_path() -> Option<PathBuf> {
         .or_else(|| default_database_path().ok())
 }
 
+pub(crate) fn metadata_state_root(db_path: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(db_path)
+        .ok()
+        .as_deref()
+        .unwrap_or(db_path)
+        .parent()
+        .map(Path::to_path_buf)
+}
+
 fn local_accepted_workspace_id() -> Option<WorkspaceId> {
     let store = MetadataStore::open(selected_metadata_database_path()?).ok()?;
     let workspace = store.current_workspace().ok().flatten()?;
@@ -444,7 +464,8 @@ pub fn daemon_device_id(workspace_id: &WorkspaceId) -> DeviceId {
     }
 
     let persisted_device_id = selected_metadata_database_path()
-        .and_then(|db_path| db_path.parent().map(Path::to_path_buf))
+        .as_deref()
+        .and_then(metadata_state_root)
         .and_then(|state_root| persisted_daemon_device_id_for_workspace(&state_root, workspace_id));
     trusted_device_id_for_local_identity(workspace_id)
         .or(persisted_device_id)
@@ -499,9 +520,9 @@ fn configured_device_id_from(
 
 fn persisted_daemon_device_id() -> Option<String> {
     let db_path = selected_metadata_database_path()?;
-    let state_root = db_path.parent()?;
+    let state_root = metadata_state_root(&db_path)?;
     let workspace_id = active_workspace_id_for_persisted_daemon_device()?;
-    persisted_daemon_device_id_for_workspace(state_root, &workspace_id)
+    persisted_daemon_device_id_for_workspace(&state_root, &workspace_id)
 }
 
 pub(crate) fn persisted_daemon_device_id_for_workspace(
@@ -580,10 +601,16 @@ mod tests {
     use super::{
         WorkspaceIdSources, account_scoped_workspace_id, configured_device_id_from,
         device_id_for_identity, keychain_secret_store_allowed_from, nonempty_env_value,
-        persisted_daemon_device_id_for_workspace, persisted_daemon_env_value,
-        select_authorized_device_for_identity, workos_account_id_from_access_token,
-        workos_token_is_not_expired, workspace_id_from_sources,
+        passive_secret_store_probe_allowed, persisted_daemon_device_id_for_workspace,
+        persisted_daemon_env_value, select_authorized_device_for_identity, tempfile_dir,
+        workos_account_id_from_access_token, workos_token_is_not_expired,
+        workspace_id_from_sources,
     };
+
+    #[test]
+    fn unit_tests_never_probe_the_ambient_secret_store() {
+        assert!(!passive_secret_store_probe_allowed());
+    }
 
     #[test]
     fn fallback_device_id_is_stable_and_unique_per_cryptographic_identity() {
@@ -850,12 +877,5 @@ mod tests {
             device_authorization_proof_verifier: None,
             revoked_at: revoked.then_some(ControlPlaneTimestamp { tick: 2 }),
         }
-    }
-
-    fn tempfile_dir(name: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).expect("temp dir");
-        path
     }
 }

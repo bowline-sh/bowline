@@ -66,8 +66,7 @@ fn dry_run_gate_matches_registry() {
         let Some(command) = sample_for_command_name(command_name) else {
             continue;
         };
-        let runtime_supports_dry_run = matches!(command, Command::Handoff(_))
-            || crate::idempotency::dry_run_plan(&command).is_some();
+        let runtime_supports_dry_run = crate::idempotency::dry_run_plan(&command).is_some();
         assert_eq!(
             spec.supports_dry_run, runtime_supports_dry_run,
             "dry-run gate disagrees for {}",
@@ -92,10 +91,6 @@ fn sample_for_command_name(command: CommandName) -> Option<Command> {
         CommandName::Help => Some(Command::Help(None)),
         CommandName::Version => Some(Command::Version),
         CommandName::Contract => Some(Command::Contract(ContractMode::Full)),
-        CommandName::Mcp => Some(Command::Mcp(McpArgs {
-            lease_id: None,
-            token_file: None,
-        })),
         CommandName::Update => Some(Command::Update(UpdateArgs {
             check: true,
             version: None,
@@ -143,24 +138,8 @@ fn sample_for_command_name(command: CommandName) -> Option<Command> {
             selection: sample_selection(),
             limit: 10,
         })),
-        CommandName::History => Some(Command::History(HistoryArgs {
-            target_path: "apps/web".to_string(),
-            mode: HistoryArgMode::Timeline,
-            limit: 10,
-            cursor: None,
-            since: None,
-            until: None,
-        })),
         CommandName::Tui => Some(Command::Tui(TuiArgs {
             selection: sample_selection(),
-        })),
-        CommandName::Resolve => Some(Command::Resolve(resolve::ResolveArgs {
-            project_or_path: "apps/web".to_string(),
-            copy_prompt: false,
-            tui: false,
-            diff: None,
-            agent: None,
-            decision: None,
         })),
         CommandName::WorkCreate => Some(Command::WorkCreate(work::WorkCreateArgs {
             project_path: "apps/web".to_string(),
@@ -189,36 +168,6 @@ fn sample_for_command_name(command: CommandName) -> Option<Command> {
             cancel: false,
             grace_days: Some(14),
         })),
-        CommandName::AgentContext => Some(Command::AgentContext(agent_selector())),
-        CommandName::AgentStart => Some(Command::AgentLeaseCreate(agent::AgentLeaseCreateArgs {
-            project_path: "apps/web".to_string(),
-            task: "sample".to_string(),
-            base: bowline_core::commands::AgentLeaseBase::LatestWorkspace,
-            work_view: false,
-            force_stale: false,
-            on_device: None,
-            remote_runtime: None,
-            remote_root: None,
-        })),
-        CommandName::AgentPrompt => Some(Command::AgentPrompt(agent_selector())),
-        CommandName::AgentComplete => Some(Command::AgentComplete(agent_selector())),
-        CommandName::AgentCancel => Some(Command::AgentCancel(agent_selector())),
-        CommandName::AgentExtend => Some(Command::AgentExtend(agent::AgentLeaseExtendArgs {
-            lease_id: "lease_sample".to_string(),
-            hours: 24,
-        })),
-        CommandName::AgentMcpToken => Some(Command::AgentMcpToken(agent::AgentMcpTokenArgs {
-            lease_id: "lease_sample".to_string(),
-            grants: vec![bowline_core::commands::AgentMcpGrant::Read],
-        })),
-        CommandName::LeaseJoin => Some(Command::LeaseJoin(lease::LeaseJoinArgs {
-            root: "/tmp/bowline-remote".to_string(),
-            lease_id: None,
-            runtime: None,
-            request_id: None,
-            token_env: None,
-            lease_json_env: "BOWLINE_AGENT_LEASE_JSON".to_string(),
-        })),
         CommandName::DaemonStart => Some(Command::Daemon(DaemonCommand::Start)),
         CommandName::DaemonStop => Some(Command::Daemon(DaemonCommand::Stop)),
         CommandName::DaemonStatus => Some(Command::Daemon(DaemonCommand::Status)),
@@ -226,21 +175,13 @@ fn sample_for_command_name(command: CommandName) -> Option<Command> {
         CommandName::DaemonRestart => Some(Command::Daemon(DaemonCommand::Restart)),
         CommandName::DaemonUninstall => Some(Command::Daemon(DaemonCommand::Uninstall)),
         CommandName::DiagnosticsCollect => Some(Command::DiagnosticsCollect(sample_selection())),
+        CommandName::Doctor => Some(Command::Doctor(DoctorArgs {
+            engine: bowline_core::commands::DoctorEngine::Manifest,
+        })),
         CommandName::Connect => Some(Command::BootstrapSsh(bootstrap::BootstrapSshArgs {
             host: "linux-home".to_string(),
             root: "~/Code".to_string(),
             artifact: None,
-            project: None,
-            task: None,
-            agent: None,
-        })),
-        CommandName::Handoff => Some(Command::Handoff(HandoffArgs {
-            target: "linux-home".to_string(),
-            agent: None,
-            session: None,
-            prompt: None,
-            prompt_file: None,
-            project: None,
         })),
     }
 }
@@ -256,11 +197,5 @@ fn work_selector() -> work::WorkSelectorArgs {
     work::WorkSelectorArgs {
         selector: "sample".to_string(),
         paths: Vec::new(),
-    }
-}
-
-fn agent_selector() -> agent::AgentLeaseSelectorArgs {
-    agent::AgentLeaseSelectorArgs {
-        lease_id: "lease_sample".to_string(),
     }
 }

@@ -3,7 +3,6 @@ import path from "node:path";
 
 const DEFAULT_ROOTS = ["apps", "packages", "crates"];
 const PHASE_ZERO_ALLOWLIST = new Set([
-  path.normalize("crates/bowline-testkit/examples/namespace_baseline.rs"),
   path.normalize("crates/bowline-local/src/page_test_support.rs"),
 ]);
 const ARCHITECTURE_FIXTURE_ROOT = path.normalize(

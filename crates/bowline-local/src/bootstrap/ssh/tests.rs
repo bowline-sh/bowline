@@ -3,12 +3,9 @@ use std::{cell::RefCell, rc::Rc};
 use crate::bootstrap::{
     process::{ProcessError, ProcessOutput, ProcessRunner},
     ssh::{
-        BootstrapSshError, BootstrapSshOptions, CodexLaunchPlatform, accept_remote_grant,
-        accept_remote_work_view, codex_launch_command, create_remote_agent_lease,
-        daemon_status_remote, install_handoff_bundle, launch_handoff_tmux,
-        launch_remote_codex_agent, list_remote_devices, prepare_remote_root, probe_remote,
-        remote_failure_detail, remove_handoff_prompt_file, start_remote_daemon, status_remote,
-        stop_remote_daemon,
+        BootstrapSshError, BootstrapSshOptions, accept_remote_grant, daemon_status_remote,
+        install_remote_daemon_service, list_remote_devices, prepare_remote_root, probe_remote,
+        publish_default_metadata, remote_failure_detail, status_remote,
     },
 };
 
@@ -183,31 +180,6 @@ fn remote_accept_quotes_request_id_before_ssh_execution() {
 }
 
 #[test]
-fn remote_work_view_accept_uses_canonical_command_path() {
-    let args = Rc::new(RefCell::new(Vec::new()));
-    let runner = RecordingRunner {
-        args: args.clone(),
-        stdin: Rc::new(RefCell::new(String::new())),
-    };
-    let options = BootstrapSshOptions {
-        host: "linux-box".to_string(),
-        root: "~/Code".to_string(),
-        remote_binary: Some("~/.local/bin/bowline".to_string()),
-        remote_platform: Some("linux".to_string()),
-        remote_workspace_id: None,
-        remote_env: Vec::new(),
-        remote_secret_env: Vec::new(),
-        bootstrap_token: None,
-    };
-
-    accept_remote_work_view(&runner, &options, "auth fix").expect("accept succeeds");
-
-    let captured = args.borrow();
-    let remote_command = captured.last().expect("ssh command is recorded");
-    assert!(remote_command.contains("work accept 'auth fix' --json"));
-}
-
-#[test]
 fn remote_probe_rejects_option_like_host_before_ssh_execution() {
     let args = Rc::new(RefCell::new(Vec::new()));
     let stdin = Rc::new(RefCell::new(String::new()));
@@ -268,23 +240,73 @@ fn remote_prepare_and_daemon_commands_use_installed_binary_and_root() {
     );
     assert!(prepare_command.contains("BOWLINE_SECRET_STORE=server-local"));
 
-    start_remote_daemon(&runner, &options).expect("daemon start succeeds");
-    let start_args = args.borrow().clone();
-    let start_command = start_args.last().expect("ssh command is recorded");
-    assert!(!start_command.starts_with("cd "));
-    assert!(start_command.contains("$HOME/.local/bin/bowline daemon start --json"));
-
-    stop_remote_daemon(&runner, &options).expect("daemon stop succeeds");
-    let stop_args = args.borrow().clone();
-    let stop_command = stop_args.last().expect("ssh command is recorded");
-    assert!(!stop_command.starts_with("cd "));
-    assert!(stop_command.contains("$HOME/.local/bin/bowline daemon stop --json"));
+    install_remote_daemon_service(&runner, &options).expect("daemon service install succeeds");
+    let install_args = args.borrow().clone();
+    let install_command = install_args.last().expect("ssh command is recorded");
+    assert!(!install_command.starts_with("cd "));
+    assert!(install_command.contains("$HOME/.local/bin/bowline daemon install --json"));
+    assert!(
+        !install_command.contains("daemon start"),
+        "bootstrap must not leave an unmanaged daemon competing with the OS service"
+    );
 
     daemon_status_remote(&runner, &options).expect("daemon status succeeds");
     let daemon_status_args = args.borrow().clone();
     let daemon_status_command = daemon_status_args.last().expect("ssh command is recorded");
     assert!(!daemon_status_command.starts_with("cd "));
     assert!(daemon_status_command.contains("$HOME/.local/bin/bowline daemon status --json"));
+}
+
+#[test]
+fn remote_metadata_persists_daemon_credentials_with_the_workspace_state() {
+    let args = Rc::new(RefCell::new(Vec::new()));
+    let stdin = Rc::new(RefCell::new(String::new()));
+    let runner = RecordingRunner {
+        args: args.clone(),
+        stdin: stdin.clone(),
+    };
+    let options = BootstrapSshOptions {
+        host: "linux-box".to_string(),
+        root: "~/Code".to_string(),
+        remote_binary: Some("~/.local/bin/bowline".to_string()),
+        remote_platform: Some("linux".to_string()),
+        remote_workspace_id: Some("ws_agent".to_string()),
+        remote_env: vec![
+            (
+                "CONVEX_URL".to_string(),
+                "https://example.convex.cloud".to_string(),
+            ),
+            ("BOWLINE_WORKSPACE_ID".to_string(), "ws_agent".to_string()),
+        ],
+        remote_secret_env: vec![
+            (
+                "BOWLINE_ACCOUNT_SESSION_ID".to_string(),
+                "bowline_session_fixture".to_string(),
+            ),
+            (
+                "BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN".to_string(),
+                "bowline_revoke_fixture".to_string(),
+            ),
+        ],
+        bootstrap_token: None,
+    };
+
+    publish_default_metadata(&runner, &options).expect("metadata publish succeeds");
+
+    let captured = args.borrow();
+    let remote_command = captured.last().expect("ssh command is recorded");
+    assert!(
+        remote_command.contains("cat > $HOME/.local/share/bowline/workspaces/ws_agent/daemon.env")
+    );
+    assert!(
+        remote_command
+            .contains("chmod 600 $HOME/.local/share/bowline/workspaces/ws_agent/daemon.env")
+    );
+    assert!(!remote_command.contains("cat > \"$dir/daemon.env\""));
+    assert_eq!(
+        stdin.borrow().as_str(),
+        "CONVEX_URL=https://example.convex.cloud\nBOWLINE_WORKSPACE_ID=ws_agent\nBOWLINE_ACCOUNT_SESSION_ID=bowline_session_fixture\nBOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN=bowline_revoke_fixture\n"
+    );
 }
 
 #[test]
@@ -315,212 +337,4 @@ fn remote_status_uses_explicit_root_without_requiring_root_cwd() {
         remote_command
             .contains("$HOME/.local/bin/bowline status --root '~/Code/new machine' --json")
     );
-}
-
-#[test]
-fn remote_agent_lease_runs_from_root_with_env_on_bowline_command() {
-    let args = Rc::new(RefCell::new(Vec::new()));
-    let stdin = Rc::new(RefCell::new(String::new()));
-    let runner = RecordingRunner {
-        args: args.clone(),
-        stdin,
-    };
-    let options = BootstrapSshOptions {
-        host: "linux-box".to_string(),
-        root: "~/Code".to_string(),
-        remote_binary: Some("~/.local/bin/bowline".to_string()),
-        remote_platform: Some("linux".to_string()),
-        remote_workspace_id: Some("ws_agent".to_string()),
-        remote_env: vec![(
-            "BOWLINE_SECRET_STORE".to_string(),
-            "server-local".to_string(),
-        )],
-        remote_secret_env: Vec::new(),
-        bootstrap_token: None,
-    };
-
-    create_remote_agent_lease(&runner, &options, "foo", "fix auth")
-        .expect("lease command succeeds");
-
-    let captured = args.borrow();
-    let remote_command = captured.last().expect("ssh command is recorded");
-    assert!(remote_command.contains(
-        "cd $HOME/Code && BOWLINE_SECRET_STORE=server-local \
-             $HOME/.local/bin/bowline agent start foo --task 'fix auth'"
-    ));
-}
-#[test]
-fn handoff_installer_pipes_transfer_key_and_envelope_without_exposing_key() {
-    let args = Rc::new(RefCell::new(Vec::new()));
-    let stdin = Rc::new(RefCell::new(String::new()));
-    let runner = RecordingRunner {
-        args: args.clone(),
-        stdin: stdin.clone(),
-    };
-    let options = BootstrapSshOptions {
-        host: "linux-box".to_string(),
-        root: "~/Code".to_string(),
-        remote_binary: Some("~/.local/bin/bowline".to_string()),
-        remote_platform: Some("linux".to_string()),
-        remote_workspace_id: None,
-        remote_env: Vec::new(),
-        remote_secret_env: Vec::new(),
-        bootstrap_token: None,
-    };
-
-    install_handoff_bundle(
-        &runner,
-        &options,
-        "linux-box",
-        "secret transfer key",
-        "{\"ciphertext\":\"abc\"}",
-    )
-    .expect("handoff install succeeds");
-
-    let captured = args.borrow();
-    let remote_command = captured.last().expect("ssh command is recorded");
-    assert!(remote_command.contains("BOWLINE_HANDOFF_TARGET=linux-box"));
-    assert!(remote_command.contains("IFS= read -r BOWLINE_HANDOFF_TRANSFER_KEY"));
-    assert!(remote_command.contains("internal handoff install-bundle --json"));
-    assert!(!remote_command.contains("secret transfer key"));
-    assert!(!remote_command.contains("ciphertext"));
-    assert_eq!(
-        stdin.borrow().as_str(),
-        "secret transfer key\n{\"ciphertext\":\"abc\"}"
-    );
-}
-
-#[test]
-fn handoff_tmux_launch_runs_launch_then_has_session_in_login_shell() {
-    let args = Rc::new(RefCell::new(Vec::new()));
-    let stdin = Rc::new(RefCell::new(String::new()));
-    let runner = RecordingRunner {
-        args: args.clone(),
-        stdin,
-    };
-    let options = BootstrapSshOptions {
-        host: "linux-box".to_string(),
-        root: "~/Code".to_string(),
-        remote_binary: None,
-        remote_platform: Some("linux".to_string()),
-        remote_workspace_id: None,
-        remote_env: Vec::new(),
-        remote_secret_env: Vec::new(),
-        bootstrap_token: None,
-    };
-
-    launch_handoff_tmux(
-        &runner,
-        &options,
-        "tmux new-session -d -s bowline-codex-app-123",
-        "tmux has-session -t bowline-codex-app-123",
-    )
-    .expect("tmux launch succeeds");
-
-    let captured = args.borrow();
-    let remote_command = captured.last().expect("ssh command is recorded");
-    assert!(remote_command.contains("bash -lc"));
-    assert!(remote_command.contains("tmux new-session -d -s bowline-codex-app-123"));
-    assert!(remote_command.contains("&& tmux has-session -t bowline-codex-app-123"));
-}
-
-#[test]
-fn handoff_prompt_cleanup_removes_quoted_remote_file() {
-    let args = Rc::new(RefCell::new(Vec::new()));
-    let stdin = Rc::new(RefCell::new(String::new()));
-    let runner = RecordingRunner {
-        args: args.clone(),
-        stdin,
-    };
-    let options = BootstrapSshOptions {
-        host: "linux-box".to_string(),
-        root: "~/Code".to_string(),
-        remote_binary: None,
-        remote_platform: Some("linux".to_string()),
-        remote_workspace_id: None,
-        remote_env: Vec::new(),
-        remote_secret_env: Vec::new(),
-        bootstrap_token: None,
-    };
-
-    remove_handoff_prompt_file(
-        &runner,
-        &options,
-        std::path::Path::new("/tmp/bowline handoff/prompt.txt"),
-    )
-    .expect("prompt cleanup succeeds");
-
-    let captured = args.borrow();
-    let remote_command = captured.last().expect("ssh command is recorded");
-    assert!(remote_command.contains("rm -f"));
-    assert!(remote_command.contains("prompt.txt"));
-}
-
-#[test]
-fn remote_codex_launch_exports_path_before_bowline_env_prefix() {
-    let args = Rc::new(RefCell::new(Vec::new()));
-    let stdin = Rc::new(RefCell::new(String::new()));
-    let runner = RecordingRunner {
-        args: args.clone(),
-        stdin,
-    };
-    let options = BootstrapSshOptions {
-        host: "linux-box".to_string(),
-        root: "~/Code".to_string(),
-        remote_binary: Some("~/.local/bin/bowline".to_string()),
-        remote_platform: Some("linux".to_string()),
-        remote_workspace_id: Some("ws_agent".to_string()),
-        remote_env: vec![
-            ("BOWLINE_WORKSPACE_ID".to_string(), "ws_agent".to_string()),
-            (
-                "BOWLINE_SECRET_STORE".to_string(),
-                "server-local".to_string(),
-            ),
-        ],
-        remote_secret_env: Vec::new(),
-        bootstrap_token: None,
-    };
-
-    launch_remote_codex_agent(&runner, &options, "lease_123", "~/Code/app")
-        .expect("codex launch command succeeds");
-
-    let captured = args.borrow();
-    let remote_command = captured.last().expect("ssh command is recorded");
-    let path_export = remote_command
-        .find("export PATH=\"$HOME/.local/bin:$PATH\";")
-        .expect("PATH export is present");
-    let env_prefix = remote_command
-        .find("BOWLINE_WORKSPACE_ID=")
-        .expect("workspace env prefix is present");
-    let agent_prompt = remote_command
-        .find("agent prompt --lease")
-        .expect("agent prompt command is present");
-    assert!(
-        path_export < env_prefix && env_prefix < agent_prompt,
-        "{remote_command}"
-    );
-    assert!(!remote_command.contains("BOWLINE_SECRET_STORE=server-local export PATH"));
-    assert!(!remote_command.contains("Library/Application Support/bowline"));
-    assert_eq!(
-        remote_command
-            .matches("--add-dir ~/.local/share/bowline")
-            .count(),
-        1
-    );
-    assert_eq!(
-        remote_command
-            .matches("--add-dir ~/.local/state/bowline")
-            .count(),
-        1
-    );
-
-    let macos = codex_launch_command(
-        "~/.local/bin/bowline",
-        "lease_123",
-        "~/Code/app",
-        CodexLaunchPlatform::Macos,
-    );
-    assert_eq!(macos.matches("--add-dir ~/.local/share/bowline").count(), 1);
-    assert_eq!(macos.matches("--add-dir ~/.local/state/bowline").count(), 1);
-    assert!(macos.contains("--add-dir \"$HOME/Library/Application Support/bowline\""));
 }

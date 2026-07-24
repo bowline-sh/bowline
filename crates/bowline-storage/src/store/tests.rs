@@ -8,11 +8,6 @@ use std::{
     thread,
 };
 
-use bowline_core::{
-    ids::{ContentId, PackId, SnapshotId, WorkspaceId},
-    workspace_graph::{ContentLocator, ContentStorage},
-};
-
 use super::*;
 
 static NEXT_TEMP_DIR: AtomicU64 = AtomicU64::new(1);
@@ -110,8 +105,8 @@ fn reader_request<'a>(
 ) -> PutObjectReaderRequest<'a> {
     PutObjectReaderRequest {
         key,
-        kind: ObjectKind::SourcePack,
-        content_id: ObjectContentId::from_pack_id(&PackId::new("pk_00112233445566ee")),
+        kind: ObjectKind::WorkspaceFileV1,
+        content_id: ObjectContentId::new("cid_00112233445566ee"),
         source,
         byte_len: expected.len() as u64,
         expected_hash: ObjectHash::from_stable_hash(stable_object_hash(expected)),
@@ -127,7 +122,8 @@ fn inherited_reader_default_rejects_claimed_identity_before_put() {
     mutated_bytes[0] ^= 0xff;
     let mutated = BytesSource(mutated_bytes);
     let store = InheritedDefaultStore::default();
-    let key = ObjectKey::new("packs_pk_00112233445566e1").expect("key");
+    let key = ObjectKey::new("b_00112233445566e100112233445566e100112233445566e100112233445566e1")
+        .expect("key");
 
     let error = store
         .put_object_reader_with_content_id_at_epoch(reader_request(key.clone(), &mutated, expected))
@@ -146,7 +142,8 @@ fn local_reader_identity_failure_is_atomic_and_clean_retry_succeeds() {
     mutated_bytes[0] ^= 0xff;
     let mutated = BytesSource(mutated_bytes);
     let valid = BytesSource(expected.to_vec());
-    let key = ObjectKey::new("packs_pk_00112233445566e2").expect("key");
+    let key = ObjectKey::new("b_00112233445566e200112233445566e200112233445566e200112233445566e2")
+        .expect("key");
 
     let error = store
         .put_object_reader_with_content_id_at_epoch(reader_request(key.clone(), &mutated, expected))
@@ -205,7 +202,8 @@ fn local_reader_rejects_too_long_source_before_writing_excess() {
     too_long.extend_from_slice(b"excess bytes must not be written");
     assert_local_reader_failure_is_atomic_then_retry_succeeds(
         "reader-too-long",
-        ObjectKey::new("packs_pk_00112233445566e3").expect("key"),
+        ObjectKey::new("b_00112233445566e300112233445566e300112233445566e300112233445566e3")
+            .expect("key"),
         &BytesSource(too_long),
         expected,
     );
@@ -216,7 +214,8 @@ fn local_reader_cleans_up_after_source_read_error() {
     let expected = b"erroring local source";
     assert_local_reader_failure_is_atomic_then_retry_succeeds(
         "reader-error",
-        ObjectKey::new("packs_pk_00112233445566e4").expect("key"),
+        ObjectKey::new("b_00112233445566e400112233445566e400112233445566e400112233445566e4")
+            .expect("key"),
         &ReadErrorSource(expected[..5].to_vec()),
         expected,
     );
@@ -226,9 +225,10 @@ fn local_reader_cleans_up_after_source_read_error() {
 fn local_store_supports_full_range_head_and_metrics() {
     let temp = TempDir::new("byte-store");
     let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
-    let key = ObjectKey::from_pack_id(&PackId::new("pk_0011223344556677")).expect("opaque key");
+    let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+        .expect("opaque key");
     let metadata = store
-        .put_object(key.clone(), ObjectKind::SourcePack, b"abcdef", None)
+        .put_object(key.clone(), ObjectKind::WorkspaceFileV1, b"abcdef", None)
         .expect("put object");
 
     assert_eq!(metadata.byte_len, 6);
@@ -263,9 +263,10 @@ fn local_store_supports_full_range_head_and_metrics() {
 fn local_store_deletes_only_verified_known_objects() {
     let temp = TempDir::new("byte-store-delete");
     let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
-    let key = ObjectKey::from_pack_id(&PackId::new("pk_0011223344556677")).expect("opaque key");
+    let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+        .expect("opaque key");
     store
-        .put_object(key.clone(), ObjectKind::SourcePack, b"abcdef", None)
+        .put_object(key.clone(), ObjectKind::WorkspaceFileV1, b"abcdef", None)
         .expect("put object");
 
     store.delete_object(&key).expect("delete object");
@@ -284,13 +285,14 @@ fn local_store_deletes_only_verified_known_objects() {
 fn local_store_rejects_overwrite() {
     let temp = TempDir::new("byte-store");
     let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
-    let key = ObjectKey::new("packs_pk_0011223344556677").expect("opaque key");
+    let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+        .expect("opaque key");
 
     store
-        .put_object(key.clone(), ObjectKind::SourcePack, b"first", None)
+        .put_object(key.clone(), ObjectKind::WorkspaceFileV1, b"first", None)
         .expect("first put");
     let error = store
-        .put_object(key.clone(), ObjectKind::SourcePack, b"second", None)
+        .put_object(key.clone(), ObjectKind::WorkspaceFileV1, b"second", None)
         .expect_err("overwrite rejected");
 
     assert!(matches!(error, ByteStoreError::ObjectAlreadyExists(existing) if existing == key));
@@ -301,13 +303,14 @@ fn local_store_rejects_overwrite() {
 fn local_store_adopts_matching_bytes_when_metadata_was_lost() {
     let temp = TempDir::new("byte-store-orphan");
     let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
-    let key = ObjectKey::new("packs_pk_0011223344556677").expect("opaque key");
+    let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+        .expect("opaque key");
     fs::write(store.stored_path(&key), b"orphaned object bytes").expect("seed orphan bytes");
 
     let metadata = store
         .put_object(
             key.clone(),
-            ObjectKind::SourcePack,
+            ObjectKind::WorkspaceFileV1,
             b"orphaned object bytes",
             None,
         )
@@ -325,11 +328,13 @@ fn local_store_adopts_matching_bytes_when_metadata_was_lost() {
 fn head_object_rejects_missing_or_corrupt_object_bytes() {
     let temp = TempDir::new("byte-store-head");
     let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
-    let missing_key = ObjectKey::new("packs_pk_0011223344556677").expect("opaque key");
+    let missing_key =
+        ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+            .expect("opaque key");
     store
         .put_object(
             missing_key.clone(),
-            ObjectKind::SourcePack,
+            ObjectKind::WorkspaceFileV1,
             b"present",
             None,
         )
@@ -344,11 +349,13 @@ fn head_object_rejects_missing_or_corrupt_object_bytes() {
         })
     ));
 
-    let corrupt_key = ObjectKey::new("packs_pk_8899aabbccddeeff").expect("opaque key");
+    let corrupt_key =
+        ObjectKey::new("b_8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff")
+            .expect("opaque key");
     store
         .put_object(
             corrupt_key.clone(),
-            ObjectKind::SourcePack,
+            ObjectKind::WorkspaceFileV1,
             b"original",
             None,
         )
@@ -365,13 +372,27 @@ fn head_object_rejects_missing_or_corrupt_object_bytes() {
 fn head_object_rejects_metadata_for_different_key() {
     let temp = TempDir::new("byte-store-head-key");
     let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
-    let first_key = ObjectKey::new("packs_pk_0011223344556677").expect("opaque key");
-    let second_key = ObjectKey::new("packs_pk_8899aabbccddeeff").expect("opaque key");
+    let first_key =
+        ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+            .expect("opaque key");
+    let second_key =
+        ObjectKey::new("b_8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff")
+            .expect("opaque key");
     store
-        .put_object(first_key.clone(), ObjectKind::SourcePack, b"first", None)
+        .put_object(
+            first_key.clone(),
+            ObjectKind::WorkspaceFileV1,
+            b"first",
+            None,
+        )
         .expect("first object");
     store
-        .put_object(second_key.clone(), ObjectKind::SourcePack, b"second", None)
+        .put_object(
+            second_key.clone(),
+            ObjectKind::WorkspaceFileV1,
+            b"second",
+            None,
+        )
         .expect("second object");
     fs::copy(
         store.metadata_path(&second_key),
@@ -389,11 +410,13 @@ fn head_object_rejects_metadata_for_different_key() {
 fn object_reads_require_committed_matching_metadata() {
     let temp = TempDir::new("byte-store-read-integrity");
     let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
-    let no_metadata_key = ObjectKey::new("packs_pk_0011223344556677").expect("opaque key");
+    let no_metadata_key =
+        ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+            .expect("opaque key");
     store
         .put_object(
             no_metadata_key.clone(),
-            ObjectKind::SourcePack,
+            ObjectKind::WorkspaceFileV1,
             b"present",
             None,
         )
@@ -415,11 +438,13 @@ fn object_reads_require_committed_matching_metadata() {
         })
     ));
 
-    let corrupt_hash_key = ObjectKey::new("packs_pk_8899aabbccddeeff").expect("opaque key");
+    let corrupt_hash_key =
+        ObjectKey::new("b_8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff")
+            .expect("opaque key");
     store
         .put_object(
             corrupt_hash_key.clone(),
-            ObjectKind::SourcePack,
+            ObjectKind::WorkspaceFileV1,
             b"original",
             None,
         )
@@ -430,11 +455,13 @@ fn object_reads_require_committed_matching_metadata() {
         Err(ByteStoreError::CorruptObject { .. })
     ));
 
-    let corrupt_len_key = ObjectKey::new("packs_pk_0123456789abcdef").expect("opaque key");
+    let corrupt_len_key =
+        ObjectKey::new("b_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+            .expect("opaque key");
     store
         .put_object(
             corrupt_len_key.clone(),
-            ObjectKind::SourcePack,
+            ObjectKind::WorkspaceFileV1,
             b"short",
             None,
         )
@@ -445,11 +472,13 @@ fn object_reads_require_committed_matching_metadata() {
         Err(ByteStoreError::CorruptObject { .. })
     ));
 
-    let missing_epoch_key = ObjectKey::new("packs_pk_fedcba9876543210").expect("opaque key");
+    let missing_epoch_key =
+        ObjectKey::new("b_fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210")
+            .expect("opaque key");
     store
         .put_object(
             missing_epoch_key.clone(),
-            ObjectKind::SourcePack,
+            ObjectKind::WorkspaceFileV1,
             b"current-format",
             None,
         )
@@ -490,7 +519,8 @@ fn streaming_hash_matches_slice_hash() {
 fn local_store_streams_puts_and_gets_with_matching_metadata() {
     let temp = TempDir::new("byte-store-stream");
     let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
-    let key = ObjectKey::new("packs_pk_0011223344556677").expect("opaque key");
+    let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+        .expect("opaque key");
     let bytes = (0..150_000)
         .map(|index| (index % 251) as u8)
         .collect::<Vec<_>>();
@@ -498,7 +528,7 @@ fn local_store_streams_puts_and_gets_with_matching_metadata() {
     let metadata = store
         .put_object_reader(
             key.clone(),
-            ObjectKind::SourcePack,
+            ObjectKind::WorkspaceFileV1,
             &mut std::io::Cursor::new(&bytes),
             Some(bytes.len() as u64),
             None,
@@ -522,11 +552,12 @@ fn local_store_streams_puts_and_gets_with_matching_metadata() {
 fn streaming_get_rejects_corrupt_object_bytes() {
     let temp = TempDir::new("byte-store-stream-corrupt");
     let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
-    let key = ObjectKey::new("packs_pk_0011223344556677").expect("opaque key");
+    let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+        .expect("opaque key");
     store
         .put_object_reader(
             key.clone(),
-            ObjectKind::SourcePack,
+            ObjectKind::WorkspaceFileV1,
             &mut std::io::Cursor::new(b"original bytes"),
             None,
             None,
@@ -546,11 +577,12 @@ fn streaming_get_rejects_corrupt_object_bytes() {
 fn metadata_race_reuses_matching_commit_without_deleting_bytes() {
     let temp = TempDir::new("byte-store-metadata-race");
     let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
-    let key = ObjectKey::new("packs_pk_0011223344556677").expect("opaque key");
+    let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+        .expect("opaque key");
     let bytes = b"already committed bytes";
     let metadata = store.metadata_for(
         key.clone(),
-        ObjectKind::SourcePack,
+        ObjectKind::WorkspaceFileV1,
         bytes.len() as u64,
         stable_object_hash(bytes),
         CURRENT_WRITE_KEY_EPOCH,
@@ -569,128 +601,11 @@ fn metadata_race_reuses_matching_commit_without_deleting_bytes() {
 }
 
 #[test]
-fn upload_journal_appends_and_reads_latest_entry_per_object() {
-    let temp = TempDir::new("byte-store-journal");
-    let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
-    let content_id = ContentId::new("cid_journal");
-    let key = SourcePackUploadJournalKey::new(
-        WorkspaceId::new("ws_journal"),
-        SnapshotId::new("snap_journal"),
-        1,
-        [(content_id.clone(), 12)],
-    );
-    let object_key = ObjectKey::new("packs_pk_0011223344556677").expect("object key");
-    let first = SourcePackUploadJournalEntry {
-        pointer: SourcePackUploadJournalPointer {
-            object_key: object_key.clone(),
-            pack_id: PackId::new("pk_0011223344556677"),
-            byte_len: 10,
-            hash: SourcePackUploadJournalObjectHash::from_stable_hash("b3_first".to_string()),
-            key_epoch: 1,
-            created_at_unix_ms: 1,
-        },
-        locators: vec![journal_locator(
-            content_id.clone(),
-            PackId::new("pk_0011223344556677"),
-            10,
-        )],
-    };
-    let latest = SourcePackUploadJournalEntry {
-        pointer: SourcePackUploadJournalPointer {
-            byte_len: 12,
-            hash: SourcePackUploadJournalObjectHash::from_stable_hash("b3_latest".to_string()),
-            created_at_unix_ms: 2,
-            ..first.pointer.clone()
-        },
-        locators: vec![journal_locator(
-            content_id,
-            PackId::new("pk_0011223344556677"),
-            12,
-        )],
-    };
-
-    store
-        .record_source_pack_upload_journal(&key, &first)
-        .expect("record first");
-    store
-        .record_source_pack_upload_journal(&key, &latest)
-        .expect("record latest");
-
-    let entries = store
-        .source_pack_upload_journal(&key)
-        .expect("read journal");
-    assert_eq!(entries, vec![latest]);
-}
-
-#[test]
-fn upload_journal_ignores_torn_trailing_line() {
-    let temp = TempDir::new("byte-store-journal-torn");
-    let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
-    let content_id = ContentId::new("cid_journal");
-    let pack_id = PackId::new("pk_0011223344556677");
-    let object_key = ObjectKey::new("packs_pk_0011223344556677").expect("object key");
-    let key = SourcePackUploadJournalKey::new(
-        WorkspaceId::new("ws_journal"),
-        SnapshotId::new("snap_journal"),
-        1,
-        [(content_id.clone(), 12)],
-    );
-    let entry = SourcePackUploadJournalEntry {
-        pointer: SourcePackUploadJournalPointer {
-            object_key: object_key.clone(),
-            pack_id: pack_id.clone(),
-            byte_len: 12,
-            hash: SourcePackUploadJournalObjectHash::from_stable_hash("b3_complete".to_string()),
-            key_epoch: 1,
-            created_at_unix_ms: 1,
-        },
-        locators: vec![journal_locator(content_id.clone(), pack_id.clone(), 12)],
-    };
-    let latest = SourcePackUploadJournalEntry {
-        pointer: SourcePackUploadJournalPointer {
-            object_key,
-            pack_id: pack_id.clone(),
-            byte_len: 13,
-            hash: SourcePackUploadJournalObjectHash::from_stable_hash("b3_latest".to_string()),
-            key_epoch: 1,
-            created_at_unix_ms: 2,
-        },
-        locators: vec![journal_locator(content_id, pack_id, 13)],
-    };
-    store
-        .record_source_pack_upload_journal(&key, &entry)
-        .expect("record complete");
-    let path = temp
-        .path()
-        .join("upload-journal")
-        .join(format!("{}.json", key.content_set_digest()));
-    use std::io::Write as _;
-    fs::OpenOptions::new()
-        .append(true)
-        .open(&path)
-        .expect("open journal")
-        .write_all(b"{\"pointer\"")
-        .expect("append torn line");
-
-    let entries = store
-        .source_pack_upload_journal(&key)
-        .expect("read journal");
-    assert_eq!(entries, vec![entry]);
-
-    store
-        .record_source_pack_upload_journal(&key, &latest)
-        .expect("record after torn line");
-    let entries = store
-        .source_pack_upload_journal(&key)
-        .expect("read repaired journal");
-    assert_eq!(entries, vec![latest]);
-}
-
-#[test]
 fn concurrent_puts_keep_object_immutable() {
     let temp = TempDir::new("byte-store-race");
     let root = temp.path().to_path_buf();
-    let key = ObjectKey::new("packs_pk_0011223344556677").expect("opaque key");
+    let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+        .expect("opaque key");
     let barrier = Arc::new(Barrier::new(2));
     let handles = ["first", "second"]
         .into_iter()
@@ -702,7 +617,7 @@ fn concurrent_puts_keep_object_immutable() {
                 let store = LocalByteStore::open(root).expect("store opens");
                 barrier.wait();
                 store
-                    .put_object(key, ObjectKind::SourcePack, value.as_bytes(), None)
+                    .put_object(key, ObjectKind::WorkspaceFileV1, value.as_bytes(), None)
                     .map(|_| value.as_bytes().to_vec())
             })
         })
@@ -739,25 +654,14 @@ fn list_object_keys_ignores_crash_left_atomic_temp_siblings() {
     let temp = TempDir::new("byte-store-list-temp");
     let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
     fs::write(
-        temp.path()
-            .join("objects")
-            .join(".packs_pk_0011223344556677.123.1.bowline-tmp"),
+        temp.path().join("objects").join(
+            ".b_0011223344556677001122334455667700112233445566770011223344556677.123.1.bowline-tmp",
+        ),
         b"partial",
     )
     .expect("seed temp sibling");
 
     assert_eq!(store.list_object_keys().expect("list keys"), Vec::new());
-}
-
-fn journal_locator(content_id: ContentId, pack_id: PackId, raw_size: u64) -> ContentLocator {
-    ContentLocator {
-        content_id,
-        storage: ContentStorage::Packed,
-        raw_size,
-        pack_id: Some(pack_id),
-        offset: Some(0),
-        length: Some(raw_size),
-    }
 }
 
 #[test]
@@ -782,17 +686,23 @@ fn object_key_policy_rejects_path_and_secret_segments() {
         );
     }
 
-    assert!(ObjectKey::new("packs_pk_0011223344556677").is_ok());
-    assert!(ObjectKey::new("manifests_mf_0011223344556677").is_ok());
-    assert!(ObjectKey::new("indexes_ix_0011223344556677").is_ok());
+    assert!(
+        ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+            .is_ok()
+    );
     assert!(ObjectKey::new("overlays_ov_0011223344556677").is_err());
 }
 
 #[test]
 fn object_key_deserialization_uses_same_validation_as_constructor() {
-    let valid: ObjectKey =
-        serde_json::from_str("\"packs_pk_0011223344556677\"").expect("valid key");
-    assert_eq!(valid.as_str(), "packs_pk_0011223344556677");
+    let valid: ObjectKey = serde_json::from_str(
+        "\"b_0011223344556677001122334455667700112233445566770011223344556677\"",
+    )
+    .expect("valid key");
+    assert_eq!(
+        valid.as_str(),
+        "b_0011223344556677001122334455667700112233445566770011223344556677"
+    );
 
     for key in [
         "\"packs/../secret\"",
@@ -810,7 +720,7 @@ fn object_key_deserialization_uses_same_validation_as_constructor() {
 #[test]
 fn object_key_leak_helper_checks_source_path_components() {
     assert_object_key_does_not_leak_path(
-        "packs_pk_0011223344556677",
+        "b_0011223344556677001122334455667700112233445566770011223344556677",
         "/workspace/Code/acme/web/src/main.rs",
     )
     .expect("opaque key is clean");

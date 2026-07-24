@@ -10,7 +10,6 @@ pub(super) fn construct_command(
         )),
         CommandName::Version => no_argument_command(command, values, Command::Version),
         CommandName::Contract => parse_contract_command(values),
-        CommandName::Mcp => parse_mcp_command(values),
         CommandName::Update => parse_update_command(values),
         CommandName::Login => parse_login_command(values),
         CommandName::Logout => no_argument_command(command, values, Command::Logout),
@@ -24,9 +23,7 @@ pub(super) fn construct_command(
             parse_device_command(command, values)
         }
         CommandName::Events => parse_events_command(values),
-        CommandName::History => parse_history_command(values),
         CommandName::Tui => parse_tui_command(values),
-        CommandName::Resolve => parse_resolve_command(values),
         CommandName::ForgetLocal => parse_forget_local_command(values),
         CommandName::Archive => parse_archive_command(values),
         CommandName::Purge => parse_purge_command(values),
@@ -37,14 +34,6 @@ pub(super) fn construct_command(
             parse_work_selector_command(command, values)
         }
         CommandName::Cleanup => parse_cleanup_command(values),
-        CommandName::AgentContext
-        | CommandName::AgentPrompt
-        | CommandName::AgentComplete
-        | CommandName::AgentCancel => parse_agent_selector_command(command, values),
-        CommandName::AgentStart => parse_agent_start_command(values),
-        CommandName::AgentExtend => parse_agent_extend_command(values),
-        CommandName::AgentMcpToken => parse_agent_mcp_token_command(values),
-        CommandName::LeaseJoin => parse_lease_join_command(values),
         CommandName::DaemonStart => {
             no_argument_command(command, values, Command::Daemon(DaemonCommand::Start))
         }
@@ -69,10 +58,29 @@ pub(super) fn construct_command(
                 Err(error) => Err(*error),
             }
         }
+        CommandName::Doctor => parse_doctor_command(values),
         CommandName::Connect => parse_connect_command(values),
-        CommandName::Handoff => parse_handoff_command(values),
         CommandName::Unknown => Err(ParseError::Unknown(command.token().to_string())),
     }
+}
+
+fn parse_doctor_command(values: &crate::registry::ParsedValues) -> Result<Command, ParseError> {
+    if let [unexpected, ..] = values.positionals() {
+        return usage_error(
+            CommandName::Doctor,
+            format!("unexpected bowline doctor argument `{unexpected}`"),
+        );
+    }
+    let engine = match values.option("--engine") {
+        None | Some("manifest") => bowline_core::commands::DoctorEngine::Manifest,
+        Some(other) => {
+            return usage_error(
+                CommandName::Doctor,
+                format!("unsupported engine `{other}`; the only engine is `manifest`"),
+            );
+        }
+    };
+    Ok(Command::Doctor(DoctorArgs { engine }))
 }
 
 fn no_argument_command(
@@ -111,100 +119,6 @@ fn parse_contract_command(values: &crate::registry::ParsedValues) -> Result<Comm
     } else {
         Ok(Command::Contract(ContractMode::Topic(topic.to_vec())))
     }
-}
-
-fn parse_mcp_command(values: &crate::registry::ParsedValues) -> Result<Command, ParseError> {
-    if let Some(unexpected) = values.positionals().first() {
-        return usage_error(
-            CommandName::Mcp,
-            format!("unexpected bowline mcp argument `{unexpected}`"),
-        );
-    }
-
-    Ok(Command::Mcp(McpArgs {
-        lease_id: values.option("--lease").map(str::to_string),
-        token_file: values.option("--token-file").map(str::to_string),
-    }))
-}
-
-pub(super) fn parse_handoff_command(
-    values: &crate::registry::ParsedValues,
-) -> Result<Command, ParseError> {
-    let Some(target) = values.positionals().first() else {
-        return command_usage_error(
-            CommandName::Handoff,
-            "usage_error",
-            "bowline handoff requires a target".to_string(),
-            handoff_usage_actions(),
-        );
-    };
-    if let Some(unexpected) = values.positionals().get(1) {
-        return command_usage_error(
-            CommandName::Handoff,
-            "usage_error",
-            format!("unexpected bowline handoff argument `{unexpected}`"),
-            handoff_usage_actions(),
-        );
-    }
-    let agent = match values.option("--agent") {
-        Some(value) => match parse_handoff_agent(value) {
-            Some(parsed) => Some(parsed),
-            None => {
-                return command_usage_error(
-                    CommandName::Handoff,
-                    "unsupported_agent",
-                    format!("bowline handoff --agent must be codex or claude, got `{value}`"),
-                    handoff_usage_actions(),
-                );
-            }
-        },
-        None => None,
-    };
-    let session = values.option("--session").map(str::to_string);
-    let prompt = values.option("--prompt").map(str::to_string);
-    let prompt_file = values.option("--prompt-file").map(str::to_string);
-    let project = values.option("--project").map(str::to_string);
-
-    if prompt.is_some() && prompt_file.is_some() {
-        return command_usage_error(
-            CommandName::Handoff,
-            "usage_error",
-            "bowline handoff cannot combine --prompt and --prompt-file".to_string(),
-            handoff_usage_actions(),
-        );
-    }
-    if session.is_some() && (prompt.is_some() || prompt_file.is_some()) {
-        return command_usage_error(
-            CommandName::Handoff,
-            "usage_error",
-            "bowline handoff cannot combine --session with prompt launch mode".to_string(),
-            handoff_usage_actions(),
-        );
-    }
-
-    Ok(Command::Handoff(HandoffArgs {
-        target: target.to_string(),
-        agent,
-        session,
-        prompt,
-        prompt_file,
-        project,
-    }))
-}
-
-fn parse_handoff_agent(value: &str) -> Option<HandoffAgent> {
-    match value {
-        "codex" => Some(HandoffAgent::Codex),
-        "claude" => Some(HandoffAgent::Claude),
-        _ => None,
-    }
-}
-
-fn handoff_usage_actions() -> Vec<RepairCommand> {
-    vec![RepairCommand::inspect(
-        "See handoff usage",
-        Some("bowline help handoff".to_string()),
-    )]
 }
 
 pub(super) fn parse_update_command(

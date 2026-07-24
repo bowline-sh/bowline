@@ -2,7 +2,6 @@ use std::fmt;
 #[cfg(test)]
 use std::{error::Error, path::Path};
 
-use bowline_core::ids::{ManifestId, PackId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use super::ByteStoreError;
@@ -11,48 +10,16 @@ use super::ByteStoreError;
 pub struct ObjectKey(String);
 
 impl ObjectKey {
-    pub const SNAPSHOT_METADATA_PAGE_PREFIX: &'static str = "metadata_mp_";
+    /// Manifest-sync file blob prefix; the 64-hex suffix is `blake3(sealed)`.
+    pub const BLOB_PREFIX: &'static str = "b_";
+    /// Manifest-sync workspace manifest prefix; the 64-hex suffix is
+    /// `blake3(sealed)`. The hosted CAS ref's `snapshotId` is this key.
+    pub const MANIFEST_PREFIX: &'static str = "m_";
 
     pub fn new(value: impl Into<String>) -> Result<Self, ByteStoreError> {
         let value = value.into();
         validate_opaque_object_key(&value)?;
         Ok(Self(value))
-    }
-
-    pub fn from_pack_id(pack_id: &PackId) -> Result<Self, ByteStoreError> {
-        Self::new(format!("packs_{}", pack_id.as_str()))
-    }
-
-    pub fn from_manifest_id(manifest_id: &ManifestId) -> Result<Self, ByteStoreError> {
-        Self::new(format!("manifests_{}", manifest_id.as_str()))
-    }
-
-    pub fn from_opaque_index_id(index_id: &str) -> Result<Self, ByteStoreError> {
-        Self::new(format!("indexes_{index_id}"))
-    }
-
-    pub fn from_conflict_bundle_id(conflict_id: &str) -> Result<Self, ByteStoreError> {
-        let Some(suffix) = conflict_id.strip_prefix("conflict_") else {
-            return Err(ByteStoreError::InvalidObjectKey {
-                key: conflict_id.to_string(),
-                reason: "conflict bundle IDs must use the generated conflict prefix",
-            });
-        };
-        Self::new(format!("conflicts_cb_{suffix}"))
-    }
-
-    pub fn new_snapshot_metadata_page() -> Result<Self, ByteStoreError> {
-        let mut random = [0_u8; 32];
-        getrandom::fill(&mut random).map_err(|_| ByteStoreError::InvalidObjectKey {
-            key: Self::SNAPSHOT_METADATA_PAGE_PREFIX.to_string(),
-            reason: "snapshot metadata page key generation failed",
-        })?;
-        let mut suffix = String::with_capacity(random.len() * 2);
-        for byte in random {
-            use fmt::Write as _;
-            write!(&mut suffix, "{byte:02x}").expect("writing to a String cannot fail");
-        }
-        Self::new(format!("{}{suffix}", Self::SNAPSHOT_METADATA_PAGE_PREFIX))
     }
 
     pub fn as_str(&self) -> &str {
@@ -111,27 +78,28 @@ fn validate_opaque_object_key(key: &str) -> Result<(), ByteStoreError> {
         });
     }
 
-    if !(matches_opaque_storage_key(key, "packs_pk_", 16)
-        || matches_opaque_storage_key(key, "manifests_mf_", 16)
-        || matches_opaque_storage_key(key, "indexes_ix_", 16)
-        || matches_opaque_storage_key(key, "conflicts_cb_", 16)
-        || matches_opaque_storage_key(key, ObjectKey::SNAPSHOT_METADATA_PAGE_PREFIX, 64))
+    // Manifest-sync engine keys (Plan 110): the key is the sealed-bytes hash,
+    // so the 64-hex suffix is exact — `b_` file blob, `m_` workspace manifest.
+    if !(matches_sealed_hash_key(key, ObjectKey::BLOB_PREFIX)
+        || matches_sealed_hash_key(key, ObjectKey::MANIFEST_PREFIX))
     {
         return Err(ByteStoreError::InvalidObjectKey {
             key: key.to_string(),
-            reason: "object keys must be generated opaque pack, manifest, locator-index, overlay, or conflict-bundle keys",
+            reason: "object keys must be sealed-hash b_/m_ keys",
         });
     }
 
     Ok(())
 }
 
-fn matches_opaque_storage_key(key: &str, prefix: &str, min_suffix_len: usize) -> bool {
+/// A manifest-sync key is exactly `<prefix><64 lowercase hex>`: the suffix is the
+/// full BLAKE3 of the sealed bytes, so unlike the former opaque generated keys it
+/// has no length tolerance — the key must equal the sealed hash.
+fn matches_sealed_hash_key(key: &str, prefix: &str) -> bool {
     let Some(suffix) = key.strip_prefix(prefix) else {
         return false;
     };
-    suffix.len() >= min_suffix_len
-        && suffix.len() <= 80
+    suffix.len() == 64
         && suffix
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
@@ -180,45 +148,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn conflict_bundle_key_is_opaque_and_deterministic() {
-        let key = ObjectKey::from_conflict_bundle_id("conflict_00112233445566778899aabb")
-            .expect("conflict key");
-        assert_eq!(key.as_str(), "conflicts_cb_00112233445566778899aabb");
-        assert!(ObjectKey::new(key.as_str()).is_ok());
-    }
-
-    #[test]
-    fn conflict_bundle_key_rejects_bad_suffixes() {
-        assert!(ObjectKey::from_conflict_bundle_id("not_conflict_0011223344556677").is_err());
-        assert!(ObjectKey::new("conflicts_cb_short").is_err());
-        assert!(ObjectKey::new("conflicts_cb_001122334455667g").is_err());
-    }
-
-    #[test]
-    fn snapshot_metadata_page_keys_are_random_opaque_physical_keys() {
-        let first = ObjectKey::new_snapshot_metadata_page().expect("first metadata key");
-        let second = ObjectKey::new_snapshot_metadata_page().expect("second metadata key");
-
-        assert_ne!(first, second);
-        assert!(
-            first
-                .as_str()
-                .starts_with(ObjectKey::SNAPSHOT_METADATA_PAGE_PREFIX)
+    fn object_key_accepts_b_and_m_prefixes() {
+        let blob = format!("{}{}", ObjectKey::BLOB_PREFIX, "a".repeat(64));
+        let manifest = format!("{}{}", ObjectKey::MANIFEST_PREFIX, "b".repeat(64));
+        assert_eq!(
+            ObjectKey::new(blob.clone()).expect("blob key").as_str(),
+            blob
         );
         assert_eq!(
-            first.as_str().len(),
-            ObjectKey::SNAPSHOT_METADATA_PAGE_PREFIX.len() + 64
+            ObjectKey::new(manifest.clone())
+                .expect("manifest key")
+                .as_str(),
+            manifest
         );
-        assert!(ObjectKey::new(first.as_str()).is_ok());
-        for canary in ["src", "secret", ".env", "workspace"] {
-            assert!(!first.as_str().contains(canary));
-        }
+
+        // The suffix is the sealed hash, so it is exact: 63 or 65 hex, a non-hex
+        // digit, or a wrong prefix length are all rejected.
+        assert!(ObjectKey::new(format!("b_{}", "a".repeat(63))).is_err());
+        assert!(ObjectKey::new(format!("m_{}", "a".repeat(65))).is_err());
+        assert!(ObjectKey::new(format!("b_{}g", "a".repeat(63))).is_err());
     }
 
     #[test]
-    fn snapshot_metadata_page_keys_require_full_random_suffix() {
-        assert!(ObjectKey::new("metadata_mp_0011223344556677").is_err());
-        assert!(ObjectKey::new(format!("metadata_mp_{}", "0".repeat(63))).is_err());
-        assert!(ObjectKey::new(format!("metadata_mp_{}g", "0".repeat(63))).is_err());
+    fn object_key_rejects_retired_pack_engine_prefixes() {
+        for key in [
+            "legacy_pk_0011223344556677",
+            "manifests_mf_0011223344556677",
+            "indexes_ix_0011223344556677",
+            "conflicts_cb_0011223344556677",
+            &format!("metadata_mp_{}", "0".repeat(64)),
+        ] {
+            assert!(ObjectKey::new(key.to_string()).is_err(), "key: {key}");
+        }
     }
 }

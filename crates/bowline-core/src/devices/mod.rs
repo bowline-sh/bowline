@@ -67,10 +67,6 @@ pub struct DeviceApprovalRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lease_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lease_handoff_digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup_receipts_digest: Option<String>,
@@ -333,8 +329,6 @@ mod tests {
             expires_at: "2026-06-23T12:10:00Z".to_string(),
             state: DeviceApprovalRequestState::Pending,
             host: Some("linux-server-1".to_string()),
-            lease_id: None,
-            lease_handoff_digest: None,
             root: Some("~/Code".to_string()),
             setup_receipts_digest: None,
         };

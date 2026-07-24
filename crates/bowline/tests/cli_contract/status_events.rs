@@ -138,42 +138,6 @@ fn status_watch_json_emits_initial_frame() {
 }
 
 #[test]
-fn status_watch_json_emits_sync_queue_change_frame() {
-    let db_path = unique_db("watch-status-sync-queue");
-    seed_sync_queue_workspace(&db_path);
-    let mut child = bowline()
-        .args(["status", "--root", "~/Code", "--watch", "--json"])
-        .env("BOWLINE_METADATA_DB", db_path.display().to_string())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("bowline status watch should start");
-    let stdout = child.stdout.take().expect("watch stdout should be piped");
-    let mut reader = BufReader::new(stdout);
-    let mut initial = String::new();
-    reader
-        .read_line(&mut initial)
-        .expect("initial watch frame should be readable");
-
-    enqueue_sync_queue_watch_change(&db_path);
-
-    let mut changed = String::new();
-    reader
-        .read_line(&mut changed)
-        .expect("changed watch frame should be readable");
-    let _ = child.kill();
-    let _ = child.wait();
-
-    let json: Value = serde_json::from_str(&changed).expect("watch frame should be json");
-    assert_eq!(json["type"], "status");
-    assert_eq!(json["sequence"], 2);
-    assert_eq!(json["status"]["syncQueue"]["waitingRetry"], 1);
-    assert_eq!(
-        json["status"]["status"]["attentionItems"],
-        serde_json::json!(["Sync queue is waiting for retry."])
-    );
-}
-
-#[test]
 fn status_watch_human_emits_initial_frame() {
     let db_path = unique_db("watch-status-human");
     let mut child = bowline()
@@ -202,28 +166,6 @@ fn status_watch_human_emits_initial_frame() {
         line,
         include_str!("../../../../tests/golden/cli/status-watch.txt")
     );
-}
-
-#[test]
-fn status_json_reports_daemon_component_degradation_from_metadata() {
-    let db_path = unique_db("daemon-component-status");
-    seed_daemon_component_status(&db_path);
-
-    let output = run_bowline_with_env(
-        &["status", "--root", "~/Code", "--json"],
-        &[("BOWLINE_METADATA_DB", db_path.display().to_string())],
-    );
-
-    assert!(output.status.success());
-    let json = parse_stdout_json(output);
-    assert_eq!(json["status"]["level"], "limited");
-    assert_eq!(json["eventWatermarks"]["syncState"], "degraded");
-    assert_eq!(json["eventWatermarks"]["watcherState"], "unavailable");
-    assert_eq!(json["eventWatermarks"]["networkState"], "offline");
-    let text = serde_json::to_string(&json).expect("status serializes");
-    assert!(text.contains("Sync is degraded."), "{text}");
-    assert!(text.contains("Native file watching is degraded."), "{text}");
-    assert!(text.contains("Network is unavailable."), "{text}");
 }
 
 #[test]
@@ -273,33 +215,6 @@ fn tui_rejects_json_output_mode() {
         .as_str()
         .expect("next action command");
     assert_eq!(command, "bowline help tui --json");
-}
-
-#[test]
-fn resolve_tui_noninteractive_falls_back_to_resolve_output() {
-    let temp = TempWorkspace::new("resolve-tui-fallback").expect("temp workspace");
-    let project = temp.root().join("Code").join("app");
-    let bundle = project
-        .join(".bowline")
-        .join("conflicts")
-        .join("conflict_tui");
-    create_conflict_bundle_with_id(&bundle, "conflict_tui", "src/auth.ts", false);
-
-    let output = run_bowline_with_env(
-        &[
-            "resolve",
-            project.to_str().expect("project path"),
-            "--tui",
-            "--human",
-        ],
-        &[("BOWLINE_GENERATED_AT", "2026-06-25T12:00:00Z".to_string())],
-    );
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).expect("resolve output should be utf8");
-    assert!(stdout.contains("Resolve"));
-    assert!(stdout.contains("1 unresolved conflict bundle(s) found"));
-    assert!(stdout.contains("conflict_tui"));
 }
 
 #[test]

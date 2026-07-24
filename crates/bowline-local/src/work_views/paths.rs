@@ -1,78 +1,22 @@
 use std::{
-    fs, io,
+    fs,
     path::{Component, Path, PathBuf},
 };
 
 use bowline_core::{
     events::{EventName, EventSeverity, EventSubject, EventSubjectKind, WorkspaceEvent},
-    ids::{EventId, ProjectId, WorkViewId},
-    policy::{AccessFlag, MaterializationMode, PathClassification},
+    ids::{EventId, WorkViewId},
     status::{StatusLevel, WorkspaceStatus},
-    work_views::{
-        WorkDiffChangeKind, WorkDiffEntry, WorkView, WorkViewLifecycle, WorkViewSyncState,
-    },
+    work_views::{WorkView, WorkViewLifecycle, WorkViewRetentionState, WorkViewSyncState},
     workspace_graph::normalize_workspace_path,
 };
 
-use crate::{
-    metadata::{MetadataStore, default_database_path},
-    policy::{PathFacts, UserPolicy, classify_path},
-};
+use crate::metadata::{MetadataStore, default_database_path};
 
 use super::WorkViewError;
 
-pub(super) fn project_has_pending_local_writes(
-    store: &MetadataStore,
-    workspace_id: &bowline_core::ids::WorkspaceId,
-    project_id: &ProjectId,
-    project_path: &str,
-) -> Result<bool, WorkViewError> {
-    let project_path = normalize_workspace_path(project_path);
-    let synced_at = store
-        .workspace_sync_head(workspace_id)?
-        .map(|head| head.observed_at);
-    for write in store.local_writes_for_project(
-        workspace_id,
-        project_id,
-        &project_path,
-        synced_at.as_deref(),
-        None,
-    )? {
-        let Ok(relative_path) = store.workspace_relative_path(workspace_id, &write.path) else {
-            if write.project_id.as_ref() == Some(project_id) {
-                return Ok(true);
-            }
-            continue;
-        };
-        let relative_path = normalize_workspace_path(&relative_path);
-        if relative_path == project_path && write.operation == "modify" {
-            continue;
-        }
-        if relative_path == ".work"
-            || relative_path
-                .strip_prefix(".work")
-                .is_some_and(|suffix| suffix.starts_with('/'))
-        {
-            continue;
-        }
-        if write.project_id.as_ref() == Some(project_id) {
-            return Ok(true);
-        }
-        if relative_path == project_path
-            || relative_path
-                .strip_prefix(&project_path)
-                .is_some_and(|suffix| suffix.starts_with('/'))
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-pub(super) fn resolve_work_view(
-    store: &MetadataStore,
-    selector: &str,
-) -> Result<WorkView, WorkViewError> {
+pub fn resolve_work_view(store: &MetadataStore, selector: &str) -> Result<WorkView, WorkViewError> {
+    reconcile_aux_work_views(store)?;
     let workspace = store
         .current_workspace()?
         .ok_or(WorkViewError::MissingWorkspace)?;
@@ -98,6 +42,44 @@ pub(super) fn resolve_work_view(
                 .collect(),
         }),
     }
+}
+
+pub fn reconcile_aux_work_views(store: &MetadataStore) -> Result<(), WorkViewError> {
+    use crate::sync::manifest_engine::work_view_cli::{read_aux_index_file, wire_view_from_record};
+
+    let workspace = store
+        .current_workspace()?
+        .ok_or(WorkViewError::MissingWorkspace)?;
+    let root = store
+        .current_workspace_root()?
+        .ok_or(WorkViewError::MissingWorkspaceRoot)?;
+    let root_id = store
+        .accepted_root_id_for_path(&workspace.id, &root)?
+        .ok_or(WorkViewError::MissingWorkspaceRoot)?;
+    let expanded_root = expand_display_path(&root);
+    let aux = read_aux_index_file(&expanded_root)?;
+    for (id, record) in &aux.work_views {
+        store.insert_project(
+            &record.project_id,
+            &workspace.id,
+            &root_id,
+            &record.project_path,
+            &record.created_at,
+        )?;
+        let mut view = wire_view_from_record(&workspace.id, &expanded_root, id, record);
+        if let Some(existing) = store.work_view_by_id(&workspace.id, &view.id)?
+            && existing.retention.state == WorkViewRetentionState::DeleteEligible
+            && matches!(
+                view.lifecycle,
+                WorkViewLifecycle::Accepted | WorkViewLifecycle::Discarded
+            )
+        {
+            view.retention = existing.retention;
+            view.updated_at = existing.updated_at;
+        }
+        store.upsert_work_view(&view)?;
+    }
+    Ok(())
 }
 
 pub(super) fn resolve_work_view_by_visible_path(
@@ -138,181 +120,6 @@ pub(super) fn normalize_lexical_path(path: PathBuf) -> PathBuf {
         }
     }
     normalized
-}
-
-pub(super) fn workspace_path_for_project_file(work_view: &WorkView, relative: &Path) -> String {
-    normalize_workspace_path(
-        &PathBuf::from(normalize_workspace_path(&work_view.project_path))
-            .join(relative)
-            .display()
-            .to_string(),
-    )
-}
-
-pub(super) fn clean_accept_policy(
-    store: &MetadataStore,
-    workspace_root: &Path,
-    workspace_id: &bowline_core::ids::WorkspaceId,
-    workspace_path: &str,
-    source: Option<&Path>,
-) -> Result<crate::policy::PathPolicyDecision, WorkViewError> {
-    if let Some(observed) = store.observed_path(workspace_id, workspace_path)? {
-        return Ok(crate::policy::PathPolicyDecision {
-            classification: observed.classification,
-            mode: observed.mode,
-            access: observed.access,
-        });
-    }
-    let policy = UserPolicy::load_for_path(workspace_root, workspace_path)?;
-    let byte_len = source
-        .map(fs::metadata)
-        .transpose()?
-        .map(|metadata| metadata.len());
-    Ok(classify_path(
-        &PathFacts {
-            relative_path: workspace_path.to_string(),
-            is_dir: false,
-            byte_len,
-        },
-        &policy,
-    ))
-}
-
-pub(super) fn clean_accept_explicit_include(
-    workspace_root: &Path,
-    workspace_path: &str,
-) -> Result<bool, WorkViewError> {
-    Ok(UserPolicy::load_for_path(workspace_root, workspace_path)?
-        .explicitly_includes(workspace_path))
-}
-
-pub(super) fn is_clean_accept_policy_eligible(
-    classification: PathClassification,
-    mode: MaterializationMode,
-) -> bool {
-    matches!(
-        (classification, mode),
-        (PathClassification::WorkspaceSync, _)
-            | (PathClassification::LargeFile, MaterializationMode::Lazy)
-            | (
-                PathClassification::ProjectEnv,
-                MaterializationMode::ProjectEnv | MaterializationMode::EncryptedSync
-            )
-            | (
-                PathClassification::SecretLooking,
-                MaterializationMode::EncryptedSync | MaterializationMode::ProjectEnv
-            )
-    )
-}
-
-pub(super) fn is_work_view_materialization_eligible(
-    classification: PathClassification,
-    mode: MaterializationMode,
-    access: &[AccessFlag],
-) -> bool {
-    if access.contains(&AccessFlag::AgentHidden) {
-        return false;
-    }
-    matches!(
-        (classification, mode),
-        (PathClassification::WorkspaceSync, _)
-            | (PathClassification::LargeFile, MaterializationMode::Lazy)
-            | (
-                PathClassification::ProjectEnv,
-                MaterializationMode::ProjectEnv | MaterializationMode::EncryptedSync
-            )
-    )
-}
-
-pub(super) fn is_owner_only_work_view_policy(
-    classification: PathClassification,
-    mode: MaterializationMode,
-) -> bool {
-    matches!(
-        (classification, mode),
-        (
-            PathClassification::ProjectEnv | PathClassification::SecretLooking,
-            MaterializationMode::ProjectEnv | MaterializationMode::EncryptedSync
-        )
-    )
-}
-
-#[cfg(unix)]
-#[cfg(test)]
-pub(super) fn apply_owner_only_work_view_permissions(
-    path: &Path,
-    owner_only: bool,
-) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    if owner_only {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-#[cfg(test)]
-pub(super) fn apply_owner_only_work_view_permissions(
-    path: &Path,
-    owner_only: bool,
-) -> io::Result<()> {
-    let _ = (path, owner_only);
-    Ok(())
-}
-
-pub(super) fn is_ignored_clean_accept_policy(
-    classification: PathClassification,
-    mode: MaterializationMode,
-) -> bool {
-    matches!(
-        (classification, mode),
-        (
-            PathClassification::Generated
-                | PathClassification::Dependency
-                | PathClassification::Cache
-                | PathClassification::LocalOnly,
-            MaterializationMode::LocalRegenerate
-                | MaterializationMode::LocalCache
-                | MaterializationMode::Ignore
-                | MaterializationMode::LocalOnly
-        )
-    )
-}
-
-pub(super) fn is_bowline_owned_namespace(relative: &Path) -> bool {
-    matches!(
-        relative.components().next(),
-        Some(Component::Normal(name)) if name.to_str() == Some(".work")
-    )
-}
-
-pub(super) fn is_secret_bearing_work_path(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with(".env"))
-}
-
-pub(super) fn is_source_control_metadata_path(path: &Path) -> bool {
-    path.components().any(|component| {
-        matches!(
-            component,
-            Component::Normal(name)
-                if matches!(name.to_str(), Some(".git" | ".jj" | ".hg" | ".svn"))
-        )
-    })
-}
-
-pub(super) fn main_project_root(
-    store: &MetadataStore,
-    work_view: &WorkView,
-) -> Result<Option<PathBuf>, WorkViewError> {
-    let Some(root) = store.current_workspace_root()? else {
-        return Ok(None);
-    };
-    Ok(Some(
-        expand_display_path(root).join(normalize_workspace_path(&work_view.project_path)),
-    ))
 }
 
 pub(super) fn work_namespace_root(
@@ -394,104 +201,6 @@ pub(super) fn ensure_no_symlink_ancestors(
     Ok(())
 }
 
-pub(super) fn files_under_with_checkpoint(
-    root: &Path,
-    checkpoint: &mut dyn FnMut() -> bool,
-) -> Result<Vec<PathBuf>, WorkViewError> {
-    let mut files = Vec::new();
-    collect_files_with_checkpoint(root, root, &mut files, checkpoint)?;
-    files.sort();
-    Ok(files)
-}
-
-fn collect_files_with_checkpoint(
-    root: &Path,
-    path: &Path,
-    files: &mut Vec<PathBuf>,
-    checkpoint: &mut dyn FnMut() -> bool,
-) -> Result<(), WorkViewError> {
-    for entry in fs::read_dir(path)? {
-        cancellation_checkpoint(checkpoint)?;
-        let entry = entry?;
-        let path = entry.path();
-        let relative = path
-            .strip_prefix(root)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if is_source_control_metadata_path(relative) {
-            continue;
-        }
-        let metadata = fs::symlink_metadata(&path)?;
-        if metadata.file_type().is_symlink() {
-            return Err(WorkViewError::UnsafeWorkViewPath {
-                path: path.display().to_string(),
-                reason: "symlinks are not followed in work views",
-            });
-        }
-        if metadata.is_dir() {
-            collect_files_with_checkpoint(root, &path, files, checkpoint)?;
-        } else if metadata.is_file() {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn cancellation_checkpoint(
-    checkpoint: &mut dyn FnMut() -> bool,
-) -> Result<(), WorkViewError> {
-    if checkpoint() {
-        Ok(())
-    } else {
-        Err(WorkViewError::Io(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "work-view operation cancelled",
-        )))
-    }
-}
-
-pub(super) fn ensure_fresh_materialization_path(path: &Path) -> Result<(), WorkViewError> {
-    let Ok(metadata) = fs::symlink_metadata(path) else {
-        return Ok(());
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(WorkViewError::UnsafeWorkViewPath {
-            path: path.display().to_string(),
-            reason: "work view materialization path already exists",
-        });
-    }
-    if fs::read_dir(path)?.next().is_some() {
-        return Err(WorkViewError::UnsafeWorkViewPath {
-            path: path.display().to_string(),
-            reason: "work view materialization path is not empty",
-        });
-    }
-    Ok(())
-}
-
-pub(super) fn remove_materialization_tree(path: &Path) {
-    if let Ok(metadata) = fs::symlink_metadata(path)
-        && metadata.is_dir()
-        && !metadata.file_type().is_symlink()
-    {
-        let _ = fs::remove_dir_all(path);
-    }
-}
-
-pub(super) fn status_for_changes(changes: &[WorkDiffEntry]) -> WorkspaceStatus {
-    if changes.iter().any(|change| {
-        matches!(
-            change.kind,
-            WorkDiffChangeKind::Conflict | WorkDiffChangeKind::PolicyReview
-        )
-    }) {
-        return WorkspaceStatus {
-            level: StatusLevel::Attention,
-            attention_items: vec!["Work view has changes that need review.".to_string()],
-        };
-    }
-    WorkspaceStatus::healthy()
-}
-
 pub(super) fn status_for_work_views(work_views: &[WorkView]) -> WorkspaceStatus {
     let attention_items = work_views
         .iter()
@@ -524,7 +233,7 @@ pub(super) fn status_for_work_views(work_views: &[WorkView]) -> WorkspaceStatus 
     }
 }
 
-pub(super) fn open_store(db_path: Option<&Path>) -> Result<MetadataStore, WorkViewError> {
+pub fn open_store(db_path: Option<&Path>) -> Result<MetadataStore, WorkViewError> {
     let path = match db_path {
         Some(path) => path.to_path_buf(),
         None => default_database_path().map_err(|_| WorkViewError::MissingMetadataDb)?,
@@ -532,7 +241,7 @@ pub(super) fn open_store(db_path: Option<&Path>) -> Result<MetadataStore, WorkVi
     MetadataStore::open(path).map_err(Into::into)
 }
 
-pub(super) fn validate_work_view_name(name: &str) -> Result<(), WorkViewError> {
+pub fn validate_work_view_name(name: &str) -> Result<(), WorkViewError> {
     let invalid = |reason| WorkViewError::InvalidName {
         name: name.to_string(),
         reason,
@@ -562,14 +271,14 @@ pub(super) fn validate_work_view_name(name: &str) -> Result<(), WorkViewError> {
     Ok(())
 }
 
-pub(super) fn visible_path(root: &str, project_path: &str, name: &str) -> PathBuf {
+pub fn visible_path(root: &str, project_path: &str, name: &str) -> PathBuf {
     expand_display_path(root)
         .join(".work")
         .join(normalize_workspace_path(project_path))
         .join(name)
 }
 
-pub(super) fn display_path(path: &Path) -> String {
+pub fn display_path(path: &Path) -> String {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return path.display().to_string();
     };
@@ -583,7 +292,7 @@ pub(super) fn display_path(path: &Path) -> String {
     }
 }
 
-pub(crate) fn expand_display_path(path: impl AsRef<str>) -> PathBuf {
+pub fn expand_display_path(path: impl AsRef<str>) -> PathBuf {
     let path = path.as_ref();
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         if path == "~" {
@@ -596,7 +305,7 @@ pub(crate) fn expand_display_path(path: impl AsRef<str>) -> PathBuf {
     PathBuf::from(path)
 }
 
-pub(super) fn work_view_id(workspace_id: &str, project_id: &str, name: &str) -> WorkViewId {
+pub fn work_view_id(workspace_id: &str, project_id: &str, name: &str) -> WorkViewId {
     let input = format!("{workspace_id}:{project_id}:{name}");
     WorkViewId::new(format!(
         "work_{}",
@@ -604,12 +313,20 @@ pub(super) fn work_view_id(workspace_id: &str, project_id: &str, name: &str) -> 
     ))
 }
 
-pub(super) fn append_work_event(
+pub fn append_work_event(
     store: &MetadataStore,
     name: EventName,
     work_view: &WorkView,
     generated_at: &str,
 ) {
+    append_event_or_log(store, work_event(name, work_view, generated_at));
+}
+
+pub(crate) fn work_event(
+    name: EventName,
+    work_view: &WorkView,
+    generated_at: &str,
+) -> WorkspaceEvent {
     let mut event = WorkspaceEvent::new(
         event_id(&name, work_view.id.as_str(), generated_at),
         name.clone(),
@@ -629,7 +346,7 @@ pub(super) fn append_work_event(
         "name".to_string(),
         serde_json::Value::String(work_view.name.clone()),
     );
-    append_event_or_log(store, event);
+    event
 }
 
 pub(super) fn append_workspace_event(

@@ -1,18 +1,5 @@
 use super::*;
 
-pub(super) fn missing_value(
-    command: CommandName,
-    name: &str,
-    flag: &str,
-) -> Result<Command, ParseError> {
-    command_usage_error(
-        command,
-        "usage_error",
-        format!("bowline {name} {flag} requires a value"),
-        trust_usage_actions(name),
-    )
-}
-
 pub(super) fn unexpected_argument(
     command: CommandName,
     name: &str,

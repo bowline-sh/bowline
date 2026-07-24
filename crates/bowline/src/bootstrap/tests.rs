@@ -1,185 +1,8 @@
 use super::*;
-use std::{cell::RefCell, rc::Rc};
 
-use bowline_control_plane::{DeviceControlPlaneClient, FakeControlPlaneClient};
-use bowline_core::{
-    commands::{CONTRACT_VERSION, DeviceCommandAction, DevicesCommandOutput},
-    devices::{DevicePlatform, DeviceTrustState, RecoveryKeyState},
-    ids::{DeviceApprovalRequestId, WorkspaceId},
-    status::RepairCommand,
-};
-use bowline_local::{
-    bootstrap::{
-        install::{RemoteBowlineInstall, RemotePlatform},
-        process::{ProcessError, ProcessOutput, ProcessRunner},
-    },
-    fakes::FakeKeychain,
-};
-
-#[derive(Clone)]
-struct FakeBootstrapRunner {
-    control_plane: FakeControlPlaneClient,
-    remote_keychain: FakeKeychain,
-    workspace_id: WorkspaceId,
-    request_id: Rc<RefCell<Option<DeviceApprovalRequestId>>>,
-    remote_daemon_running: Rc<RefCell<bool>>,
-}
-
-impl ProcessRunner for FakeBootstrapRunner {
-    fn run(&self, _program: &str, args: &[String]) -> Result<ProcessOutput, ProcessError> {
-        self.run_with_stdin(_program, args, "")
-    }
-
-    fn run_with_stdin(
-        &self,
-        _program: &str,
-        args: &[String],
-        _stdin: &str,
-    ) -> Result<ProcessOutput, ProcessError> {
-        let command = args.last().cloned().unwrap_or_default();
-        if command.contains("device request") && command.contains("--json") {
-            let request = bowline_local::trust::create_device_request(
-                &self.control_plane,
-                &self.remote_keychain,
-                bowline_local::trust::DeviceRequestOptions {
-                    workspace_id: self.workspace_id.clone(),
-                    device_id: DeviceId::new("remote-linux"),
-                    device_name: "Remote Linux".to_string(),
-                    platform: DevicePlatform::Linux,
-                    host: Some("linux-box".to_string()),
-                    lease_id: None,
-                    root: Some("~/Code".to_string()),
-                    runtime: None,
-                    generated_at: "2026-06-26T12:00:00Z".to_string(),
-                },
-            )
-            .expect("remote request");
-            *self.request_id.borrow_mut() = Some(request.request_id.clone());
-            return Ok(json_output(&DevicesCommandOutput {
-                contract_version: CONTRACT_VERSION,
-                command: bowline_core::commands::CommandName::Devices,
-                generated_at: "2026-06-26T12:00:00Z".to_string(),
-                action: DeviceCommandAction::Request,
-                workspace_id: Some(self.workspace_id.clone()),
-                local_device: None,
-                devices: Vec::new(),
-                revoked_devices: Vec::new(),
-                pending_requests: vec![request.clone()],
-                created_request: Some(request),
-                approved_device: None,
-                denied_request: None,
-                revoked_device: None,
-                recovery_key: Some(RecoveryKeyState::missing()),
-                next_actions: Vec::new(),
-            }));
-        }
-        if command.contains("device accept") {
-            let request_id = self
-                .request_id
-                .borrow()
-                .clone()
-                .expect("request id exists before accept");
-            bowline_local::trust::accept_device_grant(
-                &self.control_plane,
-                &self.remote_keychain,
-                &self.workspace_id,
-                &request_id,
-                &DeviceId::new("remote-linux"),
-            )
-            .expect("remote accepts grant");
-            return Ok(json_output(&serde_json::json!({"ok": true})));
-        }
-        if command.contains("daemon stop --json") {
-            *self.remote_daemon_running.borrow_mut() = false;
-            return Ok(json_output(
-                &serde_json::json!({"daemon": {"state": "stopped"}}),
-            ));
-        }
-        if command.contains("daemon start --json") {
-            *self.remote_daemon_running.borrow_mut() = true;
-            return Ok(json_output(
-                &serde_json::json!({"daemon": {"state": "starting"}}),
-            ));
-        }
-        if command.contains("daemon status --json") {
-            let running = *self.remote_daemon_running.borrow();
-            return Ok(json_output(&serde_json::json!({
-                "daemon": {"state": if running { "running" } else { "stopped" }},
-                "sync": {
-                    "state": "idle",
-                    "lastOutcome": "no-changes",
-                    "localHead": {
-                        "workspaceId": self.workspace_id.as_str(),
-                        "snapshotId": "snap-ready",
-                        "version": 1
-                    },
-                    "remoteHead": {
-                        "workspaceId": self.workspace_id.as_str(),
-                        "snapshotId": "snap-ready",
-                        "version": 1
-                    }
-                }
-            })));
-        }
-        if command.contains("setup --root")
-            || command.contains("ln -sfn")
-            || command.contains("daemon.env")
-        {
-            return Ok(json_output(&serde_json::json!({"ok": true})));
-        }
-        if command.contains("agent start") {
-            return Ok(json_output(&serde_json::json!({
-                "lease": {
-                    "id": "lease-remote-codex",
-                    "writeTargetMode": "direct",
-                    "writeTargetPath": "~/Code/foo",
-                    "outputTarget": {
-                        "kind": "real-project",
-                        "path": "~/Code/foo"
-                    }
-                }
-            })));
-        }
-        if command.contains("codex exec") {
-            return Ok(ProcessOutput {
-                status_code: 0,
-                stdout: "codex completed\n".to_string(),
-                stderr: String::new(),
-            });
-        }
-        if command.contains("agent complete --lease")
-            && command.contains("lease-remote-codex")
-            && command.contains("--json")
-        {
-            return Ok(json_output(&serde_json::json!({
-                "requestId": "tool-complete",
-                "leaseId": "lease-remote-codex",
-                "tool": "complete-task",
-                "outcome": "allowed",
-                "summary": "task completed"
-            })));
-        }
-        if command.contains("accept")
-            && command.contains("work_view_remote_codex")
-            && command.contains("--json")
-        {
-            return Ok(json_output(&serde_json::json!({
-                "action": "accepted",
-                "workView": {"id": "work_view_remote_codex"},
-                "status": {"level": "healthy", "attentionItems": []}
-            })));
-        }
-        Ok(json_output(&serde_json::json!({})))
-    }
-}
-
-fn json_output<T: serde::Serialize>(value: &T) -> ProcessOutput {
-    ProcessOutput {
-        status_code: 0,
-        stdout: serde_json::to_string(value).expect("json") + "\n",
-        stderr: String::new(),
-    }
-}
+use bowline_control_plane::FakeControlPlaneClient;
+use bowline_core::{devices::DeviceTrustState, status::RepairCommand};
+use bowline_local::fakes::FakeKeychain;
 
 #[test]
 fn remote_sync_ready_requires_healthy_without_attention() {
@@ -245,6 +68,11 @@ fn bootstrap_root_unexpands_local_home_for_remote_hosts() {
     assert_eq!(
         normalize_remote_root_for_home("/srv/Code", "/workspace/user"),
         "/srv/Code"
+    );
+    assert_eq!(
+        normalize_remote_root_for_home("/srv/Code", ""),
+        "/srv/Code",
+        "empty HOME must not rewrite absolute roots to ~/…"
     );
 }
 
@@ -321,6 +149,33 @@ fn bootstrap_output_keeps_trust_separate_from_sync_status() {
 }
 
 #[test]
+fn daemon_bootstrap_recovery_installs_the_managed_service() {
+    let base = BootstrapOutputBase {
+        host: "linux-box".to_string(),
+        root: "~/Code".to_string(),
+        local_root: Some("~/Code".to_string()),
+        generated_at: "2026-07-23T21:00:00Z".to_string(),
+        steps: Vec::new(),
+        remote_status_items: Vec::new(),
+    };
+
+    let actions = blocked_repair_actions(&base, BootstrapStepName::DaemonStart);
+
+    assert!(actions.iter().any(|action| {
+        action.label == "Install remote daemon service"
+            && action.command.as_deref()
+                == Some(ssh_command("linux-box", "bowline daemon install --json").as_str())
+    }));
+    assert!(
+        actions.iter().all(|action| !action
+            .command
+            .as_deref()
+            .is_some_and(|command| { command.contains("bowline daemon start") })),
+        "bootstrap recovery must never create an unmanaged remote daemon"
+    );
+}
+
+#[test]
 fn bootstrap_output_ready_surfaces_inspect_without_agent_launch() {
     let output = bootstrap_output(
         BootstrapOutputBase {
@@ -354,68 +209,6 @@ fn bootstrap_output_ready_surfaces_inspect_without_agent_launch() {
             .repair_actions
             .iter()
             .any(|action| action.label.to_lowercase().contains("agent"))
-    );
-}
-
-#[test]
-fn blocked_remote_agent_handoff_points_at_conflict_resolution() {
-    let output = bootstrap_output(
-        BootstrapOutputBase {
-            host: "linux-box".to_string(),
-            root: "~/Code".to_string(),
-            local_root: Some("~/Code".to_string()),
-            generated_at: "2026-06-24T12:00:00Z".to_string(),
-            steps: vec![step(
-                BootstrapStepName::AgentLease,
-                BootstrapStepState::Blocked,
-                "Remote agent start failed: conflicts need attention",
-            )],
-            remote_status_items: vec![StatusItem {
-                kind: StatusItemKind::Conflict,
-                summary: "1 unresolved conflict needs attention".to_string(),
-                subject: None,
-                path: None,
-                classification: None,
-                mode: None,
-                access: Vec::new(),
-                event_id: None,
-                event_name: None,
-                device_id: None,
-                lease_id: None,
-                project_id: None,
-                snapshot_id: None,
-                policy_version: None,
-                env_record_id: None,
-            }],
-        },
-        None,
-        None,
-        true,
-        Some(WorkspaceStatus {
-            level: StatusLevel::Attention,
-            attention_items: vec!["1 unresolved conflict needs attention".to_string()],
-        }),
-    );
-
-    assert_eq!(output.sync, BootstrapSyncState::Blocked);
-    assert!(output.repair_actions.iter().any(|action| {
-        action.label == "Resolve remote conflicts"
-            && action.command.as_deref()
-                == Some(ssh_command("linux-box", "bowline resolve ~/Code --json").as_str())
-    }));
-    assert!(
-        output
-            .repair_actions
-            .iter()
-            .any(|action| action.label == "Retry remote bootstrap")
-    );
-    // A blocked handoff is repaired by resolving conflicts / retrying, never by an
-    // agent-launch action.
-    assert!(
-        !output
-            .repair_actions
-            .iter()
-            .any(|action| action.label == "Start remote agent work")
     );
 }
 
@@ -541,109 +334,6 @@ fn remote_bootstrap_secrets_require_durable_account_session() {
 }
 
 #[test]
-fn fake_ssh_bootstrap_completes_device_trust_and_prepares_agent_lease() {
-    let control_plane = FakeControlPlaneClient::default();
-    let workspace_id = WorkspaceId::new("ws_agent_native_fake_bootstrap");
-    control_plane.create_workspace(workspace_id.as_str());
-    let local_keychain = FakeKeychain::default();
-    bowline_local::trust::ensure_first_device_trust_root(
-        &control_plane,
-        &local_keychain,
-        workspace_id.clone(),
-        DeviceId::new("local-codex"),
-        "Local Codex".to_string(),
-        DevicePlatform::Macos,
-        "2026-06-26T12:00:00Z",
-    )
-    .expect("local device trusted");
-    let runner = FakeBootstrapRunner {
-        control_plane: control_plane.clone(),
-        remote_keychain: FakeKeychain::default(),
-        workspace_id: workspace_id.clone(),
-        request_id: Rc::new(RefCell::new(None)),
-        remote_daemon_running: Rc::new(RefCell::new(false)),
-    };
-    let output = run_after_install(AfterInstallInput {
-        runner: &runner,
-        args: BootstrapSshArgs {
-            host: "linux-box".to_string(),
-            root: "~/Code".to_string(),
-            artifact: None,
-            project: Some("foo".to_string()),
-            task: Some("implement the thing".to_string()),
-            agent: Some("codex".to_string()),
-        },
-        generated_at: "2026-06-26T12:00:00Z".to_string(),
-        steps: vec![step(
-            BootstrapStepName::Install,
-            BootstrapStepState::Completed,
-            "Installed fake bowline artifacts.",
-        )],
-        install: RemoteBowlineInstall {
-            platform: RemotePlatform {
-                os: "linux".to_string(),
-                arch: "x86_64".to_string(),
-            },
-            remote_binary: "~/.local/bin/bowline".to_string(),
-            remote_daemon_binary: "~/.local/bin/bowline-daemon".to_string(),
-            artifact_sha256: "0123456789abcdef".repeat(4),
-            daemon_artifact_sha256: "fedcba9876543210".repeat(4),
-        },
-        control_plane: &control_plane,
-        key_store: &local_keychain,
-        workspace_id: workspace_id.clone(),
-        device_id: DeviceId::new("local-codex"),
-        remote_secret_env: Vec::new(),
-    });
-
-    assert!(output.trusted);
-    assert_eq!(output.sync, BootstrapSyncState::Ready);
-    assert!(
-        output
-            .steps
-            .iter()
-            .all(|step| step.state == BootstrapStepState::Completed)
-    );
-    assert_eq!(
-        output
-            .authorized_device
-            .as_ref()
-            .expect("authorized remote")
-            .id
-            .as_str(),
-        "remote-linux"
-    );
-    assert!(output.steps.iter().any(|step| {
-        step.name == BootstrapStepName::AgentLease
-            && step.state == BootstrapStepState::Completed
-            && step.summary.contains("lease-remote-codex")
-            && step.summary.contains("Prepared remote agent work")
-    }));
-    // Bootstrap prepares the handoff lease and stops; it never launches, completes,
-    // or accepts the agent, so no agent-launch repair actions are emitted.
-    assert!(
-        !output
-            .repair_actions
-            .iter()
-            .any(|action| action.label.contains("Launch Codex"))
-    );
-    assert!(
-        !output
-            .repair_actions
-            .iter()
-            .any(|action| action.label.contains("Copy prompt"))
-    );
-
-    let trust = control_plane
-        .list_device_trust(&workspace_id)
-        .expect("trust list");
-    assert!(trust.pending_requests.is_empty());
-    assert!(trust.authorized_devices.iter().any(|device| {
-        device.device_id == "remote-linux" && device.device_name == "Remote Linux"
-    }));
-}
-
-#[test]
 fn remote_device_trust_requires_exact_authorized_device() {
     let control_plane = FakeControlPlaneClient::default();
     let workspace_id = bowline_core::ids::WorkspaceId::new("ws_bootstrap_trust");
@@ -670,7 +360,6 @@ fn remote_device_trust_requires_exact_authorized_device() {
             device_name: "Linux Server".to_string(),
             platform: bowline_core::devices::DevicePlatform::Linux,
             host: Some("linux-server".to_string()),
-            lease_id: None,
             root: Some("~/Code".to_string()),
             runtime: None,
             generated_at: "2026-06-24T12:00:00Z".to_string(),

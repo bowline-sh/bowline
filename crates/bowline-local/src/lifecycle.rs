@@ -19,12 +19,9 @@ use bowline_core::{
 };
 use serde_json::Value;
 
-use crate::{
-    metadata::{
-        MetadataError, MetadataStore, ProjectLifecycleState, ProjectLocalMaterializationState,
-        ProjectRecord, SyncOperationState, default_database_path,
-    },
-    sync::{ConflictBundleError, unresolved_conflict_paths},
+use crate::metadata::{
+    MetadataError, MetadataStore, ProjectLifecycleState, ProjectLocalMaterializationState,
+    ProjectRecord, default_database_path,
 };
 
 const DEFAULT_PURGE_GRACE_DAYS: u32 = 14;
@@ -45,7 +42,6 @@ pub struct NamespaceLifecycleOptions {
 #[derive(Debug)]
 pub enum NamespaceLifecycleError {
     Metadata(MetadataError),
-    ConflictBundle(ConflictBundleError),
     Io(io::Error),
     ProjectMissing(String),
     ConfirmationRequired,
@@ -254,7 +250,6 @@ struct LifecycleContext {
     workspace_id: WorkspaceId,
     project: ProjectRecord,
     project_path: PathBuf,
-    workspace_root: PathBuf,
 }
 
 impl LifecycleContext {
@@ -284,32 +279,20 @@ impl LifecycleContext {
             workspace_id: workspace.id,
             project,
             project_path,
-            workspace_root: PathBuf::from(workspace_root),
         })
     }
 }
 
 fn ensure_no_unsynced_work(context: &LifecycleContext) -> Result<(), NamespaceLifecycleError> {
-    let mut blockers = context
-        .store
-        .sync_operations(&context.workspace_id)?
-        .into_iter()
-        .filter(|operation| operation.state != SyncOperationState::Completed)
-        .map(|operation| format!("sync operation {}", operation.id))
-        .collect::<Vec<_>>();
-    let conflict_root = context.workspace_root.join(".bowline").join("conflicts");
-    blockers.extend(
-        unresolved_conflict_paths(&conflict_root)?
-            .into_iter()
-            .filter(|path| path.starts_with(&context.project.path)),
-    );
-    blockers.sort();
-    blockers.dedup();
-    if blockers.is_empty() {
-        Ok(())
-    } else {
-        Err(NamespaceLifecycleError::UnsyncedWork { paths: blockers })
-    }
+    // The old engine's convergence journal and conflict records are gone
+    // (Plan 111): conflicts are ordinary conflict-aside files that sync like
+    // any file, and pending-push truth lives in the daemon's manifest-engine
+    // state, not `local.sqlite3`. The destructive-action gate therefore moves
+    // to the engine phase check (Plan 111 Step 6 `bowline doctor` / daemon
+    // Ready state); locally there is nothing left that can prove unsynced
+    // work, so this seam no longer blocks.
+    let _ = context;
+    Ok(())
 }
 
 fn deletion_preview(path: &Path) -> Result<NamespaceLifecyclePreview, NamespaceLifecycleError> {
@@ -459,7 +442,6 @@ impl fmt::Display for NamespaceLifecycleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Metadata(error) => error.fmt(formatter),
-            Self::ConflictBundle(error) => error.fmt(formatter),
             Self::Io(error) => write!(formatter, "lifecycle file operation failed: {error}"),
             Self::ProjectMissing(path) => write!(formatter, "project `{path}` was not found"),
             Self::ConfirmationRequired => write!(
@@ -489,12 +471,6 @@ impl From<MetadataError> for NamespaceLifecycleError {
     }
 }
 
-impl From<ConflictBundleError> for NamespaceLifecycleError {
-    fn from(error: ConflictBundleError) -> Self {
-        Self::ConflictBundle(error)
-    }
-}
-
 impl From<io::Error> for NamespaceLifecycleError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
@@ -504,33 +480,9 @@ impl From<io::Error> for NamespaceLifecycleError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        metadata::{
-            ProjectLocalMaterializationState, SyncOperationKind, SyncOperationRecord,
-            SyncOperationState,
-        },
-        workspace::TempWorkspace,
-    };
+    use crate::{metadata::ProjectLocalMaterializationState, workspace::TempWorkspace};
 
     const NOW: &str = "2026-07-09T12:00:00Z";
-
-    #[test]
-    fn forget_local_refuses_queued_sync_operation() {
-        let fixture = fixture("lifecycle-forget-blocked");
-        fixture
-            .store
-            .enqueue_sync_operation(&sync_operation())
-            .unwrap();
-
-        let error = forget_local(options(&fixture, "apps/web"))
-            .expect_err("queued sync operation blocks delete");
-
-        assert!(matches!(
-            error,
-            NamespaceLifecycleError::UnsyncedWork { .. }
-        ));
-        assert!(fixture.temp.root().join("apps/web/src/index.ts").exists());
-    }
 
     #[test]
     fn forget_local_removes_local_bytes_and_appends_lifecycle_event() {
@@ -671,36 +623,6 @@ mod tests {
             restore: false,
             cancel: false,
             grace_days: None,
-        }
-    }
-
-    fn sync_operation() -> SyncOperationRecord {
-        SyncOperationRecord {
-            id: "sync_lifecycle".to_string(),
-            workspace_id: WorkspaceId::new("ws_lifecycle"),
-            kind: SyncOperationKind::Reconcile,
-            resource_key: crate::metadata::SyncResourceKey::workspace_sync(WorkspaceId::new(
-                "ws_lifecycle",
-            )),
-            state: SyncOperationState::Queued,
-            idempotency_key: "sync_lifecycle".to_string(),
-            base_version: None,
-            base_snapshot_id: None,
-            target_snapshot_id: None,
-            device_id: None,
-            payload_json: "{}".to_string(),
-            attempt_count: 0,
-            claimed_by: None,
-            claim_generation: 0,
-            heartbeat_at: None,
-            lease_expires_at: None,
-            cancellation_requested_at: None,
-            next_attempt_at: None,
-            result_json: None,
-            last_error_code: None,
-            last_error: None,
-            created_at: NOW.to_string(),
-            updated_at: NOW.to_string(),
         }
     }
 }

@@ -1,6 +1,6 @@
 use bowline_core::ids::{
     AccountId, BootstrapSessionId, DeviceApprovalRequestId, DeviceId, EncryptedDeviceGrantId,
-    LeaseId, RecoveryEnvelopeId, WorkspaceId,
+    RecoveryEnvelopeId, WorkspaceId,
 };
 
 use crate::ControlPlaneTimestamp;
@@ -17,8 +17,6 @@ pub struct DeviceRequestInput {
     pub matching_code: String,
     pub account_id: Option<AccountId>,
     pub host: Option<String>,
-    pub lease_handoff_digest: Option<String>,
-    pub lease_id: Option<LeaseId>,
     pub root: Option<String>,
     pub runtime: Option<String>,
     pub setup_receipts_digest: Option<String>,
@@ -49,8 +47,6 @@ impl DeviceRequestInput {
             matching_code: draft.matching_code,
             account_id: None,
             host: None,
-            lease_handoff_digest: None,
-            lease_id: None,
             root: None,
             runtime: None,
             setup_receipts_digest: None,
@@ -63,8 +59,6 @@ impl DeviceRequestInput {
 pub struct BootstrapSessionInput {
     pub workspace_id: WorkspaceId,
     pub host: Option<String>,
-    pub lease_handoff_digest: Option<String>,
-    pub lease_id: Option<LeaseId>,
     pub root: Option<String>,
     pub runtime: Option<String>,
     pub setup_receipts_digest: Option<String>,
@@ -76,8 +70,6 @@ impl BootstrapSessionInput {
         Self {
             workspace_id: WorkspaceId::new(workspace_id),
             host: None,
-            lease_handoff_digest: None,
-            lease_id: None,
             root: None,
             runtime: None,
             setup_receipts_digest: None,
@@ -91,8 +83,6 @@ pub struct BootstrapSession {
     pub session_id: BootstrapSessionId,
     pub workspace_id: WorkspaceId,
     pub token: String,
-    pub lease_id: Option<LeaseId>,
-    pub lease_handoff_digest: Option<String>,
     pub runtime: Option<String>,
     pub setup_receipts_digest: Option<String>,
     pub expires_at: ControlPlaneTimestamp,
@@ -111,8 +101,6 @@ pub struct DeviceRequest {
     pub matching_code: String,
     pub account_id: Option<AccountId>,
     pub host: Option<String>,
-    pub lease_handoff_digest: Option<String>,
-    pub lease_id: Option<LeaseId>,
     pub root: Option<String>,
     pub runtime: Option<String>,
     pub setup_receipts_digest: Option<String>,

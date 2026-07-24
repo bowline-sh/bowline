@@ -1,5 +1,0 @@
-Resolve: 1 unresolved conflict bundle(s) found
-- conflict_same_line at .bowline/conflicts/conflict_same_line (local)
-  apps/web/.env.local
-Actions:
-- Print repair prompt: bowline resolve ~/Code/acme/web --copy-prompt

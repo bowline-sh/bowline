@@ -10,15 +10,16 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL};
 use bowline_core::ids::{
-    AccountId, BootstrapSessionId, ConflictId, ContentId, DeviceApprovalRequestId, DeviceId,
-    EncryptedDeviceGrantId, EventId, LeaseId, ManifestId, ProjectId, RecoveryEnvelopeId,
-    SnapshotId, WorkViewId, WorkspaceId,
+    AccountId, BootstrapSessionId, DeviceApprovalRequestId, DeviceId, EncryptedDeviceGrantId,
+    EventId, ProjectId, RecoveryEnvelopeId, SnapshotId, WorkspaceId,
 };
 use bowline_core::status::StatusFact;
 use bowline_storage::{
     ObjectKey as StorageObjectKey, ObjectKind as StorageObjectKind, ObjectMetadata, RetentionState,
 };
-use convex::{ConvexClient, ConvexError, FunctionResult, Value};
+use convex::{
+    ConvexClient, ConvexClientBuilder, ConvexError, FunctionResult, Value, WebSocketState,
+};
 use futures::{StreamExt, future::Either};
 use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -27,23 +28,18 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::{
     AuthorizedDeviceRecord, BootstrapSession, BootstrapSessionInput,
     CURRENT_SNAPSHOT_AUTHORITY_FORMAT_VERSION, Capability, CapabilityReporting, CompactEvent,
-    CompactEventKind, CompareAndSwapError, ConflictMetadataRecord, ConflictOccurrenceReconcile,
-    ConflictOccurrenceState, ConflictReconcileOutcome, ConflictReconcileResult, ControlPlaneError,
-    ControlPlaneResult, ControlPlaneTimestamp, DeleteIntent, DeviceApproval, DeviceApprovalInput,
+    CompactEventKind, CompareAndSwapError, ControlPlaneError, ControlPlaneResult,
+    ControlPlaneTimestamp, DeleteIntent, DeviceApproval, DeviceApprovalInput,
     DeviceApprovalRequestList, DeviceDenial, DeviceDenialInput, DeviceRequest, DeviceRequestInput,
     DeviceRequestState, DeviceRevocationInput, DownloadIntent, DownloadIntentRequest,
-    FirstAuthorizedDeviceInput, GrantAcceptanceInput, Lease, LeaseCreate, LeaseSessionState,
-    LeaseUpdate, LeaseWriteTargetMode, MetadataBindingBatch, MetadataBindingCommit,
-    MetadataBindingInput, MetadataBindingOutcome, MetadataBindingRecord, MetadataRecordKind,
-    MetadataSidecar, ObjectKind, ObjectMetadataCommit, ObjectPointer, ObjectRetentionStateUpdate,
-    RecoveryDeviceAuthorizationInput, RecoveryEnvelopeInput, RecoveryEnvelopeRecord,
-    RecoveryEnvelopeState, RejectionCode, RevokedDeviceRecord, SignedUrlIntent, SnapshotRootCommit,
-    SnapshotRootRecord, StaleWorkViewOverlayHead, StaleWorkspaceRef, StatusEventWatermarks,
+    FirstAuthorizedDeviceInput, GrantAcceptanceInput, ObjectKind, ObjectMetadataCommit,
+    ObjectPointer, ObjectRetentionStateUpdate, RecoveryDeviceAuthorizationInput,
+    RecoveryEnvelopeInput, RecoveryEnvelopeRecord, RecoveryEnvelopeState, RejectionCode,
+    RevokedDeviceRecord, SignedUrlIntent, StaleWorkspaceRef, StatusEventWatermarks,
     StatusItemSnapshot, StatusLimitSnapshot, StatusSyncQueueSnapshot,
     StatusWorkspaceSummarySnapshot, UploadIntent, UploadIntentRequest,
-    UploadVerificationIntentRequest, WorkViewCreate, WorkViewLifecycleState,
-    WorkViewLifecycleUpdate, WorkViewOverlayCommit, WorkViewRecord, WorkViewUpdateError,
-    WorkspaceRef, WorkspaceRefHistoryRecord, WorkspaceStatusSnapshot,
+    UploadVerificationIntentRequest, WorkspaceRef, WorkspaceRefHistoryRecord,
+    WorkspaceStatusSnapshot,
 };
 
 pub(crate) mod contracts;
@@ -51,7 +47,6 @@ mod dashboard;
 mod devices;
 mod generated;
 use generated::{AuthRegisterAccountSession, HostedAuthRegisterAccountSessionRequest};
-mod leases;
 mod objects;
 mod parse;
 mod proof;
@@ -59,7 +54,6 @@ mod recovery;
 mod rpc;
 mod sync;
 mod wire_validation;
-mod work_views;
 
 pub use dashboard::*;
 
@@ -94,6 +88,46 @@ pub(crate) enum ConvexRpcKind {
 pub struct WorkspaceRefStreamShutdown(Option<tokio::sync::oneshot::Sender<()>>);
 
 pub struct WorkspaceRefStreamCancellation(tokio::sync::oneshot::Receiver<()>);
+
+/// Connection lifecycle emitted by the Convex websocket that owns a workspace
+/// ref subscription.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceRefStreamConnectionState {
+    Connecting,
+    Connected,
+}
+
+/// Ordered output from one workspace-ref subscription. Connection lifecycle and
+/// values share one channel so consumers cannot attribute a value to the wrong
+/// websocket generation.
+#[derive(Debug)]
+pub enum WorkspaceRefStreamEvent {
+    ConnectionState(WorkspaceRefStreamConnectionState),
+    Ref(ControlPlaneResult<Option<WorkspaceRef>>),
+}
+
+enum WorkspaceRefStreamOutput {
+    Values(std::sync::mpsc::Sender<ControlPlaneResult<Option<WorkspaceRef>>>),
+    Events(std::sync::mpsc::Sender<WorkspaceRefStreamEvent>),
+}
+
+impl WorkspaceRefStreamOutput {
+    fn send_state(&self, state: WorkspaceRefStreamConnectionState) -> bool {
+        match self {
+            Self::Values(_) => true,
+            Self::Events(sender) => sender
+                .send(WorkspaceRefStreamEvent::ConnectionState(state))
+                .is_ok(),
+        }
+    }
+
+    fn send_ref(&self, value: ControlPlaneResult<Option<WorkspaceRef>>) -> bool {
+        match self {
+            Self::Values(sender) => sender.send(value).is_ok(),
+            Self::Events(sender) => sender.send(WorkspaceRefStreamEvent::Ref(value)).is_ok(),
+        }
+    }
+}
 
 pub fn workspace_ref_stream_shutdown_pair()
 -> (WorkspaceRefStreamShutdown, WorkspaceRefStreamCancellation) {
@@ -168,8 +202,6 @@ fn hosted_supported_capabilities() -> &'static [Capability] {
         Capability::WorkspaceRefHistory,
         Capability::StorageGc,
         Capability::ObjectMetadata,
-        Capability::WorkViews,
-        Capability::AgentLeases,
         Capability::DeviceBootstrap,
         Capability::DeviceTrust,
         Capability::RecoveryKey,
@@ -321,6 +353,32 @@ impl HostedControlPlaneClient {
         sender: std::sync::mpsc::Sender<ControlPlaneResult<Option<WorkspaceRef>>>,
         shutdown: WorkspaceRefStreamCancellation,
     ) -> ControlPlaneResult<()> {
+        self.stream_workspace_ref_output_until(
+            workspace_id,
+            WorkspaceRefStreamOutput::Values(sender),
+            shutdown,
+        )
+    }
+
+    pub fn stream_workspace_ref_events_until(
+        &self,
+        workspace_id: &str,
+        sender: std::sync::mpsc::Sender<WorkspaceRefStreamEvent>,
+        shutdown: WorkspaceRefStreamCancellation,
+    ) -> ControlPlaneResult<()> {
+        self.stream_workspace_ref_output_until(
+            workspace_id,
+            WorkspaceRefStreamOutput::Events(sender),
+            shutdown,
+        )
+    }
+
+    fn stream_workspace_ref_output_until(
+        &self,
+        workspace_id: &str,
+        output: WorkspaceRefStreamOutput,
+        shutdown: WorkspaceRefStreamCancellation,
+    ) -> ControlPlaneResult<()> {
         let deployment_url = self.deployment_url.clone();
         let device_proof_verifier_resolver = self.device_proof_verifier_resolver.clone();
         // The live subscription shares the typed refs:getWorkspaceRef contract:
@@ -341,47 +399,71 @@ impl HostedControlPlaneClient {
         let request_args = encode_hosted_request::<generated::RefsGetWorkspaceRef>(&request)?;
         let function_name = generated::RefsGetWorkspaceRef::CONVEX_FUNCTION;
         self.runtime.block_on(async move {
-            let mut client = ConvexClient::new(&deployment_url)
-                .await
-                .map_err(map_convex_error)?;
-            let mut subscription = client
-                .subscribe(function_name, request_args)
-                .await
-                .map_err(map_convex_error)?;
             let mut shutdown = Box::pin(shutdown.0);
+            let (websocket_state_tx, mut websocket_state_rx) = tokio::sync::mpsc::channel(8);
+            let Some(client) = until_workspace_ref_stream_shutdown(
+                &mut shutdown,
+                ConvexClientBuilder::new(&deployment_url)
+                    .with_on_state_change(websocket_state_tx)
+                    .build(),
+            )
+            .await
+            else {
+                return Ok(());
+            };
+            let mut client = client.map_err(map_convex_error)?;
+            let Some(subscription) = until_workspace_ref_stream_shutdown(
+                &mut shutdown,
+                client.subscribe(function_name, request_args),
+            )
+            .await
+            else {
+                return Ok(());
+            };
+            let mut subscription = subscription.map_err(map_convex_error)?;
+            let mut websocket_state_open = true;
             loop {
-                let next = subscription.next();
-                let result = match futures::future::select(shutdown, next).await {
-                    Either::Left((_shutdown, _next)) => break,
-                    Either::Right((result, pending_shutdown)) => {
-                        shutdown = pending_shutdown;
-                        let Some(result) = result else {
-                            break;
+                tokio::select! {
+                    biased;
+                    _ = &mut shutdown => break,
+                    state = websocket_state_rx.recv(), if websocket_state_open => {
+                        let Some(state) = state else {
+                            websocket_state_open = false;
+                            continue;
                         };
-                        result
+                        let state = match state {
+                            WebSocketState::Connected => WorkspaceRefStreamConnectionState::Connected,
+                            WebSocketState::Connecting => WorkspaceRefStreamConnectionState::Connecting,
+                        };
+                        if !output.send_state(state) {
+                            break;
+                        }
                     }
-                };
-                record_hosted_function_call(function_name);
-                let parsed = unwrap_function_result(result).and_then(|value| {
-                    decode_hosted_response::<generated::RefsGetWorkspaceRef>(value).and_then(
-                        |maybe_dto| {
-                            maybe_dto
-                                .map(|dto| {
-                                    workspace_ref_from_dto(dto, |workspace_id, device_id| {
-                                        let Some(resolver) =
-                                            device_proof_verifier_resolver.as_ref()
-                                        else {
-                                            return Ok(None);
-                                        };
-                                        resolver(workspace_id, device_id)
-                                    })
-                                })
-                                .transpose()
-                        },
-                    )
-                });
-                if sender.send(parsed).is_err() {
-                    break;
+                    result = subscription.next() => {
+                        let Some(result) = result else { break };
+                        record_hosted_function_call(function_name);
+                        let parsed = unwrap_function_result(result).and_then(|value| {
+                            decode_hosted_response::<generated::RefsGetWorkspaceRef>(value).and_then(
+                                |maybe_dto| {
+                                    maybe_dto
+                                        .map(|dto| {
+                                            workspace_ref_from_dto(dto, |workspace_id, device_id| {
+                                                let Some(resolver) =
+                                                    device_proof_verifier_resolver.as_ref()
+                                                else {
+                                                    return Ok(None);
+                                                };
+                                                resolver(workspace_id, device_id)
+                                            })
+                                        })
+                                        .transpose()
+                                },
+                            )
+                        });
+                        if !output.send_ref(parsed) {
+                            break;
+                        }
+                    }
                 }
             }
             Ok(())
@@ -549,6 +631,16 @@ impl HostedControlPlaneClient {
             return Ok(None);
         };
         resolver(workspace_id.as_ref(), device_id.as_ref())
+    }
+}
+
+async fn until_workspace_ref_stream_shutdown<T>(
+    shutdown: &mut std::pin::Pin<Box<tokio::sync::oneshot::Receiver<()>>>,
+    future: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    match futures::future::select(shutdown.as_mut(), Box::pin(future)).await {
+        Either::Left((_shutdown, _pending)) => None,
+        Either::Right((output, _shutdown)) => Some(output),
     }
 }
 

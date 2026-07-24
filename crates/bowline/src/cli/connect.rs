@@ -24,47 +24,12 @@ pub(super) fn parse_connect_command(
     };
     let root = values.option("--root").map(str::to_string);
     let artifact = values.option("--binary").map(str::to_string);
-    let project = values.option("--project").map(str::to_string);
-    let task = values.option("--task").map(str::to_string);
-    let agent = values.option("--agent").map(str::to_string);
-
-    if project.is_some() != task.is_some() {
-        return command_usage_error(
-            CommandName::Connect,
-            "usage_error",
-            "bowline connect agent handoff requires both --project <project> and --task <task>"
-                .to_string(),
-            vec![RepairCommand::mutating(
-                "Connect and start remote agent work".to_string(),
-                Some(format!(
-                    "bowline connect {host} --project <project> --task '<task>'"
-                )),
-            )],
-        );
-    }
-    if agent.is_some() && project.is_none() {
-        return command_usage_error(
-            CommandName::Connect,
-            "usage_error",
-            "bowline connect --agent requires --project <project> and --task <task>".to_string(),
-            vec![RepairCommand::mutating(
-                "Connect and start remote agent work".to_string(),
-                Some(format!(
-                    "bowline connect {host} --project <project> --task '<task>' --agent codex"
-                )),
-            )],
-        );
-    }
-
     Ok(Command::BootstrapSsh(bootstrap::BootstrapSshArgs {
         host: host.clone(),
         root: root
             .or_else(runtime::active_workspace_root)
             .unwrap_or_else(|| "~/Code".to_string()),
         artifact,
-        project,
-        task,
-        agent,
     }))
 }
 

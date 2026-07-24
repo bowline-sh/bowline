@@ -6,7 +6,7 @@ use bowline_core::{
     workspace_graph::FileExecutability,
 };
 
-use crate::{policy::classify_path_with_builtin_policy, sync::coalescer::syncs_to_workspace_head};
+use crate::policy::classify_path_with_builtin_policy;
 
 use super::{
     PathObservation, ProjectHealthDepth, ProjectObservation, ScanReport, attach_project_ids,
@@ -402,7 +402,6 @@ fn nested_bare_exclusion_stays_local_only() {
         "local-only"
     );
     assert_eq!(nested.policy.mode, MaterializationMode::Ignore);
-    assert!(!syncs_to_workspace_head(nested.policy.mode));
     assert!(report.summary.local_only_path_count >= 2);
 }
 

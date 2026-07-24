@@ -10,7 +10,6 @@ export {
   type BillingPlanTier,
 } from "./billing";
 export * from "./account";
-export * from "./agent";
 export * from "./bootstrap";
 export * from "./commands";
 export * from "./devices";

@@ -146,8 +146,9 @@ that tools can use without wrapper commands.
    narrow pending device approval, and Linux desktop notifications can use
    `notify-rust` where available.
 8. Add `bowline connect` for agent-native Linux host setup over explicit SSH.
-9. Add conflict records, conflict bundles, and `bowline resolve` with agent CLI
-   detection and copy-prompt fallback.
+9. Add conflict-aside files that sync like any other file, surfaced in
+   `bowline status`, with agent CLI detection and copy-prompt fallback for
+   reconciliation.
 10. Add the agent-native contract: `AgentContextV1`, primitive tools, capability
     discovery, prompt recipes, and lifecycle verbs.
 11. Add agent leases with direct project writes by default, optional isolated

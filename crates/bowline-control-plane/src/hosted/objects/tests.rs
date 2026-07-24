@@ -1,5 +1,6 @@
 use super::proof::generated_object_key;
 use super::*;
+use bowline_core::ids::ContentId;
 
 fn gc_dto(key: String) -> HostedStorageGcObjectRef {
     HostedStorageGcObjectRef {
@@ -9,33 +10,27 @@ fn gc_dto(key: String) -> HostedStorageGcObjectRef {
         referenced_by_snapshot: Some("snapshot_1".to_string()),
         referenced_by_work_view_base: true,
         referenced_by_active_overlay: false,
-        referenced_by_active_lease: true,
-        referenced_by_conflict_bundle: true,
+        // Still on the wire (server sends constant false) until the contract
+        // regen drops them; the domain conversion discards them.
+        referenced_by_active_lease: false,
+        referenced_by_conflict_bundle: false,
         verified: true,
     }
 }
 
-fn object_pointer_dto(kind: HostedObjectKind) -> HostedObjectPointer {
-    HostedObjectPointer {
-        object_key: "packs_pk_boundary".to_string(),
-        content_id: "cid_boundary".to_string(),
-        byte_length: 128,
-        hash: "blake3:boundary".to_string(),
-        key_epoch: 7,
-        kind,
-        created_at: "2026-06-23T12:00:00Z".to_string(),
-    }
+fn blob_object_key(seed: &str) -> String {
+    generated_object_key(ObjectKind::Blob, seed)
 }
 
 fn metadata_dto() -> HostedObjectMetadata {
-    let key = generated_object_key(ObjectKind::SourcePack, "metadata-boundary");
+    let key = generated_object_key(ObjectKind::Blob, "metadata-boundary");
     HostedObjectMetadata {
         byte_length: 256,
         content_id: Some("cid_metadata".to_string()),
         created_at: "2026-06-23T12:00:00Z".to_string(),
         hash: "blake3:metadata".to_string(),
         key_epoch: 9,
-        kind: HostedObjectKind::SourcePack,
+        kind: HostedObjectKind::Blob,
         object_key: key,
         retention_state: HostedRetentionState::Retained,
         workspace_id: "ws_code".to_string(),
@@ -52,11 +47,10 @@ fn assert_parse_error_field<T: std::fmt::Debug>(result: ControlPlaneResult<T>, f
 
 #[test]
 fn gc_object_ref_dto_maps_flags_state_and_snapshot() {
-    let key = generated_object_key(ObjectKind::SourcePack, "gc-boundary");
+    let key = generated_object_key(ObjectKind::Blob, "gc-boundary");
     let reference = storage_gc_object_ref_from_dto(gc_dto(key)).expect("valid gc reference");
     assert_eq!(reference.retention_state, RetentionState::Retained);
-    assert!(reference.referenced_by_active_lease);
-    assert!(reference.referenced_by_conflict_bundle);
+    assert!(reference.referenced_by_work_view_base);
     assert_eq!(
         reference
             .referenced_by_snapshot
@@ -96,88 +90,53 @@ fn retention_state_dto_maps_every_variant() {
 }
 
 #[test]
-fn object_kind_dto_round_trips_and_maps_overlay_alias() {
+fn object_kind_dto_round_trips_blob_and_manifest() {
     for (dto, control, storage) in [
         (
-            HostedObjectKind::SourcePack,
-            ObjectKind::SourcePack,
-            StorageObjectKind::SourcePack,
+            HostedObjectKind::Blob,
+            ObjectKind::Blob,
+            StorageObjectKind::WorkspaceFileV1,
         ),
         (
-            HostedObjectKind::LocatorIndex,
-            ObjectKind::LocatorIndex,
-            StorageObjectKind::LocatorIndex,
-        ),
-        (
-            HostedObjectKind::SnapshotManifest,
-            ObjectKind::SnapshotManifest,
-            StorageObjectKind::SnapshotManifest,
-        ),
-        (
-            HostedObjectKind::SnapshotMetadataPage,
-            ObjectKind::SnapshotMetadataPage,
-            StorageObjectKind::SnapshotMetadataPage,
-        ),
-        (
-            HostedObjectKind::AgentOverlay,
-            ObjectKind::AgentOverlay,
-            StorageObjectKind::AgentOverlay,
-        ),
-        (
-            HostedObjectKind::ConflictBundle,
-            ObjectKind::ConflictBundle,
-            StorageObjectKind::ConflictBundle,
+            HostedObjectKind::Manifest,
+            ObjectKind::Manifest,
+            StorageObjectKind::WorkspaceManifestV1,
         ),
     ] {
         assert_eq!(object_kind_from_dto(dto), control);
         assert_eq!(object_kind_to_dto(control), dto);
         assert_eq!(storage_object_kind_from_dto(dto), storage);
     }
-    // AgentOverlay must serialize to the canonical wire value the proof
-    // subjects and server both expect.
-    assert_eq!(ObjectKind::AgentOverlay.as_str(), "overlay-pack");
-}
-
-#[test]
-fn object_pointer_dto_maps_identity_and_rejects_malformed_timestamp() {
-    let pointer = object_pointer_from_dto(object_pointer_dto(HostedObjectKind::LocatorIndex))
-        .expect("pointer");
-    assert_eq!(pointer.object_key, "packs_pk_boundary");
-    assert_eq!(pointer.content_id.as_str(), "cid_boundary");
-    assert_eq!(pointer.byte_len, 128);
-    assert_eq!(pointer.key_epoch, 7);
-    assert_eq!(pointer.kind, ObjectKind::LocatorIndex);
-
-    let mut malformed = object_pointer_dto(HostedObjectKind::SourcePack);
-    malformed.created_at = "not-a-timestamp".to_string();
-    assert_parse_error_field(object_pointer_from_dto(malformed), "createdAt");
+    // The manifest-sync kinds serialize to their opaque wire values.
+    assert_eq!(ObjectKind::Blob.as_str(), "blob");
+    assert_eq!(ObjectKind::Manifest.as_str(), "manifest");
 }
 
 #[test]
 fn object_pointer_to_dto_preserves_wire_fields() {
     let domain = ObjectPointer {
-        object_key: "packs_pk_encode".to_string(),
+        object_key: blob_object_key("pointer-encode"),
         content_id: ContentId::new("cid_encode"),
         byte_len: 42,
         hash: "blake3:encode".to_string(),
         key_epoch: 3,
-        kind: ObjectKind::AgentOverlay,
+        kind: ObjectKind::Blob,
         created_at: ControlPlaneTimestamp {
             tick: 1_730_000_000_000,
         },
     };
     let dto = object_pointer_to_dto(&domain);
-    assert_eq!(dto.object_key, "packs_pk_encode");
+    assert_eq!(dto.object_key, blob_object_key("pointer-encode"));
     assert_eq!(dto.content_id, "cid_encode");
     assert_eq!(dto.byte_length, 42);
     assert_eq!(dto.key_epoch, 3);
-    assert_eq!(dto.kind, HostedObjectKind::AgentOverlay);
+    assert_eq!(dto.kind, HostedObjectKind::Blob);
 }
 
 #[test]
 fn object_metadata_dto_maps_values_and_rejects_bad_key_and_timestamp() {
     let metadata = object_metadata_from_dto(metadata_dto()).expect("metadata");
-    assert_eq!(metadata.kind, StorageObjectKind::SourcePack);
+    assert_eq!(metadata.kind, StorageObjectKind::WorkspaceFileV1);
     assert_eq!(metadata.byte_len, 256);
     assert_eq!(metadata.key_epoch, 9);
     assert_eq!(metadata.retention_state, RetentionState::Retained);

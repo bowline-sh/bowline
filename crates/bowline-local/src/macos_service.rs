@@ -158,6 +158,65 @@ where
     ))
 }
 
+pub fn stop_service<R>(
+    runner: &R,
+    launch_agents_dir: &Path,
+    launch_domain: &str,
+) -> Result<MacosServiceOutcome, MacosServiceError>
+where
+    R: ProcessRunner,
+{
+    let path = plist_path(launch_agents_dir);
+    run_launchctl(
+        runner,
+        &["bootout", launch_domain, &path.display().to_string()],
+        true,
+    )?;
+    Ok(outcome(path, MacosServiceState::Inactive))
+}
+
+pub fn restore_service<R>(
+    runner: &R,
+    launch_agents_dir: &Path,
+    launch_domain: &str,
+    definition: &[u8],
+) -> Result<MacosServiceOutcome, MacosServiceError>
+where
+    R: ProcessRunner,
+{
+    fs::create_dir_all(launch_agents_dir)?;
+    let path = plist_path(launch_agents_dir);
+    write_atomic(
+        &path,
+        definition,
+        AtomicWriteOptions {
+            unix_mode: Some(0o600),
+            reject_symlink: true,
+            replace_existing: true,
+        },
+    )?;
+    run_launchctl(
+        runner,
+        &["bootout", launch_domain, &path.display().to_string()],
+        true,
+    )?;
+    run_launchctl(
+        runner,
+        &["bootstrap", launch_domain, &path.display().to_string()],
+        false,
+    )?;
+    run_launchctl(
+        runner,
+        &[
+            "kickstart",
+            "-k",
+            &format!("{launch_domain}/{SERVICE_LABEL}"),
+        ],
+        false,
+    )?;
+    Ok(outcome(path, MacosServiceState::Restarted))
+}
+
 pub fn uninstall_service<R>(
     runner: &R,
     launch_agents_dir: &Path,
@@ -332,11 +391,15 @@ fn launchctl_missing_service(stderr: &str) -> bool {
 
 fn parse_launchctl_state(stdout: &str) -> MacosServiceState {
     let lower = stdout.to_ascii_lowercase();
-    if lower.contains("state = running") || lower.contains("\"state\" => running") {
-        return MacosServiceState::Active;
-    }
-    if lower.contains("state = exited") || lower.contains("state = not running") {
+    if lower.contains("state = exited")
+        || lower.contains("state = not running")
+        || lower.contains("\"state\" => exited")
+        || lower.contains("\"state\" => not running")
+    {
         return MacosServiceState::Inactive;
+    }
+    if lower.contains("state = ") || lower.contains("\"state\" => ") {
+        return MacosServiceState::Active;
     }
     MacosServiceState::Unknown("unknown".to_string())
 }
@@ -386,7 +449,8 @@ mod tests {
 
     use super::{
         MacosServiceConfig, MacosServiceOptions, MacosServiceState, install_or_update_service,
-        plist_path, render_launch_agent_plist, restart_service, service_status, uninstall_service,
+        plist_path, render_launch_agent_plist, restart_service, restore_service, service_status,
+        stop_service, uninstall_service,
     };
 
     #[test]
@@ -503,10 +567,83 @@ mod tests {
     }
 
     #[test]
+    fn stop_retains_launch_agent_configuration() {
+        let temp = tempfile_dir("bowline-macos-service-stop");
+        fs::create_dir_all(&temp).expect("launch agents dir");
+        fs::write(plist_path(&temp), "plist").expect("plist");
+        let runner = RecordingRunner::ok();
+
+        let stopped = stop_service(&runner, &temp, "gui/501").expect("stop");
+
+        assert_eq!(stopped.state, MacosServiceState::Inactive);
+        assert!(plist_path(&temp).exists());
+        assert_eq!(
+            *runner.calls.borrow(),
+            vec![vec![
+                "launchctl",
+                "bootout",
+                "gui/501",
+                &plist_path(&temp).display().to_string()
+            ]]
+        );
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn restore_replaces_plist_before_bootstrap_and_kickstart() {
+        let temp = tempfile_dir("bowline-macos-service-restore");
+        fs::create_dir_all(&temp).expect("launch agents dir");
+        fs::write(plist_path(&temp), "broken").expect("broken plist");
+        let runner = RecordingRunner::ok();
+
+        let restored =
+            restore_service(&runner, &temp, "gui/501", b"previous plist").expect("restore");
+
+        assert_eq!(restored.state, MacosServiceState::Restarted);
+        assert_eq!(
+            fs::read(plist_path(&temp)).expect("restored plist"),
+            b"previous plist"
+        );
+        assert_eq!(
+            *runner.calls.borrow(),
+            vec![
+                vec![
+                    "launchctl",
+                    "bootout",
+                    "gui/501",
+                    &plist_path(&temp).display().to_string()
+                ],
+                vec![
+                    "launchctl",
+                    "bootstrap",
+                    "gui/501",
+                    &plist_path(&temp).display().to_string()
+                ],
+                vec!["launchctl", "kickstart", "-k", "gui/501/io.bowline.daemon"],
+            ]
+        );
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
     fn status_parses_running_launch_agent() {
         let runner = RecordingRunner::with_output(ProcessOutput {
             status_code: 0,
             stdout: "state = running\n".to_string(),
+            stderr: String::new(),
+        });
+
+        let outcome = service_status(&runner, PathBuf::from("/tmp/agents").as_path(), "gui/501")
+            .expect("status");
+
+        assert_eq!(outcome.state, MacosServiceState::Active);
+    }
+
+    #[test]
+    fn status_treats_waiting_launch_agent_as_supervisor_owned() {
+        let runner = RecordingRunner::with_output(ProcessOutput {
+            status_code: 0,
+            stdout: "state = waiting\n".to_string(),
             stderr: String::new(),
         });
 

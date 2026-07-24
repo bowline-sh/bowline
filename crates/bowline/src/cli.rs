@@ -29,18 +29,19 @@ pub(super) enum Command {
     Login(login::LoginArgs),
     Logout,
     Approve(ApproveArgs),
-    ApproveMergePlugin(MergePluginApproveArgs),
     Deny(ApproveArgs),
     Revoke(RevokeArgs),
     Setup(SetupArgs),
     Status(StatusArgs),
     Tui(TuiArgs),
+    SyncWait(SyncWaitArgs),
+    SyncAttention,
+    SyncRetry(crate::sync_attention::RetrySelector),
+    SyncDismiss(String),
     DebugClassify(DebugClassifyArgs),
     Devices(devices::DevicesArgs),
     Recovery(recovery::RecoveryArgs),
-    Resolve(resolve::ResolveArgs),
     Events(EventsArgs),
-    History(HistoryArgs),
     WorkCreate(work::WorkCreateArgs),
     Work(work::WorkListArgs),
     WorkDiff(work::WorkSelectorArgs),
@@ -52,20 +53,15 @@ pub(super) enum Command {
     ForgetLocal(ForgetLocalArgs),
     Archive(ArchiveArgs),
     Purge(PurgeArgs),
-    AgentLeaseCreate(agent::AgentLeaseCreateArgs),
-    AgentContext(agent::AgentLeaseSelectorArgs),
-    AgentPrompt(agent::AgentLeaseSelectorArgs),
-    AgentComplete(agent::AgentLeaseSelectorArgs),
-    AgentCancel(agent::AgentLeaseSelectorArgs),
-    AgentExtend(agent::AgentLeaseExtendArgs),
-    AgentMcpToken(agent::AgentMcpTokenArgs),
-    Mcp(McpArgs),
-    LeaseJoin(lease::LeaseJoinArgs),
     BootstrapSsh(bootstrap::BootstrapSshArgs),
-    Handoff(HandoffArgs),
-    HandoffInstallBundle,
     Daemon(DaemonCommand),
     DiagnosticsCollect(WorkspaceSelection),
+    Doctor(DoctorArgs),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct DoctorArgs {
+    pub(super) engine: bowline_core::commands::DoctorEngine,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,12 +69,6 @@ pub(super) enum ContractMode {
     Full,
     Summary,
     Topic(Vec<String>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct McpArgs {
-    pub(super) lease_id: Option<String>,
-    pub(super) token_file: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,17 +109,6 @@ pub(super) struct ApproveArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct MergePluginApproveArgs {
-    pub(super) selection: WorkspaceSelection,
-    pub(super) id: String,
-    pub(super) version: String,
-    pub(super) digest: String,
-    pub(super) matcher_version: Option<String>,
-    pub(super) validator_version: Option<String>,
-    pub(super) yes: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RevokeArgs {
     pub(super) selection: WorkspaceSelection,
     pub(super) device_id: String,
@@ -158,6 +137,15 @@ pub(super) struct TuiArgs {
     pub(super) selection: WorkspaceSelection,
 }
 
+/// Machine-facing `bowline sync wait`: block until the daemon reports the
+/// workspace at or past `target_state`, or `timeout` elapses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SyncWaitArgs {
+    pub(super) workspace_id: String,
+    pub(super) target_state: bowline_core::introspection::WorkspaceReadiness,
+    pub(super) timeout: std::time::Duration,
+}
+
 /// Hidden `bowline debug classify <path>` affordance. Not in public help or the
 /// command registry; prints only classification / mode / access.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,33 +164,6 @@ pub(super) enum OutputMode {
     Human,
     Json,
     Quiet,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct HistoryArgs {
-    pub(super) target_path: String,
-    pub(super) mode: HistoryArgMode,
-    pub(super) limit: u32,
-    pub(super) cursor: Option<usize>,
-    pub(super) since: Option<String>,
-    pub(super) until: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum HistoryArgMode {
-    Timeline,
-    Path,
-    Diff { from: String, to: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct HandoffArgs {
-    pub(super) target: String,
-    pub(super) agent: Option<HandoffAgent>,
-    pub(super) session: Option<String>,
-    pub(super) prompt: Option<String>,
-    pub(super) prompt_file: Option<String>,
-    pub(super) project: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,15 +204,15 @@ where
                 crate::registry::DefinitionTarget::DebugClassify => {
                     parse_debug_classify_command(&definition.values)
                 }
-                crate::registry::DefinitionTarget::HandoffInstallBundle => {
-                    if definition.values.positionals().is_empty() {
-                        Ok(Command::HandoffInstallBundle)
-                    } else {
-                        usage_error(
-                            CommandName::Handoff,
-                            "internal handoff install-bundle takes no positional arguments",
-                        )
-                    }
+                crate::registry::DefinitionTarget::SyncWait => {
+                    parse_sync_wait_command(&definition.values)
+                }
+                crate::registry::DefinitionTarget::SyncAttention => Ok(Command::SyncAttention),
+                crate::registry::DefinitionTarget::SyncRetry => {
+                    parse_sync_retry_command(&definition.values)
+                }
+                crate::registry::DefinitionTarget::SyncDismiss => {
+                    parse_sync_dismiss_command(&definition.values)
                 }
             }
             .and_then(|command| validate_quiet(command, definition.quiet));
@@ -286,19 +247,14 @@ fn validate_quiet(command: Command, quiet: bool) -> Result<Command, ParseError> 
     }
     usage_error(
         command.name(),
-        "--quiet is only available for work, events, history list/path, and devices list",
+        "--quiet is only available for work, events, and devices list",
     )
 }
 
 fn command_supports_quiet(command: &Command) -> bool {
     matches!(
         command,
-        Command::History(HistoryArgs {
-            mode: HistoryArgMode::Timeline | HistoryArgMode::Path,
-            ..
-        }) | Command::Work(_)
-            | Command::Events(_)
-            | Command::Devices(devices::DevicesArgs::List { .. })
+        Command::Work(_) | Command::Events(_) | Command::Devices(devices::DevicesArgs::List { .. })
     )
 }
 
@@ -311,19 +267,20 @@ impl Command {
             Command::Update(_) => CommandName::Update,
             Command::Login(_) => CommandName::Login,
             Command::Logout => CommandName::Logout,
-            Command::Approve(_) | Command::ApproveMergePlugin(_) => CommandName::Approve,
+            Command::Approve(_) => CommandName::Approve,
             Command::Deny(_) => CommandName::Deny,
             Command::Revoke(_) => CommandName::Revoke,
             Command::Setup(_) => CommandName::Setup,
             Command::Status(_) => CommandName::Status,
             Command::Tui(_) => CommandName::Tui,
+            Command::SyncWait(_) => CommandName::Unknown,
+            Command::SyncAttention | Command::SyncRetry(_) | Command::SyncDismiss(_) => {
+                CommandName::Unknown
+            }
             Command::DebugClassify(_) => CommandName::Unknown,
-            Command::Mcp(_) => CommandName::Mcp,
             Command::Recovery(_) => CommandName::Recover,
-            Command::Resolve(_) => CommandName::Resolve,
             Command::Work(_) => CommandName::Work,
             Command::Events(_) => CommandName::Events,
-            Command::History(_) => CommandName::History,
             Command::Devices(args) => args.command_name(),
             Command::WorkCreate(_) => CommandName::WorkCreate,
             Command::WorkDiff(_) => CommandName::Diff,
@@ -335,16 +292,7 @@ impl Command {
             Command::ForgetLocal(_) => CommandName::ForgetLocal,
             Command::Archive(_) => CommandName::Archive,
             Command::Purge(_) => CommandName::Purge,
-            Command::AgentLeaseCreate(_) => CommandName::AgentStart,
-            Command::AgentContext(_) => CommandName::AgentContext,
-            Command::AgentPrompt(_) => CommandName::AgentPrompt,
-            Command::AgentComplete(_) => CommandName::AgentComplete,
-            Command::AgentCancel(_) => CommandName::AgentCancel,
-            Command::AgentExtend(_) => CommandName::AgentExtend,
-            Command::AgentMcpToken(_) => CommandName::AgentMcpToken,
-            Command::LeaseJoin(_) => CommandName::LeaseJoin,
             Command::BootstrapSsh(_) => CommandName::Connect,
-            Command::Handoff(_) | Command::HandoffInstallBundle => CommandName::Handoff,
             Command::Daemon(DaemonCommand::Start) => CommandName::DaemonStart,
             Command::Daemon(DaemonCommand::Stop) => CommandName::DaemonStop,
             Command::Daemon(DaemonCommand::Status) => CommandName::DaemonStatus,
@@ -352,6 +300,7 @@ impl Command {
             Command::Daemon(DaemonCommand::Restart) => CommandName::DaemonRestart,
             Command::Daemon(DaemonCommand::Uninstall) => CommandName::DaemonUninstall,
             Command::DiagnosticsCollect(_) => CommandName::DiagnosticsCollect,
+            Command::Doctor(_) => CommandName::Doctor,
         }
     }
 }
@@ -364,11 +313,9 @@ mod args;
 mod connect;
 mod context;
 mod device_parse;
-mod lease_parse;
 mod parser;
 mod prompt;
 mod recovery_parse;
-mod resolve_parse;
 mod work_agent;
 mod workspace;
 
@@ -376,11 +323,9 @@ use args::*;
 use connect::*;
 pub(crate) use context::current_dir_string;
 use device_parse::*;
-use lease_parse::*;
 use parser::*;
 pub(crate) use prompt::confirm_return;
 use recovery_parse::*;
-use resolve_parse::*;
 use work_agent::*;
 use workspace::*;
 

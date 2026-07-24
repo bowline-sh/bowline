@@ -1,16 +1,15 @@
+use super::server_state::ProjectStatusScope;
 use super::*;
 
 mod connection_pump;
 mod request_context;
 mod rpc_executor;
+mod work_views;
 
 use bowline_core::wire::generated::{
-    DaemonCancelOperationParams, DaemonCancelOperationResult, DaemonClientHello,
-    DaemonDeviceActionParams, DaemonOperationResult, DaemonRpcError, DaemonRpcErrorCode,
+    DaemonClientHello, DaemonDeviceActionParams, DaemonRpcError, DaemonRpcErrorCode,
     DaemonRpcRequest, DaemonRpcResponse, DaemonStatusScopeParams, DaemonStatusSnapshotResult,
-    DaemonStatusSubscribeResult, DaemonSyncCancellationOutcome, DaemonSyncOperationKind,
-    DaemonSyncOperationOwnership, DaemonSyncOperationState, DaemonSyncRequestOutcome,
-    DaemonSyncRequestParams, DaemonSyncRequestResult, DaemonSyncResource, DaemonSyncResourceKind,
+    DaemonStatusSubscribeResult,
 };
 use bowline_core::wire::{StatusTransportError, status_command_to_wire};
 use bowline_daemon_rpc::{
@@ -26,15 +25,14 @@ const SUPPORTED_CAPABILITIES: &[&str] = &[
     "daemon.info",
     "daemon.metrics",
     "daemon.ping",
-    "daemon.wakeDurableWork",
     "daemon.shutdown",
     "device.actions",
     "status.snapshot",
     "status.subscribe",
-    "sync.getOperation",
-    "sync.cancelOperation",
-    "sync.request",
-    "agent.tool.invoke",
+    "sync.barrier",
+    "work.create",
+    "work.review",
+    "work.accept",
 ];
 
 type RpcResult<T> = Result<T, Box<DaemonRpcError>>;
@@ -157,16 +155,16 @@ fn route_request(
                 "capabilities": SUPPORTED_CAPABILITIES,
             })),
             "daemon.metrics" => Ok(state.runtime_metrics()),
-            "daemon.wakeDurableWork" => {
-                state.wake_durable_work();
-                Ok(serde_json::json!({"ok": true}))
-            }
             "status.getSnapshot" => snapshot_result(context, state, request.params),
-            "sync.request" => request_sync(context, state, request.params),
-            "sync.getOperation" => get_sync_operation(context, state, request.params),
-            "sync.cancelOperation" => cancel_sync_operation(context, state, request.params),
-            "agent.tool.invoke" => {
-                invoke_agent_tool(context, request.params, peer_credential_checked)
+            "sync.barrier" => sync_barrier_result(state, request.params),
+            "work.create" => {
+                work_views::work_create(context, state, request.params, peer_credential_checked)
+            }
+            "work.review" => {
+                work_views::work_review(context, state, request.params, peer_credential_checked)
+            }
+            "work.accept" => {
+                work_views::work_accept(context, state, request.params, peer_credential_checked)
             }
             "device.approve" => device_action(
                 context,
@@ -189,6 +187,45 @@ fn route_request(
             )),
         });
     response_for(request_id, result)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SyncBarrierParams {
+    workspace_id: String,
+    timeout_ms: u64,
+}
+
+fn sync_barrier_result(
+    state: &DaemonServerState,
+    params: serde_json::Value,
+) -> RpcResult<serde_json::Value> {
+    let params: SyncBarrierParams = serde_json::from_value(params).map_err(|_| {
+        rpc_error(
+            DaemonRpcErrorCode::InvalidRequest,
+            "sync.barrier requires workspaceId and timeoutMs",
+            false,
+        )
+    })?;
+    if !state.serves_workspace(&params.workspace_id) {
+        return Err(rpc_error(
+            DaemonRpcErrorCode::InvalidRequest,
+            "daemon is serving a different workspace",
+            false,
+        ));
+    }
+    let timeout = Duration::from_millis(params.timeout_ms.clamp(1, 3_600_000));
+    let snapshot = state.request_sync_barrier(timeout).map_err(|error| {
+        let code = if error.kind() == io::ErrorKind::TimedOut {
+            DaemonRpcErrorCode::DeadlineExceeded
+        } else {
+            DaemonRpcErrorCode::Unavailable
+        };
+        rpc_error(code, &error.to_string(), true)
+    })?;
+    Ok(serde_json::json!({
+        "convergenceRevision": snapshot.revision,
+    }))
 }
 
 fn route_connection_request(
@@ -242,8 +279,8 @@ fn snapshot_result(
     params: serde_json::Value,
 ) -> RpcResult<serde_json::Value> {
     checkpoint(context, CancellationPoint::BeforeProjectionRead)?;
-    validate_status_scope(state, params)?;
-    let snapshot = state.snapshot().ok_or_else(|| {
+    let scope = resolve_status_scope(state, params)?;
+    let snapshot = state.snapshot_for_scope(scope.as_ref()).ok_or_else(|| {
         rpc_error(
             DaemonRpcErrorCode::Unavailable,
             "the daemon status projection is unavailable",
@@ -267,9 +304,9 @@ fn subscribe_result(
     status_wake: &Sender<()>,
     params: serde_json::Value,
 ) -> RpcResult<serde_json::Value> {
-    validate_status_scope(state, params)?;
+    let scope = resolve_status_scope(state, params)?;
     let (subscription, snapshot) = state
-        .subscribe_with_snapshot(Some(status_wake.clone()))
+        .subscribe_with_snapshot(Some(status_wake.clone()), scope)
         .ok_or_else(|| {
             rpc_error(
                 DaemonRpcErrorCode::Internal,
@@ -290,7 +327,10 @@ fn subscribe_result(
     serde_json::to_value(result).map_err(internal_serialization_error)
 }
 
-fn validate_status_scope(state: &DaemonServerState, params: serde_json::Value) -> RpcResult<()> {
+fn resolve_status_scope(
+    state: &DaemonServerState,
+    params: serde_json::Value,
+) -> RpcResult<Option<ProjectStatusScope>> {
     let params = serde_json::from_value::<DaemonStatusScopeParams>(params).map_err(|_| {
         rpc_error(
             DaemonRpcErrorCode::InvalidRequest,
@@ -298,18 +338,19 @@ fn validate_status_scope(state: &DaemonServerState, params: serde_json::Value) -
             false,
         )
     })?;
-    if state.scope_matches(
-        params.workspace_root.as_deref(),
-        params.project_path.as_deref(),
-    ) {
-        Ok(())
-    } else {
-        Err(rpc_error(
-            DaemonRpcErrorCode::InvalidRequest,
-            "the requested status scope is not served by this daemon instance",
-            false,
-        ))
-    }
+    state
+        .resolve_status_scope(
+            params.workspace_root.as_deref(),
+            params.project_path.as_deref(),
+            params.requested_path.as_deref(),
+        )
+        .map_err(|_| {
+            rpc_error(
+                DaemonRpcErrorCode::InvalidRequest,
+                "the requested status scope is not served by this daemon instance",
+                false,
+            )
+        })
 }
 
 fn cancel_subscription(
@@ -321,254 +362,6 @@ fn cancel_subscription(
     subscriptions.remove(subscription_id);
     let cancelled = state.cancel_subscription(subscription_id);
     Ok(serde_json::json!({"cancelled": cancelled}))
-}
-
-fn request_sync(
-    context: &RequestContext,
-    state: &DaemonServerState,
-    params: serde_json::Value,
-) -> RpcResult<serde_json::Value> {
-    let params = serde_json::from_value::<DaemonSyncRequestParams>(params).map_err(|_| {
-        rpc_error(
-            DaemonRpcErrorCode::InvalidRequest,
-            "sync.request params are invalid",
-            false,
-        )
-    })?;
-    if !state.scope_matches(params.workspace_root.as_deref(), None) {
-        return Err(rpc_error(
-            DaemonRpcErrorCode::InvalidRequest,
-            "the requested sync scope is not served by this daemon instance",
-            false,
-        ));
-    }
-    checkpoint(context, CancellationPoint::BeforeDurableEnqueue)?;
-    context
-        .begin_commit_fence()
-        .map_err(|error| request_context_error(context, error))?;
-    let (operation, coalesced) = state
-        .enqueue_sync(&params.idempotency_key)
-        .map_err(|error| {
-            rpc_error(
-                DaemonRpcErrorCode::Unavailable,
-                &format!("sync request could not be queued: {error}"),
-                true,
-            )
-        })?;
-    serde_json::to_value(DaemonSyncRequestResult {
-        outcome: if coalesced {
-            DaemonSyncRequestOutcome::Coalesced
-        } else {
-            DaemonSyncRequestOutcome::Enqueued
-        },
-        operation: operation_result(state, operation)?,
-    })
-    .map_err(internal_serialization_error)
-}
-
-fn get_sync_operation(
-    context: &RequestContext,
-    state: &DaemonServerState,
-    params: serde_json::Value,
-) -> RpcResult<serde_json::Value> {
-    checkpoint(context, CancellationPoint::BeforeDatabaseRead)?;
-    let operation_id = required_string_param(&params, "operationId")?;
-    let operation = state.sync_operation(operation_id).map_err(|error| {
-        rpc_error(
-            DaemonRpcErrorCode::Unavailable,
-            &format!("sync operation could not be read: {error}"),
-            true,
-        )
-    })?;
-    let Some(operation) = operation else {
-        return Err(rpc_error(
-            DaemonRpcErrorCode::InvalidRequest,
-            "sync operation does not exist",
-            false,
-        ));
-    };
-    serde_json::to_value(operation_result(state, operation)?).map_err(internal_serialization_error)
-}
-
-fn cancel_sync_operation(
-    context: &RequestContext,
-    state: &DaemonServerState,
-    params: serde_json::Value,
-) -> RpcResult<serde_json::Value> {
-    checkpoint(context, CancellationPoint::BeforeDatabaseMutation)?;
-    let params = serde_json::from_value::<DaemonCancelOperationParams>(params).map_err(|_| {
-        rpc_error(
-            DaemonRpcErrorCode::InvalidRequest,
-            "sync.cancelOperation params are invalid",
-            false,
-        )
-    })?;
-    context
-        .begin_commit_fence()
-        .map_err(|error| request_context_error(context, error))?;
-    let Some((outcome, operation)) =
-        state
-            .cancel_sync_operation(&params.operation_id)
-            .map_err(|error| {
-                rpc_error(
-                    DaemonRpcErrorCode::Unavailable,
-                    &format!("sync operation cancellation could not be requested: {error}"),
-                    true,
-                )
-            })?
-    else {
-        return Err(rpc_error(
-            DaemonRpcErrorCode::NotFound,
-            "sync operation does not exist",
-            false,
-        ));
-    };
-    let outcome = match outcome {
-        SyncCancellationOutcome::Requested => DaemonSyncCancellationOutcome::Requested,
-        SyncCancellationOutcome::Cancelled => DaemonSyncCancellationOutcome::Cancelled,
-        SyncCancellationOutcome::AlreadyCompleted => {
-            DaemonSyncCancellationOutcome::AlreadyCompleted
-        }
-        SyncCancellationOutcome::AlreadyCancelled => {
-            DaemonSyncCancellationOutcome::AlreadyCancelled
-        }
-    };
-    serde_json::to_value(DaemonCancelOperationResult {
-        outcome,
-        operation: operation_result(state, operation)?,
-    })
-    .map_err(internal_serialization_error)
-}
-
-fn operation_result(
-    state: &DaemonServerState,
-    operation: SyncOperationRecord,
-) -> RpcResult<DaemonOperationResult> {
-    let ownership = operation_ownership(state, &operation);
-    let kind = match operation.kind {
-        SyncOperationKind::Reconcile => DaemonSyncOperationKind::DaemonReconcile,
-        SyncOperationKind::ConflictOccurrenceReconcile => {
-            DaemonSyncOperationKind::ConflictOccurrenceReconcile
-        }
-        SyncOperationKind::WorkViewOverlaySync => DaemonSyncOperationKind::WorkViewOverlaySync,
-    };
-    let resource = match operation.resource_key {
-        SyncResourceKey::WorkspaceSync(workspace_id) => DaemonSyncResource {
-            kind: DaemonSyncResourceKind::WorkspaceSync,
-            workspace_id: workspace_id.into(),
-            conflict_id: None,
-        },
-        SyncResourceKey::ConflictFollowup {
-            workspace_id,
-            conflict_id,
-        } => DaemonSyncResource {
-            kind: DaemonSyncResourceKind::ConflictFollowup,
-            workspace_id: workspace_id.into(),
-            conflict_id: Some(conflict_id.into()),
-        },
-        SyncResourceKey::PostCommit(workspace_id) => DaemonSyncResource {
-            kind: DaemonSyncResourceKind::PostCommit,
-            workspace_id: workspace_id.into(),
-            conflict_id: None,
-        },
-    };
-    let state = match operation.state {
-        SyncOperationState::Queued => DaemonSyncOperationState::Queued,
-        SyncOperationState::Claimed => DaemonSyncOperationState::Claimed,
-        SyncOperationState::WaitingRetry => DaemonSyncOperationState::WaitingRetry,
-        SyncOperationState::BlockedOffline => DaemonSyncOperationState::BlockedOffline,
-        SyncOperationState::ReconciliationRequired => {
-            DaemonSyncOperationState::ReconciliationRequired
-        }
-        SyncOperationState::Attention => DaemonSyncOperationState::Attention,
-        SyncOperationState::Completed => DaemonSyncOperationState::Completed,
-        SyncOperationState::Cancelled => DaemonSyncOperationState::Cancelled,
-    };
-    let result = operation
-        .result_json
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|_| {
-            rpc_error(
-                DaemonRpcErrorCode::Internal,
-                "stored sync operation result is malformed",
-                false,
-            )
-        })?;
-    Ok(DaemonOperationResult {
-        operation_id: operation.id,
-        kind,
-        resource,
-        state,
-        attempt_count: operation.attempt_count,
-        claim_generation: operation.claim_generation,
-        ownership,
-        claimed_by: operation.claimed_by,
-        lease_expires_at: operation.lease_expires_at,
-        cancellation_requested_at: operation.cancellation_requested_at,
-        next_attempt_at: operation.next_attempt_at,
-        result,
-        last_error_code: operation.last_error_code,
-        created_at: operation.created_at,
-        updated_at: operation.updated_at,
-    })
-}
-
-fn operation_ownership(
-    state: &DaemonServerState,
-    operation: &SyncOperationRecord,
-) -> DaemonSyncOperationOwnership {
-    let Some(claimed_by) = operation.claimed_by.as_deref() else {
-        return DaemonSyncOperationOwnership::Unclaimed;
-    };
-    let lease_is_current = operation
-        .lease_expires_at
-        .as_deref()
-        .and_then(|timestamp| OffsetDateTime::parse(timestamp, &Rfc3339).ok())
-        .is_some_and(|expires_at| expires_at > OffsetDateTime::now_utc());
-    if !lease_is_current {
-        DaemonSyncOperationOwnership::LeaseExpired
-    } else if claimed_by == state.instance_id() {
-        DaemonSyncOperationOwnership::OwnedByThisDaemon
-    } else {
-        DaemonSyncOperationOwnership::OwnedByAnotherDaemon
-    }
-}
-
-fn invoke_agent_tool(
-    context: &RequestContext,
-    params: serde_json::Value,
-    peer_credential_checked: bool,
-) -> RpcResult<serde_json::Value> {
-    checkpoint(context, CancellationPoint::BeforeExternalCall)?;
-    let request = serde_json::from_value::<AgentToolInvokeRequest>(params).map_err(|_| {
-        rpc_error(
-            DaemonRpcErrorCode::InvalidRequest,
-            "agent.tool.invoke params are invalid",
-            false,
-        )
-    })?;
-    validate_agent_tool_contract(&request)
-        .map_err(|message| rpc_error(DaemonRpcErrorCode::UnsupportedVersion, message, false))?;
-    let result = invoke_agent_tool_from_daemon_with_checkpoint(
-        env::var_os(ENV_METADATA_DB).map(PathBuf::from),
-        request,
-        peer_credential_checked,
-        current_timestamp(),
-        || context.checkpoint(CancellationPoint::BetweenChunks).is_ok(),
-    )
-    .map_err(
-        |error| match context.checkpoint(CancellationPoint::BetweenChunks) {
-            Err(cancellation) => request_context_error(context, cancellation),
-            Ok(()) => rpc_error(
-                DaemonRpcErrorCode::Internal,
-                &format!("agent tool failed: {error}"),
-                false,
-            ),
-        },
-    )?;
-    serde_json::to_value(result).map_err(internal_serialization_error)
 }
 
 fn device_action(

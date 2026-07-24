@@ -134,6 +134,10 @@ export type WorkLifecycleCommandOutput = CommandOutputBase<
 > & {
   readonly action: "accepted" | "review-ready" | "discarded" | "restored";
   readonly paths?: readonly string[];
+  // Paths the view deleted that the workspace independently modified after the
+  // base: the deletion did not land (the newer local edit stays canonical), so
+  // accept surfaces them here instead of reporting them as accepted paths.
+  readonly discardedDeletions?: readonly string[];
   readonly partial?: boolean;
   readonly workView: WorkView;
   readonly status: WorkspaceStatus;

@@ -451,9 +451,7 @@ fn shell_word(value: &str) -> String {
 mod tests {
     use super::{InitOptions, initialize_root, initialize_root_with_workspace};
     use crate::metadata::MetadataStore;
-    use bowline_core::{
-        ids::WorkspaceId, policy::PathClassification, workspace_graph::WorkspaceRelativePath,
-    };
+    use bowline_core::{ids::WorkspaceId, policy::PathClassification};
 
     #[test]
     fn init_existing_root_observes_without_mutating_workspace_files() {
@@ -501,16 +499,6 @@ mod tests {
             .expect("query")
             .expect("observed path");
         assert_eq!(observed.classification, PathClassification::WorkspaceSync);
-        assert!(
-            store
-                .current_namespace_entry(
-                    &workspace_id,
-                    &WorkspaceRelativePath::new("apps/web/src/index.ts"),
-                )
-                .expect("current namespace query")
-                .is_none(),
-            "an observation-only init must not manufacture committed namespace authority"
-        );
     }
 
     #[test]

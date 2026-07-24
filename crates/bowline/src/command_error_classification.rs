@@ -1,14 +1,20 @@
 use bowline_core::commands::{CommandExitCode, CommandName};
-use bowline_local::{agents::AgentError, work_views::WorkViewError};
+use bowline_local::work_views::WorkViewError;
 
 use crate::errors::{print_runtime_error, print_user_action_error};
+use crate::work::WorkCommandError;
 
 pub(super) fn print_work_error(
     command: CommandName,
     generated_at: String,
-    error: &WorkViewError,
+    error: &WorkCommandError,
     json: bool,
 ) -> CommandExitCode {
+    // A daemon RPC failure is a retryable runtime error (start the daemon and
+    // retry); workspace/selector-state errors keep the frozen classification.
+    let WorkCommandError::View(error) = error else {
+        return print_runtime_error(command, generated_at, &error.to_string(), json);
+    };
     if work_error_requires_user_action(error) {
         return print_user_action_error(
             command,
@@ -23,6 +29,16 @@ pub(super) fn print_work_error(
 }
 
 fn work_error_requires_user_action(error: &WorkViewError) -> bool {
+    use bowline_local::sync::manifest_engine::work_view_cli::WorkViewCliError;
+    if let WorkViewError::Index(index_error) = error {
+        return matches!(
+            index_error,
+            WorkViewCliError::InvalidPathSelector { .. }
+                | WorkViewCliError::EmptyPathSelection { .. }
+                | WorkViewCliError::UnknownView { .. }
+                | WorkViewCliError::Unrestorable { .. }
+        );
+    }
     matches!(
         error,
         WorkViewError::MissingMetadataDb
@@ -41,36 +57,4 @@ fn work_error_requires_user_action(error: &WorkViewError) -> bool {
             | WorkViewError::InvalidPathSelector { .. }
             | WorkViewError::EmptyPathSelection { .. }
     )
-}
-
-pub(super) fn print_agent_error(
-    command: CommandName,
-    generated_at: String,
-    error: &AgentError,
-    json: bool,
-) -> CommandExitCode {
-    if agent_error_requires_user_action(error) {
-        return print_user_action_error(
-            command,
-            generated_at,
-            "agent_requires_action",
-            &error.to_string(),
-            "Inspect the lease and work-view selectors, correct the local state, and retry.",
-            json,
-        );
-    }
-    print_runtime_error(command, generated_at, &error.to_string(), json)
-}
-
-fn agent_error_requires_user_action(error: &AgentError) -> bool {
-    match error {
-        AgentError::MissingWorkspace
-        | AgentError::MissingProject { .. }
-        | AgentError::MissingLease { .. }
-        | AgentError::MissingWorkView { .. }
-        | AgentError::StaleBaseHeld { .. }
-        | AgentError::InvalidLease { .. } => true,
-        AgentError::WorkView(error) => work_error_requires_user_action(error),
-        _ => false,
-    }
 }

@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+mod convergence;
 mod facts;
 
+pub use convergence::*;
 pub use facts::*;
 
 pub use crate::wire::DeviceApprovalAffordance;
@@ -465,22 +467,6 @@ pub enum ControlPlaneSupportCapability {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ComponentState {
-    Ready,
-    Degraded,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum NetworkState {
-    Online,
-    Degraded,
-    Offline,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum StatusEvidenceLevel {
     Live,
     Cached,
@@ -539,6 +525,43 @@ pub struct SyncQueueStatus {
     pub completed: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConvergenceReadinessState {
+    Ready,
+    Converging,
+    Recovering,
+    Limited,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConvergenceReadinessReason {
+    StartupRecovery,
+    CausesPending,
+    AttemptClaimed,
+    AttemptWaitingRetry,
+    ReconciliationRequired,
+    RecoveryFenceOpen,
+    FilesystemEpochOpen,
+    MaterializationIncomplete,
+    MaterializationConflict,
+    WorkspaceAuthorityUnpublished,
+    WatcherStarting,
+    WatcherRecoveryRequired,
+    ObserverConnecting,
+    ObserverUnavailable,
+    AttentionRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvergenceStatusSummary {
+    pub revision: u64,
+    pub state: ConvergenceReadinessState,
+    pub reasons: Vec<ConvergenceReadinessReason>,
+}
+
 impl SyncQueueStatus {
     pub fn has_pending_work(&self) -> bool {
         self.queued
@@ -560,12 +583,6 @@ pub struct EventWatermarks {
     pub last_event_id: Option<EventId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_lag_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sync_state: Option<ComponentState>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub watcher_state: Option<ComponentState>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub network_state: Option<NetworkState>,
 }
 
 #[cfg(test)]

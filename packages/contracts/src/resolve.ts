@@ -1,6 +1,23 @@
 import type { RepairCommand, StatusLevel } from "./status";
-import type { AgentCliCapability } from "./agent";
 import type { CommandOutputBase } from "./commands";
+
+// The `--agent codex|claude|cursor` / `--copy-prompt` affordance only formats
+// copyable conflict context (rehost map "bowline resolve" finding); this is
+// the sole remaining consumer of the CLI-availability shape once the deleted
+// agent-lease/MCP contract (packages/contracts/src/agent.ts) stopped owning it.
+export type ResolveAgentCliName = "codex" | "claude" | "cursor";
+
+export type ResolveAgentCliCapability = {
+  readonly name: ResolveAgentCliName;
+  readonly available: boolean;
+  readonly command?: string;
+  readonly supportsPromptFileLaunch: boolean;
+  readonly supportsStdinLaunch: boolean;
+  readonly supportsCwdSelection: boolean;
+  readonly supportsNoninteractiveExecution: boolean;
+  readonly supportsReceiptCapture: boolean;
+  readonly degradedReason?: string;
+};
 
 export type ResolveAction =
   | "list"
@@ -40,7 +57,7 @@ export type ResolveConflictSpan = {
 export type ResolveAgentOption = {
   readonly name: ResolveAgent;
   readonly command: string;
-  readonly capability: AgentCliCapability;
+  readonly capability: ResolveAgentCliCapability;
 };
 
 export type ResolveAvailableAction = {

@@ -137,6 +137,33 @@ fn external_sqlite_commit_changes_source_revision() {
 }
 
 #[test]
+fn status_collection_reads_while_writer_holds_immediate_transaction() {
+    let temp = TempWorkspace::new("status-reader-contention").expect("temp workspace");
+    let db_path = temp.root().join("state/local.sqlite3");
+    let workspace_id = WorkspaceId::new("ws_status_reader_contention");
+    let writer = MetadataStore::open(&db_path).expect("metadata opens");
+    seed_workspace_root(&writer, &workspace_id);
+    writer
+        .connection()
+        .execute("BEGIN IMMEDIATE", [])
+        .expect("writer reserves database");
+
+    let mut collector = LocalStatusFactCollector::new(Some(db_path.clone())).expect("collector");
+    let LocalStatusCollection::Collected(facts) = collector
+        .collect_if_needed(revision_options(&db_path), Instant::now())
+        .expect("status reads committed metadata during write")
+    else {
+        panic!("initial status collection must return facts");
+    };
+    assert_eq!(facts.output.workspace_id, workspace_id);
+
+    writer
+        .connection()
+        .execute("ROLLBACK", [])
+        .expect("writer releases database");
+}
+
+#[test]
 fn database_removal_and_replacement_invalidate_retained_store() {
     let temp = TempWorkspace::new("status-revision-replacement").expect("temp workspace");
     let db_path = temp.root().join("state/local.sqlite3");
@@ -170,92 +197,6 @@ fn database_removal_and_replacement_invalidate_retained_store() {
         panic!("database replacement must recompose");
     };
     assert_eq!(replaced.workspace_id, replacement_id);
-}
-
-#[test]
-fn conflict_bundle_revision_recomposes_without_waiting_for_safety_refresh() {
-    let temp = TempWorkspace::new("status-conflict-revision").expect("temp workspace");
-    let state_root = temp.root().join("state");
-    let db_path = state_root.join("local.sqlite3");
-    let workspace_id = WorkspaceId::new("ws_conflict_revision");
-    let store = MetadataStore::open(&db_path).expect("metadata opens");
-    seed_workspace_root(&store, &workspace_id);
-    drop(store);
-    let start = Instant::now();
-    let mut composer = RevisionedStatusComposer::new(Some(db_path.clone())).expect("composer");
-    composer
-        .compose_if_needed(revision_options(&db_path), start)
-        .expect("initial compose");
-
-    create_conflict_bundle(
-        &state_root,
-        ConflictRecord::same_path("src/main.rs"),
-        &[ConflictFile {
-            relative_path: "src/main.rs".to_string(),
-            base: Some(b"base".to_vec()),
-            local: Some(b"local".to_vec()),
-            remote: Some(b"remote".to_vec()),
-        }],
-    )
-    .expect("conflict bundle");
-
-    let changed = composer
-        .compose_if_needed(revision_options(&db_path), start + Duration::from_secs(1))
-        .expect("conflict revision composes");
-    assert!(matches!(changed, RevisionedStatus::Composed(_)));
-    assert_eq!(composer.metrics().full_compositions, 2);
-    assert_eq!(composer.metrics().store_opens, 1);
-}
-
-#[test]
-fn safety_refresh_catches_conflict_manifest_change_that_missed_revision_marker() {
-    let temp = TempWorkspace::new("status-conflict-safety").expect("temp workspace");
-    let state_root = temp.root().join("state");
-    let db_path = state_root.join("local.sqlite3");
-    let workspace_id = WorkspaceId::new("ws_conflict_safety");
-    let store = MetadataStore::open(&db_path).expect("metadata opens");
-    seed_workspace_root(&store, &workspace_id);
-    drop(store);
-    let bundle = create_conflict_bundle(
-        &state_root,
-        ConflictRecord::same_path("src/lib.rs"),
-        &[ConflictFile {
-            relative_path: "src/lib.rs".to_string(),
-            base: Some(b"base".to_vec()),
-            local: Some(b"local".to_vec()),
-            remote: Some(b"remote".to_vec()),
-        }],
-    )
-    .expect("conflict bundle");
-    let start = Instant::now();
-    let mut composer = RevisionedStatusComposer::new(Some(db_path.clone())).expect("composer");
-    composer
-        .compose_if_needed(revision_options(&db_path), start)
-        .expect("initial compose");
-
-    let manifest_path = bundle.root.join("manifest.json");
-    let mut manifest: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&manifest_path).expect("manifest read"))
-            .expect("manifest json");
-    manifest["state"] = serde_json::Value::String("accepted".to_string());
-    std::fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("manifest encode"),
-    )
-    .expect("simulated missed invalidation");
-
-    assert!(matches!(
-        composer.compose_if_needed(revision_options(&db_path), start + Duration::from_secs(1)),
-        Ok(RevisionedStatus::Unchanged)
-    ));
-    assert!(matches!(
-        composer.compose_if_needed(
-            revision_options(&db_path),
-            start + STATUS_SAFETY_REFRESH_INTERVAL,
-        ),
-        Ok(RevisionedStatus::Composed(_))
-    ));
-    assert_eq!(composer.metrics().full_compositions, 2);
 }
 
 #[test]
@@ -537,16 +478,6 @@ fn observed_workspace_with_ready_sync_is_healthy() {
             workspace_id.clone(),
         ))
         .expect("sync event append");
-    store
-        .set_component_state("sync", "ready", "2026-06-23T12:00:01Z")
-        .expect("sync component");
-    store
-        .set_component_state("watcher", "ready", "2026-06-23T12:00:01Z")
-        .expect("watcher component");
-    store
-        .set_component_state("network", "online", "2026-06-23T12:00:01Z")
-        .expect("network component");
-
     let output = compose_status(StatusOptions {
         db_path: Some(db_path),
         requested_path: None,

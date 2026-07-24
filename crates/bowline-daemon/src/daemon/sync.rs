@@ -1,65 +1,22 @@
-use super::store_health::StoreHealth;
 use super::*;
 
-#[cfg(test)]
-mod claim_lease;
-mod component_state;
-mod conflict_runtime;
-mod dirty_batch;
-mod dirty_scope;
-mod durable_runtime;
-mod executor;
-mod failure;
 mod notification_status;
-mod operations;
-mod overlay_runtime;
 mod policy_cache;
-mod remote_observer;
-mod scan_summary;
-mod scheduler_poll;
-mod scheduler_work;
-mod status_json;
 mod status_publish;
-mod work_accept_runtime;
+mod workspace_key;
 
-#[cfg(test)]
-pub(super) use claim_lease::{ClaimLeasePolicy, ClaimLeaseSupervisor, ClaimOwnership};
-pub(super) use component_state::SyncComponentState;
-pub(in crate::daemon) use dirty_batch::PendingDirtyRoots;
-pub(in crate::daemon) use dirty_scope::{DaemonReconcileRequest, DirtyScope, RootEntryKind};
-#[cfg(test)]
-pub(in crate::daemon) use durable_runtime::local_metadata_sweep_due;
-use durable_runtime::{
-    forced_full_reason_survives_retry, local_conflict_state, validate_conflict_operation,
-};
-pub(in crate::daemon) use executor::*;
-pub(in crate::daemon) use failure::*;
-pub(in crate::daemon) use operations::*;
 pub(in crate::daemon) use policy_cache::{drain_policy, invalidate_policy_cache_for_path};
-pub(in crate::daemon) use scan_summary::SyncScanSummary;
-pub(in crate::daemon) use scheduler_work::*;
-use status_json::*;
+pub(in crate::daemon) use workspace_key::require_local_workspace_key;
 
-// Local metadata is append-heavy, but pruning on every filesystem tick would
-// fight the hot path. Derive an hourly cadence from the configured sync loop.
-const LOCAL_METADATA_SWEEP_SECONDS: u64 = 60 * 60;
-pub(in crate::daemon) const MAX_SYNC_RETRY_ATTEMPTS: u32 = 8;
-
+/// The workspace identity and filesystem locations a daemon serves. Every
+/// engine-facing surface (driver build, status publish, work-view RPCs) reads
+/// from this one struct.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SyncOnceArgs {
+pub(super) struct SyncArgs {
     pub(super) root: PathBuf,
     pub(super) state_root: PathBuf,
     pub(super) workspace_id: String,
     pub(super) device_id: String,
-    pub(super) sync_claim: Option<SyncClaimHandle>,
-    pub(super) scan_scope: ScanScope,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ContinuousSyncOptions {
-    pub(super) args: SyncOnceArgs,
-    pub(super) interval: Duration,
-    pub(super) max_ticks: Option<u64>,
 }
 
 pub(super) struct DaemonRuntime {
@@ -91,139 +48,113 @@ pub(super) struct StatusPublishCompletion {
     result: Result<StatusPublishOutcome, String>,
 }
 
+/// The per-workspace sync runtime. The manifest engine owns sync end to end:
+/// this host carries the engine driver (or its pending rebuild), the watcher
+/// kernel feeding it, and the hosted status publisher.
 pub(super) struct ContinuousSyncRuntime {
-    pub(super) options: ContinuousSyncOptions,
-    pub(super) next_tick: Instant,
-    pub(super) next_remote_observe: Instant,
-    pub(super) next_dispatch_claim: Instant,
-    pub(super) awaiting_handoff: bool,
-    pub(super) tick_count: u64,
-    pub(super) last_json: String,
-    pub(super) watcher: Option<RecommendedWatcher>,
+    pub(super) args: SyncArgs,
+    pub(super) watcher: Option<super::watcher::SyncWatcher>,
     pub(super) change_rx: Option<Receiver<WatcherSignal>>,
-    pub(super) watcher_state: WatcherRuntimeState,
-    pub(super) watcher_recovery: WatcherRecovery,
-    pub(super) sync_once: SyncExecutor,
-    pub(super) remote_ref_observer: RemoteRefObserver,
-    pub(super) dispatch_claimer: DispatchClaimer,
-    pub(super) latest_observed_ref: Option<WorkspaceRef>,
-    pub(super) remote_observer_state: RemoteObserverState,
     pub(super) status_publisher: StatusPublisher,
     pub(super) next_status_publish: Instant,
     pub(super) last_status_publish_fingerprint: Option<String>,
     pub(super) last_status_publish_at: Option<Instant>,
     pub(super) last_status_publish_failed_at: Option<Instant>,
     pub(super) hosted_resolver: HostedContextResolver,
-    pub(super) store_health: StoreHealth,
     pub(super) claimant_id: String,
-    pub(super) store: CachedStore,
-    pub(super) pending_dirty: DirtyScope,
-    // Roots deferred from a bounded dirty batch, carried across ticks with
-    // fairness bookkeeping so cost-first scheduling cannot starve a large root.
-    pub(super) pending_dirty_roots: PendingDirtyRoots,
+    /// The manifest-sync engine host. Construction leaves it `PendingRebuild`
+    /// (surfaced as `limited` status); the scheduler's first engine drive
+    /// performs the real build after the control socket is available. There is
+    /// no other sync engine to fall back to.
+    pub(super) manifest_engine: ManifestEngineHost,
+    /// The persistent status slot for this workspace's engine. A driver built at
+    /// startup or later publishes into it; while the driver is pending, the daemon
+    /// publishes a `limited` host-status snapshot into it. Owning it here (not
+    /// inside the driver) is what lets the status projection observe a late-built
+    /// driver without being rebuilt.
+    pub(super) manifest_snapshot: (
+        bowline_daemon::manifest_driver::EngineSnapshotSink,
+        bowline_daemon::manifest_driver::EngineSnapshotHandle,
+    ),
+    /// The persistent engine cost meters for this workspace (Plan 111 Step 5).
+    /// Owned here, not inside the driver, so counts accumulate across driver
+    /// rebuilds and the daemon metrics RPC reads a stable handle. Threaded into
+    /// each rebuilt engine's `EngineContext`.
+    pub(super) manifest_counters:
+        std::sync::Arc<bowline_local::sync::manifest_engine::EngineCounters>,
 }
 
+/// The daemon's ownership state for a workspace's sync engine. Both variants
+/// mean "the manifest engine owns sync": `Active` is a running driver,
+/// `PendingRebuild` retries the build on a capped backoff while status shows
+/// `limited`.
+pub(super) enum ManifestEngineHost {
+    /// The engine driver is built and running; its snapshot feeds status.
+    Active(bowline_daemon::manifest_driver::ManifestDriver),
+    /// The driver could not be built yet (missing workspace key or hosted
+    /// context, or a spawn failure). The daemon retries on a capped backoff and
+    /// surfaces `limited` status meanwhile. The specific unavailability reason is
+    /// logged at each failed attempt; it is not stored because every reason
+    /// collapses to the same `limited` status.
+    PendingRebuild {
+        next_attempt: Instant,
+        backoff: Option<Duration>,
+    },
+}
+
+/// Why the manifest engine driver could not be built. Logged verbatim; the status
+/// projection collapses every variant to a single `limited` convergence state
+/// (there is no separate wire reason code per prerequisite, by design).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RemoteObserverState {
-    Ready,
-    Unavailable,
+pub(super) enum ManifestEngineUnavailableReason {
+    WorkspaceKeyUnavailable,
+    HostedContextUnavailable,
+    DriverStartFailed,
 }
 
-pub(super) type SyncExecutor = Box<
-    dyn FnMut(SyncOnceArgs, Option<WorkspaceRef>) -> Result<SyncOnceSummary, SyncOnceError>
-        + Send
-        + 'static,
->;
-type RemoteRefObserverFn = dyn FnMut(SyncOnceArgs) -> Result<Option<WorkspaceRef>, Box<dyn std::error::Error>>
-    + Send
-    + 'static;
-
-#[derive(Default)]
-pub(in crate::daemon) struct OwnedThreadMetrics {
-    started: AtomicUsize,
-    joined: AtomicUsize,
-}
-
-impl OwnedThreadMetrics {
-    pub(in crate::daemon) fn record_started(&self) {
-        self.started.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(in crate::daemon) fn record_joined(&self) {
-        self.joined.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn snapshot(&self) -> (usize, usize) {
-        (
-            self.started.load(Ordering::Relaxed),
-            self.joined.load(Ordering::Relaxed),
-        )
-    }
-}
-
-pub(super) struct RemoteRefObserver {
-    observe: Box<RemoteRefObserverFn>,
-    thread_metrics: Arc<OwnedThreadMetrics>,
-}
-
-impl RemoteRefObserver {
-    pub(in crate::daemon) fn new(
-        observe: Box<RemoteRefObserverFn>,
-        thread_metrics: Arc<OwnedThreadMetrics>,
-    ) -> Self {
-        Self {
-            observe,
-            thread_metrics,
+impl ManifestEngineUnavailableReason {
+    fn as_log(self) -> &'static str {
+        match self {
+            Self::WorkspaceKeyUnavailable => "workspace key unavailable",
+            Self::HostedContextUnavailable => "hosted context unavailable",
+            Self::DriverStartFailed => "driver failed to start",
         }
     }
-
-    pub(super) fn observe(
-        &mut self,
-        args: SyncOnceArgs,
-    ) -> Result<Option<WorkspaceRef>, Box<dyn std::error::Error>> {
-        (self.observe)(args)
-    }
-
-    pub(super) fn shutdown_and_report(&mut self) -> (usize, usize) {
-        self.observe = Box::new(|_| Ok(None));
-        self.thread_metrics.snapshot()
-    }
-}
-pub(super) type DispatchClaimer = Box<
-    dyn FnMut(SyncOnceArgs) -> Result<Option<Lease>, Box<dyn std::error::Error>> + Send + 'static,
->;
-
-const DISPATCH_CLAIM_IDLE_INTERVAL: Duration = Duration::from_secs(30);
-pub(super) struct SyncOnceSummary {
-    pub(super) workspace_id: String,
-    pub(super) snapshot_id: String,
-    pub(super) version: u64,
-    pub(super) outcome: SyncSummaryOutcome,
-    pub(super) snapshot_root_manifest_id: Option<String>,
-    pub(super) manifest_object_key: Option<String>,
-    pub(super) namespace_root_id: Option<String>,
-    pub(super) conflict_count: usize,
-    pub(super) conflicts: Vec<ConflictSummary>,
-    pub(super) scan: SyncScanSummary,
-    pub(super) cancelled_late: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SyncSummaryOutcome {
-    NoWorkspaceRef,
-    NoChanges,
-    Imported,
-    Uploaded { stale: bool },
-    Merged { stale: bool },
-    Conflicted,
-}
+/// First retry delay after a failed build. Short so a transiently-missing key or
+/// hosted context (common right after first-run trust) recovers within seconds.
+const MANIFEST_ENGINE_RETRY_INITIAL: Duration = Duration::from_secs(1);
+/// Backoff ceiling: past this the daemon retries once per this interval forever.
+const MANIFEST_ENGINE_RETRY_MAX: Duration = Duration::from_secs(30);
 
-pub(super) struct ConflictSummary {
-    pub(super) id: String,
-    pub(super) paths: Vec<String>,
+/// Shared reconnect backoff for the manifest transport's ref subscription.
+pub(in crate::daemon) fn remote_observer_reconnect_delay(failure_count: u32) -> Duration {
+    let exponent = failure_count.saturating_sub(1).min(5);
+    let multiplier = 1_u32 << exponent;
+    (REMOTE_OBSERVER_RECONNECT_INITIAL * multiplier).min(REMOTE_OBSERVER_RECONNECT_MAX)
 }
 
 impl DaemonRuntime {
+    /// Retry building the manifest driver if one is pending and due. Returns
+    /// `true` when this call brought the driver up (so the caller starts the
+    /// watcher bridge).
+    pub(super) fn retry_manifest_engine(&mut self, now: Instant) -> bool {
+        self.sync
+            .as_mut()
+            .is_some_and(|sync| sync.retry_manifest_engine(now))
+    }
+
+    /// A sender for feeding watcher-derived engine events, or `None` when no
+    /// manifest driver is running.
+    pub(super) fn manifest_event_sender(
+        &self,
+    ) -> Option<std::sync::mpsc::Sender<bowline_local::sync::manifest_engine::EngineEvent>> {
+        self.sync
+            .as_ref()
+            .and_then(ContinuousSyncRuntime::manifest_event_sender)
+    }
+
     pub(super) fn prepare_projection_status(
         &mut self,
         projection: &bowline_daemon::status_projection::DaemonStatusProjection,
@@ -317,202 +248,257 @@ impl PreparedNotificationPoll {
 }
 
 impl ContinuousSyncRuntime {
-    pub(super) fn new(options: ContinuousSyncOptions) -> Self {
-        requeue_startup_sync_claims(&options);
-        let store = CachedStore::new(options.args.state_root.join(DEFAULT_DATABASE_FILE));
-        let (watcher, change_rx, watcher_state) = match start_sync_watcher(&options.args.root) {
-            Ok((watcher, change_rx)) => {
-                (Some(watcher), Some(change_rx), WatcherRuntimeState::Ready)
-            }
-            Err(error) => (None, None, WatcherRuntimeState::Limited(error.to_string())),
+    pub(super) fn new(args: SyncArgs) -> Self {
+        let claimant_id = format!(
+            "daemon-{}-{}",
+            std::process::id(),
+            OffsetDateTime::now_utc().unix_timestamp_nanos()
+        );
+        let (watcher, change_rx) = match start_sync_watcher(&args.root) {
+            Ok((watcher, change_rx)) => (Some(watcher), Some(change_rx)),
+            Err(_) => (None, None),
         };
-        let watcher_recovery = WatcherRecovery::default();
-        let last_json = initial_sync_status_json(&watcher_state, &watcher_recovery);
         let hosted_context = Arc::new(HostedContextCache::new());
         let hosted_resolver = hosted_context_resolver(hosted_context);
+        let manifest_snapshot = bowline_daemon::manifest_driver::shared_engine_snapshot();
+        // Publish the `limited` host-status snapshot immediately so status
+        // consumers see a truthful degradation until the driver is built.
+        manifest_snapshot
+            .0
+            .publish(bowline_daemon::manifest_driver::host_status_snapshot());
         Self {
-            claimant_id: format!(
-                "daemon-{}-{}",
-                std::process::id(),
-                OffsetDateTime::now_utc().unix_timestamp_nanos()
-            ),
-            options,
-            next_tick: Instant::now(),
-            next_remote_observe: Instant::now(),
-            next_dispatch_claim: Instant::now(),
-            awaiting_handoff: false,
-            tick_count: 0,
-            last_json,
+            claimant_id,
+            args,
             watcher,
             change_rx,
-            watcher_state,
-            watcher_recovery,
-            sync_once: hosted_sync_executor_with_context(hosted_resolver.clone()),
-            remote_ref_observer: hosted_remote_ref_observer_with_context(hosted_resolver.clone()),
-            dispatch_claimer: hosted_dispatch_claimer_with_context(hosted_resolver.clone()),
-            latest_observed_ref: None,
-            remote_observer_state: RemoteObserverState::Unavailable,
             status_publisher: hosted_status_publisher_with_context(hosted_resolver.clone()),
             next_status_publish: Instant::now(),
             last_status_publish_fingerprint: None,
             last_status_publish_at: None,
             last_status_publish_failed_at: None,
             hosted_resolver,
-            store_health: StoreHealth::new(),
-            store,
-            pending_dirty: DirtyScope::default(),
-            pending_dirty_roots: PendingDirtyRoots::default(),
+            manifest_engine: ManifestEngineHost::PendingRebuild {
+                next_attempt: Instant::now(),
+                // No build has failed yet. If the immediate background attempt
+                // fails, it receives the configured initial retry delay.
+                backoff: None,
+            },
+            manifest_snapshot,
+            manifest_counters: bowline_local::sync::manifest_engine::EngineCounters::shared(),
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn status_json(&self) -> &str {
-        &self.last_json
+    /// A shared handle to this workspace's engine cost meters, for the daemon
+    /// metrics RPC. Stable across driver rebuilds.
+    pub(super) fn manifest_counters(
+        &self,
+    ) -> std::sync::Arc<bowline_local::sync::manifest_engine::EngineCounters> {
+        std::sync::Arc::clone(&self.manifest_counters)
     }
 
-    pub(super) fn claim_pending_dispatch_lease(
-        &mut self,
-    ) -> Result<Option<Lease>, Box<dyn std::error::Error>> {
-        (self.dispatch_claimer)(self.options.args.clone())
-    }
-
-    fn claim_pending_dispatch_lease_if_due(
-        &mut self,
-        force: bool,
-    ) -> Result<Option<Lease>, Box<dyn std::error::Error>> {
-        let now = Instant::now();
-        if !force && now < self.next_dispatch_claim {
-            return Ok(None);
-        }
-        let result = self.claim_pending_dispatch_lease();
-        self.next_dispatch_claim = match result {
-            Ok(Some(_)) => {
-                self.awaiting_handoff = true;
-                now
-            }
-            Ok(None) if self.options.interval.is_zero() => {
-                self.awaiting_handoff = false;
-                now
-            }
-            Ok(None) => {
-                self.awaiting_handoff = false;
-                now + DISPATCH_CLAIM_IDLE_INTERVAL
-            }
-            Err(_) => {
-                self.awaiting_handoff = true;
-                now + DISPATCH_CLAIM_IDLE_INTERVAL
-            }
+    /// Retry building the driver if it is not yet built and the backoff deadline
+    /// has passed. Returns `true` only when this call transitioned the host to
+    /// `Active` (so the caller can start the watcher bridge). A still-failing
+    /// build leaves the workspace `limited`.
+    pub(super) fn retry_manifest_engine(&mut self, now: Instant) -> bool {
+        self.demote_dead_manifest_thread(now);
+        let ManifestEngineHost::PendingRebuild {
+            next_attempt,
+            backoff,
+        } = &self.manifest_engine
+        else {
+            return false;
         };
-        result
-    }
-
-    pub(super) fn waiting_for_sync_queue_json(&self) -> String {
-        if self.remote_observer_is_unavailable() {
-            return self.remote_observer_failure_status_json();
+        if now < *next_attempt {
+            return false;
         }
-        let counts = self.queue_counts();
-        let (state, unavailable_because, blocked_action, still_works) =
-            waiting_queue_status_parts(&counts);
-        daemon_json(&WaitingQueueStatusJson {
-            state,
-            tick_count: self.tick_count,
-            watcher_state: self.watcher_state_json(),
-            limited_capability: "continuous sync",
-            unavailable_because,
-            blocked_action,
-            still_works,
-            queue_counts: SyncOperationCountsJson::from(&counts),
-            local_head: self.local_head_payload(),
-            remote_head: self.remote_head_payload(),
-        })
-    }
-
-    pub(super) fn metadata_store_for_write<T>(
-        &self,
-        context: &'static str,
-        f: impl FnOnce(&MetadataStore) -> Result<T, MetadataError>,
-    ) -> Option<T> {
-        self.store_health
-            .record(context, self.with_store_clearing_swallowed_failures(f))
-    }
-
-    pub(super) fn metadata_store_for_maintenance<T>(
-        &self,
-        context: &'static str,
-        f: impl FnOnce(&mut MetadataStore) -> Result<T, MetadataError>,
-    ) -> Option<T> {
-        let failures_before = self.store_health.total_failure_count();
-        let result = self.store.with_store_mut(f);
-        if self.store_health.total_failure_count() > failures_before {
-            self.store.clear();
+        let next_backoff = backoff.map_or(MANIFEST_ENGINE_RETRY_INITIAL, |delay| {
+            (delay * 2).min(MANIFEST_ENGINE_RETRY_MAX)
+        });
+        let (sink, handle) = &self.manifest_snapshot;
+        match build_manifest_driver(
+            &self.args,
+            &self.hosted_resolver,
+            sink.clone(),
+            handle.clone(),
+            self.manifest_counters.clone(),
+        ) {
+            Ok(driver) => {
+                self.manifest_engine = ManifestEngineHost::Active(driver);
+                true
+            }
+            Err(reason) => {
+                eprintln!(
+                    "bowline-daemon manifest engine still unavailable ({}); retrying in {:?}",
+                    reason.as_log(),
+                    next_backoff
+                );
+                self.manifest_engine = ManifestEngineHost::PendingRebuild {
+                    next_attempt: now + next_backoff,
+                    backoff: Some(next_backoff),
+                };
+                false
+            }
         }
-        self.store_health.record(context, result)
     }
 
-    pub(super) fn queue_counts(&self) -> SyncOperationCounts {
-        self.with_store_clearing_swallowed_failures(|store| {
-            store.sync_operation_counts_for_device(
-                &self.options.args.workspace_id(),
-                &DeviceId::new(self.options.args.device_id.clone()),
-            )
-        })
-        .unwrap_or_default()
-    }
-
-    /// Run a store access closure, and drop the cached SQLite handle when the
-    /// closure swallowed a store failure via `StoreHealth::record` instead of
-    /// propagating it. `CachedStore::with_store` only clears on a propagated
-    /// `Err`, so without this, a handle that failed a write would be reused
-    /// forever (plan 021's recovery contract requires reopening on any store
-    /// error).
-    fn with_store_clearing_swallowed_failures<T>(
-        &self,
-        f: impl FnOnce(&MetadataStore) -> Result<T, MetadataError>,
-    ) -> Result<T, MetadataError> {
-        let failures_before = self.store_health.total_failure_count();
-        let result = self.store.with_store(f);
-        if self.store_health.total_failure_count() > failures_before {
-            self.store.clear();
+    /// Demote an `Active` host whose engine thread has exited (a panic or an
+    /// unexpected loop return) to `PendingRebuild`, so the retry path rebuilds it
+    /// rather than leaving a dead driver wired to status and events. Publishes the
+    /// `limited` host-status snapshot like a failed build; `next_attempt = now` so
+    /// the very next retry rebuilds.
+    fn demote_dead_manifest_thread(&mut self, now: Instant) {
+        if let ManifestEngineHost::Active(driver) = &self.manifest_engine
+            && driver.has_finished_required_worker()
+        {
+            eprintln!("bowline-daemon manifest sync worker exited unexpectedly; rebuilding");
+            self.manifest_snapshot
+                .0
+                .publish(bowline_daemon::manifest_driver::host_status_snapshot());
+            self.manifest_engine = ManifestEngineHost::PendingRebuild {
+                next_attempt: now,
+                backoff: None,
+            };
         }
-        result
+    }
+
+    /// Drive the host into `PendingRebuild` as a failed build would, publishing the
+    /// `limited` host-status snapshot — without the real build I/O. Used by tests
+    /// to exercise the rebuild status path deterministically.
+    /// Install an `Active` host whose engine thread has already exited, so tests
+    /// can exercise the dead-thread demotion path deterministically.
+    #[cfg(test)]
+    pub(in crate::daemon) fn simulate_active_manifest_engine_with_exited_thread(&mut self) {
+        let driver = bowline_daemon::manifest_driver::ManifestDriver::spawn(|_inbox, _sink| {})
+            .expect("spawn stub driver");
+        // The stub body returns immediately; wait for the thread to actually exit
+        // so `is_thread_finished` observes the dead thread.
+        while !driver.is_thread_finished() {
+            std::thread::yield_now();
+        }
+        self.manifest_engine = ManifestEngineHost::Active(driver);
     }
 
     #[cfg(test)]
-    pub(super) fn local_head_json(&self) -> String {
-        self.local_head_payload()
-            .map(|payload| daemon_json(&payload))
-            .unwrap_or_else(|| "null".to_string())
+    pub(in crate::daemon) fn simulate_manifest_engine_unavailable(&mut self) {
+        self.manifest_snapshot
+            .0
+            .publish(bowline_daemon::manifest_driver::host_status_snapshot());
+        self.manifest_engine = ManifestEngineHost::PendingRebuild {
+            next_attempt: Instant::now() + MANIFEST_ENGINE_RETRY_INITIAL,
+            backoff: Some(MANIFEST_ENGINE_RETRY_INITIAL),
+        };
     }
 
-    #[cfg(test)]
-    pub(super) fn remote_head_json(&self) -> String {
-        self.remote_head_payload()
-            .map(|payload| daemon_json(&payload))
-            .unwrap_or_else(|| "null".to_string())
+    /// When the driver is waiting to rebuild, the instant of the next attempt, so
+    /// the coordinator can wake the loop even while otherwise idle.
+    pub(super) fn next_manifest_retry(&self) -> Option<Instant> {
+        match &self.manifest_engine {
+            ManifestEngineHost::PendingRebuild { next_attempt, .. } => Some(*next_attempt),
+            // A dead engine thread is due for an immediate rebuild, so the loop
+            // wakes even while otherwise idle.
+            ManifestEngineHost::Active(driver) if driver.has_finished_required_worker() => {
+                Some(Instant::now())
+            }
+            ManifestEngineHost::Active(_) => None,
+        }
     }
 
-    fn local_head_payload(&self) -> Option<LocalHeadJson> {
-        self.store
-            .with_store(|store| store.workspace_sync_head(&self.options.args.workspace_id()))
-            .ok()
-            .flatten()
-            .map(|head| LocalHeadJson {
-                workspace_id: head.workspace_ref.workspace_id.into(),
-                snapshot_id: head.workspace_ref.snapshot_id.into(),
-                version: head.workspace_ref.version,
-                updated_at_tick: head.workspace_ref.updated_at.tick,
-            })
+    /// The persistent engine snapshot handle for the status projection: live
+    /// engine snapshots when the driver is `Active`, a `limited` host-status
+    /// snapshot while it is `PendingRebuild`.
+    pub(super) fn manifest_snapshot_handle(
+        &self,
+    ) -> bowline_daemon::manifest_driver::EngineSnapshotHandle {
+        self.manifest_snapshot.1.clone()
     }
 
-    fn remote_head_payload(&self) -> Option<RemoteHeadJson> {
-        self.store
-            .with_store(|store| store.remote_ref_cursor(&self.options.args.workspace_id()))
-            .ok()
-            .flatten()
-            .map(|cursor| RemoteHeadJson {
-                workspace_id: cursor.workspace_id.as_str().to_string(),
-                snapshot_id: cursor.last_observed_snapshot_id.unwrap_or_default(),
-                version: cursor.last_observed_version.unwrap_or_default(),
-            })
+    /// A sender for feeding watcher-derived engine events, or `None` when no driver
+    /// is running.
+    pub(super) fn manifest_event_sender(
+        &self,
+    ) -> Option<std::sync::mpsc::Sender<bowline_local::sync::manifest_engine::EngineEvent>> {
+        match &self.manifest_engine {
+            ManifestEngineHost::Active(driver) => Some(driver.event_sender()),
+            ManifestEngineHost::PendingRebuild { .. } => None,
+        }
+    }
+
+    /// Whether the hosted ref subscription has produced its initial reactive
+    /// value and is currently live. A running engine thread alone is not remote
+    /// observer readiness.
+    pub(super) fn manifest_observer_is_live(&self) -> bool {
+        match &self.manifest_engine {
+            ManifestEngineHost::Active(driver) => driver.ref_observer_is_live(),
+            ManifestEngineHost::PendingRebuild { .. } => false,
+        }
+    }
+}
+
+/// Build the manifest-sync engine driver for a workspace. A missing
+/// prerequisite (workspace key, hosted context, engine store) returns a typed
+/// [`ManifestEngineUnavailableReason`] the caller turns into a retrying,
+/// `limited`-status `PendingRebuild`. On success, returns a running driver whose
+/// engine thread and ref subscription own the sync loop from here on.
+fn build_manifest_driver(
+    args: &SyncArgs,
+    hosted_resolver: &HostedContextResolver,
+    sink: bowline_daemon::manifest_driver::EngineSnapshotSink,
+    handle: bowline_daemon::manifest_driver::EngineSnapshotHandle,
+    counters: std::sync::Arc<bowline_local::sync::manifest_engine::EngineCounters>,
+) -> Result<bowline_daemon::manifest_driver::ManifestDriver, ManifestEngineUnavailableReason> {
+    use bowline_daemon::manifest_driver::{
+        MANIFEST_ENGINE_DB_FILE, ManifestDriver, ManifestDriverConfig,
+    };
+    use bowline_local::sync::manifest_engine::{
+        EngineConfig, EngineContext, KeyEpoch, WorkspaceCrypto,
+    };
+
+    let workspace_key = match require_local_workspace_key(args) {
+        Ok(key) => key,
+        Err(error) => {
+            eprintln!("bowline-daemon manifest engine key unavailable: {error}");
+            return Err(ManifestEngineUnavailableReason::WorkspaceKeyUnavailable);
+        }
+    };
+    let hosted = match hosted_resolver(args) {
+        Ok(hosted) => hosted,
+        Err(error) => {
+            eprintln!("bowline-daemon manifest engine hosted context unavailable: {error}");
+            return Err(ManifestEngineUnavailableReason::HostedContextUnavailable);
+        }
+    };
+    let context = EngineContext {
+        crypto: WorkspaceCrypto::new(
+            &args.workspace_id,
+            workspace_key.bytes,
+            KeyEpoch::new(workspace_key.key_epoch),
+        ),
+        device_id: DeviceId::new(args.device_id.clone()),
+        engine_state_dir: args
+            .root
+            .join(bowline_local::sync::manifest_engine::ENGINE_STATE_DIR),
+        workspace_root: args.root.clone(),
+        config: EngineConfig::default(),
+        project_view: false,
+        counters,
+    };
+    let reconnect_delay: bowline_daemon::manifest_transport::ReconnectDelay =
+        Arc::new(remote_observer_reconnect_delay);
+    let config = ManifestDriverConfig {
+        store_path: args.state_root.join(MANIFEST_ENGINE_DB_FILE),
+        context,
+        client: Arc::clone(&hosted.client),
+        http: hosted.http.clone(),
+        workspace_id: WorkspaceId::new(args.workspace_id.clone()),
+        device_id: DeviceId::new(args.device_id.clone()),
+        reconnect_delay,
+    };
+    match ManifestDriver::spawn_production_with_sink(config, sink, handle) {
+        Ok(driver) => Ok(driver),
+        Err(error) => {
+            eprintln!("bowline-daemon manifest engine driver failed to start: {error}");
+            Err(ManifestEngineUnavailableReason::DriverStartFailed)
+        }
     }
 }

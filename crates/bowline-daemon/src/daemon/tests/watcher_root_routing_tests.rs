@@ -1,259 +1,215 @@
-//! Watcher-boundary integration for U8 root routing.
-//!
-//! These drive the real `drain_changes` -> `record_watcher_event` path against a
-//! temp workspace with the same `notify::Event` shape the live watcher emits, so
-//! the tri-state entry-kind derivation (regular file / symlink / directory /
-//! vanished) and the rename-source=`Unknown` rule are exercised end-to-end, not
-//! just via a direct `insert_path_parent` unit call.
+//! Watcher-kernel to manifest-engine routing integration.
 
 use super::*;
-use crate::daemon::sync::RootEntryKind;
-use bowline_local::sync::{FullScanReason, ScanScope};
-use std::collections::BTreeSet;
+#[cfg(target_os = "linux")]
+use crate::daemon::protocol::WatcherBridge;
+#[cfg(target_os = "linux")]
+use crate::daemon::send_watcher_signal;
+use crate::daemon::start_sync_watcher;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use bowline_local::sync::manifest_engine::{EngineEvent, WorkspacePath};
+#[cfg(target_os = "linux")]
+use notify::{
+    Event, EventKind,
+    event::{AccessKind, AccessMode},
+};
+#[cfg(target_os = "linux")]
+use std::sync::mpsc;
 
-// Drive one watcher event through the real drain path and return the scan scope
-// the accumulator resolves to.
-fn scope_after_event(
-    label: &str,
-    workspace_id: &str,
-    build_event: impl FnOnce(&Path) -> Event,
-) -> (ScanScope, PathBuf) {
-    let fixture = watcher_fixture(label, workspace_id);
+#[cfg(target_os = "linux")]
+fn daemon_runtime_with_sync(sync: ContinuousSyncRuntime) -> DaemonRuntime {
+    DaemonRuntime {
+        sync: Some(sync),
+        notify_approvals: false,
+        notification_dedupe: Arc::new(Mutex::new(NotificationDedupe::default())),
+        next_notification_poll: Instant::now(),
+        pending_notification_status: None,
+    }
+}
+
+/// A manifest driver whose thread records forwarded engine events instead of
+/// running the real engine, so the watcher bridge's output is observable.
+#[cfg(target_os = "linux")]
+fn recording_driver() -> (
+    bowline_daemon::manifest_driver::ManifestDriver,
+    Arc<Mutex<Vec<EngineEvent>>>,
+) {
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&recorded);
+    let driver = bowline_daemon::manifest_driver::ManifestDriver::spawn(move |inbox, _snapshot| {
+        while let Ok(event) = inbox.recv() {
+            if matches!(event, EngineEvent::Shutdown) {
+                break;
+            }
+            if let Ok(mut recorded) = sink.lock() {
+                recorded.push(event);
+            }
+        }
+    })
+    .expect("recording driver spawns");
+    (driver, recorded)
+}
+
+#[cfg(target_os = "linux")]
+fn await_recorded_paths(recorded: &Arc<Mutex<Vec<EngineEvent>>>, path: &str) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let wanted = WorkspacePath::new(path.to_string());
+    loop {
+        if let Ok(events) = recorded.lock()
+            && events.iter().any(|event| match event {
+                EngineEvent::Paths(paths) => paths.contains(&wanted),
+                EngineEvent::FullScanRequired(_) => true,
+                _ => false,
+            })
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "watcher never forwarded an engine event for {path}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_nested_edit_reaches_engine_through_watcher_bridge() {
+    let fixture = watcher_fixture("bowline-daemon-watch-nested-edit", "ws_watch_nested_edit");
     let root = fixture.root.clone();
-    let event = build_event(&root);
-    let (signal_tx, signal_rx) = mpsc::channel();
-    signal_tx
-        .send(WatcherSignal::Changed(event))
-        .expect("watcher signal sends");
-    drop(signal_tx);
-    let mut runtime = watcher_test_runtime(root, fixture.state_root, fixture.workspace_id.as_str());
-    runtime.change_rx = Some(signal_rx);
+    let project = root.join("project");
+    fs::create_dir_all(project.join("src/deep")).expect("project subtree");
+    fs::write(project.join("src/deep/lib.rs"), "pub fn before() {}\n").expect("seed file");
+    let (watcher, receiver) = start_sync_watcher(&root).expect("watcher starts");
 
-    let drained = runtime.drain_changes();
-    assert!(drained.changed, "event should record a change");
-    let scope = runtime
-        .pending_dirty
-        .take_scope(FullScanReason::CliRequested);
-    (scope, fixture.temp)
-}
+    let mut sync = watcher_test_runtime(
+        root,
+        fixture.state_root.clone(),
+        fixture.workspace_id.as_str(),
+    );
+    sync.watcher = Some(watcher);
+    sync.change_rx = Some(receiver);
+    let (driver, recorded) = recording_driver();
+    sync.manifest_engine = crate::daemon::sync::ManifestEngineHost::Active(driver);
+    let mut runtime = daemon_runtime_with_sync(sync);
+    let bridge = WatcherBridge::start(&mut runtime)
+        .expect("watcher bridge starts")
+        .expect("watcher receiver creates bridge");
 
-#[test]
-fn boundary_root_regular_file_edit_yields_root_shallow() {
-    let (scope, temp) = scope_after_event(
-        "bowline-daemon-watch-root-file",
-        "ws_watch_root_file",
-        |root| {
-            let path = root.join("README.md");
-            fs::write(&path, "# hi\n").expect("root file");
-            Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content))).add_path(path)
-        },
-    );
-    assert_eq!(scope, ScanScope::RootShallow);
-    let _ = fs::remove_dir_all(temp);
-}
+    fs::write(project.join("src/deep/lib.rs"), "pub fn after() {}\n").expect("nested user edit");
+    await_recorded_paths(&recorded, "project/src/deep/lib.rs");
 
-#[test]
-fn boundary_root_symlink_edit_yields_root_shallow() {
-    let (scope, temp) = scope_after_event(
-        "bowline-daemon-watch-root-symlink",
-        "ws_watch_root_symlink",
-        |root| {
-            let target = root.join("target.txt");
-            fs::write(&target, "data\n").expect("symlink target");
-            let link = root.join("current");
-            std::os::unix::fs::symlink(&target, &link).expect("symlink");
-            Event::new(EventKind::Create(CreateKind::Any)).add_path(link)
-        },
-    );
-    // A root symlink is file-like, not a subtree.
-    assert_eq!(scope, ScanScope::RootShallow);
-    let _ = fs::remove_dir_all(temp);
-}
-
-#[test]
-fn boundary_root_directory_move_in_yields_scoped_subtree() {
-    let (scope, temp) = scope_after_event(
-        "bowline-daemon-watch-root-dir-in",
-        "ws_watch_root_dir_in",
-        |root| {
-            let dir = root.join("newrepo");
-            fs::create_dir_all(dir.join("src")).expect("moved-in dir");
-            Event::new(EventKind::Create(CreateKind::Folder)).add_path(dir)
-        },
-    );
-    assert_eq!(
-        scope,
-        ScanScope::DirtySubtrees {
-            roots: BTreeSet::from(["newrepo".to_string()]),
-            root_shallow: false,
-        }
-    );
-    let _ = fs::remove_dir_all(temp);
-}
-
-#[test]
-fn boundary_root_directory_delete_yields_scoped_subtree() {
-    // The directory never exists on disk at derivation time (deletion), so
-    // `symlink_metadata` returns None -> Unknown -> scoped, not a shallow pass
-    // that would mask the vanished subtree.
-    let (scope, temp) = scope_after_event(
-        "bowline-daemon-watch-root-dir-del",
-        "ws_watch_root_dir_del",
-        |root| {
-            let dir = root.join("oldrepo");
-            Event::new(EventKind::Remove(RemoveKind::Folder)).add_path(dir)
-        },
-    );
-    assert_eq!(
-        scope,
-        ScanScope::DirtySubtrees {
-            roots: BTreeSet::from(["oldrepo".to_string()]),
-            root_shallow: false,
-        }
-    );
-    let _ = fs::remove_dir_all(temp);
-}
-
-#[test]
-fn boundary_root_directory_rename_away_source_arrives_unknown() {
-    // A rename whose destination leaves the workspace: only the source push
-    // survives, and it must arrive as Unknown (never the destination's kind),
-    // routing the vanished subtree to a scoped scan.
-    let (scope, temp) = scope_after_event(
-        "bowline-daemon-watch-root-dir-rename",
-        "ws_watch_root_dir_rename",
-        |root| {
-            let source = root.join("oldrepo");
-            let destination = root.parent().expect("root parent").join("moved-oldrepo");
-            Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
-                .add_path(source)
-                .add_path(destination)
-        },
-    );
-    assert_eq!(
-        scope,
-        ScanScope::DirtySubtrees {
-            roots: BTreeSet::from(["oldrepo".to_string()]),
-            root_shallow: false,
-        }
-    );
-    let _ = fs::remove_dir_all(temp);
-}
-
-#[test]
-fn boundary_root_policy_edit_forces_full_scan() {
-    let (scope, temp) = scope_after_event(
-        "bowline-daemon-watch-policy-edit",
-        "ws_watch_policy_edit",
-        |root| {
-            let path = root.join(".bowlineignore");
-            fs::write(&path, "build/\n").expect("policy file");
-            Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content))).add_path(path)
-        },
-    );
-    assert_eq!(scope, ScanScope::Full(FullScanReason::PolicyChanged));
-    let _ = fs::remove_dir_all(temp);
-}
-
-#[test]
-fn boundary_root_policy_delete_forces_full_scan() {
-    // Deleted policy marker: Unknown kind, but the guard runs before the kind
-    // split, so deep classification is still invalidated.
-    let (scope, temp) = scope_after_event(
-        "bowline-daemon-watch-policy-del",
-        "ws_watch_policy_del",
-        |root| {
-            let path = root.join(".bowlineignore");
-            Event::new(EventKind::Remove(RemoveKind::File)).add_path(path)
-        },
-    );
-    assert_eq!(scope, ScanScope::Full(FullScanReason::PolicyChanged));
-    let _ = fs::remove_dir_all(temp);
-}
-
-#[test]
-fn boundary_root_policy_rename_away_source_forces_full_scan() {
-    // The policy marker is renamed out of the workspace: the surviving source
-    // push arrives as Unknown and still forces a full scan.
-    let (scope, temp) = scope_after_event(
-        "bowline-daemon-watch-policy-rename",
-        "ws_watch_policy_rename",
-        |root| {
-            let source = root.join(".bowlineignore");
-            let destination = root
-                .parent()
-                .expect("root parent")
-                .join("moved.bowlineignore");
-            Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
-                .add_path(source)
-                .add_path(destination)
-        },
-    );
-    assert_eq!(scope, ScanScope::Full(FullScanReason::PolicyChanged));
-    let _ = fs::remove_dir_all(temp);
-}
-
-#[test]
-fn boundary_root_file_and_deep_subtree_yield_combined_scope() {
-    let fixture = watcher_fixture("bowline-daemon-watch-combined", "ws_watch_combined");
-    let root = fixture.root.clone();
-    let readme = root.join("README.md");
-    fs::write(&readme, "# hi\n").expect("root file");
-    fs::create_dir_all(root.join("src")).expect("src dir");
-    let deep = root.join("src/app.rs");
-    fs::write(&deep, "fn main() {}\n").expect("deep file");
-
-    let (signal_tx, signal_rx) = mpsc::channel();
-    signal_tx
-        .send(WatcherSignal::Changed(
-            Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content))).add_path(readme),
-        ))
-        .expect("root signal");
-    signal_tx
-        .send(WatcherSignal::Changed(
-            Event::new(EventKind::Create(CreateKind::File)).add_path(deep),
-        ))
-        .expect("deep signal");
-    drop(signal_tx);
-    let mut runtime = watcher_test_runtime(root, fixture.state_root, fixture.workspace_id.as_str());
-    runtime.change_rx = Some(signal_rx);
-
-    assert!(runtime.drain_changes().changed);
-    assert_eq!(
-        runtime
-            .pending_dirty
-            .take_scope(FullScanReason::CliRequested),
-        ScanScope::DirtySubtrees {
-            roots: BTreeSet::from(["src".to_string()]),
-            root_shallow: true,
-        }
-    );
+    runtime
+        .sync
+        .as_mut()
+        .expect("sync runtime remains")
+        .watcher
+        .take();
+    bridge.join().expect("watcher bridge joins");
+    drop(runtime);
     let _ = fs::remove_dir_all(fixture.temp);
 }
 
-// Guards against the entry-kind derivation drifting away from the tri-state
-// contract the routing depends on. The daemon computes the same mapping from
-// `symlink_metadata` in `record_watcher_event`.
+#[cfg(target_os = "linux")]
 #[test]
-fn entry_kind_derivation_matches_filesystem_shape() {
-    let dir = unique_temp_dir("bowline-daemon-entry-kind");
-    let file = dir.join("file.txt");
-    fs::write(&file, "x").expect("file");
-    let subdir = dir.join("subdir");
-    fs::create_dir_all(&subdir).expect("subdir");
-    let link = dir.join("link");
-    std::os::unix::fs::symlink(&file, &link).expect("symlink");
-    let missing = dir.join("gone");
+fn linux_close_after_write_reaches_engine() {
+    let fixture = watcher_fixture("bowline-daemon-watch-close-write", "ws_watch_close_write");
+    let env_path = fixture.root.join(".env");
+    fs::write(&env_path, "TOKEN=changed\n").expect("env file");
+    let (signal_tx, signal_rx) = mpsc::sync_channel(1);
+    send_watcher_signal(
+        &signal_tx,
+        Ok(Event::new(EventKind::Access(AccessKind::Close(AccessMode::Write))).add_path(env_path)),
+    );
+    drop(signal_tx);
 
-    let kind_of = |path: &Path| match std::fs::symlink_metadata(path).ok() {
-        Some(metadata) if metadata.is_dir() => RootEntryKind::Directory,
-        Some(_) => RootEntryKind::NonDirectory,
-        None => RootEntryKind::Unknown,
-    };
+    let mut sync = watcher_test_runtime(
+        fixture.root.clone(),
+        fixture.state_root.clone(),
+        fixture.workspace_id.as_str(),
+    );
+    sync.change_rx = Some(signal_rx);
+    let (driver, recorded) = recording_driver();
+    sync.manifest_engine = crate::daemon::sync::ManifestEngineHost::Active(driver);
+    let mut runtime = daemon_runtime_with_sync(sync);
+    let bridge = WatcherBridge::start(&mut runtime)
+        .expect("watcher bridge starts")
+        .expect("watcher receiver creates bridge");
 
-    assert_eq!(kind_of(&file), RootEntryKind::NonDirectory);
-    assert_eq!(kind_of(&subdir), RootEntryKind::Directory);
-    assert_eq!(kind_of(&link), RootEntryKind::NonDirectory);
-    assert_eq!(kind_of(&missing), RootEntryKind::Unknown);
-    let _ = fs::remove_dir_all(dir);
+    await_recorded_paths(&recorded, ".env");
+
+    bridge.join().expect("watcher bridge joins");
+    drop(runtime);
+    let _ = fs::remove_dir_all(fixture.temp);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_watcher_kernel_arms_recursive_root_watch() {
+    let fixture = watcher_fixture("bowline-daemon-watch-macos-kernel", "ws_watch_macos_kernel");
+    fs::create_dir_all(fixture.root.join("project/src")).expect("project subtree");
+    let (watcher, receiver) = start_sync_watcher(&fixture.root).expect("watcher starts");
+
+    fs::write(fixture.root.join("project/src/lib.rs"), "pub fn a() {}\n").expect("nested write");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut observed = false;
+    while Instant::now() < deadline {
+        match receiver.recv_timeout(Duration::from_millis(100)) {
+            Ok(_signal) => {
+                observed = true;
+                break;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    assert!(observed, "recursive root watch observes nested writes");
+    drop(watcher);
+    let _ = fs::remove_dir_all(fixture.temp);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_dense_git_init_emits_recursive_engine_roots() {
+    let fixture = watcher_fixture("bowline-daemon-watch-macos-dense-git", "ws_watch_macos_git");
+    let (watcher, receiver) = start_sync_watcher(&fixture.root).expect("watcher starts");
+
+    let project = fixture.root.join("project");
+    fs::create_dir_all(project.join(".git/objects/ab")).expect("object tree");
+    fs::create_dir_all(project.join(".git/refs/heads")).expect("ref tree");
+    fs::write(project.join(".git/objects/ab/cdef"), b"opaque object").expect("object");
+    fs::write(project.join(".git/refs/heads/main"), b"abc123\n").expect("ref");
+    fs::write(project.join(".git/HEAD"), b"ref: refs/heads/main\n").expect("head");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut quiet_intervals = 0;
+    let mut policy_cache = std::collections::HashMap::new();
+    let mut recursive_roots = std::collections::BTreeSet::new();
+    while Instant::now() < deadline && quiet_intervals < 3 {
+        match receiver.recv_timeout(Duration::from_millis(100)) {
+            Ok(signal) => {
+                quiet_intervals = 0;
+                if let Some(EngineEvent::RecursivePaths(paths)) =
+                    crate::daemon::watcher::watcher_signal_engine_event(
+                        &fixture.root,
+                        &signal,
+                        &mut policy_cache,
+                    )
+                {
+                    recursive_roots.extend(paths);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => quiet_intervals += 1,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    assert!(
+        recursive_roots.iter().any(|path| {
+            path == &WorkspacePath::new("project") || path == &WorkspacePath::new("project/.git")
+        }),
+        "dense Git creation must yield a recursive project or .git root; got {recursive_roots:?}"
+    );
+    drop(watcher);
+    let _ = fs::remove_dir_all(fixture.temp);
 }

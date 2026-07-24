@@ -332,6 +332,93 @@ export type DiagnosticsCollectCommandOutput =
     readonly bundle: string;
   };
 
+export type DoctorEngine = "manifest";
+
+export type DoctorCheckStatus = "ok" | "degraded" | "unavailable" | "failed";
+
+export type DoctorCheckId =
+  | "engine-sqlite-integrity"
+  | "ancestor-ref-consistency"
+  | "intent-recoverability"
+  | "watcher-health"
+  | "ref-fetch-verification"
+  | "ref-metadata-object-existence"
+  | "sealed-content-id-verification"
+  | "workspace-key-availability"
+  | "retry-age"
+  | "portable-path-collisions"
+  | "temp-capacity"
+  | "atomic-rename-capability"
+  | "deployment-identity"
+  | "installed-candidate-hash";
+
+// Fixed, safe reason codes. The Rust `DoctorReason` enum is the authority; this
+// union mirrors it for the TypeScript fixture decoder (the codebase's standard
+// cross-language command-output contract mechanism).
+export type DoctorReason =
+  | "integrity-verified"
+  | "integrity-failed"
+  | "engine-database-missing"
+  | "ancestor-consistent"
+  | "ancestor-missing"
+  | "ref-regressed-below-verified"
+  | "intents-recoverable"
+  | "intent-unclassifiable"
+  | "watcher-healthy"
+  | "watcher-recovery-pending"
+  | "daemon-unreachable"
+  | "ref-verified"
+  | "ref-signature-unverifiable"
+  | "ref-absent"
+  | "control-plane-unreachable"
+  | "object-present"
+  | "metadata-missing"
+  | "object-missing"
+  | "sample-verified"
+  | "content-id-mismatch"
+  | "seal-verification-unavailable"
+  | "sample-empty"
+  | "key-available"
+  | "key-unavailable"
+  | "epoch-mismatch"
+  | "retry-nominal"
+  | "retry-stale"
+  | "no-collisions"
+  | "portable-path-collision"
+  | "capacity-sufficient"
+  | "capacity-insufficient"
+  | "state-root-unavailable"
+  | "rename-supported"
+  | "rename-unsupported"
+  | "identity-matched"
+  | "identity-mismatched"
+  | "identity-unknown"
+  | "hash-computed"
+  | "hash-unavailable";
+
+export type DoctorCheck = {
+  readonly id: DoctorCheckId;
+  readonly status: DoctorCheckStatus;
+  readonly reason: DoctorReason;
+  readonly count?: number;
+  readonly opaque?: string;
+};
+
+export type DoctorSummary = {
+  readonly ok: number;
+  readonly degraded: number;
+  readonly unavailable: number;
+  readonly failed: number;
+  readonly attentionRequired: boolean;
+};
+
+export type DoctorCommandOutput = CommandOutputBase<"doctor"> & {
+  readonly workspaceId: WorkspaceId;
+  readonly engine: DoctorEngine;
+  readonly summary: DoctorSummary;
+  readonly checks: readonly DoctorCheck[];
+};
+
 export type LoginCommandOutput = CommandOutputBase<"login"> & {
   readonly account: AccountLoginState;
   readonly localDevice?: DeviceRecord;
@@ -347,6 +434,7 @@ export type StatusCommandOutput = CommandOutputBase<"status"> & {
   readonly scope?: StatusScope;
   readonly requestedPath?: string;
   readonly resolvedWorkspaceRoot?: string;
+  readonly resolvedProjectRoot?: string;
   readonly workspaceSummary?: WorkspaceSummary;
   readonly setupReadiness?: ProjectSetupReadiness;
   readonly syncQueue?: SyncQueueStatus;
@@ -487,7 +575,6 @@ export type DevicesCommandOutput = CommandOutputBase<
   | "device list"
   | "device request"
   | "device accept"
-  | "lease join"
 > & {
   readonly action:
     | "list"

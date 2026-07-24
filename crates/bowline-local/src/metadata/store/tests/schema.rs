@@ -1,3 +1,4 @@
+use super::super::MetadataReadRole;
 use super::*;
 
 #[test]
@@ -17,27 +18,134 @@ fn schema_initialization_is_idempotent_and_enables_wal() {
 }
 
 #[test]
-fn current_version_with_noncanonical_tables_is_refused() {
-    let temp = TempWorkspace::new("metadata-noncanonical-current").expect("temp workspace");
+fn reopening_current_schema_does_not_compete_with_active_writer() {
+    let temp = TempWorkspace::new("metadata-reopen-contention").expect("temp workspace");
     let db_path = temp.root().join(".state").join("local.sqlite3");
-    let store = MetadataStore::open(&db_path).expect("metadata opens");
-    store
+    let writer = MetadataStore::open(&db_path).expect("metadata opens");
+    writer
         .connection()
-        .execute(
-            "CREATE TABLE obsolete_schema_history (version INTEGER PRIMARY KEY)",
-            [],
-        )
-        .expect("add noncanonical table");
-    drop(store);
+        .execute("BEGIN IMMEDIATE", [])
+        .expect("writer reserves database");
 
+    let reopened = MetadataStore::open(&db_path).expect("current metadata reopens during write");
+    reopened
+        .assert_schema_tables()
+        .expect("reopened schema is readable");
+
+    writer
+        .connection()
+        .execute("ROLLBACK", [])
+        .expect("writer releases database");
+}
+
+#[test]
+fn reopening_current_schema_preserves_existing_journal_mode() {
+    let temp = TempWorkspace::new("metadata-reopen-journal-mode").expect("temp workspace");
+    let db_path = temp.root().join(".state").join("local.sqlite3");
+    drop(MetadataStore::open(&db_path).expect("metadata opens"));
+
+    let connection = Connection::open(&db_path).expect("raw metadata opens");
+    connection
+        .pragma_update(None, "journal_mode", "DELETE")
+        .expect("switch journal mode for reopen proof");
+    drop(connection);
+
+    let reopened = MetadataStore::open(&db_path).expect("current metadata reopens");
+    assert_eq!(reopened.journal_mode().expect("journal mode"), "delete");
+    reopened
+        .assert_schema_tables()
+        .expect("reopened schema remains canonical");
+}
+
+#[test]
+fn wal_readers_remain_available_while_writer_has_uncommitted_changes() {
+    let temp = TempWorkspace::new("metadata-wal-reader-contention").expect("temp workspace");
+    let db_path = temp.root().join(".state").join("local.sqlite3");
+    let writer = MetadataStore::open(&db_path).expect("metadata opens");
+    assert_eq!(writer.journal_mode().expect("journal mode"), "wal");
+    writer
+        .insert_workspace(
+            &WorkspaceId::new("committed"),
+            "Committed",
+            "2026-07-18T00:00:00Z",
+        )
+        .expect("committed workspace");
+    writer
+        .connection()
+        .execute("BEGIN EXCLUSIVE", [])
+        .expect("writer exclusively reserves WAL writes");
+    writer
+        .insert_workspace(
+            &WorkspaceId::new("uncommitted"),
+            "Uncommitted",
+            "2026-07-18T00:00:01Z",
+        )
+        .expect("uncommitted workspace");
+
+    let reader = MetadataStore::open_read_only(&db_path, MetadataStore::STATUS_PROJECTION_READER)
+        .expect("WAL reader opens while writer is active");
+    let workspace_count = reader
+        .connection()
+        .query_row("SELECT COUNT(*) FROM workspaces", [], |row| {
+            row.get::<_, u64>(0)
+        })
+        .expect("reader observes committed snapshot");
+    assert_eq!(workspace_count, 1);
+
+    writer
+        .connection()
+        .execute("ROLLBACK", [])
+        .expect("writer releases database");
+}
+
+#[test]
+fn read_only_roles_do_not_mutate_schema_or_journal_mode() {
+    let temp = TempWorkspace::new("metadata-read-roles-no-mutation").expect("temp workspace");
+    let db_path = temp.root().join(".state").join("local.sqlite3");
+    drop(MetadataStore::open(&db_path).expect("metadata opens"));
+
+    let raw = Connection::open(&db_path).expect("raw metadata opens");
+    raw.pragma_update(None, "journal_mode", "DELETE")
+        .expect("switch journal mode for read-only proof");
+    let schema_version = raw
+        .pragma_query_value(None, "schema_version", |row| row.get::<_, u32>(0))
+        .expect("schema version");
+    let user_version = raw
+        .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+        .expect("user version");
+    drop(raw);
+
+    for role in [
+        MetadataReadRole::SchemaInspection,
+        MetadataReadRole::StatusProjection,
+    ] {
+        let reader = MetadataStore::open_read_only(&db_path, role).expect("read role opens");
+        assert_eq!(reader.journal_mode().expect("journal mode"), "delete");
+        assert_eq!(
+            reader
+                .connection()
+                .pragma_query_value(None, "query_only", |row| row.get::<_, u32>(0))
+                .expect("query-only mode"),
+            1
+        );
+    }
+
+    let raw = Connection::open(&db_path).expect("raw metadata reopens");
     assert_eq!(
-        MetadataStore::inspect(&db_path).state,
-        DatabaseState::UnsupportedSchema
+        raw.pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))
+            .expect("journal mode"),
+        "delete"
     );
-    assert!(matches!(
-        MetadataStore::open(&db_path).expect_err("noncanonical schema is refused"),
-        MetadataError::UnsupportedSchema
-    ));
+    assert_eq!(
+        raw.pragma_query_value(None, "schema_version", |row| row.get::<_, u32>(0))
+            .expect("schema version"),
+        schema_version
+    );
+    assert_eq!(
+        raw.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            .expect("user version"),
+        user_version
+    );
 }
 
 #[test]
@@ -82,11 +190,10 @@ fn version_7_schema_is_refused_without_mutation() {
     let store = MetadataStore::open(&db_path).expect("metadata opens");
     drop(store);
     let connection = Connection::open(&db_path).expect("db");
+    // Stamp an older schema version: any version below the current one is refused
+    // regardless of table shape.
     connection
-        .execute_batch(
-            "DROP TABLE merge_plugin_approvals;
-             PRAGMA user_version = 7;",
-        )
+        .execute_batch("PRAGMA user_version = 7;")
         .expect("simulate v7");
     drop(connection);
 
@@ -233,6 +340,79 @@ fn future_versioned_schema_is_refused_without_stamping_current() {
             supported: CURRENT_SCHEMA_VERSION,
         }
     );
+}
+
+#[test]
+fn version_33_schema_is_refused_without_mutation() {
+    let temp = TempWorkspace::new("metadata-v33-refused").expect("temp workspace");
+    let db_path = temp.root().join(".state").join("local.sqlite3");
+    fs::create_dir_all(db_path.parent().expect("database parent")).expect("state directory");
+    let connection = Connection::open(&db_path).expect("v33 database");
+    connection
+        .execute_batch(
+            "PRAGMA user_version = 33;
+             CREATE TABLE retired_state (payload TEXT NOT NULL);
+             INSERT INTO retired_state VALUES ('disposable-test-state');",
+        )
+        .expect("seed v33 database");
+    drop(connection);
+
+    let error = MetadataStore::open(&db_path).expect_err("v33 must fail closed");
+    assert!(matches!(error, MetadataError::UnsupportedSchema));
+    assert_eq!(
+        MetadataStore::inspect(&db_path).state,
+        DatabaseState::UnsupportedSchema
+    );
+
+    let connection = Connection::open(&db_path).expect("reopen refused database");
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            .expect("schema version"),
+        33
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT payload FROM retired_state", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .expect("retired row remains"),
+        "disposable-test-state"
+    );
+}
+
+#[test]
+fn current_schema_rejects_unreviewed_schema_objects() {
+    for (case, mutation) in [
+        (
+            "extra-table",
+            "CREATE TABLE unreviewed_state (payload BLOB);",
+        ),
+        (
+            "extra-view",
+            "CREATE VIEW unreviewed_workspaces AS SELECT * FROM workspaces;",
+        ),
+        (
+            "extra-trigger",
+            "CREATE TRIGGER unreviewed_workspace_trigger AFTER INSERT ON workspaces BEGIN SELECT 1; END;",
+        ),
+    ] {
+        let temp = TempWorkspace::new(&format!("metadata-current-{case}")).expect("temp workspace");
+        let db_path = temp.root().join(".state").join("local.sqlite3");
+        drop(MetadataStore::open(&db_path).expect("create canonical database"));
+        let connection = Connection::open(&db_path).expect("open canonical database");
+        connection
+            .execute_batch(mutation)
+            .expect("add schema drift");
+        drop(connection);
+
+        let error = MetadataStore::open(&db_path).expect_err("schema drift must fail closed");
+        assert!(matches!(error, MetadataError::UnsupportedSchema));
+        assert_eq!(
+            MetadataStore::inspect(&db_path).state,
+            DatabaseState::UnsupportedSchema
+        );
+    }
 }
 
 #[test]

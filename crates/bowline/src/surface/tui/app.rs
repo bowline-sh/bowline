@@ -142,9 +142,11 @@ mod tests {
             scope: Some(StatusScope::Project),
             requested_path: None,
             resolved_workspace_root: Some("~/Code".to_string()),
+            resolved_project_root: None,
             workspace_summary: None,
             setup_readiness: None,
             sync_queue: None,
+            convergence: None,
             freshness: FreshnessVerdict::Unknown,
             stale_bases: Vec::new(),
             status: WorkspaceStatus {
@@ -158,12 +160,12 @@ mod tests {
                 last_scan_at: None,
                 last_event_id: None,
                 event_lag_ms: None,
-                sync_state: None,
-                watcher_state: None,
-                network_state: None,
             },
             next_actions,
             device_approvals,
+            service: None,
+            authentication: None,
+            sync: None,
         }
     }
 

@@ -16,6 +16,12 @@ run("sh", ["-n", "scripts/install.sh"]);
 run("sh", ["-n", "scripts/package-release-binary.sh"]);
 run("sh", ["-n", "scripts/smoke-install-headless.sh"]);
 run("bash", ["-n", "scripts/macos/build-release.sh"]);
+run("env", [
+  "PATH=/usr/bin:/bin",
+  "CARGO_BIN=",
+  "scripts/macos/build-release.sh",
+  "--help",
+]);
 
 const installScript = readFileSync("scripts/install.sh", "utf8");
 const macosBuildScript = readFileSync("scripts/macos/build-release.sh", "utf8");
@@ -86,6 +92,45 @@ if (!installScript.includes('echo "Next: bowline setup --root ~/Code"')) {
 if (macosBuildScript.includes('"$BOWLINE" daemon install')) {
   throw new Error(
     "macOS package postinstall must leave daemon service installation to authenticated setup",
+  );
+}
+if (
+  !macosBuildScript.includes(
+    'CARGO_BIN="${CARGO_BIN:-$(command -v cargo || true)}"',
+  ) ||
+  !macosBuildScript.includes('"$CARGO_BIN" build')
+) {
+  throw new Error(
+    "macOS release build must resolve and invoke a Cargo executable directly",
+  );
+}
+if (
+  !macosBuildScript.includes(
+    'export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"',
+  ) ||
+  !macosBuildScript.includes(
+    'cp "$CARGO_TARGET_DIR/release/bowline" "$APP_BUNDLE/Contents/Resources/bin/bowline"',
+  ) ||
+  !macosBuildScript.includes(
+    'cp "$CARGO_TARGET_DIR/release/bowline-daemon" "$APP_BUNDLE/Contents/Resources/bin/bowline-daemon"',
+  )
+) {
+  throw new Error(
+    "macOS release bundle must copy Rust binaries from the active Cargo target directory",
+  );
+}
+if (macosBuildScript.includes("$ROOT/target/release/bowline")) {
+  throw new Error(
+    "macOS release build must not copy from a hard-coded target tree",
+  );
+}
+if (
+  !macosBuildScript.includes(
+    'VERSION="${BOWLINE_MACOS_VERSION:-$WORKSPACE_VERSION}"',
+  )
+) {
+  throw new Error(
+    "macOS release version must default to the Rust workspace version",
   );
 }
 

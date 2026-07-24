@@ -106,8 +106,8 @@ pub(super) fn bootstrap_repair_actions(
         BootstrapSyncState::Ready => {}
         BootstrapSyncState::Prepared => {
             actions.push(RepairCommand::mutating(
-                "Start the remote daemon",
-                Some(ssh_command(&base.host, "bowline daemon start --json")),
+                "Install the remote daemon service",
+                Some(ssh_command(&base.host, "bowline daemon install --json")),
             ));
         }
         BootstrapSyncState::Blocked => {
@@ -205,8 +205,8 @@ pub(super) fn blocked_repair_actions(
         ],
         BootstrapStepName::DaemonStart | BootstrapStepName::DaemonStatus => vec![
             RepairCommand::mutating(
-                "Start remote daemon",
-                Some(ssh_command(&base.host, "bowline daemon start --json")),
+                "Install remote daemon service",
+                Some(ssh_command(&base.host, "bowline daemon install --json")),
             ),
             RepairCommand::inspect(
                 "Inspect remote daemon status",
@@ -228,30 +228,7 @@ pub(super) fn blocked_repair_actions(
             ),
             retry,
         ],
-        // The handoff lease is prepared, but bootstrap does not launch/complete/
-        // accept the agent; a blocked handoff is repaired by resolving remote
-        // conflicts (if any) and retrying, never by an agent-launch action.
-        BootstrapStepName::AgentLease => {
-            let mut actions = Vec::new();
-            if remote_status_has_conflict(&base.remote_status_items) {
-                actions.push(RepairCommand::inspect(
-                    "Resolve remote conflicts",
-                    Some(ssh_command(
-                        &base.host,
-                        &format!("bowline resolve {} --json", remote_path_arg(&base.root)),
-                    )),
-                ));
-            }
-            actions.push(retry);
-            actions
-        }
     }
-}
-
-pub(super) fn remote_status_has_conflict(items: &[StatusItem]) -> bool {
-    items
-        .iter()
-        .any(|item| item.kind == StatusItemKind::Conflict)
 }
 
 pub(super) fn ssh_command(host: &str, remote_command: &str) -> String {

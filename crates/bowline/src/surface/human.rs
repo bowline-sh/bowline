@@ -5,7 +5,7 @@
 
 use bowline_core::commands::{StatusCommandOutput, WatchFrame};
 use bowline_core::status::{
-    ComponentState, FreshnessVerdict, LimitedCapability, RepairCommand, StatusAttention,
+    ConvergenceReadinessState, FreshnessVerdict, LimitedCapability, RepairCommand, StatusAttention,
     StatusAvailability,
 };
 
@@ -138,8 +138,8 @@ fn verdict_message(output: &StatusCommandOutput, verdict: Verdict) -> String {
 
 fn preparing_message(output: &StatusCommandOutput) -> String {
     let sync_not_ready = !matches!(
-        output.event_watermarks.sync_state,
-        Some(ComponentState::Ready)
+        output.convergence.as_ref().map(|status| status.state),
+        Some(ConvergenceReadinessState::Ready)
     );
     if sync_not_ready {
         if output.event_watermarks.last_scan_at.is_none() {
@@ -212,10 +212,11 @@ fn freshness_label(verdict: FreshnessVerdict) -> &'static str {
 }
 
 fn sync_label(output: &StatusCommandOutput) -> &'static str {
-    match output.event_watermarks.sync_state {
-        Some(ComponentState::Ready) => "up to date",
-        Some(ComponentState::Degraded) => "degraded, retrying",
-        Some(ComponentState::Unavailable) => "paused",
+    match output.convergence.as_ref().map(|status| status.state) {
+        Some(ConvergenceReadinessState::Ready) => "up to date",
+        Some(ConvergenceReadinessState::Converging) => "catching up",
+        Some(ConvergenceReadinessState::Recovering) => "recovering",
+        Some(ConvergenceReadinessState::Limited) => "needs attention",
         None => "starting…",
     }
 }

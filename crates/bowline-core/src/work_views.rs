@@ -170,6 +170,11 @@ pub struct WorkLifecycleCommandOutput {
     pub action: WorkCommandAction,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
+    /// Paths the work view deleted that the workspace independently modified after
+    /// the base. The deletion did not land — the newer local edit stays canonical
+    /// — so accept surfaces them here rather than reporting them as accepted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discarded_deletions: Vec<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub partial: bool,
     pub work_view: WorkView,

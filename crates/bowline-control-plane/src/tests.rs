@@ -43,22 +43,3 @@ fn publish_workspace_status_is_noop_for_in_memory_client() {
         WorkspaceControlPlaneClient::publish_workspace_status(&client, &sample_snapshot()).is_ok()
     );
 }
-
-#[test]
-fn lease_update_event_kinds_match_lifecycle_vocabulary() {
-    let expected = [
-        "lease.created",
-        "lease.updated",
-        "lease.dispatched",
-        "lease.claimed",
-        "lease.completed",
-        "lease.review_ready",
-    ];
-    let actual: std::collections::BTreeSet<_> = CompactEventKind::LEASE_UPDATE_EVENT_KINDS
-        .iter()
-        .map(|kind| kind.as_str())
-        .collect();
-    let want: std::collections::BTreeSet<_> = expected.iter().copied().collect();
-    assert_eq!(actual, want);
-    assert_eq!(CompactEventKind::OverlayChanged.as_str(), "overlay.changed");
-}

@@ -1,7 +1,47 @@
 use super::common::*;
 use super::*;
 
+#[derive(Debug, Clone)]
+pub(crate) struct EnvRecordSourceReplacement {
+    source_path: String,
+    records: Vec<EnvRecord>,
+}
+
+impl EnvRecordSourceReplacement {
+    pub(crate) fn new(source_path: String, records: Vec<EnvRecord>) -> Self {
+        Self {
+            source_path,
+            records,
+        }
+    }
+}
+
 impl MetadataStore {
+    pub(crate) fn commit_env_record_replacements(
+        &mut self,
+        workspace_id: &WorkspaceId,
+        replacements: &[EnvRecordSourceReplacement],
+    ) -> Result<(), MetadataError> {
+        self.with_committed(|store| {
+            store.apply_env_record_replacements_uncommitted(workspace_id, replacements)
+        })
+    }
+
+    pub(crate) fn apply_env_record_replacements_uncommitted(
+        &self,
+        workspace_id: &WorkspaceId,
+        replacements: &[EnvRecordSourceReplacement],
+    ) -> Result<(), MetadataError> {
+        for replacement in replacements {
+            self.replace_env_records_for_source_uncommitted(
+                workspace_id,
+                &replacement.source_path,
+                &replacement.records,
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn replace_env_records_for_source(
         &mut self,
         workspace_id: &WorkspaceId,

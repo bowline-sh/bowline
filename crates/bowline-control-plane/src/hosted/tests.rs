@@ -2,25 +2,23 @@ use super::generated::{
     HostedRefsListWorkspaceRefHistoryRequest, HostedWorkspaceRef, RefsListWorkspaceRefHistory,
 };
 use super::*;
+use crate::Sha256Checksum;
 use crate::{ObjectControlPlaneClient, WorkspaceControlPlaneClient, device_authorization_message};
-use bowline_core::ids::{DeviceId, EventId, LeaseId, ProjectId, SnapshotId, WorkspaceId};
+use bowline_core::ids::{DeviceId, EventId, ProjectId, SnapshotId, WorkspaceId};
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
 
 #[test]
 fn generated_object_keys_preserve_shape_and_change_with_seed() {
-    let first = generated_object_key(ObjectKind::SourcePack, "workspace:device:1");
-    let second = generated_object_key(ObjectKind::SourcePack, "workspace:device:2");
-    let manifest = generated_object_key(ObjectKind::SnapshotManifest, "workspace:device:1");
-    let overlay = generated_object_key(ObjectKind::AgentOverlay, "workspace:device:1");
+    let first = generated_object_key(ObjectKind::Blob, "workspace:device:1");
+    let second = generated_object_key(ObjectKind::Blob, "workspace:device:2");
+    let manifest = generated_object_key(ObjectKind::Manifest, "workspace:device:1");
 
     assert_ne!(first, second);
-    assert!(first.starts_with("packs_pk_"));
-    assert!(manifest.starts_with("manifests_mf_"));
-    assert!(overlay.starts_with("packs_pk_"));
+    assert!(first.starts_with("b_"));
+    assert!(manifest.starts_with("m_"));
     assert!(StorageObjectKey::new(first).is_ok());
     assert!(StorageObjectKey::new(second).is_ok());
     assert!(StorageObjectKey::new(manifest).is_ok());
-    assert!(StorageObjectKey::new(overlay).is_ok());
 }
 
 #[test]
@@ -49,7 +47,7 @@ fn hosted_boundary_verifies_workspace_ref_signed_head() {
     )
     .expect("signed head verifies");
     assert_eq!(parsed.version, 3);
-    assert_eq!(parsed.snapshot_id, SnapshotId::new("snap_signed"));
+    assert_eq!(parsed.snapshot_id, Some(SnapshotId::new("snap_signed")));
     assert_eq!(
         parsed
             .updated_by_device_id
@@ -76,7 +74,7 @@ fn hosted_boundary_verifies_workspace_ref_signed_head() {
     let unsigned_advanced = HostedWorkspaceRef {
         workspace_id: "workspace_1".to_string(),
         version: 3,
-        snapshot_id: "snap_unsigned".to_string(),
+        snapshot_id: Some("snap_unsigned".to_string()),
         updated_at: "2026-07-02T12:00:00Z".to_string(),
         updated_by_device_id: Some("device_1".to_string()),
         head_signature: None,
@@ -85,28 +83,35 @@ fn hosted_boundary_verifies_workspace_ref_signed_head() {
 }
 
 #[test]
-fn hosted_boundary_rejects_unsigned_non_empty_genesis_ref() {
-    let empty_genesis = HostedWorkspaceRef {
+fn hosted_boundary_accepts_headless_genesis_ref() {
+    // A version-0 ref is genesis: the workspace exists but has no head yet, so it
+    // carries no snapshot id and no head signature.
+    let genesis = HostedWorkspaceRef {
         workspace_id: "workspace_1".to_string(),
         version: 0,
-        snapshot_id: "empty".to_string(),
+        snapshot_id: None,
         updated_at: "2026-07-02T12:00:00Z".to_string(),
         updated_by_device_id: None,
         head_signature: None,
     };
-    let parsed = workspace_ref_from_dto(empty_genesis, |_, _| Ok(None)).expect("empty genesis");
+    let parsed = workspace_ref_from_dto(genesis, |_, _| Ok(None)).expect("genesis ref");
     assert_eq!(parsed.version, 0);
-    assert_eq!(parsed.snapshot_id, SnapshotId::new("empty"));
+    assert_eq!(parsed.snapshot_id, None);
+}
 
-    let forged_genesis = HostedWorkspaceRef {
+#[test]
+fn hosted_boundary_rejects_advanced_ref_without_snapshot() {
+    // A version >= 1 ref must carry a manifest-backed head; a headless advanced
+    // ref is a contract violation rejected at the boundary.
+    let headless_advanced = HostedWorkspaceRef {
         workspace_id: "workspace_1".to_string(),
-        version: 0,
-        snapshot_id: "snap_unsigned".to_string(),
+        version: 2,
+        snapshot_id: None,
         updated_at: "2026-07-02T12:00:00Z".to_string(),
-        updated_by_device_id: None,
-        head_signature: None,
+        updated_by_device_id: Some("device_1".to_string()),
+        head_signature: Some("dapp_p256_v1_sig".to_string()),
     };
-    assert!(workspace_ref_from_dto(forged_genesis, |_, _| Ok(None)).is_err());
+    assert!(workspace_ref_from_dto(headless_advanced, |_, _| Ok(None)).is_err());
 }
 
 fn sign_workspace_head(
@@ -136,7 +141,7 @@ fn signed_workspace_ref_dto(
     HostedWorkspaceRef {
         workspace_id: "workspace_1".to_string(),
         version,
-        snapshot_id: snapshot_id.to_string(),
+        snapshot_id: Some(snapshot_id.to_string()),
         updated_at: "2026-07-02T12:00:00Z".to_string(),
         updated_by_device_id: Some(device_id.to_string()),
         head_signature: Some(head_signature.to_string()),
@@ -148,8 +153,6 @@ fn bootstrap_session_proof_subject_binds_bootstrap_token_hash() {
     let input = BootstrapSessionInput {
         workspace_id: WorkspaceId::new("workspace_1"),
         host: Some("mac-mini".to_string()),
-        lease_handoff_digest: Some("lease_handoff_blake3:def456".to_string()),
-        lease_id: Some(LeaseId::new("lease_remote_1")),
         root: Some("/workspace/Code".to_string()),
         runtime: Some("codex-cloud".to_string()),
         setup_receipts_digest: Some("setup_receipts_blake3:abc123".to_string()),
@@ -161,8 +164,8 @@ fn bootstrap_session_proof_subject_binds_bootstrap_token_hash() {
         [
             "workspaceId=workspace_1",
             "host=mac-mini",
-            "leaseHandoffDigest=lease_handoff_blake3:def456",
-            "leaseId=lease_remote_1",
+            "leaseHandoffDigest=",
+            "leaseId=",
             "root=/workspace/Code",
             "runtime=codex-cloud",
             "setupReceiptsDigest=setup_receipts_blake3:abc123",
@@ -200,7 +203,7 @@ fn hosted_object_intent_actions_preserve_server_expires_at() {
                 ("byteLength", number_value(128)),
                 ("expiresAt", Value::from("2026-06-23T12:00:11Z")),
                 ("intentId", Value::from("intent_upload")),
-                ("kind", Value::from("source-pack")),
+                ("kind", Value::from("blob")),
                 ("method", Value::from("PUT")),
                 ("objectKey", Value::from("object_upload")),
                 ("signedUrl", Value::from("https://storage.example/upload")),
@@ -246,8 +249,13 @@ fn hosted_object_intent_actions_preserve_server_expires_at() {
 
     let upload = client
         .create_upload_intent(
-            UploadIntentRequest::new("workspace_1", ObjectKind::SourcePack, 128)
-                .with_object_key("object_upload"),
+            UploadIntentRequest::new(
+                "workspace_1",
+                ObjectKind::Blob,
+                128,
+                Sha256Checksum::for_bytes(b"fixture"),
+            )
+            .with_object_key("object_upload"),
         )
         .expect("upload intent");
     assert_eq!(upload.signed_url.expires_at.tick, 1782216011000);
@@ -842,6 +850,87 @@ fn workspace_ref_stream_shutdown_wakes_a_blocked_owner() {
     );
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingWorkspaceRefStreamSetupStage {
+    ClientConstruction,
+    SubscriptionCreation,
+}
+
+#[test]
+fn workspace_ref_stream_shutdown_interrupts_pending_setup_before_next() {
+    for stage in [
+        PendingWorkspaceRefStreamSetupStage::ClientConstruction,
+        PendingWorkspaceRefStreamSetupStage::SubscriptionCreation,
+    ] {
+        assert_workspace_ref_stream_shutdown_interrupts_pending_setup(stage);
+    }
+}
+
+fn assert_workspace_ref_stream_shutdown_interrupts_pending_setup(
+    stage: PendingWorkspaceRefStreamSetupStage,
+) {
+    let (shutdown, cancellation) = workspace_ref_stream_shutdown_pair();
+    let (setup_polled, setup_observed) = std::sync::mpsc::sync_channel(0);
+    let (worker_finished, worker_completion) = std::sync::mpsc::sync_channel(0);
+    let worker = std::thread::spawn(move || {
+        let reached_subscription_next = futures::executor::block_on(async move {
+            let mut cancellation = Box::pin(cancellation.0);
+            let client_setup = workspace_ref_stream_setup_stage(
+                stage,
+                PendingWorkspaceRefStreamSetupStage::ClientConstruction,
+                setup_polled.clone(),
+            );
+            if until_workspace_ref_stream_shutdown(&mut cancellation, client_setup)
+                .await
+                .is_none()
+            {
+                return false;
+            }
+            let subscription_setup = workspace_ref_stream_setup_stage(
+                stage,
+                PendingWorkspaceRefStreamSetupStage::SubscriptionCreation,
+                setup_polled,
+            );
+            until_workspace_ref_stream_shutdown(&mut cancellation, subscription_setup)
+                .await
+                .is_some()
+        });
+        worker_finished
+            .send(reached_subscription_next)
+            .expect("worker completion is observed");
+    });
+
+    setup_observed
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap_or_else(|error| panic!("{stage:?} did not become pending: {error}"));
+    drop(shutdown);
+
+    assert!(
+        !worker_completion
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap_or_else(|error| panic!("{stage:?} cancellation wedged the worker: {error}")),
+        "{stage:?} must stop before subscription.next"
+    );
+    worker
+        .join()
+        .unwrap_or_else(|_| panic!("{stage:?} worker panicked"));
+}
+
+fn workspace_ref_stream_setup_stage(
+    pending_stage: PendingWorkspaceRefStreamSetupStage,
+    current_stage: PendingWorkspaceRefStreamSetupStage,
+    setup_polled: std::sync::mpsc::SyncSender<()>,
+) -> impl std::future::Future<Output = ()> {
+    if pending_stage == current_stage {
+        Either::Left(std::future::poll_fn(move |_context| {
+            setup_polled.send(()).expect("setup poll is observed");
+            std::task::Poll::Pending
+        }))
+    } else {
+        Either::Right(std::future::ready(()))
+    }
+}
+
 // Routing-only markers: they reuse the refs schemas/DTOs so the spine's contract
 // validation resolves, and exercise each ConvexRpcKind through `call`.
 struct RefsHistoryQueryRoute;
@@ -1057,7 +1146,7 @@ fn expected_ref_history_rows() -> Vec<WorkspaceRefHistoryRecord> {
         WorkspaceRefHistoryRecord {
             workspace_id: WorkspaceId::new("ws_code"),
             version: 2,
-            base_snapshot_id: SnapshotId::new("snap_after"),
+            base_snapshot_id: Some(SnapshotId::new("snap_after")),
             target_snapshot_id: SnapshotId::new("snap_later"),
             occurred_at: "2026-06-23T12:00:02Z".to_string(),
             advanced_by_device_id: Some(DeviceId::new("dev_writer")),
@@ -1067,7 +1156,7 @@ fn expected_ref_history_rows() -> Vec<WorkspaceRefHistoryRecord> {
         WorkspaceRefHistoryRecord {
             workspace_id: WorkspaceId::new("ws_code"),
             version: 1,
-            base_snapshot_id: SnapshotId::new("snap_base"),
+            base_snapshot_id: Some(SnapshotId::new("snap_base")),
             target_snapshot_id: SnapshotId::new("snap_after"),
             occurred_at: "2026-06-23T12:00:01Z".to_string(),
             advanced_by_device_id: None,
@@ -1121,7 +1210,10 @@ fn list_workspace_ref_history_falls_back_to_control_plane_token() {
 }
 
 #[test]
-fn list_workspace_ref_history_rejects_row_missing_base_snapshot() {
+fn list_workspace_ref_history_decodes_genesis_advance_without_base_snapshot() {
+    // The genesis advance (version 1) has no prior head, so its history row omits
+    // baseSnapshotId; the domain boundary decodes it as `None` rather than
+    // rejecting it or fabricating a base.
     let client =
         HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "cp-token")
             .expect("client")
@@ -1134,10 +1226,12 @@ fn list_workspace_ref_history_rejects_row_missing_base_snapshot() {
                 ]))]))
             });
 
-    let error = client
+    let records = client
         .list_workspace_ref_history(&WorkspaceId::new("ws_code"), 50)
-        .expect_err("row missing baseSnapshotId rejects at the domain boundary");
-    assert!(error.to_string().contains("baseSnapshotId"));
+        .expect("genesis advance row decodes");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].base_snapshot_id, None);
+    assert_eq!(records[0].target_snapshot_id, SnapshotId::new("snap_after"));
 }
 
 #[test]

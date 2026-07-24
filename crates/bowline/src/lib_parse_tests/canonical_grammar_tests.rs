@@ -3,9 +3,6 @@ use super::{ParseError, parse_args};
 #[test]
 fn noncanonical_command_paths_are_rejected() {
     for args in [
-        &["--version"][..],
-        &["--help"][..],
-        &["-h"][..],
         &["diff"][..],
         &["review", "work-view"][..],
         &["accept", "work-view"][..],
@@ -26,6 +23,23 @@ fn noncanonical_command_paths_are_rejected() {
         assert!(
             invocation.command.is_err(),
             "noncanonical command path unexpectedly resolved: {args:?}"
+        );
+    }
+}
+
+#[test]
+fn conventional_discovery_aliases_are_accepted() {
+    for args in [
+        &["--version"][..],
+        &["-V"][..],
+        &["--help"][..],
+        &["-h"][..],
+        &["status", "--help"][..],
+    ] {
+        let invocation = parse_args(args.iter().copied());
+        assert!(
+            invocation.command.is_ok(),
+            "conventional discovery alias did not resolve: {args:?}"
         );
     }
 }

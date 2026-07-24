@@ -1,57 +1,54 @@
-use super::sync::{RootEntryKind, drain_policy, invalidate_policy_cache_for_path};
+use super::sync::{drain_policy, invalidate_policy_cache_for_path};
 use super::*;
-use bowline_core::git_paths::is_git_derivable_volatile_path;
+use bowline_core::git_paths::{is_git_derivable_volatile_path, is_git_directory_path};
+use bowline_local::policy::{
+    is_private_workspace_state_path, is_work_view_namespace_path, policy_should_recurse,
+};
+use notify::event::{AccessKind, AccessMode};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum WatcherRuntimeState {
-    Ready,
-    Rearming,
-    Limited(String),
-}
-
+/// A watcher-kernel signal. The manifest engine treats any lost-fidelity signal
+/// (overflow, adapter loss) as `FullScanRequired`, so signals carry no epoch or
+/// generation token.
 #[derive(Debug)]
 pub(super) enum WatcherSignal {
-    Changed(Event),
+    Changed { event: Event },
     Recoverable,
-    Limited(String),
+    Limited { reason: String },
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(super) struct WatcherDrain {
-    pub(super) changed: bool,
-    pub(super) sync_now: bool,
+/// The workspace filesystem watcher kernel: a recursive notify watch on the
+/// workspace root whose callback read-filters events into [`WatcherSignal`]s.
+/// Dropping it tears down the native watch.
+#[derive(Debug)]
+pub(in crate::daemon) struct SyncWatcher {
+    _watcher: RecommendedWatcher,
 }
 
-#[derive(Debug, Default)]
-pub(super) struct WatcherRecovery {
-    pub(super) overflow_total: u64,
-    pub(super) consecutive_overflows: u32,
-    pub(super) last_overflow_at: Option<Instant>,
-    pub(super) rearm_at: Option<Instant>,
-    pub(super) rearm_failure_count: u32,
-    pub(super) full_reconcile_required: bool,
-}
-
-pub(super) fn watcher_rearm_delay(consecutive_overflows: u32) -> Duration {
-    let exponent = consecutive_overflows.saturating_sub(1).min(5);
-    let multiplier = 1_u64 << exponent;
-    Duration::from_secs(
-        WATCHER_REARM_INITIAL
-            .as_secs()
-            .saturating_mul(multiplier)
-            .min(WATCHER_REARM_MAX.as_secs()),
-    )
-}
-
-pub(super) fn start_sync_watcher(
+pub(in crate::daemon) fn start_sync_watcher(
     root: &Path,
-) -> Result<(RecommendedWatcher, Receiver<WatcherSignal>), notify::Error> {
+) -> Result<(SyncWatcher, Receiver<WatcherSignal>), notify::Error> {
     let (change_tx, change_rx) = mpsc::sync_channel(WATCHER_DRAIN_BUDGET);
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        send_watcher_signal(&change_tx, event);
-    })?;
-    watcher.watch(root, RecursiveMode::Recursive)?;
-    Ok((watcher, change_rx))
+    let callback_tx = change_tx.clone();
+    let reported_root = root.to_path_buf();
+    let watch_root = fs::canonicalize(root).unwrap_or_else(|_| reported_root.clone());
+    let callback_watch_root = watch_root.clone();
+    let mut watcher =
+        notify::recommended_watcher(move |mut event: notify::Result<notify::Event>| {
+            if let Ok(event) = &mut event {
+                remap_watcher_event_root(event, &callback_watch_root, &reported_root);
+            }
+            send_watcher_signal(&callback_tx, event);
+        })?;
+    watcher.watch(&watch_root, RecursiveMode::Recursive)?;
+    Ok((SyncWatcher { _watcher: watcher }, change_rx))
+}
+
+fn remap_watcher_event_root(event: &mut Event, watched_root: &Path, reported_root: &Path) {
+    for path in &mut event.paths {
+        if let Ok(relative) = path.strip_prefix(watched_root) {
+            *path = reported_root.join(relative);
+        }
+    }
 }
 
 pub(super) fn send_watcher_signal(
@@ -59,9 +56,13 @@ pub(super) fn send_watcher_signal(
     event: notify::Result<notify::Event>,
 ) {
     let signal = match event {
-        Ok(event) => WatcherSignal::Changed(event),
+        Ok(event) if event.need_rescan() => WatcherSignal::Changed { event },
+        Ok(event) if watcher_operation(&event.kind).is_none() => return,
+        Ok(event) => WatcherSignal::Changed { event },
         Err(error) if watcher_error_needs_rescan(&error) => WatcherSignal::Recoverable,
-        Err(error) => WatcherSignal::Limited(error.to_string()),
+        Err(error) => WatcherSignal::Limited {
+            reason: error.to_string(),
+        },
     };
     match change_tx.try_send(signal) {
         Ok(()) => {}
@@ -88,24 +89,36 @@ fn watcher_error_needs_rescan(error: &notify::Error) -> bool {
     }
 }
 
-pub(super) fn watcher_operation(kind: &EventKind) -> &'static str {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatcherOperation {
+    Create,
+    Delete,
+    Rename,
+    Metadata,
+    Modify,
+}
+
+fn watcher_operation(kind: &EventKind) -> Option<WatcherOperation> {
     match kind {
-        EventKind::Create(_) => "create",
+        EventKind::Access(
+            AccessKind::Open(_) | AccessKind::Read | AccessKind::Close(AccessMode::Read),
+        ) => None,
+        EventKind::Create(_) => Some(WatcherOperation::Create),
         EventKind::Remove(
             RemoveKind::Any | RemoveKind::File | RemoveKind::Folder | RemoveKind::Other,
-        ) => "delete",
-        EventKind::Modify(ModifyKind::Name(_)) => "rename",
-        EventKind::Modify(ModifyKind::Metadata(_)) => "chmod",
-        _ => "modify",
+        ) => Some(WatcherOperation::Delete),
+        EventKind::Modify(ModifyKind::Name(_)) => Some(WatcherOperation::Rename),
+        EventKind::Modify(ModifyKind::Metadata(_)) => Some(WatcherOperation::Metadata),
+        _ => Some(WatcherOperation::Modify),
     }
 }
 
-pub(super) fn watcher_event_paths<'a>(
+fn watcher_event_paths<'a>(
     root: &Path,
-    operation: &str,
+    operation: WatcherOperation,
     event: &'a Event,
 ) -> Vec<(usize, &'a Path, Option<String>)> {
-    if operation == "rename" && event.paths.len() >= 2 {
+    if operation == WatcherOperation::Rename && event.paths.len() >= 2 {
         return vec![(
             1,
             event.paths[1].as_path(),
@@ -133,6 +146,133 @@ pub(super) fn watcher_relative_path(root: &Path, path: &Path) -> Option<String> 
     Some(normalized)
 }
 
+/// Translate one watcher signal into an engine event (Plan 111 Step 1b),
+/// preserving the watcher kernel's read/private/git filtering. A recordable
+/// change yields `Paths`; a lost-fidelity signal (overflow, adapter loss) yields
+/// `FullScanRequired`, which the engine recovers with one cheap stat walk.
+pub(in crate::daemon) fn watcher_signal_engine_event(
+    root: &Path,
+    signal: &WatcherSignal,
+    policy_cache: &mut HashMap<String, UserPolicy>,
+) -> Option<bowline_local::sync::manifest_engine::EngineEvent> {
+    use bowline_local::sync::manifest_engine::{EngineEvent, FullScanReason};
+    match signal {
+        WatcherSignal::Changed { event } if event.need_rescan() => Some(
+            EngineEvent::FullScanRequired(FullScanReason::WatcherOverflow),
+        ),
+        WatcherSignal::Changed { event } => {
+            let recursive_roots = watcher_event_recursive_roots(root, event, policy_cache);
+            if !recursive_roots.is_empty() {
+                return Some(EngineEvent::RecursivePaths(recursive_roots));
+            }
+            let paths = watcher_event_engine_paths(root, event, policy_cache);
+            (!paths.is_empty()).then_some(EngineEvent::Paths(paths))
+        }
+        WatcherSignal::Recoverable => Some(EngineEvent::FullScanRequired(
+            FullScanReason::WatcherOverflow,
+        )),
+        WatcherSignal::Limited { reason } => {
+            eprintln!("bowline-daemon watcher adapter is unavailable: {reason}");
+            Some(EngineEvent::FullScanRequired(
+                FullScanReason::WatcherDisconnected,
+            ))
+        }
+    }
+}
+
+fn watcher_event_recursive_roots(
+    root: &Path,
+    event: &Event,
+    policy_cache: &mut HashMap<String, UserPolicy>,
+) -> std::collections::BTreeSet<bowline_local::sync::manifest_engine::WorkspacePath> {
+    use bowline_local::sync::manifest_engine::WorkspacePath;
+    let mut roots = std::collections::BTreeSet::new();
+    let Some(operation) = watcher_operation(&event.kind) else {
+        return roots;
+    };
+    let recursive_without_metadata = operation == WatcherOperation::Delete
+        || matches!(
+            event.kind,
+            EventKind::Modify(ModifyKind::Name(notify::event::RenameMode::From))
+        );
+    for (_, path, source_path) in watcher_event_paths(root, operation, event) {
+        let destination_is_directory =
+            fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir());
+        if !recursive_without_metadata && !destination_is_directory {
+            continue;
+        }
+        if let Some(source) = source_path
+            && watcher_recursive_root(root, &source, policy_cache)
+        {
+            roots.insert(WorkspacePath::new(source));
+        }
+        if let Some(relative) = watcher_relative_path(root, path)
+            && watcher_recursive_root(root, &relative, policy_cache)
+        {
+            roots.insert(WorkspacePath::new(relative));
+        }
+    }
+    roots
+}
+
+fn watcher_recursive_root(
+    root: &Path,
+    relative_path: &str,
+    policy_cache: &mut HashMap<String, UserPolicy>,
+) -> bool {
+    if relative_path.is_empty()
+        || is_private_workspace_state_path(relative_path)
+        || is_work_view_namespace_path(relative_path)
+    {
+        return false;
+    }
+    if is_git_derivable_volatile_path(relative_path) {
+        return is_git_directory_path(relative_path);
+    }
+    invalidate_policy_cache_for_path(relative_path, policy_cache);
+    let absolute = root.join(relative_path);
+    let metadata = fs::symlink_metadata(&absolute).ok();
+    let is_dir = metadata.as_ref().is_some_and(|metadata| metadata.is_dir());
+    let byte_len = metadata
+        .as_ref()
+        .filter(|metadata| !metadata.is_dir())
+        .map(|metadata| metadata.len());
+    let policy = drain_policy(root, relative_path, policy_cache);
+    let decision = classify_path(
+        &PathFacts {
+            relative_path: relative_path.to_string(),
+            is_dir,
+            byte_len,
+        },
+        policy,
+    );
+    policy_should_recurse(&decision, policy, relative_path)
+}
+
+/// The recordable workspace paths a watcher event touches, read-filtered by the
+/// same policy classification the old journal path used. A rename dirties both
+/// its source (so the stale entry drops) and its recordable destination.
+fn watcher_event_engine_paths(
+    root: &Path,
+    event: &Event,
+    policy_cache: &mut HashMap<String, UserPolicy>,
+) -> std::collections::BTreeSet<bowline_local::sync::manifest_engine::WorkspacePath> {
+    use bowline_local::sync::manifest_engine::WorkspacePath;
+    let mut paths = std::collections::BTreeSet::new();
+    let Some(operation) = watcher_operation(&event.kind) else {
+        return paths;
+    };
+    for (_, path, source_path) in watcher_event_paths(root, operation, event) {
+        if let Some(source) = rename_source_dirty_path(source_path.as_deref()) {
+            paths.insert(WorkspacePath::new(source.to_string()));
+        }
+        if let Some(destination) = watcher_destination(root, path, policy_cache) {
+            paths.insert(WorkspacePath::new(destination.relative_path));
+        }
+    }
+    paths
+}
+
 pub(super) fn watcher_should_record(
     classification: PathClassification,
     mode: MaterializationMode,
@@ -146,13 +286,6 @@ pub(super) fn watcher_should_record(
     )
 }
 
-pub(super) fn is_private_state_path(path: &str) -> bool {
-    path == ".bowline"
-        || path.starts_with(".bowline/")
-        || path == ".bowline-conflicts"
-        || path.starts_with(".bowline-conflicts/")
-}
-
 // A rename's source is where a tracked file used to live. It must be rescanned
 // when the file leaves — independent of whether the rename *destination* is
 // recordable — or a scoped reconcile never observes the removal and the stale
@@ -161,316 +294,233 @@ pub(super) fn is_private_state_path(path: &str) -> bool {
 // synced location (non-rename event, empty, private state, or git-volatile).
 pub(super) fn rename_source_dirty_path(source_path: Option<&str>) -> Option<&str> {
     let source = source_path?;
-    if source.is_empty() || is_private_state_path(source) || is_git_derivable_volatile_path(source)
+    if source.is_empty()
+        || is_private_workspace_state_path(source)
+        || is_work_view_namespace_path(source)
+        || is_git_derivable_volatile_path(source)
     {
         return None;
     }
     Some(source)
 }
 
-pub(super) fn stable_token(value: &str) -> String {
-    let token = value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    token.trim_matches('_').chars().take(80).collect()
+struct WatcherDestination {
+    relative_path: String,
 }
 
-impl ContinuousSyncRuntime {
-    pub(super) fn drain_changes(&mut self) -> WatcherDrain {
-        if self.change_rx.is_none() {
-            return WatcherDrain::default();
-        }
-        let mut drain = WatcherDrain::default();
-        // The policy cache is fresh per drain batch so .bowlineignore edits take
-        // effect on the next drain without invalidation machinery.
-        let mut policy_cache = HashMap::new();
-        let mut consumed_count = 0;
-        let mut rescan_required = false;
-        for _ in 0..WATCHER_DRAIN_BUDGET {
-            let Ok(signal) = self
-                .change_rx
-                .as_ref()
-                .expect("receiver checked before drain")
-                .try_recv()
-            else {
-                break;
-            };
-            consumed_count += 1;
-            match signal {
-                WatcherSignal::Changed(event) => {
-                    if event.need_rescan() {
-                        rescan_required = true;
-                        break;
-                    }
-                    match self.record_watcher_event(&event, &mut policy_cache) {
-                        Ok(true) => {
-                            drain.changed = true;
-                        }
-                        Ok(false) => {}
-                        Err(error) => {
-                            self.watcher_state = WatcherRuntimeState::Limited(error.to_string());
-                            self.pending_dirty
-                                .force_full(FullScanReason::WatcherUnavailable);
-                            drain.sync_now = true;
-                        }
-                    }
-                }
-                WatcherSignal::Recoverable => {
-                    self.pending_dirty
-                        .force_full(FullScanReason::WatcherOverflow);
-                    rescan_required = true;
-                    break;
-                }
-                WatcherSignal::Limited(reason) => {
-                    self.watcher_state = WatcherRuntimeState::Limited(reason);
-                    self.pending_dirty
-                        .force_full(FullScanReason::WatcherUnavailable);
-                    drain.changed = true;
-                    drain.sync_now = true;
-                }
-            }
-        }
-        let saturated = consumed_count == WATCHER_DRAIN_BUDGET
-            && self.change_rx.as_ref().is_some_and(|change_rx| {
-                drain_and_detect_sync_relevant_backlog(&self.options.args.root, change_rx)
-            });
-        if rescan_required || saturated {
-            self.pending_dirty
-                .force_full(FullScanReason::WatcherOverflow);
-            self.begin_watcher_overflow_recovery(Instant::now());
-            drain.changed = true;
-            drain.sync_now = true;
-        }
-        drain
-    }
-
-    pub(super) fn begin_watcher_overflow_recovery(&mut self, now: Instant) {
-        // Dropping the watcher stops the OS watch; dropping the receiver
-        // discards the queued backlog. Safe: every reconcile tick rescans the
-        // whole root, so dropped events cost latency, never correctness.
-        self.watcher = None;
-        self.change_rx = None;
-        let recovery = &mut self.watcher_recovery;
-        let storm_continues = recovery
-            .last_overflow_at
-            .is_some_and(|previous| now.duration_since(previous) <= WATCHER_OVERFLOW_RESET_WINDOW);
-        recovery.consecutive_overflows = if storm_continues {
-            recovery.consecutive_overflows.saturating_add(1)
-        } else {
-            1
-        };
-        recovery.overflow_total = recovery.overflow_total.saturating_add(1);
-        recovery.last_overflow_at = Some(now);
-        recovery.rearm_at = Some(now + watcher_rearm_delay(recovery.consecutive_overflows));
-        recovery.full_reconcile_required = true;
-        self.watcher_state = WatcherRuntimeState::Rearming;
-    }
-
-    pub(super) fn maybe_rearm_watcher(&mut self, now: Instant) -> bool {
-        let Some(rearm_at) = self.watcher_recovery.rearm_at else {
-            return false;
-        };
-        if now < rearm_at {
-            return false;
-        }
-        match start_sync_watcher(&self.options.args.root) {
-            Ok((watcher, change_rx)) => {
-                self.watcher = Some(watcher);
-                self.change_rx = Some(change_rx);
-                self.watcher_recovery.rearm_at = None;
-                self.watcher_recovery.rearm_failure_count = 0;
-                // consecutive_overflows is reset only by the quiet window, not
-                // by re-arm, so a storm cannot restart at the initial delay.
-                self.watcher_state = WatcherRuntimeState::Ready;
-                true
-            }
-            Err(error) => {
-                let failures = self.watcher_recovery.rearm_failure_count.saturating_add(1);
-                self.watcher_recovery.rearm_failure_count = failures;
-                if failures >= WATCHER_REARM_FAILURE_LIMIT {
-                    self.watcher_recovery.rearm_at = None;
-                    self.watcher_state = WatcherRuntimeState::Limited(format!(
-                        "watcher re-arm failed {failures} times: {error}"
-                    ));
-                    true
-                } else {
-                    self.watcher_recovery.rearm_at = Some(now + watcher_rearm_delay(failures));
-                    false
-                }
-            }
-        }
-    }
-
-    pub(super) fn record_watcher_event(
-        &mut self,
-        event: &Event,
-        policy_cache: &mut HashMap<String, UserPolicy>,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
-        let operation = watcher_operation(&event.kind);
-        let workspace_id = self.options.args.workspace_id();
-        let device_id = DeviceId::new(self.options.args.device_id.clone());
-        let now = current_timestamp();
-        let causation_id = format!("watch_{}_{}", self.tick_count, stable_token(&now));
-
-        let paths = watcher_event_paths(&self.options.args.root, operation, event);
-        let mut recorded = false;
-        let mut dirty_paths: Vec<(String, RootEntryKind)> = Vec::new();
-        self.store.with_store(|store| {
-            for (index, path, source_path) in paths {
-                // Dirty the rename source before the destination filters below:
-                // moving a tracked file to a filtered location (git-volatile,
-                // out-of-root, non-syncing) still removes it from the source,
-                // which a scoped reconcile must rescan. The source path is gone,
-                // so it carries no metadata: route it as `Unknown`, never by
-                // assuming the destination's kind.
-                if let Some(source) = rename_source_dirty_path(source_path.as_deref()) {
-                    dirty_paths.push((source.to_string(), RootEntryKind::Unknown));
-                    recorded = true;
-                }
-                let Some(relative_path) = watcher_relative_path(&self.options.args.root, path)
-                else {
-                    continue;
-                };
-                if relative_path.is_empty() || is_private_state_path(&relative_path) {
-                    continue;
-                }
-                if is_git_derivable_volatile_path(&relative_path) {
-                    continue;
-                }
-                invalidate_policy_cache_for_path(&relative_path, policy_cache);
-                let metadata = fs::symlink_metadata(path).ok();
-                let is_dir = metadata.as_ref().is_some_and(|metadata| metadata.is_dir());
-                // Tri-state entry kind for root routing: present-and-dir vs
-                // present-and-file-like (regular file OR symlink) vs vanished
-                // (deletion / rename-away / stat failure).
-                let entry_kind = match metadata.as_ref() {
-                    Some(metadata) if metadata.is_dir() => RootEntryKind::Directory,
-                    Some(_) => RootEntryKind::NonDirectory,
-                    None => RootEntryKind::Unknown,
-                };
-                let byte_len = metadata
-                    .as_ref()
-                    .filter(|metadata| !metadata.is_dir())
-                    .map(|metadata| metadata.len());
-                let policy = drain_policy(&self.options.args.root, &relative_path, policy_cache);
-                let decision = classify_path(
-                    &PathFacts {
-                        relative_path: relative_path.clone(),
-                        is_dir,
-                        byte_len,
-                    },
-                    policy,
-                );
-                if !watcher_should_record(decision.classification, decision.mode) {
-                    continue;
-                }
-                dirty_paths.push((relative_path.clone(), entry_kind));
-                store.append_local_write_log(&LocalWriteLogRecord {
-                    id: format!(
-                        "watch_{}_{}_{}",
-                        stable_token(&relative_path),
-                        stable_token(operation),
-                        stable_token(&format!("{now}-{index}")),
-                    ),
-                    workspace_id: workspace_id.clone(),
-                    device_id: device_id.clone(),
-                    project_id: None,
-                    path: relative_path,
-                    source_path,
-                    operation: operation.to_string(),
-                    staged_content_id: None,
-                    policy_classification: decision.classification,
-                    causation_id: causation_id.clone(),
-                    settled_at: now.clone(),
-                    created_at: now.clone(),
-                })?;
-                recorded = true;
-            }
-            Ok(())
-        })?;
-        for (path, kind) in dirty_paths {
-            self.pending_dirty.insert_path_parent(&path, kind);
-        }
-        Ok(recorded)
-    }
-
-    pub(super) fn watcher_state_json(&self) -> WatcherRuntimeStateJson<'_> {
-        WatcherRuntimeStateJson::from_state(&self.watcher_state, &self.watcher_recovery)
-    }
-
-    pub(super) fn watcher_component_state(&self) -> &'static str {
-        match self.watcher_state {
-            WatcherRuntimeState::Ready => "ready",
-            WatcherRuntimeState::Rearming | WatcherRuntimeState::Limited(_) => "degraded",
-        }
-    }
-}
-
-fn drain_and_detect_sync_relevant_backlog(
-    root: &Path,
-    change_rx: &Receiver<WatcherSignal>,
-) -> bool {
-    // This destructively drains the saturated queue. The sole caller converts a
-    // positive result into WatcherOverflow, whose full rescan re-observes every
-    // path represented by the discarded signals.
-    while let Ok(signal) = change_rx.try_recv() {
-        if watcher_signal_is_sync_relevant(root, &signal) {
-            return true;
-        }
-    }
-    false
-}
-
-// Whether one watcher path tuple warrants a sync. Mirrors what
-// `record_watcher_event` would act on: a recordable destination OR a rename
-// whose source is a tracked location. The saturated-drain backlog check must
-// consider the source too, or a rename of a tracked file to a filtered
-// destination is discarded under event storms and its deletion is lost.
-fn watcher_path_tuple_is_sync_relevant(
+fn watcher_destination(
     root: &Path,
     path: &Path,
-    source_path: Option<&str>,
-) -> bool {
-    let destination_relevant = watcher_relative_path(root, path).is_some_and(|relative_path| {
-        !relative_path.is_empty()
-            && !is_private_state_path(&relative_path)
-            && !is_git_derivable_volatile_path(&relative_path)
-    });
-    destination_relevant || rename_source_dirty_path(source_path).is_some()
-}
-
-fn watcher_signal_is_sync_relevant(root: &Path, signal: &WatcherSignal) -> bool {
-    match signal {
-        WatcherSignal::Changed(event) => {
-            event.need_rescan()
-                || watcher_event_paths(root, watcher_operation(&event.kind), event)
-                    .into_iter()
-                    .any(|(_, path, source_path)| {
-                        watcher_path_tuple_is_sync_relevant(root, path, source_path.as_deref())
-                    })
-        }
-        WatcherSignal::Recoverable | WatcherSignal::Limited(_) => true,
+    policy_cache: &mut HashMap<String, UserPolicy>,
+) -> Option<WatcherDestination> {
+    let relative_path = watcher_relative_path(root, path)?;
+    if relative_path.is_empty()
+        || is_private_workspace_state_path(&relative_path)
+        || is_work_view_namespace_path(&relative_path)
+        || is_git_derivable_volatile_path(&relative_path)
+    {
+        return None;
     }
+    invalidate_policy_cache_for_path(&relative_path, policy_cache);
+    let metadata = fs::symlink_metadata(path).ok();
+    let is_dir = metadata.as_ref().is_some_and(|metadata| metadata.is_dir());
+    let byte_len = metadata
+        .as_ref()
+        .filter(|metadata| !metadata.is_dir())
+        .map(|metadata| metadata.len());
+    let policy = drain_policy(root, &relative_path, policy_cache);
+    let decision = classify_path(
+        &PathFacts {
+            relative_path: relative_path.clone(),
+            is_dir,
+            byte_len,
+        },
+        policy,
+    );
+    watcher_should_record(decision.classification, decision.mode)
+        .then_some(WatcherDestination { relative_path })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{rename_source_dirty_path, watcher_path_tuple_is_sync_relevant};
+    use super::{
+        WatcherSignal, rename_source_dirty_path, watcher_destination, watcher_operation,
+        watcher_recursive_root,
+    };
     use bowline_core::git_paths::is_git_derivable_volatile_path;
+    use notify::{
+        Event,
+        event::{AccessKind, AccessMode, EventKind, Flag},
+    };
     use std::path::Path;
+    use std::sync::mpsc;
+
+    #[test]
+    fn rename_signal_forwards_source_and_destination_paths() {
+        use bowline_local::sync::manifest_engine::{EngineEvent, WorkspacePath};
+        let temp = std::env::temp_dir().join(format!(
+            "bowline-watcher-normalize-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let root = temp.join("Code");
+        std::fs::create_dir_all(root.join("src")).expect("workspace root");
+        let source = root.join("src/old.rs");
+        let destination = root.join("src/new.rs");
+        std::fs::write(&destination, "fn renamed() {}\n").expect("destination");
+        let event = Event::new(EventKind::Modify(notify::event::ModifyKind::Name(
+            notify::event::RenameMode::Both,
+        )))
+        .add_path(source)
+        .add_path(destination);
+        let signal = super::WatcherSignal::Changed { event };
+        let engine_event = super::watcher_signal_engine_event(
+            &root,
+            &signal,
+            &mut std::collections::HashMap::new(),
+        )
+        .expect("rename yields an engine event");
+        let EngineEvent::Paths(paths) = engine_event else {
+            panic!("expected Paths event");
+        };
+        assert!(paths.contains(&WorkspacePath::new("src/old.rs")));
+        assert!(paths.contains(&WorkspacePath::new("src/new.rs")));
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn created_directory_signal_requests_recursive_manifest_discovery() {
+        use bowline_local::sync::manifest_engine::{EngineEvent, WorkspacePath};
+        let temp = std::env::temp_dir().join(format!(
+            "bowline-watcher-recursive-create-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let root = temp.join("Code");
+        let project = root.join("repo");
+        std::fs::create_dir_all(project.join(".git/objects/ab")).expect("git tree");
+        std::fs::write(project.join(".git/objects/ab/cdef"), b"opaque").expect("git object");
+        let event =
+            Event::new(EventKind::Create(notify::event::CreateKind::Folder)).add_path(project);
+        let signal = super::WatcherSignal::Changed { event };
+
+        let engine_event = super::watcher_signal_engine_event(
+            &root,
+            &signal,
+            &mut std::collections::HashMap::new(),
+        )
+        .expect("directory creation yields an engine event");
+
+        let EngineEvent::RecursivePaths(roots) = engine_event else {
+            panic!("expected RecursivePaths event");
+        };
+        assert_eq!(roots, [WorkspacePath::new("repo")].into_iter().collect());
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn excluded_directory_with_included_descendants_requests_recursive_discovery() {
+        use bowline_local::sync::manifest_engine::{EngineEvent, WorkspacePath};
+        let temp = std::env::temp_dir().join(format!(
+            "bowline-watcher-recursive-include-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let root = temp.join("Code");
+        let vendor = root.join("vendor");
+        std::fs::create_dir_all(vendor.join("kept")).expect("included tree");
+        std::fs::write(root.join(".bowlineignore"), b"vendor/**\n!vendor/kept/**\n")
+            .expect("policy");
+        std::fs::write(vendor.join("kept/source.rs"), b"pub fn kept() {}\n")
+            .expect("included child");
+        let event =
+            Event::new(EventKind::Create(notify::event::CreateKind::Folder)).add_path(vendor);
+        let signal = super::WatcherSignal::Changed { event };
+
+        let engine_event = super::watcher_signal_engine_event(
+            &root,
+            &signal,
+            &mut std::collections::HashMap::new(),
+        )
+        .expect("included descendants keep the traversal root");
+
+        let EngineEvent::RecursivePaths(roots) = engine_event else {
+            panic!("expected RecursivePaths event");
+        };
+        assert_eq!(roots, [WorkspacePath::new("vendor")].into_iter().collect());
+        let _ = std::fs::remove_dir_all(temp);
+    }
 
     #[test]
     fn watcher_git_churn_predicate_skips_derivable_state_only() {
         assert!(!is_git_derivable_volatile_path("repo/.git/index"));
         assert!(is_git_derivable_volatile_path("repo/.git/logs"));
         assert!(!is_git_derivable_volatile_path("repo/.git/HEAD"));
+    }
+
+    #[test]
+    fn read_access_events_do_not_wake_sync_or_saturate_the_backlog() {
+        let root = Path::new("/ws");
+        for kind in [
+            AccessKind::Open(AccessMode::Read),
+            AccessKind::Read,
+            AccessKind::Close(AccessMode::Read),
+        ] {
+            let event = Event::new(EventKind::Access(kind)).add_path(root.join(".env"));
+            assert_eq!(watcher_operation(&event.kind), None);
+        }
+        assert_eq!(
+            watcher_operation(&EventKind::Access(AccessKind::Close(AccessMode::Write))),
+            Some(super::WatcherOperation::Modify)
+        );
+    }
+
+    #[test]
+    fn read_access_events_consume_no_watcher_channel_capacity() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        for _ in 0..10 {
+            super::send_watcher_signal(
+                &sender,
+                Ok(
+                    Event::new(EventKind::Access(AccessKind::Close(AccessMode::Read)))
+                        .add_path("/ws/.env".into()),
+                ),
+            );
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        super::send_watcher_signal(
+            &sender,
+            Ok(
+                Event::new(EventKind::Access(AccessKind::Close(AccessMode::Write)))
+                    .add_path("/ws/.env".into()),
+            ),
+        );
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(WatcherSignal::Changed { .. })
+        ));
+    }
+
+    #[test]
+    fn rescan_flag_takes_precedence_over_read_filtering() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        super::send_watcher_signal(
+            &sender,
+            Ok(
+                Event::new(EventKind::Access(AccessKind::Close(AccessMode::Read)))
+                    .add_path("/ws/.env".into())
+                    .set_flag(Flag::Rescan),
+            ),
+        );
+
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(WatcherSignal::Changed { event, .. }) if event.need_rescan()
+        ));
     }
 
     #[test]
@@ -481,39 +531,55 @@ mod tests {
             rename_source_dirty_path(Some("src/app.rs")),
             Some("src/app.rs")
         );
-        // Non-rename events carry no source; nothing extra to dirty.
         assert_eq!(rename_source_dirty_path(None), None);
         // Sources that were never synced need no rescan.
         assert_eq!(rename_source_dirty_path(Some("")), None);
         assert_eq!(rename_source_dirty_path(Some(".bowline/state.json")), None);
         assert_eq!(
-            rename_source_dirty_path(Some("repo/.git/index")),
-            Some("repo/.git/index")
+            rename_source_dirty_path(Some(".work/app/feature/src/auth.rs")),
+            None
         );
+        assert_eq!(
+            rename_source_dirty_path(Some("repo/.work/feature/src/auth.rs")),
+            None
+        );
+        assert_eq!(
+            rename_source_dirty_path(Some("src/.bowline-materialize-app_rs-abcdef123456.tmp")),
+            None
+        );
+        for ordinary_path in [
+            ".env",
+            ".git/HEAD",
+            ".bowline-conflicts/conflict/local/app.env",
+            "repo/.git/index",
+        ] {
+            assert_eq!(
+                rename_source_dirty_path(Some(ordinary_path)),
+                Some(ordinary_path)
+            );
+        }
     }
 
     #[test]
-    fn saturated_backlog_treats_rename_source_as_relevant() {
-        let root = Path::new("/ws");
-        // Destination outside the workspace, but the source is a tracked file:
-        // the backlog check must keep it sync-relevant so a saturated drain
-        // forces a rescan instead of dropping the source deletion.
-        assert!(watcher_path_tuple_is_sync_relevant(
-            root,
-            Path::new("/elsewhere/app.rs"),
-            Some("src/app.rs"),
+    fn work_view_git_state_never_enters_watcher_reconciliation() {
+        let temp = std::env::temp_dir().join(format!(
+            "bowline-watcher-local-work-view-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
         ));
-        // Neither destination nor source is a synced location.
-        assert!(watcher_path_tuple_is_sync_relevant(
-            root,
-            Path::new("/elsewhere/app.rs"),
-            Some("repo/.git/index"),
+        let root = temp.join("Code");
+        let work_git = root.join(".work/app/feature/.git");
+        std::fs::create_dir_all(&work_git).expect("create local work-view Git state");
+        std::fs::write(work_git.join("HEAD"), "ref: refs/heads/main\n")
+            .expect("write local work-view Git head");
+        let mut policy_cache = std::collections::HashMap::new();
+
+        assert!(!watcher_recursive_root(
+            &root,
+            ".work/app/feature/.git",
+            &mut policy_cache,
         ));
-        // Non-rename event with a recordable destination stays relevant.
-        assert!(watcher_path_tuple_is_sync_relevant(
-            root,
-            Path::new("/ws/src/app.rs"),
-            None,
-        ));
+        assert!(watcher_destination(&root, &work_git.join("HEAD"), &mut policy_cache).is_none());
+        let _ = std::fs::remove_dir_all(temp);
     }
 }

@@ -1,25 +1,6 @@
 {
   "CommandName.unknown": "unknown.CommandName",
   "DaemonCancelOperationParams.missing.operationId": {},
-  "DaemonCancelOperationResult.missing.operation": {
-    "outcome": "requested"
-  },
-  "DaemonCancelOperationResult.missing.outcome": {
-    "operation": {
-      "attemptCount": 0,
-      "claimGeneration": 0,
-      "createdAt": "2026-07-12T00:00:00Z",
-      "kind": "daemon-reconcile",
-      "operationId": "sync-op-1",
-      "ownership": "unclaimed",
-      "resource": {
-        "kind": "workspace-sync",
-        "workspaceId": "ws_fixture"
-      },
-      "state": "queued",
-      "updatedAt": "2026-07-12T00:00:00Z"
-    }
-  },
   "DaemonClientHello.missing.capabilities": {
     "clientKind": "cli",
     "clientVersion": "0.1.1",
@@ -99,195 +80,6 @@
   },
   "DaemonDeviceActionParams.missing.requestId": {
     "idempotencyKey": "action-1"
-  },
-  "DaemonOperationResult.missing.attemptCount": {
-    "claimGeneration": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "kind": "daemon-reconcile",
-    "operationId": "sync-op-1",
-    "ownership": "unclaimed",
-    "resource": {
-      "kind": "workspace-sync",
-      "workspaceId": "ws_fixture"
-    },
-    "state": "queued",
-    "updatedAt": "2026-07-12T00:00:00Z"
-  },
-  "DaemonOperationResult.missing.claimGeneration": {
-    "attemptCount": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "kind": "daemon-reconcile",
-    "operationId": "sync-op-1",
-    "ownership": "unclaimed",
-    "resource": {
-      "kind": "workspace-sync",
-      "workspaceId": "ws_fixture"
-    },
-    "state": "queued",
-    "updatedAt": "2026-07-12T00:00:00Z"
-  },
-  "DaemonOperationResult.missing.createdAt": {
-    "attemptCount": 0,
-    "claimGeneration": 0,
-    "kind": "daemon-reconcile",
-    "operationId": "sync-op-1",
-    "ownership": "unclaimed",
-    "resource": {
-      "kind": "workspace-sync",
-      "workspaceId": "ws_fixture"
-    },
-    "state": "queued",
-    "updatedAt": "2026-07-12T00:00:00Z"
-  },
-  "DaemonOperationResult.missing.kind": {
-    "attemptCount": 0,
-    "claimGeneration": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "operationId": "sync-op-1",
-    "ownership": "unclaimed",
-    "resource": {
-      "kind": "workspace-sync",
-      "workspaceId": "ws_fixture"
-    },
-    "state": "queued",
-    "updatedAt": "2026-07-12T00:00:00Z"
-  },
-  "DaemonOperationResult.missing.operationId": {
-    "attemptCount": 0,
-    "claimGeneration": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "kind": "daemon-reconcile",
-    "ownership": "unclaimed",
-    "resource": {
-      "kind": "workspace-sync",
-      "workspaceId": "ws_fixture"
-    },
-    "state": "queued",
-    "updatedAt": "2026-07-12T00:00:00Z"
-  },
-  "DaemonOperationResult.missing.ownership": {
-    "attemptCount": 0,
-    "claimGeneration": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "kind": "daemon-reconcile",
-    "operationId": "sync-op-1",
-    "resource": {
-      "kind": "workspace-sync",
-      "workspaceId": "ws_fixture"
-    },
-    "state": "queued",
-    "updatedAt": "2026-07-12T00:00:00Z"
-  },
-  "DaemonOperationResult.missing.resource": {
-    "attemptCount": 0,
-    "claimGeneration": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "kind": "daemon-reconcile",
-    "operationId": "sync-op-1",
-    "ownership": "unclaimed",
-    "state": "queued",
-    "updatedAt": "2026-07-12T00:00:00Z"
-  },
-  "DaemonOperationResult.missing.state": {
-    "attemptCount": 0,
-    "claimGeneration": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "kind": "daemon-reconcile",
-    "operationId": "sync-op-1",
-    "ownership": "unclaimed",
-    "resource": {
-      "kind": "workspace-sync",
-      "workspaceId": "ws_fixture"
-    },
-    "updatedAt": "2026-07-12T00:00:00Z"
-  },
-  "DaemonOperationResult.missing.updatedAt": {
-    "attemptCount": 0,
-    "claimGeneration": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "kind": "daemon-reconcile",
-    "operationId": "sync-op-1",
-    "ownership": "unclaimed",
-    "resource": {
-      "kind": "workspace-sync",
-      "workspaceId": "ws_fixture"
-    },
-    "state": "queued"
-  },
-  "DaemonOperationResult.null.cancellationRequestedAt": {
-    "attemptCount": 0,
-    "cancellationRequestedAt": null,
-    "claimGeneration": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "kind": "daemon-reconcile",
-    "operationId": "sync-op-1",
-    "ownership": "unclaimed",
-    "resource": {
-      "kind": "workspace-sync",
-      "workspaceId": "ws_fixture"
-    },
-    "state": "queued",
-    "updatedAt": "2026-07-12T00:00:00Z"
-  },
-  "DaemonOperationResult.null.claimedBy": {
-    "attemptCount": 0,
-    "claimedBy": null,
-    "claimGeneration": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "kind": "daemon-reconcile",
-    "operationId": "sync-op-1",
-    "ownership": "unclaimed",
-    "resource": {
-      "kind": "workspace-sync",
-      "workspaceId": "ws_fixture"
-    },
-    "state": "queued",
-    "updatedAt": "2026-07-12T00:00:00Z"
-  },
-  "DaemonOperationResult.null.lastErrorCode": {
-    "attemptCount": 0,
-    "claimGeneration": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "kind": "daemon-reconcile",
-    "lastErrorCode": null,
-    "operationId": "sync-op-1",
-    "ownership": "unclaimed",
-    "resource": {
-      "kind": "workspace-sync",
-      "workspaceId": "ws_fixture"
-    },
-    "state": "queued",
-    "updatedAt": "2026-07-12T00:00:00Z"
-  },
-  "DaemonOperationResult.null.leaseExpiresAt": {
-    "attemptCount": 0,
-    "claimGeneration": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "kind": "daemon-reconcile",
-    "leaseExpiresAt": null,
-    "operationId": "sync-op-1",
-    "ownership": "unclaimed",
-    "resource": {
-      "kind": "workspace-sync",
-      "workspaceId": "ws_fixture"
-    },
-    "state": "queued",
-    "updatedAt": "2026-07-12T00:00:00Z"
-  },
-  "DaemonOperationResult.null.nextAttemptAt": {
-    "attemptCount": 0,
-    "claimGeneration": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "kind": "daemon-reconcile",
-    "nextAttemptAt": null,
-    "operationId": "sync-op-1",
-    "ownership": "unclaimed",
-    "resource": {
-      "kind": "workspace-sync",
-      "workspaceId": "ws_fixture"
-    },
-    "state": "queued",
-    "updatedAt": "2026-07-12T00:00:00Z"
   },
   "DaemonRpcCancel.missing.requestId": {},
   "DaemonRpcError.missing.code": {
@@ -441,6 +233,9 @@
   "DaemonStatusScopeParams.null.projectPath": {
     "projectPath": null
   },
+  "DaemonStatusScopeParams.null.requestedPath": {
+    "requestedPath": null
+  },
   "DaemonStatusScopeParams.null.workspaceRoot": {
     "workspaceRoot": null
   },
@@ -584,35 +379,6 @@
         "snapshotVersion": 1
       },
       "workspaceId": "ws_fixture"
-    }
-  },
-  "DaemonSyncCancellationOutcome.unknown": "unknown.DaemonSyncCancellationOutcome",
-  "DaemonSyncOperationKind.unknown": "unknown.DaemonSyncOperationKind",
-  "DaemonSyncOperationOwnership.unknown": "unknown.DaemonSyncOperationOwnership",
-  "DaemonSyncOperationState.unknown": "unknown.DaemonSyncOperationState",
-  "DaemonSyncRequestOutcome.unknown": "unknown.DaemonSyncRequestOutcome",
-  "DaemonSyncRequestParams.missing.idempotencyKey": {},
-  "DaemonSyncRequestParams.null.workspaceRoot": {
-    "idempotencyKey": "sync-1",
-    "workspaceRoot": null
-  },
-  "DaemonSyncRequestResult.missing.operation": {
-    "outcome": "enqueued"
-  },
-  "DaemonSyncRequestResult.missing.outcome": {
-    "operation": {
-      "attemptCount": 0,
-      "claimGeneration": 0,
-      "createdAt": "2026-07-12T00:00:00Z",
-      "kind": "daemon-reconcile",
-      "operationId": "sync-op-1",
-      "ownership": "unclaimed",
-      "resource": {
-        "kind": "workspace-sync",
-        "workspaceId": "ws_fixture"
-      },
-      "state": "queued",
-      "updatedAt": "2026-07-12T00:00:00Z"
     }
   },
   "DaemonSyncResource.missing.kind": {
@@ -800,465 +566,6 @@
     "subject": "snap_head"
   },
   "HostedCompactEventKind.unknown": "unknown.HostedCompactEventKind",
-  "HostedConflictMetadataRecord.missing.baseSnapshotId": {
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "detectedByDeviceId": "dev_detector",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "state": "unresolved",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictMetadataRecord.missing.conflictId": {
-    "baseSnapshotId": "snap_base",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "detectedByDeviceId": "dev_detector",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "state": "unresolved",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictMetadataRecord.missing.conflictKind": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "containsSecrets": false,
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "detectedByDeviceId": "dev_detector",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "state": "unresolved",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictMetadataRecord.missing.containsSecrets": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "detectedByDeviceId": "dev_detector",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "state": "unresolved",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictMetadataRecord.missing.detectedAt": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "detectedByDeviceId": "dev_detector",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "state": "unresolved",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictMetadataRecord.missing.detectedByDeviceId": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "state": "unresolved",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictMetadataRecord.missing.occurrenceVersion": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "detectedByDeviceId": "dev_detector",
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "state": "unresolved",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictMetadataRecord.missing.paths": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "detectedByDeviceId": "dev_detector",
-    "occurrenceVersion": 1,
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "state": "unresolved",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictMetadataRecord.missing.reason": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "detectedByDeviceId": "dev_detector",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "remoteSnapshotId": "snap_remote",
-    "state": "unresolved",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictMetadataRecord.missing.remoteSnapshotId": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "detectedByDeviceId": "dev_detector",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "state": "unresolved",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictMetadataRecord.missing.state": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "detectedByDeviceId": "dev_detector",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictMetadataRecord.missing.workspaceId": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "detectedByDeviceId": "dev_detector",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "state": "unresolved"
-  },
-  "HostedConflictMetadataRecord.null.bundleObject": {
-    "baseSnapshotId": "snap_base",
-    "bundleObject": null,
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "detectedByDeviceId": "dev_detector",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "state": "unresolved",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictMetadataRecord.null.resolvedAt": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "detectedByDeviceId": "dev_detector",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "resolvedAt": null,
-    "state": "unresolved",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictMetadataRecord.null.resolvedByDeviceId": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "detectedByDeviceId": "dev_detector",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "resolvedByDeviceId": null,
-    "state": "unresolved",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictOccurrenceState.unknown": "unknown.HostedConflictOccurrenceState",
-  "HostedConflictReconcileOutcome.unknown": "unknown.HostedConflictReconcileOutcome",
-  "HostedConflictReconcileResult.missing.conflict": {
-    "outcome": "applied"
-  },
-  "HostedConflictReconcileResult.missing.outcome": {
-    "conflict": {
-      "baseSnapshotId": "snap_base",
-      "conflictId": "conflict_1",
-      "conflictKind": "path-divergence",
-      "containsSecrets": false,
-      "detectedAt": "2026-06-23T12:00:00Z",
-      "detectedByDeviceId": "dev_detector",
-      "occurrenceVersion": 1,
-      "paths": [
-        "src/main.rs"
-      ],
-      "reason": "both sides edited",
-      "remoteSnapshotId": "snap_remote",
-      "state": "unresolved",
-      "workspaceId": "ws_code"
-    }
-  },
-  "HostedConflictsListWorkspaceConflictsRequest.missing.requestedByDeviceId": {
-    "requestedByDeviceProof": "proof_list",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictsListWorkspaceConflictsRequest.missing.requestedByDeviceProof": {
-    "requestedByDeviceId": "dev_reader",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictsListWorkspaceConflictsRequest.missing.workspaceId": {
-    "requestedByDeviceId": "dev_reader",
-    "requestedByDeviceProof": "proof_list"
-  },
-  "HostedConflictsReconcileConflictOccurrenceRequest.missing.baseSnapshotId": {
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "desiredState": "unresolved",
-    "deviceId": "dev_writer",
-    "deviceProof": "proof_reconcile",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictsReconcileConflictOccurrenceRequest.missing.conflictId": {
-    "baseSnapshotId": "snap_base",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "desiredState": "unresolved",
-    "deviceId": "dev_writer",
-    "deviceProof": "proof_reconcile",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictsReconcileConflictOccurrenceRequest.missing.conflictKind": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "containsSecrets": false,
-    "desiredState": "unresolved",
-    "deviceId": "dev_writer",
-    "deviceProof": "proof_reconcile",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictsReconcileConflictOccurrenceRequest.missing.containsSecrets": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "desiredState": "unresolved",
-    "deviceId": "dev_writer",
-    "deviceProof": "proof_reconcile",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictsReconcileConflictOccurrenceRequest.missing.desiredState": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "deviceId": "dev_writer",
-    "deviceProof": "proof_reconcile",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictsReconcileConflictOccurrenceRequest.missing.deviceId": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "desiredState": "unresolved",
-    "deviceProof": "proof_reconcile",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictsReconcileConflictOccurrenceRequest.missing.deviceProof": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "desiredState": "unresolved",
-    "deviceId": "dev_writer",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictsReconcileConflictOccurrenceRequest.missing.occurrenceVersion": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "desiredState": "unresolved",
-    "deviceId": "dev_writer",
-    "deviceProof": "proof_reconcile",
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictsReconcileConflictOccurrenceRequest.missing.paths": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "desiredState": "unresolved",
-    "deviceId": "dev_writer",
-    "deviceProof": "proof_reconcile",
-    "occurrenceVersion": 1,
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictsReconcileConflictOccurrenceRequest.missing.reason": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "desiredState": "unresolved",
-    "deviceId": "dev_writer",
-    "deviceProof": "proof_reconcile",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "remoteSnapshotId": "snap_remote",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictsReconcileConflictOccurrenceRequest.missing.remoteSnapshotId": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "desiredState": "unresolved",
-    "deviceId": "dev_writer",
-    "deviceProof": "proof_reconcile",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictsReconcileConflictOccurrenceRequest.missing.workspaceId": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "desiredState": "unresolved",
-    "deviceId": "dev_writer",
-    "deviceProof": "proof_reconcile",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote"
-  },
-  "HostedConflictsReconcileConflictOccurrenceRequest.null.bundleObject": {
-    "baseSnapshotId": "snap_base",
-    "bundleObject": null,
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "desiredState": "unresolved",
-    "deviceId": "dev_writer",
-    "deviceProof": "proof_reconcile",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "workspaceId": "ws_code"
-  },
   "HostedDashboardAccount.missing.accountId": {
     "workOsUserId": "user_1"
   },
@@ -2930,17 +2237,16 @@
     "selected": true,
     "version": 1
   },
-  "HostedDashboardWorkspaceRef.missing.snapshotId": {
-    "updatedAt": "2026-07-14T12:00:00Z",
-    "version": 4
-  },
   "HostedDashboardWorkspaceRef.missing.updatedAt": {
-    "snapshotId": "snapshot_1",
     "version": 4
   },
   "HostedDashboardWorkspaceRef.missing.version": {
-    "snapshotId": "snapshot_1",
     "updatedAt": "2026-07-14T12:00:00Z"
+  },
+  "HostedDashboardWorkspaceRef.null.snapshotId": {
+    "snapshotId": null,
+    "updatedAt": "2026-07-14T12:00:00Z",
+    "version": 4
   },
   "HostedDashboardWorkspaceRole.unknown": "unknown.HostedDashboardWorkspaceRole",
   "HostedDeviceApproval.missing.approverDeviceId": {
@@ -4119,175 +3425,6 @@
   "HostedDownloadIntentRange.missing.offset": {
     "length": 8
   },
-  "HostedEventsCreateLeaseRequest.missing.baseSnapshotId": {
-    "deviceId": "dev_fixture",
-    "deviceProof": "dapp_p256_v1_x",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "statusCode": "active",
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedEventsCreateLeaseRequest.missing.deviceId": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceProof": "dapp_p256_v1_x",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "statusCode": "active",
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedEventsCreateLeaseRequest.missing.deviceProof": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "statusCode": "active",
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedEventsCreateLeaseRequest.missing.expiresAt": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceId": "dev_fixture",
-    "deviceProof": "dapp_p256_v1_x",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "statusCode": "active",
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedEventsCreateLeaseRequest.missing.leaseId": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceId": "dev_fixture",
-    "deviceProof": "dapp_p256_v1_x",
-    "expiresAt": "t000000000100",
-    "projectId": "proj_fixture",
-    "statusCode": "active",
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedEventsCreateLeaseRequest.missing.projectId": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceId": "dev_fixture",
-    "deviceProof": "dapp_p256_v1_x",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "statusCode": "active",
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedEventsCreateLeaseRequest.missing.statusCode": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceId": "dev_fixture",
-    "deviceProof": "dapp_p256_v1_x",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedEventsCreateLeaseRequest.missing.workspaceId": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceId": "dev_fixture",
-    "deviceProof": "dapp_p256_v1_x",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "statusCode": "active",
-    "writeTargetMode": "direct"
-  },
-  "HostedEventsCreateLeaseRequest.missing.writeTargetMode": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceId": "dev_fixture",
-    "deviceProof": "dapp_p256_v1_x",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "statusCode": "active",
-    "workspaceId": "ws_fixture"
-  },
-  "HostedEventsCreateLeaseRequest.null.originDeviceRef": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceId": "dev_fixture",
-    "deviceProof": "dapp_p256_v1_x",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "originDeviceRef": null,
-    "projectId": "proj_fixture",
-    "statusCode": "active",
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedEventsCreateLeaseRequest.null.sessionState": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceId": "dev_fixture",
-    "deviceProof": "dapp_p256_v1_x",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "sessionState": null,
-    "statusCode": "active",
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedEventsCreateLeaseRequest.null.targetDeviceRef": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceId": "dev_fixture",
-    "deviceProof": "dapp_p256_v1_x",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "statusCode": "active",
-    "targetDeviceRef": null,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedEventsCreateLeaseRequest.null.taskLabel": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceId": "dev_fixture",
-    "deviceProof": "dapp_p256_v1_x",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "statusCode": "active",
-    "taskLabel": null,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedEventsCreateLeaseRequest.null.workViewId": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceId": "dev_fixture",
-    "deviceProof": "dapp_p256_v1_x",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "statusCode": "active",
-    "workspaceId": "ws_fixture",
-    "workViewId": null,
-    "writeTargetMode": "direct"
-  },
-  "HostedEventsCreateLeaseResponse.missing.event": {
-    "lease": {
-      "baseSnapshotId": "snap_fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "deviceId": "dev_fixture",
-      "expiresAt": "t000000000100",
-      "leaseId": "lease_fixture",
-      "projectId": "proj_fixture",
-      "sessionState": "open",
-      "statusCode": "active",
-      "updatedAt": "2026-07-12T00:00:00Z",
-      "version": 0,
-      "workspaceId": "ws_fixture",
-      "writeTargetMode": "direct"
-    }
-  },
-  "HostedEventsCreateLeaseResponse.missing.lease": {
-    "event": null
-  },
   "HostedEventsListCompactEventsRequest.missing.workspaceId": {},
   "HostedEventsListCompactEventsRequest.null.accountSessionId": {
     "accountSessionId": null,
@@ -4301,333 +3438,13 @@
     "limit": null,
     "workspaceId": "ws_code"
   },
-  "HostedEventsListLeasesRequest.missing.requestedByDeviceId": {
-    "requestedByDeviceProof": "dapp_p256_v1_x",
-    "workspaceId": "ws_fixture"
-  },
-  "HostedEventsListLeasesRequest.missing.requestedByDeviceProof": {
-    "requestedByDeviceId": "dev_fixture",
-    "workspaceId": "ws_fixture"
-  },
-  "HostedEventsListLeasesRequest.missing.workspaceId": {
-    "requestedByDeviceId": "dev_fixture",
-    "requestedByDeviceProof": "dapp_p256_v1_x"
-  },
-  "HostedEventsUpdateLeaseRequest.missing.expectedVersion": {
-    "leaseId": "lease_fixture",
-    "updatedByDeviceId": "dev_fixture",
-    "updatedByDeviceProof": "dapp_p256_v1_x",
-    "workspaceId": "ws_fixture"
-  },
-  "HostedEventsUpdateLeaseRequest.missing.leaseId": {
-    "expectedVersion": 0,
-    "updatedByDeviceId": "dev_fixture",
-    "updatedByDeviceProof": "dapp_p256_v1_x",
-    "workspaceId": "ws_fixture"
-  },
-  "HostedEventsUpdateLeaseRequest.missing.updatedByDeviceId": {
-    "expectedVersion": 0,
-    "leaseId": "lease_fixture",
-    "updatedByDeviceProof": "dapp_p256_v1_x",
-    "workspaceId": "ws_fixture"
-  },
-  "HostedEventsUpdateLeaseRequest.missing.updatedByDeviceProof": {
-    "expectedVersion": 0,
-    "leaseId": "lease_fixture",
-    "updatedByDeviceId": "dev_fixture",
-    "workspaceId": "ws_fixture"
-  },
-  "HostedEventsUpdateLeaseRequest.missing.workspaceId": {
-    "expectedVersion": 0,
-    "leaseId": "lease_fixture",
-    "updatedByDeviceId": "dev_fixture",
-    "updatedByDeviceProof": "dapp_p256_v1_x"
-  },
-  "HostedEventsUpdateLeaseRequest.null.eventKind": {
-    "eventKind": null,
-    "expectedVersion": 0,
-    "leaseId": "lease_fixture",
-    "updatedByDeviceId": "dev_fixture",
-    "updatedByDeviceProof": "dapp_p256_v1_x",
-    "workspaceId": "ws_fixture"
-  },
-  "HostedEventsUpdateLeaseRequest.null.sessionState": {
-    "expectedVersion": 0,
-    "leaseId": "lease_fixture",
-    "sessionState": null,
-    "updatedByDeviceId": "dev_fixture",
-    "updatedByDeviceProof": "dapp_p256_v1_x",
-    "workspaceId": "ws_fixture"
-  },
-  "HostedEventsUpdateLeaseRequest.null.statusCode": {
-    "expectedVersion": 0,
-    "leaseId": "lease_fixture",
-    "statusCode": null,
-    "updatedByDeviceId": "dev_fixture",
-    "updatedByDeviceProof": "dapp_p256_v1_x",
-    "workspaceId": "ws_fixture"
-  },
-  "HostedEventsUpdateLeaseResponse.missing.ok": {},
-  "HostedEventsUpdateLeaseResponse.null.currentLease": {
-    "currentLease": null,
-    "ok": true
-  },
-  "HostedEventsUpdateLeaseResponse.null.error": {
-    "error": null,
-    "ok": true
-  },
-  "HostedEventsUpdateLeaseResponse.null.event": {
-    "event": null,
-    "ok": true
-  },
-  "HostedEventsUpdateLeaseResponse.null.lease": {
-    "lease": null,
-    "ok": true
-  },
-  "HostedEventsUpdateLeaseResponse.null.leaseId": {
-    "leaseId": null,
-    "ok": true
-  },
-  "HostedEventsUpdateLeaseResponse.null.workspaceId": {
-    "ok": true,
-    "workspaceId": null
-  },
   "HostedEventWatermarks.null.lastEventId": {
     "lastEventId": null
   },
   "HostedEventWatermarks.null.lastScanAt": {
     "lastScanAt": null
   },
-  "HostedEventWatermarks.null.networkState": {
-    "networkState": null
-  },
-  "HostedEventWatermarks.null.syncState": {
-    "syncState": null
-  },
-  "HostedEventWatermarks.null.watcherState": {
-    "watcherState": null
-  },
   "HostedGcDeleteSkipReason.unknown": "unknown.HostedGcDeleteSkipReason",
-  "HostedLease.missing.baseSnapshotId": {
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedLease.missing.createdAt": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedLease.missing.deviceId": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedLease.missing.expiresAt": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedLease.missing.leaseId": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedLease.missing.projectId": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedLease.missing.sessionState": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "statusCode": "active",
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedLease.missing.statusCode": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedLease.missing.updatedAt": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "version": 0,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedLease.missing.version": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedLease.missing.workspaceId": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "writeTargetMode": "direct"
-  },
-  "HostedLease.missing.writeTargetMode": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "workspaceId": "ws_fixture"
-  },
-  "HostedLease.null.originDeviceRef": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "originDeviceRef": null,
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedLease.null.targetDeviceRef": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "targetDeviceRef": null,
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedLease.null.taskLabel": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "taskLabel": null,
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedLease.null.workViewId": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "workspaceId": "ws_fixture",
-    "workViewId": null,
-    "writeTargetMode": "direct"
-  },
-  "HostedLeaseEventKind.unknown": "unknown.HostedLeaseEventKind",
-  "HostedLeaseSessionState.unknown": "unknown.HostedLeaseSessionState",
-  "HostedLeaseUpdateError.unknown": "unknown.HostedLeaseUpdateError",
-  "HostedLeaseWriteTargetMode.unknown": "unknown.HostedLeaseWriteTargetMode",
   "HostedLimitedCapability.missing.capability": {
     "stillWorks": [
       "local edits"
@@ -4660,254 +3477,13 @@
     "supportCapability": null,
     "unavailableBecause": "offline"
   },
-  "HostedMetadataBindingInput.missing.logicalId": {
-    "object": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-metadata-page",
-      "objectKey": "fixture"
-    },
-    "recordKind": "namespace-page",
-    "sidecar": {
-      "childLogicalIds": [],
-      "digest": "fixture",
-      "directObjectKeys": []
-    }
-  },
-  "HostedMetadataBindingInput.missing.object": {
-    "logicalId": "fixture",
-    "recordKind": "namespace-page",
-    "sidecar": {
-      "childLogicalIds": [],
-      "digest": "fixture",
-      "directObjectKeys": []
-    }
-  },
-  "HostedMetadataBindingInput.missing.recordKind": {
-    "logicalId": "fixture",
-    "object": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-metadata-page",
-      "objectKey": "fixture"
-    },
-    "sidecar": {
-      "childLogicalIds": [],
-      "digest": "fixture",
-      "directObjectKeys": []
-    }
-  },
-  "HostedMetadataBindingInput.missing.sidecar": {
-    "logicalId": "fixture",
-    "object": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-metadata-page",
-      "objectKey": "fixture"
-    },
-    "recordKind": "namespace-page"
-  },
-  "HostedMetadataBindingOutcome.unknown": "unknown.HostedMetadataBindingOutcome",
-  "HostedMetadataBindingRecord.missing.logicalId": {
-    "object": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-metadata-page",
-      "objectKey": "fixture"
-    },
-    "recordKind": "namespace-page"
-  },
-  "HostedMetadataBindingRecord.missing.object": {
-    "logicalId": "fixture",
-    "recordKind": "namespace-page"
-  },
-  "HostedMetadataBindingRecord.missing.recordKind": {
-    "logicalId": "fixture",
-    "object": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-metadata-page",
-      "objectKey": "fixture"
-    }
-  },
-  "HostedMetadataBindingRecord.null.outcome": {
-    "logicalId": "fixture",
-    "object": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-metadata-page",
-      "objectKey": "fixture"
-    },
-    "outcome": null,
-    "recordKind": "namespace-page"
-  },
-  "HostedMetadataBindingRecord.null.sidecar": {
-    "logicalId": "fixture",
-    "object": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-metadata-page",
-      "objectKey": "fixture"
-    },
-    "recordKind": "namespace-page",
-    "sidecar": null
-  },
-  "HostedMetadataBindingRecord.null.sidecarDigest": {
-    "logicalId": "fixture",
-    "object": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-metadata-page",
-      "objectKey": "fixture"
-    },
-    "recordKind": "namespace-page",
-    "sidecarDigest": null
-  },
-  "HostedMetadataBindingsResponse.missing.bindings": {
-    "workspaceId": "fixture"
-  },
-  "HostedMetadataBindingsResponse.missing.workspaceId": {
-    "bindings": []
-  },
-  "HostedMetadataPagePointer.missing.byteLength": {
-    "contentId": "fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-metadata-page",
-    "objectKey": "fixture"
-  },
-  "HostedMetadataPagePointer.missing.contentId": {
-    "byteLength": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-metadata-page",
-    "objectKey": "fixture"
-  },
-  "HostedMetadataPagePointer.missing.createdAt": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-metadata-page",
-    "objectKey": "fixture"
-  },
-  "HostedMetadataPagePointer.missing.hash": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "keyEpoch": 1,
-    "kind": "snapshot-metadata-page",
-    "objectKey": "fixture"
-  },
-  "HostedMetadataPagePointer.missing.keyEpoch": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "hash": "fixture",
-    "kind": "snapshot-metadata-page",
-    "objectKey": "fixture"
-  },
-  "HostedMetadataPagePointer.missing.kind": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "objectKey": "fixture"
-  },
-  "HostedMetadataPagePointer.missing.objectKey": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-metadata-page"
-  },
-  "HostedMetadataPagePointerInput.missing.byteLength": {
-    "contentId": "fixture",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-metadata-page",
-    "objectKey": "fixture"
-  },
-  "HostedMetadataPagePointerInput.missing.contentId": {
-    "byteLength": 0,
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-metadata-page",
-    "objectKey": "fixture"
-  },
-  "HostedMetadataPagePointerInput.missing.hash": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-metadata-page",
-    "objectKey": "fixture"
-  },
-  "HostedMetadataPagePointerInput.missing.keyEpoch": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "hash": "fixture",
-    "kind": "snapshot-metadata-page",
-    "objectKey": "fixture"
-  },
-  "HostedMetadataPagePointerInput.missing.kind": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "objectKey": "fixture"
-  },
-  "HostedMetadataPagePointerInput.missing.objectKey": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-metadata-page"
-  },
-  "HostedMetadataRecordKind.unknown": "unknown.HostedMetadataRecordKind",
-  "HostedMetadataSidecar.missing.childLogicalIds": {
-    "digest": "fixture",
-    "directObjectKeys": []
-  },
-  "HostedMetadataSidecar.missing.digest": {
-    "childLogicalIds": [],
-    "directObjectKeys": []
-  },
-  "HostedMetadataSidecar.missing.directObjectKeys": {
-    "childLogicalIds": [],
-    "digest": "fixture"
-  },
   "HostedObjectKind.unknown": "unknown.HostedObjectKind",
   "HostedObjectMetadata.missing.byteLength": {
     "createdAt": "2026-06-23T12:00:00Z",
     "hash": "b3_fixture",
     "keyEpoch": 1,
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "current",
     "workspaceId": "ws_code"
   },
@@ -4915,8 +3491,8 @@
     "byteLength": 256,
     "hash": "b3_fixture",
     "keyEpoch": 1,
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "current",
     "workspaceId": "ws_code"
   },
@@ -4924,8 +3500,8 @@
     "byteLength": 256,
     "createdAt": "2026-06-23T12:00:00Z",
     "keyEpoch": 1,
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "current",
     "workspaceId": "ws_code"
   },
@@ -4933,8 +3509,8 @@
     "byteLength": 256,
     "createdAt": "2026-06-23T12:00:00Z",
     "hash": "b3_fixture",
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "current",
     "workspaceId": "ws_code"
   },
@@ -4943,7 +3519,7 @@
     "createdAt": "2026-06-23T12:00:00Z",
     "hash": "b3_fixture",
     "keyEpoch": 1,
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "current",
     "workspaceId": "ws_code"
   },
@@ -4952,7 +3528,7 @@
     "createdAt": "2026-06-23T12:00:00Z",
     "hash": "b3_fixture",
     "keyEpoch": 1,
-    "kind": "source-pack",
+    "kind": "blob",
     "retentionState": "current",
     "workspaceId": "ws_code"
   },
@@ -4961,8 +3537,8 @@
     "createdAt": "2026-06-23T12:00:00Z",
     "hash": "b3_fixture",
     "keyEpoch": 1,
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "workspaceId": "ws_code"
   },
   "HostedObjectMetadata.missing.workspaceId": {
@@ -4970,8 +3546,8 @@
     "createdAt": "2026-06-23T12:00:00Z",
     "hash": "b3_fixture",
     "keyEpoch": 1,
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "current"
   },
   "HostedObjectMetadata.null.contentId": {
@@ -4980,108 +3556,52 @@
     "createdAt": "2026-06-23T12:00:00Z",
     "hash": "b3_fixture",
     "keyEpoch": 1,
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "current",
     "workspaceId": "ws_code"
-  },
-  "HostedObjectPointer.missing.byteLength": {
-    "contentId": "cid_overlay",
-    "createdAt": "2026-06-23T12:00:00Z",
-    "hash": "b3_fixture",
-    "keyEpoch": 1,
-    "kind": "overlay-pack",
-    "objectKey": "packs_pk_fixture"
-  },
-  "HostedObjectPointer.missing.contentId": {
-    "byteLength": 128,
-    "createdAt": "2026-06-23T12:00:00Z",
-    "hash": "b3_fixture",
-    "keyEpoch": 1,
-    "kind": "overlay-pack",
-    "objectKey": "packs_pk_fixture"
-  },
-  "HostedObjectPointer.missing.createdAt": {
-    "byteLength": 128,
-    "contentId": "cid_overlay",
-    "hash": "b3_fixture",
-    "keyEpoch": 1,
-    "kind": "overlay-pack",
-    "objectKey": "packs_pk_fixture"
-  },
-  "HostedObjectPointer.missing.hash": {
-    "byteLength": 128,
-    "contentId": "cid_overlay",
-    "createdAt": "2026-06-23T12:00:00Z",
-    "keyEpoch": 1,
-    "kind": "overlay-pack",
-    "objectKey": "packs_pk_fixture"
-  },
-  "HostedObjectPointer.missing.keyEpoch": {
-    "byteLength": 128,
-    "contentId": "cid_overlay",
-    "createdAt": "2026-06-23T12:00:00Z",
-    "hash": "b3_fixture",
-    "kind": "overlay-pack",
-    "objectKey": "packs_pk_fixture"
-  },
-  "HostedObjectPointer.missing.kind": {
-    "byteLength": 128,
-    "contentId": "cid_overlay",
-    "createdAt": "2026-06-23T12:00:00Z",
-    "hash": "b3_fixture",
-    "keyEpoch": 1,
-    "objectKey": "packs_pk_fixture"
-  },
-  "HostedObjectPointer.missing.objectKey": {
-    "byteLength": 128,
-    "contentId": "cid_overlay",
-    "createdAt": "2026-06-23T12:00:00Z",
-    "hash": "b3_fixture",
-    "keyEpoch": 1,
-    "kind": "overlay-pack"
   },
   "HostedObjectPointerInput.missing.byteLength": {
     "contentId": "cid_fixture",
     "hash": "b3_fixture",
     "keyEpoch": 1,
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture"
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
   },
   "HostedObjectPointerInput.missing.contentId": {
     "byteLength": 256,
     "hash": "b3_fixture",
     "keyEpoch": 1,
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture"
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
   },
   "HostedObjectPointerInput.missing.hash": {
     "byteLength": 256,
     "contentId": "cid_fixture",
     "keyEpoch": 1,
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture"
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
   },
   "HostedObjectPointerInput.missing.keyEpoch": {
     "byteLength": 256,
     "contentId": "cid_fixture",
     "hash": "b3_fixture",
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture"
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
   },
   "HostedObjectPointerInput.missing.kind": {
     "byteLength": 256,
     "contentId": "cid_fixture",
     "hash": "b3_fixture",
     "keyEpoch": 1,
-    "objectKey": "packs_pk_fixture"
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
   },
   "HostedObjectPointerInput.missing.objectKey": {
     "byteLength": 256,
     "contentId": "cid_fixture",
     "hash": "b3_fixture",
     "keyEpoch": 1,
-    "kind": "source-pack"
+    "kind": "blob"
   },
   "HostedObjectQueriesGetObjectMetadataRequest.missing.objectKey": {
     "requestedByDeviceId": "device_1",
@@ -5089,200 +3609,19 @@
     "workspaceId": "ws_code"
   },
   "HostedObjectQueriesGetObjectMetadataRequest.missing.requestedByDeviceId": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceProof": "proof_head_metadata",
     "workspaceId": "ws_code"
   },
   "HostedObjectQueriesGetObjectMetadataRequest.missing.requestedByDeviceProof": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "workspaceId": "ws_code"
   },
   "HostedObjectQueriesGetObjectMetadataRequest.missing.workspaceId": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "requestedByDeviceProof": "proof_head_metadata"
-  },
-  "HostedObjectQueriesGetSnapshotRootRequest.missing.requestedByDeviceId": {
-    "requestedByDeviceProof": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectQueriesGetSnapshotRootRequest.missing.requestedByDeviceProof": {
-    "requestedByDeviceId": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectQueriesGetSnapshotRootRequest.missing.snapshotId": {
-    "requestedByDeviceId": "fixture",
-    "requestedByDeviceProof": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectQueriesGetSnapshotRootRequest.missing.workspaceId": {
-    "requestedByDeviceId": "fixture",
-    "requestedByDeviceProof": "fixture",
-    "snapshotId": "fixture"
-  },
-  "HostedObjectQueriesResolveMetadataBindingsRequest.missing.logicalIds": {
-    "requestedByDeviceId": "fixture",
-    "requestedByDeviceProof": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectQueriesResolveMetadataBindingsRequest.missing.requestedByDeviceId": {
-    "logicalIds": [],
-    "requestedByDeviceProof": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectQueriesResolveMetadataBindingsRequest.missing.requestedByDeviceProof": {
-    "logicalIds": [],
-    "requestedByDeviceId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectQueriesResolveMetadataBindingsRequest.missing.workspaceId": {
-    "logicalIds": [],
-    "requestedByDeviceId": "fixture",
-    "requestedByDeviceProof": "fixture"
-  },
-  "HostedObjectsCommitMetadataBindingsRequest.missing.bindings": {
-    "committedByDeviceId": "fixture",
-    "committedByDeviceProof": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectsCommitMetadataBindingsRequest.missing.committedByDeviceId": {
-    "bindings": [],
-    "committedByDeviceProof": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectsCommitMetadataBindingsRequest.missing.committedByDeviceProof": {
-    "bindings": [],
-    "committedByDeviceId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectsCommitMetadataBindingsRequest.missing.workspaceId": {
-    "bindings": [],
-    "committedByDeviceId": "fixture",
-    "committedByDeviceProof": "fixture"
-  },
-  "HostedObjectsCommitSnapshotRootRequest.missing.committedByDeviceId": {
-    "committedByDeviceProof": "fixture",
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectsCommitSnapshotRootRequest.missing.committedByDeviceProof": {
-    "committedByDeviceId": "fixture",
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectsCommitSnapshotRootRequest.missing.extraRootLogicalIds": {
-    "committedByDeviceId": "fixture",
-    "committedByDeviceProof": "fixture",
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectsCommitSnapshotRootRequest.missing.manifestId": {
-    "committedByDeviceId": "fixture",
-    "committedByDeviceProof": "fixture",
-    "extraRootLogicalIds": [],
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectsCommitSnapshotRootRequest.missing.manifestObject": {
-    "committedByDeviceId": "fixture",
-    "committedByDeviceProof": "fixture",
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectsCommitSnapshotRootRequest.missing.namespaceRootId": {
-    "committedByDeviceId": "fixture",
-    "committedByDeviceProof": "fixture",
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectsCommitSnapshotRootRequest.missing.snapshotId": {
-    "committedByDeviceId": "fixture",
-    "committedByDeviceProof": "fixture",
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectsCommitSnapshotRootRequest.missing.workspaceId": {
-    "committedByDeviceId": "fixture",
-    "committedByDeviceProof": "fixture",
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture"
   },
   "HostedObjectsCommitUploadedObjectMetadataRequest.missing.committedByDeviceId": {
     "committedByDeviceProof": "proof_commit_metadata",
@@ -5291,8 +3630,8 @@
       "contentId": "cid_fixture",
       "hash": "b3_fixture",
       "keyEpoch": 1,
-      "kind": "source-pack",
-      "objectKey": "packs_pk_fixture"
+      "kind": "blob",
+      "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
     },
     "workspaceId": "ws_code"
   },
@@ -5303,8 +3642,8 @@
       "contentId": "cid_fixture",
       "hash": "b3_fixture",
       "keyEpoch": 1,
-      "kind": "source-pack",
-      "objectKey": "packs_pk_fixture"
+      "kind": "blob",
+      "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
     },
     "workspaceId": "ws_code"
   },
@@ -5321,8 +3660,8 @@
       "contentId": "cid_fixture",
       "hash": "b3_fixture",
       "keyEpoch": 1,
-      "kind": "source-pack",
-      "objectKey": "packs_pk_fixture"
+      "kind": "blob",
+      "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
     }
   },
   "HostedObjectsCreateDownloadIntentRequest.missing.objectKey": {
@@ -5331,29 +3670,29 @@
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateDownloadIntentRequest.missing.requestedByDeviceId": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceProof": "proof_download_intent",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateDownloadIntentRequest.missing.requestedByDeviceProof": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateDownloadIntentRequest.missing.workspaceId": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "requestedByDeviceProof": "proof_download_intent"
   },
   "HostedObjectsCreateDownloadIntentRequest.null.length": {
     "length": null,
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "requestedByDeviceProof": "proof_download_intent",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateDownloadIntentRequest.null.offset": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "offset": null,
     "requestedByDeviceId": "device_1",
     "requestedByDeviceProof": "proof_download_intent",
@@ -5362,21 +3701,21 @@
   "HostedObjectsCreateDownloadIntentResponse.missing.expiresAt": {
     "intentId": "intent_1",
     "method": "GET",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "signedUrl": "https://r2.example/get",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateDownloadIntentResponse.missing.intentId": {
     "expiresAt": "2026-06-23T12:00:00Z",
     "method": "GET",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "signedUrl": "https://r2.example/get",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateDownloadIntentResponse.missing.method": {
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "signedUrl": "https://r2.example/get",
     "workspaceId": "ws_code"
   },
@@ -5391,27 +3730,27 @@
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
     "method": "GET",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateDownloadIntentResponse.missing.workspaceId": {
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
     "method": "GET",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "signedUrl": "https://r2.example/get"
   },
   "HostedObjectsCreateDownloadIntentResponse.null.range": {
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
     "method": "GET",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "range": null,
     "signedUrl": "https://r2.example/get",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateStorageGcDeleteIntentRequest.missing.authToken": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateStorageGcDeleteIntentRequest.missing.objectKey": {
@@ -5420,22 +3759,22 @@
   },
   "HostedObjectsCreateStorageGcDeleteIntentRequest.missing.workspaceId": {
     "authToken": "cp_token",
-    "objectKey": "packs_pk_fixture"
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
   },
   "HostedObjectsCreateStorageGcDeleteIntentResponse.missing.expiresAt": {
     "keyEpoch": 1,
-    "kind": "source-pack",
+    "kind": "blob",
     "method": "DELETE",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "delete-eligible",
     "signedUrl": "https://r2.example/delete",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateStorageGcDeleteIntentResponse.missing.keyEpoch": {
     "expiresAt": "2026-06-23T12:00:00Z",
-    "kind": "source-pack",
+    "kind": "blob",
     "method": "DELETE",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "delete-eligible",
     "signedUrl": "https://r2.example/delete",
     "workspaceId": "ws_code"
@@ -5444,7 +3783,7 @@
     "expiresAt": "2026-06-23T12:00:00Z",
     "keyEpoch": 1,
     "method": "DELETE",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "delete-eligible",
     "signedUrl": "https://r2.example/delete",
     "workspaceId": "ws_code"
@@ -5452,8 +3791,8 @@
   "HostedObjectsCreateStorageGcDeleteIntentResponse.missing.method": {
     "expiresAt": "2026-06-23T12:00:00Z",
     "keyEpoch": 1,
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "delete-eligible",
     "signedUrl": "https://r2.example/delete",
     "workspaceId": "ws_code"
@@ -5461,7 +3800,7 @@
   "HostedObjectsCreateStorageGcDeleteIntentResponse.missing.objectKey": {
     "expiresAt": "2026-06-23T12:00:00Z",
     "keyEpoch": 1,
-    "kind": "source-pack",
+    "kind": "blob",
     "method": "DELETE",
     "retentionState": "delete-eligible",
     "signedUrl": "https://r2.example/delete",
@@ -5470,120 +3809,137 @@
   "HostedObjectsCreateStorageGcDeleteIntentResponse.missing.retentionState": {
     "expiresAt": "2026-06-23T12:00:00Z",
     "keyEpoch": 1,
-    "kind": "source-pack",
+    "kind": "blob",
     "method": "DELETE",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "signedUrl": "https://r2.example/delete",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateStorageGcDeleteIntentResponse.missing.signedUrl": {
     "expiresAt": "2026-06-23T12:00:00Z",
     "keyEpoch": 1,
-    "kind": "source-pack",
+    "kind": "blob",
     "method": "DELETE",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "delete-eligible",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateStorageGcDeleteIntentResponse.missing.workspaceId": {
     "expiresAt": "2026-06-23T12:00:00Z",
     "keyEpoch": 1,
-    "kind": "source-pack",
+    "kind": "blob",
     "method": "DELETE",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "delete-eligible",
     "signedUrl": "https://r2.example/delete"
   },
   "HostedObjectsCreateUploadIntentRequest.missing.authorityFormatVersion": {
     "byteLength": 256,
+    "checksumSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     "createdByDeviceId": "device_1",
     "createdByDeviceProof": "proof_upload_intent",
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadIntentRequest.missing.byteLength": {
     "authorityFormatVersion": 2,
+    "checksumSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     "createdByDeviceId": "device_1",
     "createdByDeviceProof": "proof_upload_intent",
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "workspaceId": "ws_code"
+  },
+  "HostedObjectsCreateUploadIntentRequest.missing.checksumSha256": {
+    "authorityFormatVersion": 2,
+    "byteLength": 256,
+    "createdByDeviceId": "device_1",
+    "createdByDeviceProof": "proof_upload_intent",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadIntentRequest.missing.createdByDeviceId": {
     "authorityFormatVersion": 2,
     "byteLength": 256,
+    "checksumSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     "createdByDeviceProof": "proof_upload_intent",
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadIntentRequest.missing.createdByDeviceProof": {
     "authorityFormatVersion": 2,
     "byteLength": 256,
+    "checksumSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     "createdByDeviceId": "device_1",
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadIntentRequest.missing.kind": {
     "authorityFormatVersion": 2,
     "byteLength": 256,
+    "checksumSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     "createdByDeviceId": "device_1",
     "createdByDeviceProof": "proof_upload_intent",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadIntentRequest.missing.objectKey": {
     "authorityFormatVersion": 2,
     "byteLength": 256,
+    "checksumSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     "createdByDeviceId": "device_1",
     "createdByDeviceProof": "proof_upload_intent",
-    "kind": "source-pack",
+    "kind": "blob",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadIntentRequest.missing.workspaceId": {
     "authorityFormatVersion": 2,
     "byteLength": 256,
+    "checksumSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     "createdByDeviceId": "device_1",
     "createdByDeviceProof": "proof_upload_intent",
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture"
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
   },
   "HostedObjectsCreateUploadIntentRequest.null.contentId": {
     "authorityFormatVersion": 2,
     "byteLength": 256,
+    "checksumSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     "contentId": null,
     "createdByDeviceId": "device_1",
     "createdByDeviceProof": "proof_upload_intent",
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadIntentResponse.missing.byteLength": {
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
-    "kind": "source-pack",
+    "kind": "blob",
     "method": "PUT",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "signedUrl": "https://r2.example/put",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadIntentResponse.missing.expiresAt": {
     "byteLength": 256,
     "intentId": "intent_1",
-    "kind": "source-pack",
+    "kind": "blob",
     "method": "PUT",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "signedUrl": "https://r2.example/put",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadIntentResponse.missing.intentId": {
     "byteLength": 256,
     "expiresAt": "2026-06-23T12:00:00Z",
-    "kind": "source-pack",
+    "kind": "blob",
     "method": "PUT",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "signedUrl": "https://r2.example/put",
     "workspaceId": "ws_code"
   },
@@ -5592,7 +3948,7 @@
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
     "method": "PUT",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "signedUrl": "https://r2.example/put",
     "workspaceId": "ws_code"
   },
@@ -5600,8 +3956,8 @@
     "byteLength": 256,
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "signedUrl": "https://r2.example/put",
     "workspaceId": "ws_code"
   },
@@ -5609,7 +3965,7 @@
     "byteLength": 256,
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
-    "kind": "source-pack",
+    "kind": "blob",
     "method": "PUT",
     "signedUrl": "https://r2.example/put",
     "workspaceId": "ws_code"
@@ -5618,22 +3974,22 @@
     "byteLength": 256,
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
-    "kind": "source-pack",
+    "kind": "blob",
     "method": "PUT",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadIntentResponse.missing.workspaceId": {
     "byteLength": 256,
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
-    "kind": "source-pack",
+    "kind": "blob",
     "method": "PUT",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "signedUrl": "https://r2.example/put"
   },
   "HostedObjectsCreateUploadVerificationIntentRequest.missing.byteLength": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "requestedByDeviceProof": "proof_upload_verification",
     "workspaceId": "ws_code"
@@ -5646,26 +4002,26 @@
   },
   "HostedObjectsCreateUploadVerificationIntentRequest.missing.requestedByDeviceId": {
     "byteLength": 256,
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceProof": "proof_upload_verification",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadVerificationIntentRequest.missing.requestedByDeviceProof": {
     "byteLength": 256,
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadVerificationIntentRequest.missing.workspaceId": {
     "byteLength": 256,
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "requestedByDeviceProof": "proof_upload_verification"
   },
   "HostedObjectsCreateUploadVerificationIntentRequest.null.contentId": {
     "byteLength": 256,
     "contentId": null,
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "requestedByDeviceProof": "proof_upload_verification",
     "workspaceId": "ws_code"
@@ -5674,7 +4030,7 @@
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
     "method": "GET",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "signedUrl": "https://r2.example/get",
     "workspaceId": "ws_code"
@@ -5683,7 +4039,7 @@
     "byteLength": 256,
     "intentId": "intent_1",
     "method": "GET",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "signedUrl": "https://r2.example/get",
     "workspaceId": "ws_code"
@@ -5692,7 +4048,7 @@
     "byteLength": 256,
     "expiresAt": "2026-06-23T12:00:00Z",
     "method": "GET",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "signedUrl": "https://r2.example/get",
     "workspaceId": "ws_code"
@@ -5701,7 +4057,7 @@
     "byteLength": 256,
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "signedUrl": "https://r2.example/get",
     "workspaceId": "ws_code"
@@ -5720,7 +4076,7 @@
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
     "method": "GET",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "signedUrl": "https://r2.example/get",
     "workspaceId": "ws_code"
   },
@@ -5729,7 +4085,7 @@
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
     "method": "GET",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "workspaceId": "ws_code"
   },
@@ -5738,7 +4094,7 @@
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
     "method": "GET",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "signedUrl": "https://r2.example/get"
   },
@@ -5749,70 +4105,28 @@
     "workspaceId": "ws_code"
   },
   "HostedObjectsMarkObjectRetentionStateRequest.missing.requestedByDeviceId": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceProof": "proof_retention",
     "retentionState": "retained",
     "workspaceId": "ws_code"
   },
   "HostedObjectsMarkObjectRetentionStateRequest.missing.requestedByDeviceProof": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "retentionState": "retained",
     "workspaceId": "ws_code"
   },
   "HostedObjectsMarkObjectRetentionStateRequest.missing.retentionState": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "requestedByDeviceProof": "proof_retention",
     "workspaceId": "ws_code"
   },
   "HostedObjectsMarkObjectRetentionStateRequest.missing.workspaceId": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "requestedByDeviceProof": "proof_retention",
     "retentionState": "retained"
-  },
-  "HostedOverlayObjectInput.missing.byteLength": {
-    "contentId": "cid_overlay",
-    "hash": "b3_fixture",
-    "keyEpoch": 1,
-    "kind": "overlay-pack",
-    "objectKey": "packs_pk_fixture"
-  },
-  "HostedOverlayObjectInput.missing.contentId": {
-    "byteLength": 128,
-    "hash": "b3_fixture",
-    "keyEpoch": 1,
-    "kind": "overlay-pack",
-    "objectKey": "packs_pk_fixture"
-  },
-  "HostedOverlayObjectInput.missing.hash": {
-    "byteLength": 128,
-    "contentId": "cid_overlay",
-    "keyEpoch": 1,
-    "kind": "overlay-pack",
-    "objectKey": "packs_pk_fixture"
-  },
-  "HostedOverlayObjectInput.missing.keyEpoch": {
-    "byteLength": 128,
-    "contentId": "cid_overlay",
-    "hash": "b3_fixture",
-    "kind": "overlay-pack",
-    "objectKey": "packs_pk_fixture"
-  },
-  "HostedOverlayObjectInput.missing.kind": {
-    "byteLength": 128,
-    "contentId": "cid_overlay",
-    "hash": "b3_fixture",
-    "keyEpoch": 1,
-    "objectKey": "packs_pk_fixture"
-  },
-  "HostedOverlayObjectInput.missing.objectKey": {
-    "byteLength": 128,
-    "contentId": "cid_overlay",
-    "hash": "b3_fixture",
-    "keyEpoch": 1,
-    "kind": "overlay-pack"
   },
   "HostedProjectionMetadata.missing.generatedAt": {
     "repairState": "current",
@@ -6450,20 +4764,13 @@
     "ok": true,
     "ref": null
   },
-  "HostedRefsCreateWorkspaceRefRequest.missing.snapshotId": {
-    "workspaceId": "ws_code"
-  },
-  "HostedRefsCreateWorkspaceRefRequest.missing.workspaceId": {
-    "snapshotId": "snap_empty"
-  },
+  "HostedRefsCreateWorkspaceRefRequest.missing.workspaceId": {},
   "HostedRefsCreateWorkspaceRefRequest.null.accountSessionId": {
     "accountSessionId": null,
-    "snapshotId": "snap_empty",
     "workspaceId": "ws_code"
   },
   "HostedRefsCreateWorkspaceRefRequest.null.authToken": {
     "authToken": null,
-    "snapshotId": "snap_empty",
     "workspaceId": "ws_code"
   },
   "HostedRefsGetWorkspaceRefRequest.missing.workspaceId": {},
@@ -6600,258 +4907,6 @@
     "reason": "rotated away",
     "revokedAt": "2026-06-23T12:00:03Z",
     "revokedByDeviceId": "device_owner"
-  },
-  "HostedSnapshotManifestPointer.missing.byteLength": {
-    "contentId": "fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-manifest",
-    "objectKey": "fixture"
-  },
-  "HostedSnapshotManifestPointer.missing.contentId": {
-    "byteLength": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-manifest",
-    "objectKey": "fixture"
-  },
-  "HostedSnapshotManifestPointer.missing.createdAt": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-manifest",
-    "objectKey": "fixture"
-  },
-  "HostedSnapshotManifestPointer.missing.hash": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "keyEpoch": 1,
-    "kind": "snapshot-manifest",
-    "objectKey": "fixture"
-  },
-  "HostedSnapshotManifestPointer.missing.keyEpoch": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "hash": "fixture",
-    "kind": "snapshot-manifest",
-    "objectKey": "fixture"
-  },
-  "HostedSnapshotManifestPointer.missing.kind": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "objectKey": "fixture"
-  },
-  "HostedSnapshotManifestPointer.missing.objectKey": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-manifest"
-  },
-  "HostedSnapshotManifestPointerInput.missing.byteLength": {
-    "contentId": "fixture",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-manifest",
-    "objectKey": "fixture"
-  },
-  "HostedSnapshotManifestPointerInput.missing.contentId": {
-    "byteLength": 0,
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-manifest",
-    "objectKey": "fixture"
-  },
-  "HostedSnapshotManifestPointerInput.missing.hash": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-manifest",
-    "objectKey": "fixture"
-  },
-  "HostedSnapshotManifestPointerInput.missing.keyEpoch": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "hash": "fixture",
-    "kind": "snapshot-manifest",
-    "objectKey": "fixture"
-  },
-  "HostedSnapshotManifestPointerInput.missing.kind": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "objectKey": "fixture"
-  },
-  "HostedSnapshotManifestPointerInput.missing.objectKey": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-manifest"
-  },
-  "HostedSnapshotRootRecord.missing.committedAt": {
-    "committedByDeviceId": "fixture",
-    "complete": false,
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedSnapshotRootRecord.missing.committedByDeviceId": {
-    "committedAt": "2026-07-12T00:00:00Z",
-    "complete": false,
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedSnapshotRootRecord.missing.complete": {
-    "committedAt": "2026-07-12T00:00:00Z",
-    "committedByDeviceId": "fixture",
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedSnapshotRootRecord.missing.extraRootLogicalIds": {
-    "committedAt": "2026-07-12T00:00:00Z",
-    "committedByDeviceId": "fixture",
-    "complete": false,
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedSnapshotRootRecord.missing.manifestId": {
-    "committedAt": "2026-07-12T00:00:00Z",
-    "committedByDeviceId": "fixture",
-    "complete": false,
-    "extraRootLogicalIds": [],
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedSnapshotRootRecord.missing.manifestObject": {
-    "committedAt": "2026-07-12T00:00:00Z",
-    "committedByDeviceId": "fixture",
-    "complete": false,
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedSnapshotRootRecord.missing.namespaceRootId": {
-    "committedAt": "2026-07-12T00:00:00Z",
-    "committedByDeviceId": "fixture",
-    "complete": false,
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedSnapshotRootRecord.missing.snapshotId": {
-    "committedAt": "2026-07-12T00:00:00Z",
-    "committedByDeviceId": "fixture",
-    "complete": false,
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedSnapshotRootRecord.missing.workspaceId": {
-    "committedAt": "2026-07-12T00:00:00Z",
-    "committedByDeviceId": "fixture",
-    "complete": false,
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture"
   },
   "HostedStatusActionReference.missing.kind": {},
   "HostedStatusActionReference.null.targetId": {
@@ -7504,35 +5559,31 @@
     "queued": 0,
     "reconciliationRequired": 0
   },
-  "HostedWorkspaceRef.missing.snapshotId": {
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "version": 7,
-    "workspaceId": "ws_code"
-  },
   "HostedWorkspaceRef.missing.updatedAt": {
-    "snapshotId": "snap_head",
     "version": 7,
     "workspaceId": "ws_code"
   },
   "HostedWorkspaceRef.missing.version": {
-    "snapshotId": "snap_head",
     "updatedAt": "2026-06-23T12:00:00Z",
     "workspaceId": "ws_code"
   },
   "HostedWorkspaceRef.missing.workspaceId": {
-    "snapshotId": "snap_head",
     "updatedAt": "2026-06-23T12:00:00Z",
     "version": 7
   },
   "HostedWorkspaceRef.null.headSignature": {
     "headSignature": null,
-    "snapshotId": "snap_head",
+    "updatedAt": "2026-06-23T12:00:00Z",
+    "version": 7,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceRef.null.snapshotId": {
+    "snapshotId": null,
     "updatedAt": "2026-06-23T12:00:00Z",
     "version": 7,
     "workspaceId": "ws_code"
   },
   "HostedWorkspaceRef.null.updatedByDeviceId": {
-    "snapshotId": "snap_head",
     "updatedAt": "2026-06-23T12:00:00Z",
     "updatedByDeviceId": null,
     "version": 7,
@@ -7594,488 +5645,6 @@
   },
   "HostedWorkspaceSummary.null.totalProjects": {
     "totalProjects": null
-  },
-  "HostedWorkView.missing.baseSnapshotId": {
-    "baseWorkspaceVersion": 1,
-    "createdAt": "2026-06-23T12:00:00Z",
-    "createdByDeviceId": "dev_creator",
-    "lifecycle": "active",
-    "name": "Primary",
-    "overlayHead": null,
-    "overlayVersion": 0,
-    "projectId": "proj_code",
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "updatedByDeviceId": "dev_updater",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkView.missing.baseWorkspaceVersion": {
-    "baseSnapshotId": "snap_base",
-    "createdAt": "2026-06-23T12:00:00Z",
-    "createdByDeviceId": "dev_creator",
-    "lifecycle": "active",
-    "name": "Primary",
-    "overlayHead": null,
-    "overlayVersion": 0,
-    "projectId": "proj_code",
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "updatedByDeviceId": "dev_updater",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkView.missing.createdAt": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdByDeviceId": "dev_creator",
-    "lifecycle": "active",
-    "name": "Primary",
-    "overlayHead": null,
-    "overlayVersion": 0,
-    "projectId": "proj_code",
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "updatedByDeviceId": "dev_updater",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkView.missing.createdByDeviceId": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdAt": "2026-06-23T12:00:00Z",
-    "lifecycle": "active",
-    "name": "Primary",
-    "overlayHead": null,
-    "overlayVersion": 0,
-    "projectId": "proj_code",
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "updatedByDeviceId": "dev_updater",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkView.missing.lifecycle": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdAt": "2026-06-23T12:00:00Z",
-    "createdByDeviceId": "dev_creator",
-    "name": "Primary",
-    "overlayHead": null,
-    "overlayVersion": 0,
-    "projectId": "proj_code",
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "updatedByDeviceId": "dev_updater",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkView.missing.name": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdAt": "2026-06-23T12:00:00Z",
-    "createdByDeviceId": "dev_creator",
-    "lifecycle": "active",
-    "overlayHead": null,
-    "overlayVersion": 0,
-    "projectId": "proj_code",
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "updatedByDeviceId": "dev_updater",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkView.missing.overlayHead": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdAt": "2026-06-23T12:00:00Z",
-    "createdByDeviceId": "dev_creator",
-    "lifecycle": "active",
-    "name": "Primary",
-    "overlayVersion": 0,
-    "projectId": "proj_code",
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "updatedByDeviceId": "dev_updater",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkView.missing.overlayVersion": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdAt": "2026-06-23T12:00:00Z",
-    "createdByDeviceId": "dev_creator",
-    "lifecycle": "active",
-    "name": "Primary",
-    "overlayHead": null,
-    "projectId": "proj_code",
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "updatedByDeviceId": "dev_updater",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkView.missing.projectId": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdAt": "2026-06-23T12:00:00Z",
-    "createdByDeviceId": "dev_creator",
-    "lifecycle": "active",
-    "name": "Primary",
-    "overlayHead": null,
-    "overlayVersion": 0,
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "updatedByDeviceId": "dev_updater",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkView.missing.updatedAt": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdAt": "2026-06-23T12:00:00Z",
-    "createdByDeviceId": "dev_creator",
-    "lifecycle": "active",
-    "name": "Primary",
-    "overlayHead": null,
-    "overlayVersion": 0,
-    "projectId": "proj_code",
-    "updatedByDeviceId": "dev_updater",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkView.missing.updatedByDeviceId": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdAt": "2026-06-23T12:00:00Z",
-    "createdByDeviceId": "dev_creator",
-    "lifecycle": "active",
-    "name": "Primary",
-    "overlayHead": null,
-    "overlayVersion": 0,
-    "projectId": "proj_code",
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkView.missing.visiblePath": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdAt": "2026-06-23T12:00:00Z",
-    "createdByDeviceId": "dev_creator",
-    "lifecycle": "active",
-    "name": "Primary",
-    "overlayHead": null,
-    "overlayVersion": 0,
-    "projectId": "proj_code",
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "updatedByDeviceId": "dev_updater",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkView.missing.workspaceId": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdAt": "2026-06-23T12:00:00Z",
-    "createdByDeviceId": "dev_creator",
-    "lifecycle": "active",
-    "name": "Primary",
-    "overlayHead": null,
-    "overlayVersion": 0,
-    "projectId": "proj_code",
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "updatedByDeviceId": "dev_updater",
-    "visiblePath": ".work/primary",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkView.missing.workViewId": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdAt": "2026-06-23T12:00:00Z",
-    "createdByDeviceId": "dev_creator",
-    "lifecycle": "active",
-    "name": "Primary",
-    "overlayHead": null,
-    "overlayVersion": 0,
-    "projectId": "proj_code",
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "updatedByDeviceId": "dev_updater",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code"
-  },
-  "HostedWorkViewLifecycleState.unknown": "unknown.HostedWorkViewLifecycleState",
-  "HostedWorkViewOverlayCommitOutcome.unknown": "unknown.HostedWorkViewOverlayCommitOutcome",
-  "HostedWorkViewsCommitOverlayPointerRequest.missing.committedByDeviceId": {
-    "committedByDeviceProof": "proof_overlay",
-    "expectedOverlayVersion": 0,
-    "overlayObject": {
-      "byteLength": 128,
-      "contentId": "cid_overlay",
-      "hash": "b3_fixture",
-      "keyEpoch": 1,
-      "kind": "overlay-pack",
-      "objectKey": "packs_pk_fixture"
-    },
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCommitOverlayPointerRequest.missing.committedByDeviceProof": {
-    "committedByDeviceId": "dev_committer",
-    "expectedOverlayVersion": 0,
-    "overlayObject": {
-      "byteLength": 128,
-      "contentId": "cid_overlay",
-      "hash": "b3_fixture",
-      "keyEpoch": 1,
-      "kind": "overlay-pack",
-      "objectKey": "packs_pk_fixture"
-    },
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCommitOverlayPointerRequest.missing.expectedOverlayVersion": {
-    "committedByDeviceId": "dev_committer",
-    "committedByDeviceProof": "proof_overlay",
-    "overlayObject": {
-      "byteLength": 128,
-      "contentId": "cid_overlay",
-      "hash": "b3_fixture",
-      "keyEpoch": 1,
-      "kind": "overlay-pack",
-      "objectKey": "packs_pk_fixture"
-    },
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCommitOverlayPointerRequest.missing.overlayObject": {
-    "committedByDeviceId": "dev_committer",
-    "committedByDeviceProof": "proof_overlay",
-    "expectedOverlayVersion": 0,
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCommitOverlayPointerRequest.missing.workspaceId": {
-    "committedByDeviceId": "dev_committer",
-    "committedByDeviceProof": "proof_overlay",
-    "expectedOverlayVersion": 0,
-    "overlayObject": {
-      "byteLength": 128,
-      "contentId": "cid_overlay",
-      "hash": "b3_fixture",
-      "keyEpoch": 1,
-      "kind": "overlay-pack",
-      "objectKey": "packs_pk_fixture"
-    },
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCommitOverlayPointerRequest.missing.workViewId": {
-    "committedByDeviceId": "dev_committer",
-    "committedByDeviceProof": "proof_overlay",
-    "expectedOverlayVersion": 0,
-    "overlayObject": {
-      "byteLength": 128,
-      "contentId": "cid_overlay",
-      "hash": "b3_fixture",
-      "keyEpoch": 1,
-      "kind": "overlay-pack",
-      "objectKey": "packs_pk_fixture"
-    },
-    "workspaceId": "ws_code"
-  },
-  "HostedWorkViewsCommitOverlayPointerResponse.missing.outcome": {},
-  "HostedWorkViewsCommitOverlayPointerResponse.null.currentWorkView": {
-    "currentWorkView": null,
-    "outcome": "committed"
-  },
-  "HostedWorkViewsCommitOverlayPointerResponse.null.workView": {
-    "outcome": "committed",
-    "workView": null
-  },
-  "HostedWorkViewsCreateWorkViewRequest.missing.baseSnapshotId": {
-    "baseWorkspaceVersion": 1,
-    "createdByDeviceId": "dev_creator",
-    "createdByDeviceProof": "proof_create",
-    "name": "Primary",
-    "projectId": "proj_code",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCreateWorkViewRequest.missing.baseWorkspaceVersion": {
-    "baseSnapshotId": "snap_base",
-    "createdByDeviceId": "dev_creator",
-    "createdByDeviceProof": "proof_create",
-    "name": "Primary",
-    "projectId": "proj_code",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCreateWorkViewRequest.missing.createdByDeviceId": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdByDeviceProof": "proof_create",
-    "name": "Primary",
-    "projectId": "proj_code",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCreateWorkViewRequest.missing.createdByDeviceProof": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdByDeviceId": "dev_creator",
-    "name": "Primary",
-    "projectId": "proj_code",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCreateWorkViewRequest.missing.name": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdByDeviceId": "dev_creator",
-    "createdByDeviceProof": "proof_create",
-    "projectId": "proj_code",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCreateWorkViewRequest.missing.projectId": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdByDeviceId": "dev_creator",
-    "createdByDeviceProof": "proof_create",
-    "name": "Primary",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCreateWorkViewRequest.missing.visiblePath": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdByDeviceId": "dev_creator",
-    "createdByDeviceProof": "proof_create",
-    "name": "Primary",
-    "projectId": "proj_code",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCreateWorkViewRequest.missing.workspaceId": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdByDeviceId": "dev_creator",
-    "createdByDeviceProof": "proof_create",
-    "name": "Primary",
-    "projectId": "proj_code",
-    "visiblePath": ".work/primary",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCreateWorkViewRequest.missing.workViewId": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdByDeviceId": "dev_creator",
-    "createdByDeviceProof": "proof_create",
-    "name": "Primary",
-    "projectId": "proj_code",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code"
-  },
-  "HostedWorkViewsCreateWorkViewRequest.null.expiresAt": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdByDeviceId": "dev_creator",
-    "createdByDeviceProof": "proof_create",
-    "expiresAt": null,
-    "name": "Primary",
-    "projectId": "proj_code",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCreateWorkViewRequest.null.retainUntil": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdByDeviceId": "dev_creator",
-    "createdByDeviceProof": "proof_create",
-    "name": "Primary",
-    "projectId": "proj_code",
-    "retainUntil": null,
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsListWorkViewsRequest.missing.includeAll": {
-    "requestedByDeviceId": "dev_reader",
-    "requestedByDeviceProof": "proof_list",
-    "workspaceId": "ws_code"
-  },
-  "HostedWorkViewsListWorkViewsRequest.missing.requestedByDeviceId": {
-    "includeAll": false,
-    "requestedByDeviceProof": "proof_list",
-    "workspaceId": "ws_code"
-  },
-  "HostedWorkViewsListWorkViewsRequest.missing.requestedByDeviceProof": {
-    "includeAll": false,
-    "requestedByDeviceId": "dev_reader",
-    "workspaceId": "ws_code"
-  },
-  "HostedWorkViewsListWorkViewsRequest.missing.workspaceId": {
-    "includeAll": false,
-    "requestedByDeviceId": "dev_reader",
-    "requestedByDeviceProof": "proof_list"
-  },
-  "HostedWorkViewsRestoreWorkViewRequest.missing.restoredByDeviceId": {
-    "restoredByDeviceProof": "proof_restore",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsRestoreWorkViewRequest.missing.restoredByDeviceProof": {
-    "restoredByDeviceId": "dev_restorer",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsRestoreWorkViewRequest.missing.workspaceId": {
-    "restoredByDeviceId": "dev_restorer",
-    "restoredByDeviceProof": "proof_restore",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsRestoreWorkViewRequest.missing.workViewId": {
-    "restoredByDeviceId": "dev_restorer",
-    "restoredByDeviceProof": "proof_restore",
-    "workspaceId": "ws_code"
-  },
-  "HostedWorkViewsUpdateWorkViewLifecycleRequest.missing.lifecycle": {
-    "updatedByDeviceId": "dev_updater",
-    "updatedByDeviceProof": "proof_lifecycle",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsUpdateWorkViewLifecycleRequest.missing.updatedByDeviceId": {
-    "lifecycle": "review-ready",
-    "updatedByDeviceProof": "proof_lifecycle",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsUpdateWorkViewLifecycleRequest.missing.updatedByDeviceProof": {
-    "lifecycle": "review-ready",
-    "updatedByDeviceId": "dev_updater",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsUpdateWorkViewLifecycleRequest.missing.workspaceId": {
-    "lifecycle": "review-ready",
-    "updatedByDeviceId": "dev_updater",
-    "updatedByDeviceProof": "proof_lifecycle",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsUpdateWorkViewLifecycleRequest.missing.workViewId": {
-    "lifecycle": "review-ready",
-    "updatedByDeviceId": "dev_updater",
-    "updatedByDeviceProof": "proof_lifecycle",
-    "workspaceId": "ws_code"
   },
   "StatusActionReference.missing.kind": {},
   "StatusActionReference.null.targetId": {
@@ -8379,7 +5948,6 @@
   },
   "WireCommandErrorStatus.unknown": "unknown.WireCommandErrorStatus",
   "WireCommandRecoverability.unknown": "unknown.WireCommandRecoverability",
-  "WireComponentState.unknown": "unknown.WireComponentState",
   "WireContractCommandOutput.missing.command": {
     "contractVersion": 8,
     "schemaHash": "0000000000000000000000000000000000000000000000000000000000000000"
@@ -8393,6 +5961,20 @@
     "contractVersion": 8
   },
   "WireControlPlaneSupportCapability.unknown": "unknown.WireControlPlaneSupportCapability",
+  "WireConvergenceReadinessReason.unknown": "unknown.WireConvergenceReadinessReason",
+  "WireConvergenceReadinessState.unknown": "unknown.WireConvergenceReadinessState",
+  "WireConvergenceStatusSummary.missing.reasons": {
+    "revision": 42,
+    "state": "ready"
+  },
+  "WireConvergenceStatusSummary.missing.revision": {
+    "reasons": [],
+    "state": "ready"
+  },
+  "WireConvergenceStatusSummary.missing.state": {
+    "reasons": [],
+    "revision": 42
+  },
   "WireEventActor.missing.kind": {},
   "WireEventActor.null.displayName": {
     "displayName": null,
@@ -8429,15 +6011,6 @@
   },
   "WireEventWatermarks.null.lastScanAt": {
     "lastScanAt": null
-  },
-  "WireEventWatermarks.null.networkState": {
-    "networkState": null
-  },
-  "WireEventWatermarks.null.syncState": {
-    "syncState": null
-  },
-  "WireEventWatermarks.null.watcherState": {
-    "watcherState": null
   },
   "WireFreshnessAxis.unknown": "unknown.WireFreshnessAxis",
   "WireFreshnessVerdict.unknown": "unknown.WireFreshnessVerdict",
@@ -8486,7 +6059,6 @@
     "unavailableBecause": "Not available."
   },
   "WireMaterializationMode.unknown": "unknown.WireMaterializationMode",
-  "WireNetworkState.unknown": "unknown.WireNetworkState",
   "WireObservedWorkspaceSummary.missing.blockedPathCount": {
     "dependencyPathCount": 0,
     "envFileCount": 0,
@@ -8982,6 +6554,30 @@
       "snapshotVersion": 1
     }
   },
+  "WireStatusCommandOutput.null.convergence": {
+    "command": "status",
+    "contractVersion": 8,
+    "convergence": null,
+    "eventWatermarks": {},
+    "freshness": "current",
+    "generatedAt": "2026-07-12T00:00:00Z",
+    "items": [],
+    "limits": [],
+    "nextActions": [],
+    "status": {
+      "attentionItems": [],
+      "level": "healthy"
+    },
+    "statusSummary": {
+      "attention": "none",
+      "availability": "ready",
+      "facts": [],
+      "freshness": "fresh",
+      "observedAt": "2026-07-12T00:00:00Z",
+      "snapshotVersion": 1
+    },
+    "workspaceId": "ws_fixture"
+  },
   "WireStatusCommandOutput.null.deviceApprovals": {
     "command": "status",
     "contractVersion": 8,
@@ -9040,6 +6636,30 @@
     "limits": [],
     "nextActions": [],
     "requestedPath": null,
+    "status": {
+      "attentionItems": [],
+      "level": "healthy"
+    },
+    "statusSummary": {
+      "attention": "none",
+      "availability": "ready",
+      "facts": [],
+      "freshness": "fresh",
+      "observedAt": "2026-07-12T00:00:00Z",
+      "snapshotVersion": 1
+    },
+    "workspaceId": "ws_fixture"
+  },
+  "WireStatusCommandOutput.null.resolvedProjectRoot": {
+    "command": "status",
+    "contractVersion": 8,
+    "eventWatermarks": {},
+    "freshness": "current",
+    "generatedAt": "2026-07-12T00:00:00Z",
+    "items": [],
+    "limits": [],
+    "nextActions": [],
+    "resolvedProjectRoot": null,
     "status": {
       "attentionItems": [],
       "level": "healthy"

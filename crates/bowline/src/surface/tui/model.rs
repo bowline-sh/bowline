@@ -45,6 +45,7 @@ pub enum TuiTone {
 }
 
 impl TuiTone {
+    #[cfg(test)]
     pub fn from_status_label(level: &str) -> Self {
         StatusLevel::from_status_label(level)
             .map(Self::from)
@@ -150,14 +151,15 @@ impl TuiModel {
         self
     }
 
-    pub fn from_resolve(
+    #[cfg(test)]
+    pub fn from_parts(
         summary: String,
         tone: TuiTone,
         actions: Vec<TuiAction>,
         details: Vec<String>,
     ) -> Self {
         Self {
-            title: "bowline resolve".to_string(),
+            title: "bowline".to_string(),
             status: summary,
             tone,
             details,
@@ -399,9 +401,11 @@ mod tests {
             scope: Some(StatusScope::Project),
             requested_path: None,
             resolved_workspace_root: Some("~/Code".to_string()),
+            resolved_project_root: None,
             workspace_summary: None,
             setup_readiness: None,
             sync_queue: None,
+            convergence: None,
             freshness: FreshnessVerdict::Unknown,
             stale_bases: Vec::new(),
             status: WorkspaceStatus {
@@ -415,15 +419,15 @@ mod tests {
                 last_scan_at: None,
                 last_event_id: None,
                 event_lag_ms: None,
-                sync_state: None,
-                watcher_state: None,
-                network_state: None,
             },
             next_actions: vec![RepairCommand::inspect(
                 "Inspect status".to_string(),
                 Some("bowline status --root ~/Code".to_string()),
             )],
             device_approvals: Vec::new(),
+            service: None,
+            authentication: None,
+            sync: None,
         }
     }
 
@@ -492,7 +496,7 @@ mod tests {
         assert_eq!(TuiTone::from_status_label("unknown"), TuiTone::Attention);
 
         assert_eq!(
-            TuiModel::from_resolve(
+            TuiModel::from_parts(
                 "no unresolved conflict bundles found".to_string(),
                 TuiTone::Healthy,
                 Vec::new(),

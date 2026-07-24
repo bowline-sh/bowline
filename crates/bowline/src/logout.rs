@@ -13,49 +13,38 @@ pub fn run(generated_at: String) -> Result<LogoutCommandOutput, String> {
     let key_store = runtime::key_store()?;
     let stored_account_session = runtime::stored_account_session_revocation(&*key_store)?;
     let environment_account_session = runtime::environment_account_session_revocation()?;
+    let persisted_account_session = runtime::persisted_account_session_revocation()?;
     run_with(
         generated_at,
         &*key_store,
         stored_account_session,
         environment_account_session,
+        persisted_account_session,
         runtime::revoke_account_session,
+        runtime::clear_persisted_account_session,
     )
 }
 
-fn run_with<F>(
+fn run_with<F, C>(
     generated_at: String,
     key_store: &dyn DeviceKeyStore,
     stored_account_session: Option<runtime::AccountSessionRevocation>,
     environment_account_session: Option<runtime::AccountSessionRevocation>,
+    persisted_account_session: Option<runtime::AccountSessionRevocation>,
     mut revoke_account_session: F,
+    clear_persisted_account_session: C,
 ) -> Result<LogoutCommandOutput, String>
 where
     F: FnMut(&str, &str) -> Result<(), String>,
+    C: FnOnce() -> Result<bool, String>,
 {
-    let mut revoked_remote_session = false;
-    if let Some(session) = stored_account_session.as_ref() {
-        revoke_account_session(&session.session_id, &session.revocation_token).map_err(
-            |error| {
-                format!(
-                    "could not revoke the remote account session; local login was kept: {error}"
-                )
-            },
-        )?;
-        revoked_remote_session = true;
-    }
-    if let Some(session) = environment_account_session.as_ref()
-        && Some(session.session_id.as_str())
-            != stored_account_session
-                .as_ref()
-                .map(|stored| stored.session_id.as_str())
-    {
-        revoke_account_session(&session.session_id, &session.revocation_token).map_err(|error| {
-            format!(
-                "could not revoke the environment-provided account session; local login was kept: {error}"
-            )
-        })?;
-        revoked_remote_session = true;
-    }
+    let sessions = [
+        ("stored", stored_account_session.as_ref()),
+        ("environment-provided", environment_account_session.as_ref()),
+        ("persisted", persisted_account_session.as_ref()),
+    ];
+    let revoked_remote_session = revoke_sessions(&sessions, &mut revoke_account_session)?;
+    let cleared_persisted_session = clear_persisted_account_session()?;
     let cleared_local_login = key_store
         .clear_account_tokens()
         .map_err(|error| error.to_string())?;
@@ -63,12 +52,62 @@ where
         contract_version: CONTRACT_VERSION,
         command: CommandName::Logout,
         generated_at,
-        signed_out: revoked_remote_session || cleared_local_login,
+        signed_out: revoked_remote_session || cleared_persisted_session || cleared_local_login,
         next_actions: vec![RepairCommand::inspect(
             "Sign in again".to_string(),
             Some("bowline login".to_string()),
         )],
     })
+}
+
+fn revoke_sessions<F>(
+    sessions: &[(&str, Option<&runtime::AccountSessionRevocation>)],
+    revoke_account_session: &mut F,
+) -> Result<bool, String>
+where
+    F: FnMut(&str, &str) -> Result<(), String>,
+{
+    let mut revoked_session_ids = Vec::new();
+    for (source, session) in sessions {
+        let Some(session) = session else {
+            continue;
+        };
+        if revoked_session_ids.contains(&session.session_id) {
+            continue;
+        }
+        let mut attempted_tokens = Vec::new();
+        let mut last_error = None;
+        for (_, candidate) in sessions {
+            let Some(candidate) = candidate.filter(|candidate| {
+                candidate.session_id == session.session_id
+                    && !attempted_tokens.contains(&candidate.revocation_token)
+            }) else {
+                continue;
+            };
+            attempted_tokens.push(candidate.revocation_token.clone());
+            match revoke_account_session(&candidate.session_id, &candidate.revocation_token) {
+                Ok(()) => {
+                    last_error = None;
+                    break;
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        if let Some(error) = last_error {
+            let message = if *source == "stored" {
+                format!(
+                    "could not revoke the remote account session; local login was kept: {error}"
+                )
+            } else {
+                format!(
+                    "could not revoke the {source} account session; local login was kept: {error}"
+                )
+            };
+            return Err(message);
+        }
+        revoked_session_ids.push(session.session_id.clone());
+    }
+    Ok(!revoked_session_ids.is_empty())
 }
 
 pub(super) fn print_logout(json: bool) -> ExitCode {
@@ -113,7 +152,9 @@ mod tests {
                 "bowline_revoke_existing",
             )),
             None,
+            None,
             |_, _| Err("control plane unavailable".to_string()),
+            || Ok(false),
         )
         .expect_err("logout must fail closed");
 
@@ -141,11 +182,13 @@ mod tests {
                 "bowline_revoke_existing",
             )),
             None,
+            None,
             |session_id, revocation_token| {
                 assert_eq!(session_id, "bowline_session_existing");
                 assert_eq!(revocation_token, "bowline_revoke_existing");
                 Ok(())
             },
+            || Ok(false),
         )
         .expect("logout succeeds");
 
@@ -177,10 +220,12 @@ mod tests {
                 "bowline_session_environment",
                 "bowline_revoke_environment",
             )),
+            None,
             |session_id, revocation_token| {
                 revoked.push((session_id.to_string(), revocation_token.to_string()));
                 Ok(())
             },
+            || Ok(false),
         )
         .expect("logout succeeds");
 
@@ -219,10 +264,12 @@ mod tests {
                 "bowline_session_environment",
                 "bowline_revoke_environment",
             )),
+            None,
             |session_id, revocation_token| {
                 revoked.push((session_id.to_string(), revocation_token.to_string()));
                 Ok(())
             },
+            || Ok(false),
         )
         .expect("logout succeeds");
 
@@ -232,6 +279,80 @@ mod tests {
                 "bowline_session_environment".to_string(),
                 "bowline_revoke_environment".to_string(),
             )]
+        );
+        assert!(output.signed_out);
+    }
+
+    #[test]
+    fn persisted_session_is_revoked_once_and_removed() {
+        let store = FakeKeychain::default();
+        let persisted = session("bowline_session_remote", "bowline_revoke_remote");
+        let mut revoked = Vec::new();
+        let mut cleared = false;
+
+        let output = run_with(
+            "2026-07-15T12:00:00Z".to_string(),
+            &store,
+            None,
+            Some(persisted.clone()),
+            Some(persisted),
+            |session_id, revocation_token| {
+                revoked.push((session_id.to_string(), revocation_token.to_string()));
+                Ok(())
+            },
+            || {
+                cleared = true;
+                Ok(true)
+            },
+        )
+        .expect("logout succeeds");
+
+        assert_eq!(
+            revoked,
+            vec![(
+                "bowline_session_remote".to_string(),
+                "bowline_revoke_remote".to_string(),
+            )]
+        );
+        assert!(cleared);
+        assert!(output.signed_out);
+    }
+
+    #[test]
+    fn alternate_token_for_the_same_session_can_complete_logout() {
+        let store = FakeKeychain::default();
+        let mut attempts = Vec::new();
+
+        let output = run_with(
+            "2026-07-15T12:00:00Z".to_string(),
+            &store,
+            None,
+            Some(session("bowline_session_remote", "bowline_revoke_stale")),
+            Some(session("bowline_session_remote", "bowline_revoke_current")),
+            |session_id, revocation_token| {
+                attempts.push((session_id.to_string(), revocation_token.to_string()));
+                if revocation_token == "bowline_revoke_current" {
+                    Ok(())
+                } else {
+                    Err("revocation token rejected".to_string())
+                }
+            },
+            || Ok(true),
+        )
+        .expect("current persisted token completes logout");
+
+        assert_eq!(
+            attempts,
+            vec![
+                (
+                    "bowline_session_remote".to_string(),
+                    "bowline_revoke_stale".to_string(),
+                ),
+                (
+                    "bowline_session_remote".to_string(),
+                    "bowline_revoke_current".to_string(),
+                ),
+            ]
         );
         assert!(output.signed_out);
     }

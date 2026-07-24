@@ -5,61 +5,42 @@ mod metrics;
 #[cfg(test)]
 mod tests;
 
-use std::{
-    cmp::Reverse,
-    collections::{BTreeMap, BTreeSet, BinaryHeap},
-    fmt,
-    sync::Arc,
-    time::Duration,
-};
+use std::{cmp::Reverse, collections::BinaryHeap, fmt, sync::Arc, time::Duration};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 
 use bowline_daemon::status_projection::StatusInputEvent;
 
 pub(super) use clock::{CoordinatorClock, CoordinatorInstant, SystemCoordinatorClock};
+#[cfg(test)]
+pub(super) use lanes::CoordinatorSubmitErrorKind;
 pub(super) use lanes::{
-    CoordinatorExecutor, CoordinatorExecutorConfig, CoordinatorJob, CoordinatorSubmitErrorKind,
-    CoordinatorWorkFailure, CoordinatorWorkFailureCode,
+    CoordinatorExecutor, CoordinatorExecutorConfig, CoordinatorJob, CoordinatorWorkFailure,
 };
 pub(super) use metrics::{CoordinatorMetrics, CoordinatorMetricsSnapshot};
 
 pub(super) const COORDINATOR_EVENT_CAPACITY: usize = 1_024;
-pub(super) const DEFAULT_MAX_DIRTY_PATHS_PER_SCOPE: usize = 512;
+
+pub(super) const COORDINATOR_LANE_COUNT: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum CoordinatorLane {
-    Mutation,
-    Query,
-    Sync,
     ControlPlane,
     Notification,
 }
 
 impl CoordinatorLane {
-    pub(super) const ALL: [Self; 5] = [
-        Self::Mutation,
-        Self::Query,
-        Self::Sync,
-        Self::ControlPlane,
-        Self::Notification,
-    ];
+    pub(super) const ALL: [Self; COORDINATOR_LANE_COUNT] = [Self::ControlPlane, Self::Notification];
 
     pub(super) const fn index(self) -> usize {
         match self {
-            Self::Mutation => 0,
-            Self::Query => 1,
-            Self::Sync => 2,
-            Self::ControlPlane => 3,
-            Self::Notification => 4,
+            Self::ControlPlane => 0,
+            Self::Notification => 1,
         }
     }
 
     pub(super) const fn as_str(self) -> &'static str {
         match self {
-            Self::Mutation => "mutation",
-            Self::Query => "query",
-            Self::Sync => "sync",
             Self::ControlPlane => "control-plane",
             Self::Notification => "notification",
         }
@@ -79,64 +60,10 @@ impl CoordinatorJobId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) struct CoordinatorResourceKey(String);
-
-impl CoordinatorResourceKey {
-    pub(super) fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) struct DirtyScopeKey(String);
-
-impl DirtyScopeKey {
-    pub(super) fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) struct DirtyPath(String);
-
-impl DirtyPath {
-    pub(super) fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct FilesystemDirty {
-    pub(super) scope: DirtyScopeKey,
-    pub(super) paths: BTreeSet<DirtyPath>,
-}
-
-impl FilesystemDirty {
-    pub(super) fn one(scope: DirtyScopeKey, path: DirtyPath) -> Self {
-        Self {
-            scope,
-            paths: BTreeSet::from([path]),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum FullScanRecoveryReason {
-    WatcherOverflow,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum PendingDirtyBatch {
-    Paths(BTreeSet<DirtyPath>),
-    FullScan(FullScanRecoveryReason),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum CoordinatorDeadlineKind {
-    DurableRetry(CoordinatorJobId),
-    LeaseRenewal(CoordinatorJobId),
-    WatcherRearm(DirtyScopeKey),
+    /// A pending manifest-engine rebuild is due for another build attempt.
+    EngineRetry(CoordinatorJobId),
     HostedRefresh,
     StatusRefresh,
     NotificationPoll,
@@ -152,7 +79,6 @@ pub(super) struct CoordinatorDeadline {
 pub(super) struct CoordinatorWorkerCompletion {
     pub(super) job_id: CoordinatorJobId,
     pub(super) lane: CoordinatorLane,
-    pub(super) resource: Option<CoordinatorResourceKey>,
     pub(super) outcome: CoordinatorWorkerOutcome,
 }
 
@@ -172,9 +98,7 @@ pub(super) struct CoordinatorWorkerLoss {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum CoordinatorEvent {
-    DurableWorkAvailable,
-    FilesystemDirty(FilesystemDirty),
-    WatcherOverflow(DirtyScopeKey),
+    EngineWorkAvailable,
     StatusInput(StatusInputEvent),
     ProjectionReady,
     WorkerCompleted(CoordinatorWorkerCompletion),
@@ -185,8 +109,7 @@ pub(super) enum CoordinatorEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum CoordinatorAction {
-    DiscoverDurableWork,
-    DirtyReady(DirtyScopeKey),
+    DriveEngine,
     ForwardStatusInput(StatusInputEvent),
     PublishProjection,
     WorkerCompleted(CoordinatorWorkerCompletion),
@@ -257,36 +180,18 @@ pub(super) fn coordinator_channel(
     (CoordinatorHandle { sender }, receiver)
 }
 
-#[derive(Debug, Default)]
-struct PendingDirtyState {
-    paths: BTreeSet<DirtyPath>,
-    full_scan: Option<FullScanRecoveryReason>,
-}
-
 pub(super) struct CoordinatorState<C> {
     clock: C,
     deadlines: BinaryHeap<Reverse<CoordinatorDeadline>>,
-    pending_dirty: BTreeMap<DirtyScopeKey, PendingDirtyState>,
-    max_dirty_paths_per_scope: usize,
     metrics: Arc<CoordinatorMetrics>,
     shutting_down: bool,
 }
 
 impl<C: CoordinatorClock> CoordinatorState<C> {
     pub(super) fn new(clock: C, metrics: Arc<CoordinatorMetrics>) -> Self {
-        Self::with_dirty_capacity(clock, metrics, DEFAULT_MAX_DIRTY_PATHS_PER_SCOPE)
-    }
-
-    pub(super) fn with_dirty_capacity(
-        clock: C,
-        metrics: Arc<CoordinatorMetrics>,
-        max_dirty_paths_per_scope: usize,
-    ) -> Self {
         Self {
             clock,
             deadlines: BinaryHeap::new(),
-            pending_dirty: BTreeMap::new(),
-            max_dirty_paths_per_scope,
             metrics,
             shutting_down: false,
         }
@@ -295,11 +200,9 @@ impl<C: CoordinatorClock> CoordinatorState<C> {
     pub(super) fn handle_event(&mut self, event: CoordinatorEvent) -> Vec<CoordinatorAction> {
         self.metrics.record_event();
         match event {
-            CoordinatorEvent::DurableWorkAvailable => {
-                vec![CoordinatorAction::DiscoverDurableWork]
+            CoordinatorEvent::EngineWorkAvailable => {
+                vec![CoordinatorAction::DriveEngine]
             }
-            CoordinatorEvent::FilesystemDirty(dirty) => self.record_dirty(dirty),
-            CoordinatorEvent::WatcherOverflow(scope) => self.record_overflow(scope),
             CoordinatorEvent::StatusInput(input) => {
                 vec![CoordinatorAction::ForwardStatusInput(input)]
             }
@@ -343,69 +246,8 @@ impl<C: CoordinatorClock> CoordinatorState<C> {
             .map(|Reverse(deadline)| deadline.due.saturating_duration_since(self.clock.now()))
     }
 
-    pub(super) fn take_dirty(&mut self, scope: &DirtyScopeKey) -> Option<PendingDirtyBatch> {
-        let pending = self.pending_dirty.remove(scope)?;
-        self.metrics
-            .record_pending_dirty_scopes(self.pending_dirty.len());
-        pending
-            .full_scan
-            .map(PendingDirtyBatch::FullScan)
-            .or_else(|| {
-                (!pending.paths.is_empty()).then_some(PendingDirtyBatch::Paths(pending.paths))
-            })
-    }
-
     pub(super) fn is_shutting_down(&self) -> bool {
         self.shutting_down
-    }
-
-    fn record_dirty(&mut self, dirty: FilesystemDirty) -> Vec<CoordinatorAction> {
-        self.metrics.record_filesystem_event();
-        let is_new_scope = !self.pending_dirty.contains_key(&dirty.scope);
-        let pending = self.pending_dirty.entry(dirty.scope.clone()).or_default();
-        if pending.full_scan.is_some() {
-            self.metrics.record_filesystem_event_coalesced();
-            return Vec::new();
-        }
-        let before = pending.paths.len();
-        pending.paths.extend(dirty.paths);
-        if pending.paths.len() == before {
-            self.metrics.record_filesystem_event_coalesced();
-        }
-        if pending.paths.len() > self.max_dirty_paths_per_scope {
-            pending.paths.clear();
-            pending.full_scan = Some(FullScanRecoveryReason::WatcherOverflow);
-            self.metrics.record_filesystem_overflow();
-        }
-        self.metrics
-            .record_pending_dirty_scopes(self.pending_dirty.len());
-        if is_new_scope {
-            vec![CoordinatorAction::DirtyReady(dirty.scope)]
-        } else {
-            self.metrics.record_filesystem_wake_coalesced();
-            Vec::new()
-        }
-    }
-
-    fn record_overflow(&mut self, scope: DirtyScopeKey) -> Vec<CoordinatorAction> {
-        let is_new_scope = !self.pending_dirty.contains_key(&scope);
-        let pending = self.pending_dirty.entry(scope.clone()).or_default();
-        let newly_overflowed = pending.full_scan.is_none();
-        pending.paths.clear();
-        pending.full_scan = Some(FullScanRecoveryReason::WatcherOverflow);
-        if newly_overflowed {
-            self.metrics.record_filesystem_overflow();
-        } else {
-            self.metrics.record_filesystem_event_coalesced();
-        }
-        self.metrics
-            .record_pending_dirty_scopes(self.pending_dirty.len());
-        if is_new_scope {
-            vec![CoordinatorAction::DirtyReady(scope)]
-        } else {
-            self.metrics.record_filesystem_wake_coalesced();
-            Vec::new()
-        }
     }
 }
 

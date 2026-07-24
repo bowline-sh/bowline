@@ -27,13 +27,16 @@ pub enum StatusSourceFailurePolicy {
 pub enum StatusCollectorFailureCode {
     LocalStatusRecoverable,
     LocalStatusUnrecoverable,
+    ConvergenceUnavailable,
     InjectedFailure,
 }
 
 impl StatusCollectorFailureCode {
     pub fn is_recoverable(self) -> bool {
         match self {
-            Self::LocalStatusRecoverable | Self::InjectedFailure => true,
+            Self::LocalStatusRecoverable | Self::ConvergenceUnavailable | Self::InjectedFailure => {
+                true
+            }
             Self::LocalStatusUnrecoverable => false,
         }
     }
@@ -70,8 +73,8 @@ pub struct DeviceTrustStatusFacts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatusSourceFacts {
     Metadata(Box<LocalStatusFacts>),
+    Convergence(Box<super::engine_status::EngineConvergenceFacts>),
     SyncRuntime(StatusSourceStateFacts),
-    StoreHealth(StatusSourceStateFacts),
     DeviceTrust(StatusSourceStateFacts),
     DeviceTrustDetails(DeviceTrustStatusFacts),
     UpdateAvailability(StatusSourceStateFacts),
@@ -194,8 +197,8 @@ impl StatusSourceFacts {
     pub fn source(&self) -> StatusSource {
         match self {
             Self::Metadata(_) => StatusSource::Metadata,
+            Self::Convergence(_) => StatusSource::Convergence,
             Self::SyncRuntime(_) => StatusSource::SyncRuntime,
-            Self::StoreHealth(_) => StatusSource::StoreHealth,
             Self::DeviceTrust(_) | Self::DeviceTrustDetails(_) => StatusSource::DeviceTrust,
             Self::UpdateAvailability(_) => StatusSource::UpdateAvailability,
             Self::NotificationState(_) => StatusSource::NotificationState,
@@ -213,8 +216,8 @@ impl StatusSourceFacts {
     pub(crate) fn state_facts(&self) -> Option<&StatusSourceStateFacts> {
         match self {
             Self::Metadata(_) => None,
+            Self::Convergence(_) => None,
             Self::SyncRuntime(facts)
-            | Self::StoreHealth(facts)
             | Self::UpdateAvailability(facts)
             | Self::NotificationState(facts)
             | Self::ServiceRuntime(facts) => Some(facts),

@@ -36,11 +36,6 @@
     "WorkDiffCommandOutput",
     "WorkLifecycleCommandOutput",
     "WorkCleanupCommandOutput",
-    "AgentLeaseCreateCommandOutput",
-    "AgentContextCommandOutput",
-    "AgentPromptCommandOutput",
-    "AgentToolResult",
-    "AgentMcpTokenCommandOutput",
     "DaemonCommandOutput",
     "DaemonStatusOutput",
     "DaemonServiceOutput",
@@ -57,31 +52,10 @@
       "sideEffectLevel": "none",
       "supportsJson": true,
       "supportsDryRun": false,
-      "relatedCommands": ["help", "version"]
-    },
-    {
-      "group": "Workspace",
-      "name": "history",
-      "summary": "List project restore points and path history.",
-      "usage": "bowline history [path] [--limit <n>] [--cursor <cursor>] [--since <time>] [--until <time>] [--json]",
-      "positionals": [
-        {
-          "name": "path",
-          "required": false,
-          "repeatable": false
-        }
-      ],
-      "jsonOutputType": "HistoryCommandOutput",
-      "sideEffectLevel": "read",
-      "supportsJson": true,
-      "supportsDryRun": false,
-      "boundedOutput": {
-        "defaultLimit": 50,
-        "maxLimit": 500,
-        "cursorFormat": "offset",
-        "pathPrefix": false
-      },
-      "relatedCommands": ["events", "work create"]
+      "relatedCommands": [
+        "help",
+        "version"
+      ]
     },
     {
       "group": "Trust",
@@ -93,7 +67,11 @@
       "sideEffectLevel": "read",
       "supportsJson": true,
       "supportsDryRun": false,
-      "relatedCommands": ["device approve", "device revoke", "device request"]
+      "relatedCommands": [
+        "device approve",
+        "device revoke",
+        "device request"
+      ]
     },
     {
       "group": "Work",
@@ -111,7 +89,9 @@
       "sideEffectLevel": "read",
       "supportsJson": true,
       "supportsDryRun": false,
-      "relatedCommands": ["work review"]
+      "relatedCommands": [
+        "work review"
+      ]
     }
   ],
   "fixtures": [
@@ -119,11 +99,6 @@
       "name": "help",
       "path": "tests/contracts/commands/help.json",
       "outputType": "HelpCommandOutput"
-    },
-    {
-      "name": "history",
-      "path": "tests/contracts/commands/history.json",
-      "outputType": "HistoryCommandOutput"
     },
     {
       "name": "setup-machine",

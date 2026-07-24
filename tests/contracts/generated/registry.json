@@ -17,8 +17,6 @@
     "WireStatusSubject",
     "WireWorkspaceStatus",
     "WireStatusItem",
-    "WireComponentState",
-    "WireNetworkState",
     "WireFreshnessAxis",
     "WireFreshnessVerdict",
     "WireProjectSetupReadinessState",
@@ -33,6 +31,9 @@
     "WireProjectSetupReadiness",
     "WireLimitedCapability",
     "WireRepairCommand",
+    "WireConvergenceReadinessState",
+    "WireConvergenceReadinessReason",
+    "WireConvergenceStatusSummary",
     "WireStatusCommandOutput",
     "WireEventSubjectKind",
     "WireEventActorKind",
@@ -78,18 +79,9 @@
     "DaemonStatusSubscribeResult",
     "DaemonStatusEventPayload",
     "DaemonDeviceActionParams",
-    "DaemonSyncRequestParams",
-    "DaemonSyncOperationKind",
     "DaemonSyncResourceKind",
-    "DaemonSyncOperationState",
-    "DaemonSyncOperationOwnership",
-    "DaemonSyncCancellationOutcome",
-    "DaemonSyncRequestOutcome",
     "DaemonSyncResource",
-    "DaemonOperationResult",
-    "DaemonSyncRequestResult",
     "DaemonCancelOperationParams",
-    "DaemonCancelOperationResult",
     "HostedRefsListWorkspaceRefHistoryRequest",
     "HostedWorkspaceRefHistoryRecord",
     "HostedRefsListWorkspaceRefHistoryResponse",
@@ -100,19 +92,6 @@
     "HostedRetentionListStorageGcObjectsResponse",
     "HostedRetentionDeleteObjectMetadataAfterGcRequest",
     "HostedRetentionDeleteObjectMetadataAfterGcResponse",
-    "HostedWorkViewLifecycleState",
-    "HostedObjectKind",
-    "HostedWorkViewOverlayCommitOutcome",
-    "HostedObjectPointer",
-    "HostedWorkView",
-    "HostedOverlayObjectInput",
-    "HostedWorkViewsListWorkViewsRequest",
-    "HostedWorkViewsListWorkViewsResponse",
-    "HostedWorkViewsCreateWorkViewRequest",
-    "HostedWorkViewsRestoreWorkViewRequest",
-    "HostedWorkViewsUpdateWorkViewLifecycleRequest",
-    "HostedWorkViewsCommitOverlayPointerRequest",
-    "HostedWorkViewsCommitOverlayPointerResponse",
     "HostedRecoveryEnvelopeState",
     "HostedRecoveryEnvelope",
     "HostedRecoveryDeviceGrant",
@@ -144,6 +123,7 @@
     "HostedDevicesGetEncryptedGrantWithBootstrapRequest",
     "HostedDevicesListDeviceTrustRequest",
     "HostedDevicesRevokeDeviceRequest",
+    "HostedObjectKind",
     "HostedObjectMetadata",
     "HostedDownloadIntentRange",
     "HostedObjectMetadataOrNull",
@@ -159,8 +139,6 @@
     "HostedObjectsCreateDownloadIntentResponse",
     "HostedObjectsCreateUploadVerificationIntentResponse",
     "HostedObjectsCreateStorageGcDeleteIntentResponse",
-    "HostedConflictOccurrenceState",
-    "HostedConflictReconcileOutcome",
     "HostedCompactEventKind",
     "HostedStatusAvailability",
     "HostedStatusAttention",
@@ -174,11 +152,6 @@
     "HostedRefsCompareAndSwapWorkspaceRefRequest",
     "HostedWorkspaceRefOrNull",
     "HostedRefsCompareAndSwapWorkspaceRefResponse",
-    "HostedConflictMetadataRecord",
-    "HostedConflictsListWorkspaceConflictsRequest",
-    "HostedConflictsListWorkspaceConflictsResponse",
-    "HostedConflictsReconcileConflictOccurrenceRequest",
-    "HostedConflictReconcileResult",
     "HostedCompactEvent",
     "HostedEventsListCompactEventsRequest",
     "HostedEventsListCompactEventsResponse",
@@ -191,35 +164,8 @@
     "HostedLimitedCapability",
     "HostedStatusPublishWorkspaceStatusRequest",
     "HostedStatusPublishWorkspaceStatusResponse",
-    "HostedLeaseSessionState",
-    "HostedLeaseWriteTargetMode",
-    "HostedLeaseEventKind",
-    "HostedLeaseUpdateError",
-    "HostedLease",
-    "HostedEventsCreateLeaseRequest",
-    "HostedEventsCreateLeaseResponse",
-    "HostedEventsUpdateLeaseRequest",
-    "HostedEventsUpdateLeaseResponse",
-    "HostedEventsListLeasesRequest",
-    "HostedEventsListLeasesResponse",
     "HostedAuthRegisterAccountSessionRequest",
     "HostedAuthRegisterAccountSessionResponse",
-    "HostedMetadataRecordKind",
-    "HostedMetadataBindingOutcome",
-    "HostedMetadataPagePointerInput",
-    "HostedMetadataPagePointer",
-    "HostedSnapshotManifestPointerInput",
-    "HostedSnapshotManifestPointer",
-    "HostedMetadataSidecar",
-    "HostedMetadataBindingInput",
-    "HostedMetadataBindingRecord",
-    "HostedObjectsCommitMetadataBindingsRequest",
-    "HostedMetadataBindingsResponse",
-    "HostedObjectQueriesResolveMetadataBindingsRequest",
-    "HostedObjectsCommitSnapshotRootRequest",
-    "HostedSnapshotRootRecord",
-    "HostedObjectQueriesGetSnapshotRootRequest",
-    "HostedSnapshotRootRecordOrNull",
     "HostedDashboardProviderEnvironment",
     "HostedDashboardWorkspaceRole",
     "HostedProjectionRepairState",
@@ -256,7 +202,6 @@
       "help",
       "version",
       "contract",
-      "mcp",
       "update",
       "unknown",
       "login",
@@ -271,9 +216,7 @@
       "device request",
       "device accept",
       "events",
-      "history",
       "tui",
-      "resolve",
       "forget-local",
       "archive",
       "purge",
@@ -285,14 +228,6 @@
       "work discard",
       "work restore",
       "work cleanup",
-      "agent context",
-      "agent start",
-      "agent prompt",
-      "agent complete",
-      "agent cancel",
-      "agent extend",
-      "agent mcp-token",
-      "lease join",
       "daemon start",
       "daemon stop",
       "daemon status",
@@ -300,8 +235,8 @@
       "daemon restart",
       "daemon uninstall",
       "diagnostics collect",
-      "connect",
-      "handoff"
+      "doctor",
+      "connect"
     ],
     "DaemonRpcErrorCode": [
       "invalid_request",
@@ -318,37 +253,6 @@
       "unavailable",
       "permission_denied",
       "internal"
-    ],
-    "DaemonSyncCancellationOutcome": [
-      "requested",
-      "cancelled",
-      "already-completed",
-      "already-cancelled"
-    ],
-    "DaemonSyncOperationKind": [
-      "daemon-reconcile",
-      "conflict-occurrence-reconcile",
-      "work-view-overlay-sync"
-    ],
-    "DaemonSyncOperationOwnership": [
-      "unclaimed",
-      "owned-by-this-daemon",
-      "owned-by-another-daemon",
-      "lease-expired"
-    ],
-    "DaemonSyncOperationState": [
-      "queued",
-      "claimed",
-      "waiting_retry",
-      "blocked_offline",
-      "reconciliation_required",
-      "attention",
-      "completed",
-      "cancelled"
-    ],
-    "DaemonSyncRequestOutcome": [
-      "enqueued",
-      "coalesced"
     ],
     "DaemonSyncResourceKind": [
       "workspace-sync",
@@ -433,7 +337,6 @@
       "namespace.purge_cancelled",
       "workspace_status.published",
       "object_pointer.added",
-      "snapshot_root.committed",
       "device.requested",
       "device.harness_approved",
       "device.approval_requested",
@@ -449,34 +352,7 @@
       "recovery_key.rotated",
       "recovery_key.revoked",
       "auth.login_started",
-      "auth.login_completed",
-      "conflict.detected",
-      "conflict.resolved",
-      "lease.created",
-      "lease.updated",
-      "lease.dispatched",
-      "lease.claimed",
-      "lease.completed",
-      "lease.review_ready",
-      "overlay.changed",
-      "work.created",
-      "work.updated",
-      "work.review_ready",
-      "work.accepted",
-      "work.discarded",
-      "work.restored",
-      "work.cleanup_previewed",
-      "work.cleanup_completed"
-    ],
-    "HostedConflictOccurrenceState": [
-      "unresolved",
-      "accepted",
-      "rejected"
-    ],
-    "HostedConflictReconcileOutcome": [
-      "applied",
-      "idempotent",
-      "superseded"
+      "auth.login_completed"
     ],
     "HostedDashboardBillingMessageKey": [
       "checkout_pending",
@@ -533,44 +409,9 @@
     "HostedGcDeleteSkipReason": [
       "missing"
     ],
-    "HostedLeaseEventKind": [
-      "lease.created",
-      "lease.updated",
-      "lease.dispatched",
-      "lease.claimed",
-      "lease.completed",
-      "lease.review_ready",
-      "overlay.changed"
-    ],
-    "HostedLeaseSessionState": [
-      "provisional",
-      "open",
-      "completed"
-    ],
-    "HostedLeaseUpdateError": [
-      "lease-missing",
-      "stale-lease"
-    ],
-    "HostedLeaseWriteTargetMode": [
-      "direct",
-      "work-view"
-    ],
-    "HostedMetadataBindingOutcome": [
-      "bound-new",
-      "existing-winner"
-    ],
-    "HostedMetadataRecordKind": [
-      "namespace-page",
-      "content-layout",
-      "segment-page"
-    ],
     "HostedObjectKind": [
-      "source-pack",
-      "locator-index",
-      "snapshot-manifest",
-      "snapshot-metadata-page",
-      "overlay-pack",
-      "conflict-bundle"
+      "blob",
+      "manifest"
     ],
     "HostedProjectionRepairState": [
       "current",
@@ -627,16 +468,6 @@
       "stale",
       "unknown"
     ],
-    "HostedWorkViewLifecycleState": [
-      "active",
-      "review-ready",
-      "accepted",
-      "discarded"
-    ],
-    "HostedWorkViewOverlayCommitOutcome": [
-      "committed",
-      "stale-overlay-head"
-    ],
     "StatusAttention": [
       "none",
       "recommended",
@@ -690,11 +521,6 @@
       "unsupported",
       "none"
     ],
-    "WireComponentState": [
-      "ready",
-      "degraded",
-      "unavailable"
-    ],
     "WireControlPlaneSupportCapability": [
       "device-approval",
       "project-scoped-workspace-ref-cas",
@@ -702,6 +528,29 @@
       "agent-lease",
       "encrypted-object-store",
       "recovery"
+    ],
+    "WireConvergenceReadinessReason": [
+      "startup-recovery",
+      "causes-pending",
+      "attempt-claimed",
+      "attempt-waiting-retry",
+      "reconciliation-required",
+      "recovery-fence-open",
+      "filesystem-epoch-open",
+      "materialization-incomplete",
+      "materialization-conflict",
+      "workspace-authority-unpublished",
+      "watcher-starting",
+      "watcher-recovery-required",
+      "observer-connecting",
+      "observer-unavailable",
+      "attention-required"
+    ],
+    "WireConvergenceReadinessState": [
+      "ready",
+      "converging",
+      "recovering",
+      "limited"
     ],
     "WireEventActorKind": [
       "system",
@@ -754,11 +603,6 @@
       "ignore",
       "local-only",
       "blocked"
-    ],
-    "WireNetworkState": [
-      "online",
-      "degraded",
-      "offline"
     ],
     "WirePathClassification": [
       "workspace-sync",
@@ -835,20 +679,6 @@
       "kind": "action",
       "request": "HostedAuthRegisterAccountSessionRequest",
       "response": "HostedAuthRegisterAccountSessionResponse"
-    },
-    {
-      "convex": "conflicts:listWorkspaceConflicts",
-      "id": "conflicts.listWorkspaceConflicts",
-      "kind": "query",
-      "request": "HostedConflictsListWorkspaceConflictsRequest",
-      "response": "HostedConflictsListWorkspaceConflictsResponse"
-    },
-    {
-      "convex": "conflicts:reconcileConflictOccurrence",
-      "id": "conflicts.reconcileConflictOccurrence",
-      "kind": "mutation",
-      "request": "HostedConflictsReconcileConflictOccurrenceRequest",
-      "response": "HostedConflictReconcileResult"
     },
     {
       "convex": "dashboard:getDashboardShell",
@@ -963,13 +793,6 @@
       "response": "HostedRevokedDevice"
     },
     {
-      "convex": "events:createLease",
-      "id": "events.createLease",
-      "kind": "mutation",
-      "request": "HostedEventsCreateLeaseRequest",
-      "response": "HostedEventsCreateLeaseResponse"
-    },
-    {
       "convex": "events:listCompactEvents",
       "id": "events.listCompactEvents",
       "kind": "query",
@@ -977,53 +800,11 @@
       "response": "HostedEventsListCompactEventsResponse"
     },
     {
-      "convex": "events:listLeases",
-      "id": "events.listLeases",
-      "kind": "query",
-      "request": "HostedEventsListLeasesRequest",
-      "response": "HostedEventsListLeasesResponse"
-    },
-    {
-      "convex": "events:updateLease",
-      "id": "events.updateLease",
-      "kind": "mutation",
-      "request": "HostedEventsUpdateLeaseRequest",
-      "response": "HostedEventsUpdateLeaseResponse"
-    },
-    {
       "convex": "object_queries:getObjectMetadata",
       "id": "object_queries.getObjectMetadata",
       "kind": "query",
       "request": "HostedObjectQueriesGetObjectMetadataRequest",
       "response": "HostedObjectMetadataOrNull"
-    },
-    {
-      "convex": "object_queries:getSnapshotRoot",
-      "id": "object_queries.getSnapshotRoot",
-      "kind": "query",
-      "request": "HostedObjectQueriesGetSnapshotRootRequest",
-      "response": "HostedSnapshotRootRecordOrNull"
-    },
-    {
-      "convex": "object_queries:resolveMetadataBindings",
-      "id": "object_queries.resolveMetadataBindings",
-      "kind": "query",
-      "request": "HostedObjectQueriesResolveMetadataBindingsRequest",
-      "response": "HostedMetadataBindingsResponse"
-    },
-    {
-      "convex": "objects:commitMetadataBindings",
-      "id": "objects.commitMetadataBindings",
-      "kind": "action",
-      "request": "HostedObjectsCommitMetadataBindingsRequest",
-      "response": "HostedMetadataBindingsResponse"
-    },
-    {
-      "convex": "objects:commitSnapshotRoot",
-      "id": "objects.commitSnapshotRoot",
-      "kind": "action",
-      "request": "HostedObjectsCommitSnapshotRootRequest",
-      "response": "HostedSnapshotRootRecord"
     },
     {
       "convex": "objects:commitUploadedObjectMetadata",
@@ -1157,44 +938,9 @@
       "kind": "mutation",
       "request": "HostedStatusPublishWorkspaceStatusRequest",
       "response": "HostedStatusPublishWorkspaceStatusResponse"
-    },
-    {
-      "convex": "work_views:commitOverlayPointer",
-      "id": "work_views.commitOverlayPointer",
-      "kind": "mutation",
-      "request": "HostedWorkViewsCommitOverlayPointerRequest",
-      "response": "HostedWorkViewsCommitOverlayPointerResponse"
-    },
-    {
-      "convex": "work_views:createWorkView",
-      "id": "work_views.createWorkView",
-      "kind": "mutation",
-      "request": "HostedWorkViewsCreateWorkViewRequest",
-      "response": "HostedWorkView"
-    },
-    {
-      "convex": "work_views:listWorkViews",
-      "id": "work_views.listWorkViews",
-      "kind": "query",
-      "request": "HostedWorkViewsListWorkViewsRequest",
-      "response": "HostedWorkViewsListWorkViewsResponse"
-    },
-    {
-      "convex": "work_views:restoreWorkView",
-      "id": "work_views.restoreWorkView",
-      "kind": "mutation",
-      "request": "HostedWorkViewsRestoreWorkViewRequest",
-      "response": "HostedWorkView"
-    },
-    {
-      "convex": "work_views:updateWorkViewLifecycle",
-      "id": "work_views.updateWorkViewLifecycle",
-      "kind": "mutation",
-      "request": "HostedWorkViewsUpdateWorkViewLifecycleRequest",
-      "response": "HostedWorkView"
     }
   ],
   "machineContractVersion": 8,
   "registryVersion": 1,
-  "schemaHash": "90aaff183a675d00a355085f8a588d3d135b786f9e88fb8cde5c8a153078173e"
+  "schemaHash": "4ba7588109ebc1681e45961ce7cfc67a1cfb121e39447807957b0f64adb3ab98"
 }

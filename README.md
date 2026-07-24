@@ -79,15 +79,19 @@ store. Generated folders such as `node_modules` stay local by default.
 
 ## Agent work
 
-Agents work through leases instead of writing directly into the live workspace:
+Agents work in the same synced `~/Code` directories you do. When you want to
+review before changes land, create an isolated work view and point your agent at
+it:
 
 ```bash
-bowline agent start ~/Code/my-project --task "describe the work"
+bowline work create ~/Code/my-project review-run
 bowline work list
 ```
 
-A lease gives an agent a scoped workspace, a hydration budget, freshness checks,
-and a review path before changes land back in the main project.
+A work view is a clean, cd-able directory with the project's env and a fresh
+base. The agent's edits stay isolated until you review and accept them with
+`bowline work review` and `bowline work accept`, or drop them with
+`bowline work discard`.
 
 ## Build from source
 

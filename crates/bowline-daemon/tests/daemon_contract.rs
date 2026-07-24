@@ -2,7 +2,7 @@
 #![allow(clippy::panic)]
 
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::{self, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -73,42 +73,7 @@ fn help_json_lists_only_real_daemon_commands() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).expect("json should be utf8"),
-        "{\"ok\":true,\"command\":\"help\",\"phase\":\"0D\",\"commands\":[\"serve\",\"sync-once\",\"stop\",\"status\",\"version\"],\"socket\":{\"protocol\":\"bowline-daemon-v2\",\"version\":2}}\n"
-    );
-}
-
-#[test]
-fn sync_once_defaults_to_file_secret_store_without_keychain_probe() {
-    let temp = unique_temp_dir("daemon-secret-store");
-    let home = temp.join("home");
-    let state = temp.join("state");
-    let root = temp.join("Code");
-    let sync_state = temp.join("sync-state");
-    fs::create_dir_all(&root).expect("root dir");
-    fs::create_dir_all(&home).expect("home dir");
-    fs::create_dir_all(&state).expect("state dir");
-
-    let output = daemon()
-        .env_clear()
-        .env("HOME", &home)
-        .env("XDG_STATE_HOME", &state)
-        .env("CONVEX_URL", "http://127.0.0.1:9")
-        .args(["--json", "sync-once", "--root"])
-        .arg(&root)
-        .args(["--state-root"])
-        .arg(&sync_state)
-        .output()
-        .expect("bowline-daemon sync-once should run");
-
-    assert!(!output.status.success());
-    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
-    assert!(
-        stdout.contains("workspace key is missing"),
-        "expected local secret-store failure, got: {stdout}"
-    );
-    assert!(
-        !stdout.contains("OS keychain failed"),
-        "daemon should not touch keychain by default: {stdout}"
+        "{\"ok\":true,\"command\":\"help\",\"phase\":\"0D\",\"commands\":[\"serve\",\"stop\",\"status\",\"metrics\",\"version\"],\"socket\":{\"protocol\":\"bowline-daemon-v2\",\"version\":2}}\n"
     );
 }
 
@@ -167,9 +132,7 @@ fn serve_once_accepts_fragmented_v2_magic_and_multiple_framed_messages() {
         .stderr(Stdio::null())
         .spawn()
         .expect("bowline-daemon v2 serve should spawn");
-    wait_for_socket(&socket, &mut child);
-
-    let mut stream = UnixStream::connect(&socket).expect("connect v2");
+    let mut stream = connect_to_socket(&socket, &mut child);
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .expect("read timeout");
@@ -231,7 +194,7 @@ fn serve_once_accepts_fragmented_v2_magic_and_multiple_framed_messages() {
     let metrics: DaemonRpcResponse = codec.read(&mut stream).expect("metrics response");
     assert_eq!(metrics.request_id, "request-metrics");
     let metrics = metrics.result.expect("metrics payload");
-    assert_eq!(metrics["coordinator"]["configuredWorkers"], 19);
+    assert_eq!(metrics["coordinator"]["configuredWorkers"], 5);
     assert_eq!(metrics["rpc"]["configuredQueryWorkers"], 8);
     assert_eq!(metrics["shutdown"]["phase"], "running");
     drop(stream);
@@ -254,9 +217,7 @@ fn serve_once_rejects_wrong_schema_hash_before_any_status_frame() {
         .stderr(Stdio::null())
         .spawn()
         .expect("bowline-daemon v2 serve should spawn");
-    wait_for_socket(&socket, &mut child);
-
-    let mut stream = UnixStream::connect(&socket).expect("connect v2");
+    let mut stream = connect_to_socket(&socket, &mut child);
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .expect("read timeout");
@@ -345,7 +306,7 @@ fn unsupported_framed_method_returns_structured_error() {
         .expect("bowline-daemon serve should spawn");
     wait_for_socket(&socket, &mut child);
 
-    let mut stream = UnixStream::connect(&socket).expect("connect daemon");
+    let mut stream = connect_to_socket(&socket, &mut child);
     let codec = FrameCodec::default();
     codec.write_magic(&mut stream).expect("write magic");
     codec
@@ -422,53 +383,19 @@ fn stop_shuts_down_running_daemon() {
 }
 
 #[test]
-fn sync_once_json_requires_workspace_key_without_env() {
-    let root = unique_temp_dir("sync-root");
-    let state_root = unique_temp_dir("sync-state");
-    fs::create_dir_all(root.join("app").join("src")).expect("project dirs");
-    fs::write(root.join("app").join("package.json"), br#"{"name":"app"}"#).expect("package");
-    fs::write(
-        root.join("app").join("src").join("main.ts"),
-        b"export const value = 1;\n",
-    )
-    .expect("source");
-
-    let output = isolated_daemon(&state_root)
-        .arg("sync-once")
-        .arg("--json")
-        .arg("--root")
-        .arg(&root)
-        .arg("--state-root")
-        .arg(&state_root)
-        .arg("--workspace")
-        .arg("ws_code")
-        .arg("--device")
-        .arg("device-test")
-        .output()
-        .expect("bowline-daemon sync-once should run");
-
-    let _ = fs::remove_dir_all(&root);
-    let _ = fs::remove_dir_all(&state_root);
-
-    assert_eq!(output.status.code(), Some(1), "{:?}", output);
-    let stdout = String::from_utf8(output.stdout).expect("json should be utf8");
-    assert!(stdout.contains("\"ok\":false"));
-    assert!(stdout.contains("\"command\":\"sync-once\""));
-    assert!(stdout.contains("workspace key is missing"));
-}
-
-#[test]
-fn serve_reports_continuous_sync_state_without_manual_sync_command() {
+fn serve_reports_v8_status_without_legacy_convergence_journal() {
+    // Plan 111 Step 1: status now flows from the manifest engine snapshot, not the
+    // old convergence journal. Without a workspace key the manifest driver does not
+    // start, so a served daemon reports a coherent v8 status with no fabricated
+    // convergence state — the journal no longer drives the status snapshot. The
+    // engine-snapshot-to-v8 mapping is proven in-process (see the daemon-crate
+    // `manifest_engine_status_*` tests); a spawned binary cannot inject a fake
+    // transport to reach `ready` without real hosted infrastructure.
     let _serve_guard = daemon_serve_test_guard();
     let root = unique_temp_dir("continuous-sync-root");
     let state_root = unique_temp_dir("continuous-sync-state");
     fs::create_dir_all(root.join("app").join("src")).expect("project dirs");
     fs::write(root.join("app").join("package.json"), br#"{"name":"app"}"#).expect("package");
-    fs::write(
-        root.join("app").join("src").join("main.ts"),
-        b"export const value = 1;\n",
-    )
-    .expect("source");
     let workspace_id = bowline_core::ids::WorkspaceId::new("ws_code");
     let db_path = state_root.join(bowline_local::metadata::DEFAULT_DATABASE_FILE);
     let store = bowline_local::metadata::MetadataStore::open(&db_path).expect("metadata opens");
@@ -489,7 +416,6 @@ fn serve_reports_continuous_sync_state_without_manual_sync_command() {
     let _ = fs::remove_file(&socket);
     let mut child = isolated_daemon(&state_root)
         .arg("serve")
-        .arg("--once")
         .arg("--socket")
         .arg(&socket)
         .arg("--sync-root")
@@ -500,327 +426,72 @@ fn serve_reports_continuous_sync_state_without_manual_sync_command() {
         .arg("ws_code")
         .arg("--sync-device")
         .arg("device-test")
-        .arg("--sync-interval-ms")
-        .arg("5000")
-        .arg("--sync-max-ticks")
-        .arg("2")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("bowline-daemon serve should spawn");
     wait_for_socket(&socket, &mut child);
-    wait_for_sync_attention(&db_path, &workspace_id, &mut child);
 
     let output = daemon()
         .args(["status", "--json", "--socket"])
         .arg(&socket)
         .output()
         .expect("bowline-daemon status should run");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("status json parses");
 
+    let stop = daemon()
+        .args(["stop", "--json", "--socket"])
+        .arg(&socket)
+        .output()
+        .expect("bowline-daemon stop should run");
     let serve_status = wait_for_child(&mut child);
     let _ = fs::remove_file(&socket);
     let _ = fs::remove_dir_all(&root);
     let _ = fs::remove_dir_all(&state_root);
 
+    assert!(stop.status.success());
     assert!(serve_status.success());
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).expect("json should be utf8");
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("status json parses");
+    assert_eq!(parsed["snapshot"]["contractVersion"], 8);
     assert_eq!(parsed["snapshot"]["workspaceId"], "ws_code");
+    // A configured workspace whose manifest driver cannot build (no workspace
+    // key here) must surface a truthful engine-host `limited` state — never
+    // silently fall back to the legacy journal. Host snapshots publish in the
+    // disjoint 1<<60 revision namespace, which is the proof the convergence
+    // block is engine-host-driven rather than journal-driven.
+    let convergence = &parsed["snapshot"]["convergence"];
     assert_eq!(
-        parsed["snapshot"]["syncQueue"],
-        json!({
-            "queued": 0,
-            "claimed": 0,
-            "waitingRetry": 0,
-            "blockedOffline": 0,
-            "reconciliationRequired": 0,
-            "attention": 1,
-            "completed": 0,
-        })
+        convergence["state"], "limited",
+        "engine host must report limited while the driver is pending: {parsed}"
     );
-    assert_eq!(parsed["snapshot"]["status"]["level"], "attention");
-    assert_eq!(
-        parsed["snapshot"]["statusSummary"]["primaryFactId"],
-        "sync-queue-blocked"
-    );
-    assert_eq!(
-        parsed["snapshot"]["eventWatermarks"]["syncState"],
-        "degraded"
-    );
-    assert_eq!(
-        parsed["snapshot"]["eventWatermarks"]["watcherState"],
-        "ready"
-    );
-    assert_eq!(
-        parsed["snapshot"]["eventWatermarks"]["networkState"],
-        "degraded"
-    );
+    let revision = convergence["revision"]
+        .as_u64()
+        .expect("convergence revision is a u64");
     assert!(
-        parsed["snapshot"]["limits"]
-            .as_array()
-            .is_some_and(|limits| limits.iter().any(|limit| {
-                limit["capability"] == "sync"
-                    && limit["unavailableBecause"] == "sync queue needs attention"
-            })),
-        "{stdout}"
+        revision >= 1 << 60,
+        "convergence revision must come from the engine-host namespace, \
+         not the legacy journal: {parsed}"
     );
-}
-
-#[test]
-fn serve_once_handles_agent_tool_invoke_over_local_socket() {
-    let _serve_guard = daemon_serve_test_guard();
-    let temp = unique_temp_dir("agent-tool");
-    let code_root = temp.join("Code");
-    let project_path = code_root.join("apps/web");
-    fs::create_dir_all(&project_path).expect("project dir");
-    let db_path = temp.join(".state/local.sqlite3");
-    seed_agent_lease(&db_path, &code_root, &project_path);
-
-    let socket = unique_socket("agent-tool");
-    let _ = fs::remove_file(&socket);
-    let mut child = daemon()
-        .arg("serve")
-        .arg("--once")
-        .arg("--socket")
-        .arg(&socket)
-        .env("BOWLINE_METADATA_DB", &db_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("bowline-daemon serve should spawn");
-    wait_for_socket(&socket, &mut child);
-
-    let request = agent_tool_request(
-        "req_list_capabilities",
-        "list_capabilities",
-        "local-daemon",
-        false,
-        json!({}),
+    // The legacy convergence journal is deleted: no journal-derived items or
+    // facts may appear. The engine host snapshot is the only convergence
+    // authority in the status output.
+    let snapshot_text = parsed["snapshot"].to_string();
+    assert!(
+        !snapshot_text.contains("Recovering"),
+        "journal-derived recovery items must not appear: {parsed}"
     );
-    let response = rpc_response(&socket, "agent.tool.invoke", request);
-    let serve_status = wait_for_child(&mut child);
-    let _ = fs::remove_file(&socket);
-    let _ = fs::remove_dir_all(&temp);
-
-    assert!(serve_status.success());
-    let result = response.result.expect("agent result");
-    assert_eq!(result["tool"], "list_capabilities");
-    assert_eq!(result["outcome"], "allowed");
-    assert!(result.get("noncePresented").is_none());
-}
-
-#[test]
-fn serve_once_rejects_mcp_authority_booleans_over_local_socket() {
-    let _serve_guard = daemon_serve_test_guard();
-    let temp = unique_temp_dir("agent-tool-mcp");
-    let code_root = temp.join("Code");
-    let project_path = code_root.join("apps/web");
-    fs::create_dir_all(&project_path).expect("project dir");
-    let db_path = temp.join(".state/local.sqlite3");
-    seed_agent_lease(&db_path, &code_root, &project_path);
-
-    let socket = unique_socket("agent-tool-mcp");
-    let _ = fs::remove_file(&socket);
-    let mut child = daemon()
-        .arg("serve")
-        .arg("--once")
-        .arg("--socket")
-        .arg(&socket)
-        .env("BOWLINE_METADATA_DB", &db_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("bowline-daemon serve should spawn");
-    wait_for_socket(&socket, &mut child);
-
-    let request = agent_tool_request(
-        "req_mcp",
-        "list_capabilities",
-        "mcp-adapter",
-        true,
-        json!({}),
-    );
-    let response = rpc_response(&socket, "agent.tool.invoke", request);
-    let serve_status = wait_for_child(&mut child);
-    let _ = fs::remove_file(&socket);
-    let _ = fs::remove_dir_all(&temp);
-
-    assert!(serve_status.success());
-    let result = response.result.expect("agent denial result");
-    assert_eq!(result["outcome"], "denied");
-    assert_eq!(result["denial"]["code"], "mcp-token-file-required");
-}
-
-#[test]
-fn serve_once_rejects_agent_tool_protocol_mismatch() {
-    let _serve_guard = daemon_serve_test_guard();
-    let temp = unique_temp_dir("agent-tool-protocol");
-    let code_root = temp.join("Code");
-    let project_path = code_root.join("apps/web");
-    fs::create_dir_all(&project_path).expect("project dir");
-    let db_path = temp.join(".state/local.sqlite3");
-    seed_agent_lease(&db_path, &code_root, &project_path);
-
-    let socket = unique_socket("agent-tool-protocol");
-    let _ = fs::remove_file(&socket);
-    let mut child = daemon()
-        .arg("serve")
-        .arg("--once")
-        .arg("--socket")
-        .arg(&socket)
-        .env("BOWLINE_METADATA_DB", &db_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("bowline-daemon serve should spawn");
-    wait_for_socket(&socket, &mut child);
-
-    let response = rpc_response(
-        &socket,
-        "agent.tool.invoke",
-        json!({
-            "type": "agent.tool.invoke",
-            "protocolVersion": 999,
-            "requestId": "req_protocol",
-            "leaseId": "lease_test",
-            "tool": "list_capabilities",
-            "authority": {
-                "transport": "local-daemon",
-                "peerCredentialChecked": true,
-                "noncePresented": true
-            },
-            "arguments": {}
+    let facts = parsed["snapshot"]["facts"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        facts.iter().all(|fact| {
+            fact["id"]
+                .as_str()
+                .is_none_or(|id| !id.starts_with("sync-attempt"))
         }),
+        "journal attempt facts must not appear: {parsed}"
     );
-    let serve_status = wait_for_child(&mut child);
-    let _ = fs::remove_file(&socket);
-    let _ = fs::remove_dir_all(&temp);
-
-    assert!(serve_status.success());
-    let error = response.error.expect("structured protocol error");
-    assert_eq!(error.code.to_string(), "unsupported_version");
-}
-
-#[test]
-fn serve_once_handles_read_only_agent_tool_over_socket() {
-    let _serve_guard = daemon_serve_test_guard();
-    use bowline_core::ids::LeaseId;
-    use bowline_local::metadata::MetadataStore;
-
-    let temp = unique_temp_dir("agent-tool-timestamp");
-    let code_root = temp.join("Code");
-    let project_path = code_root.join("apps/web");
-    fs::create_dir_all(&project_path).expect("project dir");
-    let db_path = temp.join(".state/local.sqlite3");
-    seed_agent_lease(&db_path, &code_root, &project_path);
-
-    let socket = unique_socket("agent-tool-timestamp");
-    let _ = fs::remove_file(&socket);
-    let mut child = daemon()
-        .arg("serve")
-        .arg("--once")
-        .arg("--socket")
-        .arg(&socket)
-        .env("BOWLINE_METADATA_DB", &db_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("bowline-daemon serve should spawn");
-    wait_for_socket(&socket, &mut child);
-
-    // All mutating agent tools were removed with the supervisor stack; the daemon
-    // now serves only read-only inspection tools over the socket.
-    let request = agent_tool_request(
-        "req_status",
-        "workspace_status",
-        "local-daemon",
-        false,
-        json!({}),
-    );
-    let response = rpc_response(&socket, "agent.tool.invoke", request);
-    let serve_status = wait_for_child(&mut child);
-    let store = MetadataStore::open(&db_path).expect("metadata");
-    let lease = store
-        .agent_lease_by_id(&LeaseId::new("lease_test"))
-        .expect("lease query")
-        .expect("lease");
-    let _ = fs::remove_file(&socket);
-    let _ = fs::remove_dir_all(&temp);
-
-    assert!(serve_status.success());
-    assert_eq!(response.result.expect("agent result")["outcome"], "allowed");
-    // A read-only tool does not mutate the lease record's updated_at.
-    assert!(lease.updated_at.ends_with('Z'), "{}", lease.updated_at);
-}
-
-fn rpc_response(socket: &Path, method: &str, params: serde_json::Value) -> DaemonRpcResponse {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut stream = loop {
-        match UnixStream::connect(socket) {
-            Ok(stream) => break stream,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::NotFound | ErrorKind::ConnectionRefused
-                ) && Instant::now() < deadline =>
-            {
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) => panic!("socket connects: {error}"),
-        }
-    };
-    let codec = FrameCodec::default();
-    codec.write_magic(&mut stream).expect("write RPC magic");
-    codec
-        .write(
-            &mut stream,
-            &DaemonClientHello {
-                protocol: DAEMON_RPC_PROTOCOL.to_string(),
-                protocol_version: 2,
-                contract_version: CONTRACT_VERSION,
-                schema_hash: bowline_core::wire::generated::WIRE_SCHEMA_HASH.to_string(),
-                client_kind: "integration-test".to_string(),
-                client_version: "1".to_string(),
-                capabilities: vec!["agent.tool.invoke".to_string()],
-            },
-        )
-        .expect("write client hello");
-    let _: DaemonServerHello = codec.read(&mut stream).expect("read server hello");
-    codec
-        .write(
-            &mut stream,
-            &DaemonRpcRequest {
-                request_id: "integration-request".to_string(),
-                method: method.to_string(),
-                params,
-                deadline_ms: Some(5_000),
-            },
-        )
-        .expect("write RPC request");
-    codec.read(&mut stream).expect("read RPC response")
-}
-
-fn agent_tool_request(
-    request_id: &str,
-    tool: &str,
-    transport: &str,
-    peer_credential_checked: bool,
-    arguments: serde_json::Value,
-) -> serde_json::Value {
-    json!({
-        "type": "agent.tool.invoke",
-        "protocolVersion": CONTRACT_VERSION,
-        "requestId": request_id,
-        "leaseId": "lease_test",
-        "tool": tool,
-        "authority": {
-            "transport": transport,
-            "peerCredentialChecked": peer_credential_checked,
-            "noncePresented": true
-        },
-        "arguments": arguments
-    })
 }
 
 fn wait_for_socket(socket: &Path, child: &mut Child) {
@@ -840,36 +511,36 @@ fn wait_for_socket(socket: &Path, child: &mut Child) {
     }
 }
 
+fn connect_to_socket(socket: &Path, child: &mut Child) -> UnixStream {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match UnixStream::connect(socket) {
+            Ok(stream) => return stream,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                ) => {}
+            Err(error) => panic!("failed to connect to daemon socket: {error}"),
+        }
+        if let Some(status) = child.try_wait().expect("serve status should be readable") {
+            panic!("bowline-daemon serve exited before accepting connections: {status}");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for daemon socket connection"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn daemon_serve_test_guard() -> MutexGuard<'static, ()> {
     DAEMON_SERVE_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn wait_for_sync_attention(
-    db_path: &Path,
-    workspace_id: &bowline_core::ids::WorkspaceId,
-    child: &mut Child,
-) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let attention = bowline_local::metadata::MetadataStore::open(db_path)
-            .and_then(|store| store.sync_operation_counts(workspace_id))
-            .is_ok_and(|counts| counts.attention > 0);
-        if attention {
-            return;
-        }
-        if let Some(status) = child.try_wait().expect("serve status should be readable") {
-            panic!("bowline-daemon serve exited before sync reached attention: {status}");
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for continuous sync attention state"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
+/// Poll the daemon status RPC until its snapshot reports `expected_queue`, then
 fn wait_for_child(child: &mut Child) -> std::process::ExitStatus {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -926,64 +597,4 @@ fn json_string(input: &str) -> String {
     }
     escaped.push('"');
     escaped
-}
-
-fn seed_agent_lease(db_path: &Path, code_root: &Path, project_path: &Path) {
-    use bowline_core::{
-        commands::{AgentLeaseBase, AgentLeaseCreateCommandOutput},
-        ids::{DeviceId, ProjectId, WorkspaceId},
-    };
-    use bowline_local::{
-        agents::{AgentLeaseCreateOptions, create_agent_lease},
-        metadata::MetadataStore,
-    };
-
-    let mut store = MetadataStore::open(db_path).expect("metadata");
-    let workspace_id = WorkspaceId::new("ws_code");
-    let project_id = ProjectId::new("proj_web");
-    store
-        .insert_workspace(&workspace_id, "User Code", "2026-06-25T00:00:00Z")
-        .expect("workspace");
-    store
-        .insert_root(
-            "root_code",
-            &workspace_id,
-            &code_root.display().to_string(),
-            "2026-06-25T00:00:00Z",
-        )
-        .expect("root");
-    store
-        .insert_project(
-            &project_id,
-            &workspace_id,
-            "root_code",
-            "apps/web",
-            "2026-06-25T00:00:00Z",
-        )
-        .expect("project");
-    bowline_testkit::persist_project_snapshot_fixture(
-        &mut store,
-        &workspace_id,
-        &project_id,
-        code_root,
-        "apps/web",
-        db_path.parent().expect("metadata state root"),
-        "2026-06-25T00:00:00Z",
-    );
-    drop(store);
-    let output: AgentLeaseCreateCommandOutput = create_agent_lease(AgentLeaseCreateOptions {
-        db_path: Some(db_path.to_path_buf()),
-        project_path: project_path.display().to_string(),
-        task: "daemon tool".to_string(),
-        base: AgentLeaseBase::LatestWorkspace,
-        work_view: true,
-        force_stale: false,
-        device_id: DeviceId::new("device-test"),
-        generated_at: "2999-06-25T12:00:00Z".to_string(),
-    })
-    .expect("lease");
-    let mut lease = output.lease;
-    lease.id = bowline_core::ids::LeaseId::new("lease_test");
-    let store = MetadataStore::open(db_path).expect("metadata");
-    store.upsert_agent_lease(&lease).expect("stable lease id");
 }

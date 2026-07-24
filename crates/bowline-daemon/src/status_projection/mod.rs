@@ -1,5 +1,6 @@
 mod collector;
 mod delivery;
+mod engine_status;
 mod input;
 mod reducer;
 mod retry;
@@ -14,7 +15,12 @@ pub use collector::{
     StatusSourceState, StatusSourceStateFacts,
 };
 pub use delivery::LatestProjectionReceiver;
+pub use engine_status::{
+    EngineConvergenceFacts, EngineStatusCollector, engine_convergence_facts,
+    scoped_engine_convergence_facts,
+};
 pub use input::StatusProjectionInput;
+pub use reducer::replace_convergence_status;
 pub use service::{
     ProjectionHeartbeatSubscription, ProjectionSubscription, StatusProjectionService,
 };
@@ -25,5 +31,7 @@ pub use types::{
     StatusSource, StatusSourceRevision, StatusTimestamp,
 };
 
+#[cfg(test)]
+mod reducer_tests;
 #[cfg(test)]
 mod tests;

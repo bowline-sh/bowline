@@ -31,9 +31,8 @@ pub fn command_error_output(
 /// daemon publishes to the control plane. Counts, state enums, and timestamps
 /// are preserved; filesystem paths and secrets never leave the device.
 ///
-/// `syncState`/`watcherState`/`networkState` reflect whatever component states
-/// `compose_status` observed; the daemon may overwrite them with its live
-/// in-memory states before publishing.
+/// Convergence readiness and queue settlement retain their canonical typed
+/// projections; event watermarks carry event chronology only.
 pub fn redacted_status_snapshot(
     output: &StatusCommandOutput,
     device_id: &str,
@@ -47,18 +46,6 @@ pub fn redacted_status_snapshot(
             .as_ref()
             .map(|id| EventId::new(id.as_str())),
         last_scan_at: output.event_watermarks.last_scan_at.clone(),
-        sync_state: output
-            .event_watermarks
-            .sync_state
-            .map(|state| component_state_label(state).to_string()),
-        watcher_state: output
-            .event_watermarks
-            .watcher_state
-            .map(|state| component_state_label(state).to_string()),
-        network_state: output
-            .event_watermarks
-            .network_state
-            .map(|state| network_state_label(state).to_string()),
     };
 
     let sync_queue = output
@@ -227,22 +214,6 @@ fn status_snapshot_id(workspace_id: &str, generated_at: &str) -> String {
     workspace_id.hash(&mut hasher);
     generated_at.hash(&mut hasher);
     format!("wss_{:016x}", hasher.finish())
-}
-
-fn component_state_label(state: ComponentState) -> &'static str {
-    match state {
-        ComponentState::Ready => "ready",
-        ComponentState::Degraded => "degraded",
-        ComponentState::Unavailable => "unavailable",
-    }
-}
-
-fn network_state_label(state: NetworkState) -> &'static str {
-    match state {
-        NetworkState::Online => "online",
-        NetworkState::Degraded => "degraded",
-        NetworkState::Offline => "offline",
-    }
 }
 
 fn status_item_kind_label(kind: StatusItemKind) -> String {

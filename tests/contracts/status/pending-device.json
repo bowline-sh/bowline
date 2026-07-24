@@ -51,10 +51,7 @@
   "eventWatermarks": {
     "lastScanAt": "2026-06-23T11:59:55Z",
     "lastEventId": "evt_status_device_001",
-    "eventLagMs": 0,
-    "syncState": "ready",
-    "watcherState": "ready",
-    "networkState": "online"
+    "eventLagMs": 0
   },
   "nextActions": [
     {

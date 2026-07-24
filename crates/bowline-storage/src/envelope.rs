@@ -1,10 +1,11 @@
-use std::{collections::HashSet, error::Error, fmt, io::Cursor};
+use std::{error::Error, fmt, io::Cursor};
 
 use chacha20poly1305::{
     Key, KeyInit, XChaCha20Poly1305, XNonce,
     aead::{Aead, Payload},
 };
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::ObjectKind;
 
@@ -76,50 +77,13 @@ pub fn seal(
     seal_with_nonce(plaintext, key, context, random_nonce()?)
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct EnvelopeNonceTracker {
-    seen: HashSet<(u32, [u8; NONCE_LEN])>,
-}
-
-impl EnvelopeNonceTracker {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    fn reserve(
-        &mut self,
-        context: &EnvelopeContext,
-        nonce: [u8; NONCE_LEN],
-    ) -> Result<(), EnvelopeError> {
-        if context.key_epoch == 0 {
-            return Err(EnvelopeError::InvalidContext("key epoch must be non-zero"));
-        }
-        if !self.seen.insert((context.key_epoch, nonce)) {
-            return Err(EnvelopeError::NonceReuse);
-        }
-        Ok(())
-    }
-}
-
-pub(crate) fn seal_tracked(
+pub(crate) fn seal_with_associated_data(
     plaintext: &[u8],
     key: StorageKey,
-    context: &EnvelopeContext,
-    nonce_tracker: &mut EnvelopeNonceTracker,
+    key_epoch: u32,
+    associated_data: &[u8],
 ) -> Result<SealedEnvelope, EnvelopeError> {
-    let nonce = random_nonce()?;
-    seal_with_tracked_nonce(plaintext, key, context, nonce, nonce_tracker)
-}
-
-fn seal_with_tracked_nonce(
-    plaintext: &[u8],
-    key: StorageKey,
-    context: &EnvelopeContext,
-    nonce: [u8; NONCE_LEN],
-    nonce_tracker: &mut EnvelopeNonceTracker,
-) -> Result<SealedEnvelope, EnvelopeError> {
-    nonce_tracker.reserve(context, nonce)?;
-    seal_with_nonce(plaintext, key, context, nonce)
+    seal_with_nonce_and_associated_data(plaintext, key, key_epoch, associated_data, random_nonce()?)
 }
 
 fn seal_with_nonce(
@@ -128,20 +92,37 @@ fn seal_with_nonce(
     context: &EnvelopeContext,
     nonce: [u8; NONCE_LEN],
 ) -> Result<SealedEnvelope, EnvelopeError> {
-    if context.key_epoch == 0 {
+    seal_with_nonce_and_associated_data(
+        plaintext,
+        key,
+        context.key_epoch,
+        &context.associated_data(),
+        nonce,
+    )
+}
+
+fn seal_with_nonce_and_associated_data(
+    plaintext: &[u8],
+    key: StorageKey,
+    key_epoch: u32,
+    associated_data: &[u8],
+    nonce: [u8; NONCE_LEN],
+) -> Result<SealedEnvelope, EnvelopeError> {
+    if key_epoch == 0 {
         return Err(EnvelopeError::InvalidContext("key epoch must be non-zero"));
     }
 
-    let compressed = zstd::stream::encode_all(Cursor::new(plaintext), 0)
-        .map_err(|_| EnvelopeError::CompressionFailed)?;
-    let associated_data = context.associated_data();
+    let compressed = Zeroizing::new(
+        zstd::stream::encode_all(Cursor::new(plaintext), 0)
+            .map_err(|_| EnvelopeError::CompressionFailed)?,
+    );
     let cipher = XChaCha20Poly1305::new(&key.as_key());
     let ciphertext = cipher
         .encrypt(
             XNonce::from_slice(&nonce),
             Payload {
                 msg: &compressed,
-                aad: &associated_data,
+                aad: associated_data,
             },
         )
         .map_err(|_| EnvelopeError::EncryptionFailed)?;
@@ -149,7 +130,7 @@ fn seal_with_nonce(
     let mut bytes = Vec::with_capacity(HEADER_LEN + ciphertext.len());
     bytes.extend_from_slice(ENVELOPE_MAGIC);
     bytes.extend_from_slice(&ENVELOPE_VERSION.to_le_bytes());
-    bytes.extend_from_slice(&context.key_epoch.to_le_bytes());
+    bytes.extend_from_slice(&key_epoch.to_le_bytes());
     bytes.extend_from_slice(&nonce);
     bytes.extend_from_slice(&ciphertext);
 
@@ -160,6 +141,15 @@ pub fn open(
     envelope: &[u8],
     key: StorageKey,
     context: &EnvelopeContext,
+) -> Result<Vec<u8>, EnvelopeError> {
+    open_with_associated_data(envelope, key, context.key_epoch, &context.associated_data())
+}
+
+pub(crate) fn open_with_associated_data(
+    envelope: &[u8],
+    key: StorageKey,
+    key_epoch: u32,
+    associated_data: &[u8],
 ) -> Result<Vec<u8>, EnvelopeError> {
     let fixed_header_len = ENVELOPE_MAGIC.len() + 2 + 4;
     if envelope.len() < fixed_header_len {
@@ -174,20 +164,20 @@ pub fn open(
         envelope[ENVELOPE_MAGIC.len() + 1],
     ]);
     let epoch_offset = ENVELOPE_MAGIC.len() + 2;
-    let key_epoch = u32::from_le_bytes([
+    let envelope_key_epoch = u32::from_le_bytes([
         envelope[epoch_offset],
         envelope[epoch_offset + 1],
         envelope[epoch_offset + 2],
         envelope[epoch_offset + 3],
     ]);
-    if key_epoch != context.key_epoch {
+    if envelope_key_epoch != key_epoch {
         return Err(EnvelopeError::WrongContext);
     }
 
     if version != ENVELOPE_VERSION {
         return Err(EnvelopeError::UnsupportedVersion(version));
     }
-    let compressed = open_v2_envelope(envelope, key, context)?;
+    let compressed = Zeroizing::new(open_v2_envelope(envelope, key, associated_data)?);
 
     zstd::stream::decode_all(Cursor::new(compressed))
         .map_err(|_| EnvelopeError::DecompressionFailed)
@@ -196,7 +186,7 @@ pub fn open(
 fn open_v2_envelope(
     envelope: &[u8],
     key: StorageKey,
-    context: &EnvelopeContext,
+    associated_data: &[u8],
 ) -> Result<Vec<u8>, EnvelopeError> {
     if envelope.len() < HEADER_LEN {
         return Err(EnvelopeError::Truncated);
@@ -210,7 +200,7 @@ fn open_v2_envelope(
             XNonce::from_slice(nonce),
             Payload {
                 msg: ciphertext,
-                aad: &context.associated_data(),
+                aad: associated_data,
             },
         )
         .map_err(|_| EnvelopeError::VerificationFailed)
@@ -345,39 +335,6 @@ mod tests {
     }
 
     #[test]
-    fn envelope_tracker_refuses_forced_nonce_reuse_for_same_epoch() {
-        let key = StorageKey::deterministic(7);
-        let first_context = test_context("record-a");
-        let second_context = test_context("record-b");
-        let nonce = [42_u8; NONCE_LEN];
-        let mut tracker = EnvelopeNonceTracker::new();
-
-        let first = seal_with_tracked_nonce(
-            b"first source bytes",
-            key,
-            &first_context,
-            nonce,
-            &mut tracker,
-        )
-        .expect("first seal succeeds");
-        assert_eq!(
-            open(first.as_bytes(), key, &first_context).expect("first opens"),
-            b"first source bytes"
-        );
-
-        assert!(matches!(
-            seal_with_tracked_nonce(
-                b"second source bytes",
-                key,
-                &second_context,
-                nonce,
-                &mut tracker,
-            ),
-            Err(EnvelopeError::NonceReuse)
-        ));
-    }
-
-    #[test]
     fn envelope_rejects_tamper_wrong_key_wrong_context_and_truncation() {
         let key = StorageKey::deterministic(7);
         let context = test_context("record-a");
@@ -433,7 +390,7 @@ mod tests {
     fn test_context(record_id: &str) -> EnvelopeContext {
         EnvelopeContext {
             workspace_id_hash: workspace_id_hash("ws_test"),
-            object_kind: ObjectKind::SourcePack,
+            object_kind: ObjectKind::WorkspaceFileV1,
             object_id: "pk_0011223344556677".to_string(),
             record_id: record_id.to_string(),
             key_epoch: 1,

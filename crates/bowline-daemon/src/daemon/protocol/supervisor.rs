@@ -105,7 +105,7 @@ impl DaemonThreads {
             Err(error) => {
                 state.begin_shutdown(ShutdownReason::StartupRollback);
                 state.cancel_rpc_work();
-                state.stop_durable_claims();
+                state.stop_background_work();
                 let _rpc_workers = rpc_executor.shutdown_strict(DEFAULT_SHUTDOWN_GRACE);
                 return Err(error);
             }
@@ -116,6 +116,11 @@ impl DaemonThreads {
             Arc::clone(&coordinator_metrics),
             Arc::downgrade(&rpc_executor),
         );
+        // The engine's cost meters are a persistent handle on the sync runtime
+        // (stable across driver rebuilds), so registering once here is correct.
+        if let Some(sync) = runtime.sync.as_ref() {
+            state.register_manifest_counters(sync.manifest_counters());
+        }
         let scheduler_metrics = Arc::clone(&coordinator_metrics);
         let (scheduler_ready_tx, scheduler_ready) = crossbeam_channel::bounded(1);
         let (scheduler_done_tx, scheduler_done) = crossbeam_channel::bounded(1);
@@ -134,7 +139,7 @@ impl DaemonThreads {
             Err(error) => {
                 state.begin_shutdown(ShutdownReason::StartupRollback);
                 state.cancel_rpc_work();
-                state.stop_durable_claims();
+                state.stop_background_work();
                 let _connections = connections.shutdown_and_join(DEFAULT_SHUTDOWN_GRACE);
                 let _rpc_workers = rpc_executor.shutdown_strict(DEFAULT_SHUTDOWN_GRACE);
                 return Err(error);
@@ -237,7 +242,7 @@ impl DaemonThreads {
         aggregate.record_joined(1);
 
         state.cancel_rpc_work();
-        state.stop_durable_claims();
+        state.stop_background_work();
 
         let connections = self
             .connections
@@ -338,7 +343,7 @@ fn rollback_startup(
 ) {
     state.begin_shutdown(ShutdownReason::StartupRollback);
     state.cancel_rpc_work();
-    state.stop_durable_claims();
+    state.stop_background_work();
     let _connections = connections.shutdown_and_join(DEFAULT_SHUTDOWN_GRACE);
     let _scheduler = join_scheduler(scheduler, DEFAULT_SHUTDOWN_GRACE);
     let _rpc_workers = rpc_executor.shutdown_strict(DEFAULT_SHUTDOWN_GRACE);
@@ -355,7 +360,7 @@ impl Drop for DaemonThreads {
             let _join = acceptor.join();
         }
         self.state.cancel_rpc_work();
-        self.state.stop_durable_claims();
+        self.state.stop_background_work();
         if let Some(connections) = self.connections.take() {
             let _join = connections.shutdown_and_join(DEFAULT_SHUTDOWN_GRACE);
         }

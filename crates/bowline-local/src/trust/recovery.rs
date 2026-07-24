@@ -325,7 +325,6 @@ where
             device_name: options.device_name,
             platform: options.platform,
             host: None,
-            lease_id: None,
             root: Some("~/Code".to_string()),
             runtime: None,
             generated_at: options.generated_at.clone(),
@@ -348,6 +347,15 @@ where
         grants::grant_acceptance_proof(&workspace_key, &request_id, &options.device_id);
     let grant_acceptance_proof_verifier =
         grants::grant_acceptance_proof_verifier(&grant_acceptance_proof);
+    // Persist the workspace key before server-side authorization. A local write
+    // failure after authorize would leave the device trusted without material,
+    // and authorized devices cannot request trust again.
+    key_store.store_workspace_key(workspace_key.clone())?;
+    cache_recovery_device_proof_verifiers(
+        key_store,
+        &options.workspace_id,
+        recovery_device_proof_verifiers,
+    )?;
     let grant = control_plane.authorize_device_with_recovery(RecoveryDeviceAuthorizationInput {
         workspace_id: options.workspace_id.clone(),
         envelope_id: envelope.envelope_id.clone(),
@@ -369,12 +377,6 @@ where
         device_id: options.device_id.clone(),
         grant_acceptance_proof,
     })?;
-    cache_recovery_device_proof_verifiers(
-        key_store,
-        &options.workspace_id,
-        recovery_device_proof_verifiers,
-    )?;
-    key_store.store_workspace_key(workspace_key)?;
 
     Ok(RecoveryCommandOutput {
         contract_version: CONTRACT_VERSION,

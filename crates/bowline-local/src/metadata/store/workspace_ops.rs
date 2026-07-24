@@ -1,6 +1,5 @@
 use super::common::*;
 use super::*;
-use rusqlite::params_from_iter;
 
 impl MetadataStore {
     pub fn insert_workspace(
@@ -21,6 +20,36 @@ impl MetadataStore {
     }
 
     pub fn insert_root(
+        &self,
+        id: &str,
+        workspace_id: &WorkspaceId,
+        accepted_path: &str,
+        now: &str,
+    ) -> Result<(), MetadataError> {
+        // Path uniqueness is checked in Rust then written in a second statement.
+        // BEGIN IMMEDIATE serializes concurrent setup processes so two workspaces
+        // cannot both observe "free path" and insert the same accepted_path.
+        let nested = !self.connection.is_autocommit();
+        if !nested {
+            self.connection.execute("BEGIN IMMEDIATE", [])?;
+        }
+        let result = self.insert_root_in_tx(id, workspace_id, accepted_path, now);
+        if !nested {
+            match &result {
+                Ok(()) => {
+                    self.connection.execute("COMMIT", [])?;
+                }
+                Err(_) => {
+                    if let Err(rollback_error) = self.connection.execute("ROLLBACK", []) {
+                        eprintln!("bowline metadata insert_root rollback failed: {rollback_error}");
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    fn insert_root_in_tx(
         &self,
         id: &str,
         workspace_id: &WorkspaceId,
@@ -117,6 +146,40 @@ impl MetadataStore {
         projects: &[ProjectUpsert],
         now: &str,
     ) -> Result<(), MetadataError> {
+        self.upsert_projects_uncommitted(workspace_id, root_id, projects, now)?;
+
+        let retained_ids = projects
+            .iter()
+            .map(|project| project.id.as_str().to_string())
+            .collect::<BTreeSet<_>>();
+        let mut statement = self.connection.prepare(
+            "SELECT id FROM projects
+             WHERE workspace_id = ?1",
+        )?;
+        let stale_ids = statement
+            .query_map([workspace_id.as_str()], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|id| !retained_ids.contains(id))
+            .collect::<Vec<_>>();
+        drop(statement);
+        for id in stale_ids {
+            self.connection
+                .execute("DELETE FROM work_views WHERE project_id = ?1", [&id])?;
+            self.connection
+                .execute("DELETE FROM projects WHERE id = ?1", [id])?;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn upsert_projects_uncommitted(
+        &self,
+        workspace_id: &WorkspaceId,
+        root_id: &str,
+        projects: &[ProjectUpsert],
+        now: &str,
+    ) -> Result<(), MetadataError> {
         for project in projects {
             let existing_workspace = self
                 .connection
@@ -158,29 +221,6 @@ impl MetadataStore {
             ])?;
         }
         drop(statement);
-
-        let retained_ids = projects
-            .iter()
-            .map(|project| project.id.as_str().to_string())
-            .collect::<BTreeSet<_>>();
-        let mut statement = self.connection.prepare(
-            "SELECT id FROM projects
-             WHERE workspace_id = ?1",
-        )?;
-        let stale_ids = statement
-            .query_map([workspace_id.as_str()], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter(|id| !retained_ids.contains(id))
-            .collect::<Vec<_>>();
-        drop(statement);
-        for id in stale_ids {
-            self.connection
-                .execute("DELETE FROM work_views WHERE project_id = ?1", [&id])?;
-            self.connection
-                .execute("DELETE FROM projects WHERE id = ?1", [id])?;
-        }
-
         Ok(())
     }
 
@@ -441,126 +481,6 @@ impl MetadataStore {
         Ok(())
     }
 
-    pub fn upsert_snapshot(&self, record: &SnapshotRecord) -> Result<(), MetadataError> {
-        if let Some(existing) = self.snapshot(&record.workspace_id, &record.id)? {
-            // `created_at` records the first durable commit. A crash/retry may
-            // present the same immutable snapshot under a later operation
-            // timestamp and must converge on that first-writer metadata.
-            if existing.has_same_immutable_binding(record) {
-                return Ok(());
-            }
-            return Err(MetadataError::ImmutableBindingConflict {
-                logical_id: record.id.as_str().to_string(),
-                field: "snapshot_root",
-            });
-        }
-        if let Some(project_id) = &record.project_id {
-            let project_exists = self
-                .connection
-                .query_row(
-                    "SELECT 1 FROM projects WHERE workspace_id = ?1 AND id = ?2",
-                    params![record.workspace_id.as_str(), project_id.as_str()],
-                    |_| Ok(()),
-                )
-                .optional()?
-                .is_some();
-            if !project_exists {
-                return Err(MetadataError::InvalidStorageMetadata(format!(
-                    "snapshot project `{}` was not found",
-                    project_id.as_str()
-                )));
-            }
-        }
-        let refs_json = serde_json::to_string(&record.refs)
-            .map_err(|error| MetadataError::Sqlite(json_to_sql_error(error)))?;
-        self.connection.execute(
-            "INSERT INTO snapshots
-             (id, workspace_id, project_id, kind, base_snapshot_id, root_id,
-              semantic_manifest_digest, entry_count, refs_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                record.id.as_str(),
-                record.workspace_id.as_str(),
-                record.project_id.as_ref().map(|id| id.as_str()),
-                serialize_json_variant(&record.kind)?,
-                record.base_snapshot_id.as_ref().map(|id| id.as_str()),
-                record.root_id.as_str(),
-                record.semantic_manifest_digest.as_str(),
-                record.entry_count,
-                refs_json,
-                record.created_at.as_str(),
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn snapshot(
-        &self,
-        workspace_id: &WorkspaceId,
-        snapshot_id: &SnapshotId,
-    ) -> Result<Option<SnapshotRecord>, MetadataError> {
-        self.connection
-            .query_row(
-                "SELECT id, workspace_id, project_id, kind, base_snapshot_id, root_id,
-                        semantic_manifest_digest, entry_count, refs_json, created_at
-                 FROM snapshots
-                 WHERE workspace_id = ?1 AND id = ?2",
-                params![workspace_id.as_str(), snapshot_id.as_str()],
-                snapshot_record_from_row,
-            )
-            .optional()
-            .map_err(Into::into)
-    }
-
-    pub fn snapshot_project_id(
-        &self,
-        workspace_id: &WorkspaceId,
-        snapshot_id: &SnapshotId,
-    ) -> Result<Option<Option<ProjectId>>, MetadataError> {
-        self.connection
-            .query_row(
-                "SELECT project_id
-                 FROM snapshots
-                 WHERE workspace_id = ?1 AND id = ?2",
-                params![workspace_id.as_str(), snapshot_id.as_str()],
-                |row| {
-                    row.get::<_, Option<String>>(0)
-                        .map(|id| id.map(ProjectId::new))
-                },
-            )
-            .optional()
-            .map_err(Into::into)
-    }
-
-    pub fn snapshot_project_ids(
-        &self,
-        workspace_id: &WorkspaceId,
-        snapshot_ids: &[SnapshotId],
-    ) -> Result<BTreeMap<SnapshotId, Option<ProjectId>>, MetadataError> {
-        if snapshot_ids.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-
-        let placeholders = vec!["?"; snapshot_ids.len()].join(", ");
-        let sql = format!(
-            "SELECT id, project_id
-             FROM snapshots
-             WHERE workspace_id = ? AND id IN ({placeholders})"
-        );
-        let mut params = Vec::with_capacity(snapshot_ids.len() + 1);
-        params.push(workspace_id.as_str().to_string());
-        params.extend(snapshot_ids.iter().map(|id| id.as_str().to_string()));
-        let mut statement = self.connection.prepare(&sql)?;
-        let rows = statement.query_map(params_from_iter(params.iter()), |row| {
-            let snapshot_id = SnapshotId::new(row.get::<_, String>(0)?);
-            let project_id = row.get::<_, Option<String>>(1)?.map(ProjectId::new);
-            Ok((snapshot_id, project_id))
-        })?;
-
-        rows.collect::<Result<BTreeMap<_, _>, _>>()
-            .map_err(Into::into)
-    }
-
     pub fn current_workspace_root(&self) -> Result<Option<String>, MetadataError> {
         let Some(workspace) = self.current_workspace()? else {
             return Ok(None);
@@ -730,11 +650,6 @@ impl MetadataStore {
 
 #[cfg(test)]
 mod tests {
-    use bowline_core::{
-        ids::{ManifestDigest, NamespacePageId},
-        workspace_graph::SnapshotKind,
-    };
-
     use super::*;
     use crate::workspace::TempWorkspace;
 
@@ -772,37 +687,6 @@ mod tests {
         assert_eq!(snapshot_ids.get(&project_c), Some(&snapshot_c));
     }
 
-    #[test]
-    fn snapshot_project_ids_batches_present_workspace_and_project_snapshots() {
-        let temp = TempWorkspace::new("snapshot-project-ids").expect("temp workspace");
-        let db_path = temp.root().join("state/local.sqlite3");
-        let store = MetadataStore::open(&db_path).expect("metadata");
-        let workspace_id = WorkspaceId::new("ws_code");
-        let project_id = ProjectId::new("proj_a");
-        let project_snapshot = SnapshotId::new("snap_project");
-        let workspace_snapshot = SnapshotId::new("snap_workspace");
-        let missing_snapshot = SnapshotId::new("snap_missing");
-
-        seed_workspace_projects(&store, &workspace_id, &[(&project_id, "a")]);
-        seed_snapshot(&store, &workspace_id, Some(&project_id), &project_snapshot);
-        seed_snapshot(&store, &workspace_id, None, &workspace_snapshot);
-
-        let project_ids = store
-            .snapshot_project_ids(
-                &workspace_id,
-                &[
-                    project_snapshot.clone(),
-                    workspace_snapshot.clone(),
-                    missing_snapshot.clone(),
-                ],
-            )
-            .expect("snapshot project ids");
-
-        assert_eq!(project_ids.get(&project_snapshot), Some(&Some(project_id)));
-        assert_eq!(project_ids.get(&workspace_snapshot), Some(&None));
-        assert_eq!(project_ids.get(&missing_snapshot), None);
-    }
-
     fn seed_workspace_projects(
         store: &MetadataStore,
         workspace_id: &WorkspaceId,
@@ -825,30 +709,5 @@ mod tests {
                 )
                 .expect("project");
         }
-    }
-
-    fn seed_snapshot(
-        store: &MetadataStore,
-        workspace_id: &WorkspaceId,
-        project_id: Option<&ProjectId>,
-        snapshot_id: &SnapshotId,
-    ) {
-        store
-            .upsert_snapshot(&SnapshotRecord {
-                id: snapshot_id.clone(),
-                workspace_id: workspace_id.clone(),
-                project_id: project_id.cloned(),
-                kind: SnapshotKind::WorkspaceHead,
-                base_snapshot_id: None,
-                root_id: NamespacePageId::new(format!("page_{}", snapshot_id.as_str())),
-                semantic_manifest_digest: ManifestDigest::new(format!(
-                    "digest_{}",
-                    snapshot_id.as_str()
-                )),
-                entry_count: 0,
-                refs: Vec::new(),
-                created_at: "2026-07-07T00:00:00Z".to_string(),
-            })
-            .expect("snapshot");
     }
 }

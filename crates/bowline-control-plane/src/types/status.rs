@@ -2,7 +2,7 @@ use bowline_core::ids::{DeviceId, EventId, SnapshotId, WorkspaceId};
 use bowline_core::status::StatusFact;
 
 /// Redacted live workspace status snapshot published by a trusted device (the
-/// daemon) to the control plane so the dashboard can show sync/watcher
+/// daemon) to the control plane so the dashboard can show convergence
 /// posture. Paths are workspace-relative and secrets are never included.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceStatusSnapshot {
@@ -48,9 +48,6 @@ impl WorkspaceStatusSnapshot {
 pub struct StatusEventWatermarks {
     pub last_event_id: Option<EventId>,
     pub last_scan_at: Option<String>,
-    pub sync_state: Option<String>,
-    pub watcher_state: Option<String>,
-    pub network_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

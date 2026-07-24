@@ -4,9 +4,11 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { chmod, copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { isEntrypoint } from "./entrypoint.mjs";
 import { signReleaseFile } from "./release-signing.mjs";
 import { assertReleaseVersion } from "./release-version.mjs";
+import { registry } from "./verify.mjs";
+import { reuseDecision } from "./verify-receipt.mjs";
 
 const sourceRoot = process.cwd();
 const installHost = "https://install.bowline.sh";
@@ -32,6 +34,7 @@ function parseArgs(argv) {
       process.env.BOWLINE_RELEASE_ASSETS_BUCKET ?? "bowline-release-assets",
     publish: false,
     publicRepo: path.resolve(sourceRoot, "../public"),
+    receipt: null,
     urgency: process.env.BOWLINE_RELEASE_URGENCY ?? "normal",
     version: null,
   };
@@ -46,6 +49,8 @@ function parseArgs(argv) {
       args.artifacts.push(path.resolve(requiredValue(argv, ++index, arg)));
     } else if (arg === "--bucket") {
       args.bucket = requiredValue(argv, ++index, arg);
+    } else if (arg === "--receipt") {
+      args.receipt = path.resolve(requiredValue(argv, ++index, arg));
     } else if (arg === "--publish") {
       args.publish = true;
     } else if (arg === "--public-repo") {
@@ -480,6 +485,60 @@ function uploadReleasePlan(bucket, version, releaseAssets, channel, publish) {
   }
 }
 
+// The public verify pass re-runs the full release profile the private receipt
+// already proved. Because the public export is deterministically derived from
+// the private source, a fresh receipt covering `release` makes it redundant —
+// but ONLY when the receipt actually bound the public tree being published. A
+// receipt whose publicExportTreeSha is null (BOWLINE_PUBLIC_REPO was unset) or
+// diverges from this repo's HEAD tree proves nothing about ../public, so we fall
+// back to a real verify rather than letting a divergent checkout sail through.
+async function verifyPublicCheckout(args) {
+  if (args.receipt) {
+    const decision = await reuseDecision({
+      receiptPath: args.receipt,
+      neededProfile: "release",
+      registry,
+      root: sourceRoot,
+    });
+    const receipt = readReceiptFile(args.receipt);
+    const currentPublicTreeSha = git(args.publicRepo, [
+      "rev-parse",
+      "HEAD^{tree}",
+    ]);
+    if (
+      decision.reuse &&
+      publicExportMatchesReceipt(receipt, currentPublicTreeSha)
+    ) {
+      step(`reusing verification receipt ${decision.shortHash}`);
+      return;
+    }
+    const reason = decision.reuse
+      ? "receipt did not bind this public checkout's tree"
+      : decision.reason;
+    step(
+      `verification receipt not reusable (${reason}); verifying public checkout`,
+    );
+  }
+  step("verify public checkout");
+  run("pnpm", ["verify"], { cwd: args.publicRepo });
+}
+
+// Fail-closed reuse gate for the public verify: only a receipt that bound a
+// non-null public export tree SHA equal to the public repo actually being
+// published may stand in for `pnpm verify` there.
+export function publicExportMatchesReceipt(receipt, currentPublicTreeSha) {
+  const bound = receipt?.publicExportTreeSha ?? null;
+  return Boolean(bound) && bound === currentPublicTreeSha;
+}
+
+function readReceiptFile(receiptPath) {
+  try {
+    return JSON.parse(readFileSync(receiptPath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   assertReleaseVersion(args.version, sourceRoot);
@@ -501,8 +560,7 @@ async function main() {
   run("pnpm", ["export:public", "--target", args.publicRepo]);
   step("install public dependencies");
   run("pnpm", ["install", "--frozen-lockfile"], { cwd: args.publicRepo });
-  step("verify public checkout");
-  run("pnpm", ["verify"], { cwd: args.publicRepo });
+  await verifyPublicCheckout(args);
   const sourceSha = git(sourceRoot, ["rev-parse", "HEAD"]);
   const publicChanged = commitIfChanged(
     args.publicRepo,
@@ -557,7 +615,7 @@ async function main() {
   );
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (isEntrypoint(import.meta.url)) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

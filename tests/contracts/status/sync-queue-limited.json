@@ -62,11 +62,7 @@
       ]
     }
   ],
-  "eventWatermarks": {
-    "syncState": "degraded",
-    "watcherState": "ready",
-    "networkState": "online"
-  },
+  "eventWatermarks": {},
   "nextActions": [
     {
       "label": "Inspect recent events",

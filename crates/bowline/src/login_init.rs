@@ -223,6 +223,7 @@ fn print_machine_setup_output(
         root,
         generated_at.clone(),
         print_options.login_poll == LoginPollMode::Poll,
+        socket,
     ) {
         Ok(outcome) if print_options.format == OutputFormat::Json => {
             if outcome.daemon_service_ready()
@@ -321,9 +322,10 @@ fn run_machine_setup(
     root: Option<String>,
     generated_at: String,
     poll_login: bool,
+    socket: &Path,
 ) -> Result<MachineSetupOutcome, MachineSetupError> {
     if setup_login_should_run_before_root_init() {
-        return run_pending_login_setup(root, generated_at, poll_login);
+        return run_pending_login_setup(root, generated_at, poll_login, socket);
     }
 
     let mut init = initialize_setup_root(root, generated_at.clone())?;
@@ -331,7 +333,7 @@ fn run_machine_setup(
     let device_trust_attachment = advance_device_trust(&mut init, &generated_at);
     let mut next_actions = init.next_actions.clone();
     next_actions.extend(login.next_actions.clone());
-    append_setup_status_actions(&mut next_actions, &init.root, &generated_at);
+    append_setup_status_actions(&mut next_actions, &init.root, &generated_at, socket);
     Ok(MachineSetupOutcome {
         output: setup_command_output(SetupCommandParts {
             generated_at,
@@ -349,6 +351,7 @@ fn run_pending_login_setup(
     root: Option<String>,
     generated_at: String,
     poll_login: bool,
+    socket: &Path,
 ) -> Result<MachineSetupOutcome, MachineSetupError> {
     let requested_root = setup_requested_root(root);
     let selection = bowline_local::init::select_or_create_root(requested_root.as_deref())
@@ -362,7 +365,7 @@ fn run_pending_login_setup(
         let device_trust_attachment = advance_device_trust(&mut init, &generated_at);
         let mut next_actions = init.next_actions.clone();
         next_actions.extend(login.next_actions.clone());
-        append_setup_status_actions(&mut next_actions, &init.root, &generated_at);
+        append_setup_status_actions(&mut next_actions, &init.root, &generated_at, socket);
         return Ok(MachineSetupOutcome {
             output: setup_command_output(SetupCommandParts {
                 generated_at,
@@ -605,13 +608,21 @@ fn map_setup_root_error(error: LocalInitError) -> MachineSetupError {
     }
 }
 
-fn append_setup_status_actions(actions: &mut Vec<RepairCommand>, root: &str, generated_at: &str) {
-    let Ok(status) = compose_status_for_cli(StatusOptions {
-        db_path: metadata_db_path(),
-        requested_path: Some(root.to_string()),
-        workspace_scope: false,
-        generated_at: generated_at.to_string(),
-    }) else {
+fn append_setup_status_actions(
+    actions: &mut Vec<RepairCommand>,
+    root: &str,
+    generated_at: &str,
+    socket: &Path,
+) {
+    let Ok(status) = compose_status_for_cli(
+        StatusOptions {
+            db_path: metadata_db_path(),
+            requested_path: Some(root.to_string()),
+            workspace_scope: false,
+            generated_at: generated_at.to_string(),
+        },
+        socket,
+    ) else {
         return;
     };
     actions.extend(status.next_actions);

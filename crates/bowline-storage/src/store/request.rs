@@ -1,6 +1,6 @@
 use std::io::Read;
 
-use bowline_core::ids::{DeviceId, PackId};
+use bowline_core::ids::DeviceId;
 use serde::{Deserialize, Serialize};
 
 use super::{ByteStoreError, ObjectKey, ObjectKind};
@@ -80,8 +80,8 @@ impl ObjectHash {
 pub struct ObjectContentId(String);
 
 impl ObjectContentId {
-    pub fn from_pack_id(pack_id: &PackId) -> Self {
-        Self(pack_id.as_str().to_string())
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
     }
 
     pub fn as_str(&self) -> &str {

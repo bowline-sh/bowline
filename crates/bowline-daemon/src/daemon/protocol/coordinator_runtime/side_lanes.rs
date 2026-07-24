@@ -21,21 +21,16 @@ impl SchedulerCoordinator {
         let result_job_id = job_id.clone();
         let completion_job_id = job_id.clone();
         let loss_job_id = job_id.clone();
-        let job = CoordinatorJob::new(
-            job_id.clone(),
-            CoordinatorLane::Notification,
-            None,
-            move || {
-                let completion =
-                    notification.execute_cancellable(|| !notification_state.cancels_side_work());
-                let _coordinator_gone =
-                    result_fallback.send(SchedulerFallback::NotificationCompleted {
-                        job_id: result_job_id,
-                        completion: Box::new(completion),
-                    });
-                Ok(())
-            },
-        )
+        let job = CoordinatorJob::new(job_id.clone(), CoordinatorLane::Notification, move || {
+            let completion =
+                notification.execute_cancellable(|| !notification_state.cancels_side_work());
+            let _coordinator_gone =
+                result_fallback.send(SchedulerFallback::NotificationCompleted {
+                    job_id: result_job_id,
+                    completion: Box::new(completion),
+                });
+            Ok(())
+        })
         .on_completion_delivery_failure(move |_| {
             let _coordinator_gone = completion_fallback.send(
                 SchedulerFallback::NotificationWorkerLost(completion_job_id.clone()),
@@ -46,8 +41,13 @@ impl SchedulerCoordinator {
                 loss_job_id.clone(),
             ));
         });
-        if executor.submit(job).is_ok() {
-            self.notification_in_flight = Some(job_id);
+        match executor.submit(job) {
+            Ok(()) => self.notification_in_flight = Some(job_id),
+            Err(error) => eprintln!(
+                "bowline-daemon dropped side-lane job {} ({:?})",
+                error.job.id.as_str(),
+                error.kind
+            ),
         }
     }
 
@@ -61,7 +61,6 @@ impl SchedulerCoordinator {
         let job = CoordinatorJob::new(
             CoordinatorJobId::new("trust-refresh"),
             CoordinatorLane::ControlPlane,
-            None,
             move || {
                 state.refresh_device_trust_if_due();
                 Ok(())
@@ -74,8 +73,13 @@ impl SchedulerCoordinator {
         .on_worker_loss_delivery_failure(move |_| {
             let _coordinator_gone = loss_fallback.send(SchedulerFallback::TrustRefreshCompleted);
         });
-        if executor.submit(job).is_ok() {
-            self.trust_refresh_in_flight = true;
+        match executor.submit(job) {
+            Ok(()) => self.trust_refresh_in_flight = true,
+            Err(error) => eprintln!(
+                "bowline-daemon dropped side-lane job {} ({:?})",
+                error.job.id.as_str(),
+                error.kind
+            ),
         }
     }
 
@@ -99,21 +103,15 @@ impl SchedulerCoordinator {
         let result_job_id = job_id.clone();
         let completion_job_id = job_id.clone();
         let loss_job_id = job_id.clone();
-        let job = CoordinatorJob::new(
-            job_id.clone(),
-            CoordinatorLane::ControlPlane,
-            None,
-            move || {
-                let completion =
-                    prepared.execute_cancellable(|| !publish_state.cancels_side_work());
-                let _coordinator_gone =
-                    result_fallback.send(SchedulerFallback::StatusPublishCompleted {
-                        job_id: result_job_id,
-                        completion,
-                    });
-                Ok(())
-            },
-        )
+        let job = CoordinatorJob::new(job_id.clone(), CoordinatorLane::ControlPlane, move || {
+            let completion = prepared.execute_cancellable(|| !publish_state.cancels_side_work());
+            let _coordinator_gone =
+                result_fallback.send(SchedulerFallback::StatusPublishCompleted {
+                    job_id: result_job_id,
+                    completion,
+                });
+            Ok(())
+        })
         .on_completion_delivery_failure(move |_| {
             let _coordinator_gone = completion_fallback.send(
                 SchedulerFallback::StatusPublishWorkerLost(completion_job_id.clone()),
@@ -124,8 +122,13 @@ impl SchedulerCoordinator {
                 loss_job_id.clone(),
             ));
         });
-        if executor.submit(job).is_ok() {
-            self.status_publish_in_flight = Some(job_id);
+        match executor.submit(job) {
+            Ok(()) => self.status_publish_in_flight = Some(job_id),
+            Err(error) => eprintln!(
+                "bowline-daemon dropped side-lane job {} ({:?})",
+                error.job.id.as_str(),
+                error.kind
+            ),
         }
     }
 

@@ -60,13 +60,14 @@ impl StatusProjectionService {
         collectors: Vec<Box<dyn StatusSourceCollector>>,
     ) -> Result<Self, StatusProjectionError> {
         let collectors = collector_map(collectors)?;
+        let source_count = collectors.len();
         if !collectors.contains_key(&StatusSource::Metadata) {
             return Err(StatusProjectionError::MissingMetadataCollector);
         }
         let (wake_sender, wake_receiver) = mpsc::sync_channel(1);
         let (ready_sender, ready_receiver) = mpsc::channel();
         let (done_sender, done_receiver) = mpsc::sync_channel(1);
-        let pending = Arc::new(Mutex::new(PendingInputState::default()));
+        let pending = Arc::new(Mutex::new(PendingInputState::new(source_count)));
         let shared = Arc::new(Mutex::new(SharedProjectionState::new()));
         let worker_pending = Arc::clone(&pending);
         let worker_shared = Arc::clone(&shared);

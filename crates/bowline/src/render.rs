@@ -271,18 +271,6 @@ pub(super) fn render_events_quiet(output: &EventsCommandOutput) -> String {
     bare_values(output.events.iter().map(|event| event.id.as_str()))
 }
 
-pub(super) fn render_history_quiet(output: &bowline_core::history::HistoryCommandOutput) -> String {
-    if output.path_entries.is_empty() {
-        return bare_values(output.restore_points.iter().map(|point| point.id.as_str()));
-    }
-    bare_values(
-        output
-            .path_entries
-            .iter()
-            .map(|entry| entry.restore_point_id.as_str()),
-    )
-}
-
 pub(super) fn render_work_quiet(output: &bowline_core::commands::WorkListCommandOutput) -> String {
     bare_values(output.work_views.iter().map(|view| view.id.as_str()))
 }

@@ -8,6 +8,15 @@ use reqwest::blocking::{Body, Client};
 
 use super::map_http_error;
 
+pub(super) struct StreamingPutRequest<'a> {
+    pub key: &'a ObjectKey,
+    pub source: &'a dyn ReopenableObjectSource,
+    pub byte_len: u64,
+    pub expected_hash: &'a str,
+    pub checksum_sha256: &'a str,
+    pub create_only: bool,
+}
+
 pub(super) fn send_streaming_put(
     http: &Client,
     url: &str,
@@ -15,30 +24,57 @@ pub(super) fn send_streaming_put(
     source: &dyn ReopenableObjectSource,
     byte_len: u64,
     expected_hash: &str,
+    checksum_sha256: &str,
+) -> Result<reqwest::blocking::Response, ByteStoreError> {
+    send_streaming_put_with_create_only(
+        http,
+        url,
+        StreamingPutRequest {
+            key,
+            source,
+            byte_len,
+            expected_hash,
+            checksum_sha256,
+            create_only: true,
+        },
+    )
+}
+
+/// When `create_only` is false, omits `If-None-Match: *` so a mismatched
+/// pre-existing R2 object (re-sealed ciphertext or greenfield residue) can be
+/// overwritten after create-only put returned 412.
+pub(super) fn send_streaming_put_with_create_only(
+    http: &Client,
+    url: &str,
+    upload: StreamingPutRequest<'_>,
 ) -> Result<reqwest::blocking::Response, ByteStoreError> {
     let observed = Arc::new(Mutex::new(ObservedUpload::default()));
     let reader = HashingReader {
-        inner: source.open()?,
+        inner: upload.source.open()?,
         observed: observed.clone(),
     };
-    let response = http
+    let mut request = http
         .put(url)
-        .header(reqwest::header::IF_NONE_MATCH, "*")
-        .header(reqwest::header::CONTENT_LENGTH, byte_len)
-        .body(Body::sized(reader, byte_len))
+        .header(reqwest::header::CONTENT_LENGTH, upload.byte_len)
+        .header("x-amz-checksum-sha256", upload.checksum_sha256)
+        .body(Body::sized(reader, upload.byte_len));
+    if upload.create_only {
+        request = request.header(reqwest::header::IF_NONE_MATCH, "*");
+    }
+    let response = request
         .send()
         .map_err(|error| map_http_error(TransferOperation::Upload, error))?;
     if !response.status().is_success() {
         return Ok(response);
     }
     let observed = observed.lock().map_err(|_| ByteStoreError::CorruptObject {
-        key: key.clone(),
+        key: upload.key.clone(),
         reason: "streamed upload identity state was unavailable",
     })?;
     let observed_hash = format!("b3_{}", observed.hasher.clone().finalize().to_hex());
-    if observed.byte_len != byte_len || observed_hash != expected_hash {
+    if observed.byte_len != upload.byte_len || observed_hash != upload.expected_hash {
         return Err(ByteStoreError::CorruptObject {
-            key: key.clone(),
+            key: upload.key.clone(),
             reason: "streamed upload bytes did not match immutable identity",
         });
     }
@@ -137,6 +173,8 @@ mod tests {
         time::Duration,
     };
 
+    const TEST_CHECKSUM_SHA256: &str = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+
     #[derive(Clone)]
     struct TestSource {
         bytes: Arc<Vec<u8>>,
@@ -222,6 +260,7 @@ mod tests {
             };
             let headers = String::from_utf8_lossy(&request[..header_end]);
             assert!(headers.contains("if-none-match: *"));
+            assert!(headers.contains(&format!("x-amz-checksum-sha256: {TEST_CHECKSUM_SHA256}")));
             let len = headers
                 .lines()
                 .find_map(|line| {
@@ -257,7 +296,9 @@ mod tests {
             opens: Arc::new(Mutex::new(0)),
             max_read: Arc::new(Mutex::new(0)),
         };
-        let key = ObjectKey::new("packs_pk_00112233445566d1").expect("key");
+        let key =
+            ObjectKey::new("b_00112233445566d100112233445566d100112233445566d100112233445566d1")
+                .expect("key");
         let hash = stable_object_hash(&bytes);
         for _ in 0..2 {
             send_streaming_put(
@@ -267,6 +308,7 @@ mod tests {
                 &source,
                 bytes.len() as u64,
                 &hash,
+                TEST_CHECKSUM_SHA256,
             )
             .expect("put");
         }
@@ -277,7 +319,9 @@ mod tests {
     #[test]
     fn put_rejects_same_length_preopen_and_midstream_mutation() {
         let expected = Arc::new(vec![0x4d; 128 * 1024]);
-        let key = ObjectKey::new("packs_pk_00112233445566d2").expect("key");
+        let key =
+            ObjectKey::new("b_00112233445566d200112233445566d200112233445566d200112233445566d2")
+                .expect("key");
         let hash = stable_object_hash(&expected);
         for source in [
             TestSource {
@@ -301,6 +345,7 @@ mod tests {
                     &source,
                     expected.len() as u64,
                     &hash,
+                    TEST_CHECKSUM_SHA256,
                 ),
                 Err(ByteStoreError::CorruptObject { .. })
             ));
@@ -309,7 +354,9 @@ mod tests {
 
     #[test]
     fn verification_is_independent_of_read_boundaries() {
-        let key = ObjectKey::new("packs_pk_00112233445566d3").expect("key");
+        let key =
+            ObjectKey::new("b_00112233445566d300112233445566d300112233445566d300112233445566d3")
+                .expect("key");
         let bytes = (0..200_000).map(|index| index as u8).collect::<Vec<_>>();
         let hash = stable_object_hash(&bytes);
         verify_matching_readers(

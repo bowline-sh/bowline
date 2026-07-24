@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use super::CoordinatorLane;
+use super::{COORDINATOR_LANE_COUNT, CoordinatorLane};
 
 #[derive(Debug, Default)]
 struct CoordinatorLaneMetrics {
@@ -22,18 +22,10 @@ struct CoordinatorLaneMetrics {
 
 #[derive(Debug)]
 pub(in crate::daemon) struct CoordinatorMetrics {
-    lanes: [CoordinatorLaneMetrics; 5],
+    lanes: [CoordinatorLaneMetrics; COORDINATOR_LANE_COUNT],
     events_received: AtomicU64,
     deadlines_scheduled: AtomicU64,
     deadlines_fired: AtomicU64,
-    filesystem_events: AtomicU64,
-    filesystem_events_coalesced: AtomicU64,
-    filesystem_wakes_coalesced: AtomicU64,
-    filesystem_overflows: AtomicU64,
-    pending_dirty_scopes: AtomicUsize,
-    max_pending_dirty_scopes: AtomicUsize,
-    active_resources: AtomicUsize,
-    max_active_resources: AtomicUsize,
     worker_losses: AtomicU64,
     completion_events_dropped: AtomicU64,
     completion_delivery_recoveries: AtomicU64,
@@ -52,14 +44,6 @@ impl Default for CoordinatorMetrics {
             events_received: AtomicU64::new(0),
             deadlines_scheduled: AtomicU64::new(0),
             deadlines_fired: AtomicU64::new(0),
-            filesystem_events: AtomicU64::new(0),
-            filesystem_events_coalesced: AtomicU64::new(0),
-            filesystem_wakes_coalesced: AtomicU64::new(0),
-            filesystem_overflows: AtomicU64::new(0),
-            pending_dirty_scopes: AtomicUsize::new(0),
-            max_pending_dirty_scopes: AtomicUsize::new(0),
-            active_resources: AtomicUsize::new(0),
-            max_active_resources: AtomicUsize::new(0),
             worker_losses: AtomicU64::new(0),
             completion_events_dropped: AtomicU64::new(0),
             completion_delivery_recoveries: AtomicU64::new(0),
@@ -84,30 +68,6 @@ impl CoordinatorMetrics {
 
     pub(super) fn record_deadline_fired(&self) {
         self.deadlines_fired.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(super) fn record_filesystem_event(&self) {
-        self.filesystem_events.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(super) fn record_filesystem_event_coalesced(&self) {
-        self.filesystem_events_coalesced
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(super) fn record_filesystem_wake_coalesced(&self) {
-        self.filesystem_wakes_coalesced
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(super) fn record_filesystem_overflow(&self) {
-        self.filesystem_overflows.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(super) fn record_pending_dirty_scopes(&self, count: usize) {
-        self.pending_dirty_scopes.store(count, Ordering::Relaxed);
-        self.max_pending_dirty_scopes
-            .fetch_max(count, Ordering::Relaxed);
     }
 
     pub(super) fn record_enqueued(&self, lane: CoordinatorLane, queued: usize) {
@@ -140,14 +100,10 @@ impl CoordinatorMetrics {
             .fetch_max(nanos, Ordering::Relaxed);
     }
 
-    pub(super) fn record_worker_started(&self, lane: CoordinatorLane, active_resources: usize) {
+    pub(super) fn record_worker_started(&self, lane: CoordinatorLane) {
         let metrics = &self.lanes[lane.index()];
         let active = metrics.active.fetch_add(1, Ordering::AcqRel) + 1;
         metrics.max_active.fetch_max(active, Ordering::AcqRel);
-        self.active_resources
-            .store(active_resources, Ordering::Relaxed);
-        self.max_active_resources
-            .fetch_max(active_resources, Ordering::Relaxed);
     }
 
     pub(super) fn record_worker_finished(
@@ -156,7 +112,6 @@ impl CoordinatorMetrics {
         duration: std::time::Duration,
         failed: bool,
         panicked: bool,
-        active_resources: usize,
     ) {
         let metrics = &self.lanes[lane.index()];
         metrics.active.fetch_sub(1, Ordering::AcqRel);
@@ -175,14 +130,10 @@ impl CoordinatorMetrics {
         metrics
             .execution_max_nanos
             .fetch_max(nanos, Ordering::Relaxed);
-        self.active_resources
-            .store(active_resources, Ordering::Relaxed);
     }
 
-    pub(super) fn record_worker_loss(&self, active_resources: usize) {
+    pub(super) fn record_worker_loss(&self) {
         self.worker_losses.fetch_add(1, Ordering::Relaxed);
-        self.active_resources
-            .store(active_resources, Ordering::Relaxed);
     }
 
     pub(super) fn record_completion_event_dropped(&self) {
@@ -227,14 +178,6 @@ impl CoordinatorMetrics {
             events_received: self.events_received.load(Ordering::Relaxed),
             deadlines_scheduled: self.deadlines_scheduled.load(Ordering::Relaxed),
             deadlines_fired: self.deadlines_fired.load(Ordering::Relaxed),
-            filesystem_events: self.filesystem_events.load(Ordering::Relaxed),
-            filesystem_events_coalesced: self.filesystem_events_coalesced.load(Ordering::Relaxed),
-            filesystem_wakes_coalesced: self.filesystem_wakes_coalesced.load(Ordering::Relaxed),
-            filesystem_overflows: self.filesystem_overflows.load(Ordering::Relaxed),
-            pending_dirty_scopes: self.pending_dirty_scopes.load(Ordering::Relaxed),
-            max_pending_dirty_scopes: self.max_pending_dirty_scopes.load(Ordering::Relaxed),
-            active_resources: self.active_resources.load(Ordering::Relaxed),
-            max_active_resources: self.max_active_resources.load(Ordering::Relaxed),
             worker_losses: self.worker_losses.load(Ordering::Relaxed),
             completion_events_dropped: self.completion_events_dropped.load(Ordering::Relaxed),
             completion_delivery_recoveries: self
@@ -292,18 +235,10 @@ pub(in crate::daemon) struct CoordinatorLaneMetricsSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::daemon) struct CoordinatorMetricsSnapshot {
-    lanes: [CoordinatorLaneMetricsSnapshot; 5],
+    lanes: [CoordinatorLaneMetricsSnapshot; COORDINATOR_LANE_COUNT],
     pub(in crate::daemon) events_received: u64,
     pub(in crate::daemon) deadlines_scheduled: u64,
     pub(in crate::daemon) deadlines_fired: u64,
-    pub(in crate::daemon) filesystem_events: u64,
-    pub(in crate::daemon) filesystem_events_coalesced: u64,
-    pub(in crate::daemon) filesystem_wakes_coalesced: u64,
-    pub(in crate::daemon) filesystem_overflows: u64,
-    pub(in crate::daemon) pending_dirty_scopes: usize,
-    pub(in crate::daemon) max_pending_dirty_scopes: usize,
-    pub(in crate::daemon) active_resources: usize,
-    pub(in crate::daemon) max_active_resources: usize,
     pub(in crate::daemon) worker_losses: u64,
     pub(in crate::daemon) completion_events_dropped: u64,
     pub(in crate::daemon) completion_delivery_recoveries: u64,
@@ -351,14 +286,6 @@ impl CoordinatorMetricsSnapshot {
             "eventsReceived": self.events_received,
             "deadlinesScheduled": self.deadlines_scheduled,
             "deadlinesFired": self.deadlines_fired,
-            "filesystemEvents": self.filesystem_events,
-            "filesystemEventsCoalesced": self.filesystem_events_coalesced,
-            "filesystemWakesCoalesced": self.filesystem_wakes_coalesced,
-            "filesystemOverflows": self.filesystem_overflows,
-            "pendingDirtyScopes": self.pending_dirty_scopes,
-            "maxPendingDirtyScopes": self.max_pending_dirty_scopes,
-            "activeResources": self.active_resources,
-            "maxActiveResources": self.max_active_resources,
             "workerLosses": self.worker_losses,
             "completionEventsDropped": self.completion_events_dropped,
             "completionDeliveryRecoveries": self.completion_delivery_recoveries,

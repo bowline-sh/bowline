@@ -1,9 +1,6 @@
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
-use std::{
-    path::Path,
-    time::{Duration, Instant, SystemTime},
-};
+use std::time::{Duration, Instant, SystemTime};
 
 use super::*;
 
@@ -44,7 +41,6 @@ pub struct LocalStatusSourceRevision {
     trust_generation: u64,
     update_generation: u64,
     daemon_generation: u64,
-    conflict_revision: ConflictStatusRevision,
 }
 
 pub type StatusSourceRevision = LocalStatusSourceRevision;
@@ -201,9 +197,6 @@ impl LocalStatusFactCollector {
             trust_generation: self.trust_generation,
             update_generation: self.update_generation,
             daemon_generation: self.daemon_generation,
-            conflict_revision: conflict_status_revision(
-                self.db_path.parent().unwrap_or_else(|| Path::new(".")),
-            ),
         })
     }
 
@@ -221,7 +214,10 @@ impl LocalStatusFactCollector {
         match inspection.state {
             DatabaseState::Current => {
                 if self.store.is_none() {
-                    self.store = Some(MetadataStore::open(&self.db_path)?);
+                    self.store = Some(MetadataStore::open_read_only(
+                        &self.db_path,
+                        MetadataStore::STATUS_PROJECTION_READER,
+                    )?);
                     self.metrics.store_opens = self.metrics.store_opens.saturating_add(1);
                     self.open_database_identity = current_identity;
                 }

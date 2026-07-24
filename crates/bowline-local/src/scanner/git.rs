@@ -2,9 +2,11 @@ use std::{collections::BTreeSet, fs, io, path::Path};
 
 use bowline_core::workspace_graph::normalize_workspace_path;
 
-use crate::policy::{PathFacts, UserPolicy, classify_path};
+use crate::policy::{
+    PathFacts, UserPolicy, classify_path, policy_prunes_subtree, policy_syncs_workspace_state,
+};
 
-use super::{path_to_slash_string, pruned_by_default_policy, syncs_as_workspace_state};
+use super::path_to_slash_string;
 
 pub(super) fn git_config_has_remote(config: &Path) -> io::Result<bool> {
     match fs::read_to_string(config) {
@@ -143,10 +145,10 @@ fn count_untracked_files(
         );
 
         if is_dir {
-            if !pruned_by_default_policy(&decision) {
+            if !policy_prunes_subtree(&decision) {
                 count += count_untracked_files(repo, &relative_path, tracked)?;
             }
-        } else if !tracked.contains(&path) && syncs_as_workspace_state(&decision) {
+        } else if !tracked.contains(&path) && policy_syncs_workspace_state(&decision) {
             count += 1;
         }
     }

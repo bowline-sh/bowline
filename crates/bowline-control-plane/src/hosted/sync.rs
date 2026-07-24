@@ -1,9 +1,5 @@
 use super::generated::{
-    ConflictsListWorkspaceConflicts, ConflictsReconcileConflictOccurrence, EventsListCompactEvents,
-    HostedCompactEvent, HostedCompactEventKind, HostedConflictMetadataRecord,
-    HostedConflictOccurrenceState, HostedConflictReconcileOutcome, HostedConflictReconcileResult,
-    HostedConflictsListWorkspaceConflictsRequest,
-    HostedConflictsReconcileConflictOccurrenceRequest, HostedEventWatermarks,
+    EventsListCompactEvents, HostedCompactEvent, HostedCompactEventKind, HostedEventWatermarks,
     HostedEventsListCompactEventsRequest, HostedLimitedCapability,
     HostedRefsCompareAndSwapWorkspaceRefRequest, HostedRefsCreateWorkspaceRefRequest,
     HostedRefsGetWorkspaceRefRequest, HostedRefsListWorkspaceRefHistoryRequest,
@@ -14,20 +10,18 @@ use super::generated::{
     RefsCompareAndSwapWorkspaceRef, RefsCreateWorkspaceRef, RefsGetWorkspaceRef,
     RefsListWorkspaceRefHistory, StatusPublishWorkspaceStatus,
 };
-use super::objects::{object_pointer_from_dto, object_pointer_to_dto};
 use super::*;
 use crate::WorkspaceControlPlaneClient;
-use bowline_core::hosted::EMPTY_SNAPSHOT_ID;
 use bowline_core::status::{StatusAttention, StatusFactAvailabilityImpact, StatusFactScope};
 
 impl WorkspaceControlPlaneClient for HostedControlPlaneClient {
     fn create_workspace_ref(&self, workspace_id: &WorkspaceId) -> ControlPlaneResult<WorkspaceRef> {
+        // Pure workspace establishment: seeds a headless version-0 genesis ref.
         // Exactly one auth field is populated, mirroring the account-session-first,
         // control-plane-token fallback the other refs endpoints use.
         let mut request = HostedRefsCreateWorkspaceRefRequest {
             auth_token: None,
             account_session_id: None,
-            snapshot_id: EMPTY_SNAPSHOT_ID.to_string(),
             workspace_id: workspace_id.as_str().to_string(),
         };
         if self.account_session_auth_available() {
@@ -210,56 +204,6 @@ impl WorkspaceControlPlaneClient for HostedControlPlaneClient {
             .collect()
     }
 
-    fn reconcile_conflict_occurrence(
-        &self,
-        input: ConflictOccurrenceReconcile,
-    ) -> ControlPlaneResult<ConflictReconcileResult> {
-        self.require_local_device(&input.device_id)?;
-        let proof_subject = conflict_reconcile_proof_subject(&input);
-        let device_proof = self.device_proof(
-            &input.workspace_id,
-            "reconcile-conflict-occurrence",
-            &proof_subject,
-        )?;
-        let request = HostedConflictsReconcileConflictOccurrenceRequest {
-            base_snapshot_id: input.base_snapshot_id.as_str().to_string(),
-            bundle_object: input.bundle_object.as_ref().map(object_pointer_to_dto),
-            conflict_id: input.conflict_id.as_str().to_string(),
-            conflict_kind: input.conflict_kind.clone(),
-            contains_secrets: input.contains_secrets,
-            desired_state: conflict_state_to_dto(input.desired_state),
-            device_id: input.device_id.as_str().to_string(),
-            device_proof,
-            occurrence_version: input.occurrence_version,
-            paths: input.paths.clone(),
-            reason: input.reason.clone(),
-            remote_snapshot_id: input.remote_snapshot_id.as_str().to_string(),
-            workspace_id: input.workspace_id.as_str().to_string(),
-        };
-        let response = self.call::<ConflictsReconcileConflictOccurrence>(&request)?;
-        ConflictReconcileResult::try_from(response)
-    }
-
-    fn list_workspace_conflicts(
-        &self,
-        workspace_id: &WorkspaceId,
-        requested_by_device_id: &DeviceId,
-    ) -> ControlPlaneResult<Vec<ConflictMetadataRecord>> {
-        self.require_local_device(requested_by_device_id)?;
-        let proof_subject = conflict_list_proof_subject(workspace_id.as_str());
-        let requested_by_device_proof =
-            self.device_proof(workspace_id, "list-workspace-conflicts", &proof_subject)?;
-        let request = HostedConflictsListWorkspaceConflictsRequest {
-            requested_by_device_id: requested_by_device_id.as_str().to_string(),
-            requested_by_device_proof,
-            workspace_id: workspace_id.as_str().to_string(),
-        };
-        self.call::<ConflictsListWorkspaceConflicts>(&request)?
-            .into_iter()
-            .map(ConflictMetadataRecord::try_from)
-            .collect()
-    }
-
     fn publish_workspace_status(
         &self,
         snapshot: &WorkspaceStatusSnapshot,
@@ -284,16 +228,13 @@ impl TryFrom<HostedWorkspaceRefHistoryRecord> for WorkspaceRefHistoryRecord {
     type Error = ControlPlaneError;
 
     fn try_from(record: HostedWorkspaceRefHistoryRecord) -> Result<Self, Self::Error> {
-        // Transport keeps baseSnapshotId optional to mirror the stored row; the
-        // domain record requires it, so decoding a row without it is a boundary
-        // error rather than a silent gap.
-        let base_snapshot_id = record.base_snapshot_id.ok_or_else(|| {
-            shape_error("refs:listWorkspaceRefHistory record is missing baseSnapshotId")
-        })?;
+        // baseSnapshotId is absent for the genesis advance (version 1), which has
+        // no prior head to restore to; the domain record mirrors that with an
+        // Option rather than fabricating a base.
         Ok(Self {
             workspace_id: WorkspaceId::new(record.workspace_id),
             version: record.version,
-            base_snapshot_id: SnapshotId::new(base_snapshot_id),
+            base_snapshot_id: record.base_snapshot_id.map(SnapshotId::new),
             target_snapshot_id: SnapshotId::new(record.target_snapshot_id),
             occurred_at: record.occurred_at,
             advanced_by_device_id: record.advanced_by_device_id.map(DeviceId::new),
@@ -318,54 +259,6 @@ impl TryFrom<HostedCompactEvent> for CompactEvent {
     }
 }
 
-impl TryFrom<HostedConflictMetadataRecord> for ConflictMetadataRecord {
-    type Error = ControlPlaneError;
-
-    fn try_from(dto: HostedConflictMetadataRecord) -> Result<Self, Self::Error> {
-        Ok(ConflictMetadataRecord {
-            workspace_id: WorkspaceId::new(dto.workspace_id),
-            conflict_id: ConflictId::new(dto.conflict_id),
-            conflict_kind: dto.conflict_kind,
-            paths: dto.paths,
-            contains_secrets: dto.contains_secrets,
-            state: conflict_state_from_dto(dto.state),
-            base_snapshot_id: SnapshotId::new(dto.base_snapshot_id),
-            remote_snapshot_id: SnapshotId::new(dto.remote_snapshot_id),
-            occurrence_version: dto.occurrence_version,
-            reason: dto.reason,
-            detected_by_device_id: DeviceId::new(dto.detected_by_device_id),
-            bundle_object: dto
-                .bundle_object
-                .map(|pointer| {
-                    object_pointer_from_dto(pointer)
-                        .map_err(|error| add_field_context(error, "bundleObject"))
-                })
-                .transpose()?,
-            detected_at: parse_control_timestamp(&dto.detected_at)
-                .map_err(|error| add_field_context(error, "detectedAt"))?,
-            resolved_by_device_id: dto.resolved_by_device_id.map(DeviceId::new),
-            resolved_at: dto
-                .resolved_at
-                .map(|raw| {
-                    parse_control_timestamp(&raw)
-                        .map_err(|error| add_field_context(error, "resolvedAt"))
-                })
-                .transpose()?,
-        })
-    }
-}
-
-impl TryFrom<HostedConflictReconcileResult> for ConflictReconcileResult {
-    type Error = ControlPlaneError;
-
-    fn try_from(dto: HostedConflictReconcileResult) -> Result<Self, Self::Error> {
-        Ok(ConflictReconcileResult {
-            conflict: ConflictMetadataRecord::try_from(dto.conflict)?,
-            outcome: reconcile_outcome_from_dto(dto.outcome),
-        })
-    }
-}
-
 // Map the full-vocabulary wire event kind onto the domain CompactEventKind,
 // rejecting kinds the control-plane domain does not model. Mirrors the former
 // parse_event_kind, which errored on any unmodeled kind.
@@ -374,9 +267,6 @@ fn event_kind_from_dto(kind: HostedCompactEventKind) -> ControlPlaneResult<Compa
         HostedCompactEventKind::WorkspaceCreated => Ok(CompactEventKind::WorkspaceCreated),
         HostedCompactEventKind::WorkspaceRefAdvanced => Ok(CompactEventKind::WorkspaceRefAdvanced),
         HostedCompactEventKind::ObjectPointerAdded => Ok(CompactEventKind::ObjectPointerAdded),
-        HostedCompactEventKind::SnapshotRootCommitted => {
-            Ok(CompactEventKind::SnapshotRootCommitted)
-        }
         HostedCompactEventKind::DeviceRequested => Ok(CompactEventKind::DeviceRequested),
         HostedCompactEventKind::DeviceHarnessApproved => {
             Ok(CompactEventKind::DeviceHarnessApproved)
@@ -393,23 +283,6 @@ fn event_kind_from_dto(kind: HostedCompactEventKind) -> ControlPlaneResult<Compa
         HostedCompactEventKind::RecoveryKeyRevoked => Ok(CompactEventKind::RecoveryKeyRevoked),
         HostedCompactEventKind::AuthLoginStarted => Ok(CompactEventKind::AuthLoginStarted),
         HostedCompactEventKind::AuthLoginCompleted => Ok(CompactEventKind::AuthLoginCompleted),
-        HostedCompactEventKind::ConflictDetected => Ok(CompactEventKind::ConflictDetected),
-        HostedCompactEventKind::ConflictResolved => Ok(CompactEventKind::ConflictResolved),
-        HostedCompactEventKind::LeaseCreated => Ok(CompactEventKind::LeaseCreated),
-        HostedCompactEventKind::LeaseUpdated => Ok(CompactEventKind::LeaseUpdated),
-        HostedCompactEventKind::LeaseDispatched => Ok(CompactEventKind::LeaseDispatched),
-        HostedCompactEventKind::LeaseClaimed => Ok(CompactEventKind::LeaseClaimed),
-        HostedCompactEventKind::LeaseCompleted => Ok(CompactEventKind::LeaseCompleted),
-        HostedCompactEventKind::LeaseReviewReady => Ok(CompactEventKind::LeaseReviewReady),
-        HostedCompactEventKind::OverlayChanged => Ok(CompactEventKind::OverlayChanged),
-        HostedCompactEventKind::WorkCreated => Ok(CompactEventKind::WorkCreated),
-        HostedCompactEventKind::WorkUpdated => Ok(CompactEventKind::WorkUpdated),
-        HostedCompactEventKind::WorkReviewReady => Ok(CompactEventKind::WorkReviewReady),
-        HostedCompactEventKind::WorkAccepted => Ok(CompactEventKind::WorkAccepted),
-        HostedCompactEventKind::WorkDiscarded => Ok(CompactEventKind::WorkDiscarded),
-        HostedCompactEventKind::WorkRestored => Ok(CompactEventKind::WorkRestored),
-        HostedCompactEventKind::WorkCleanupPreviewed => Ok(CompactEventKind::WorkCleanupPreviewed),
-        HostedCompactEventKind::WorkCleanupCompleted => Ok(CompactEventKind::WorkCleanupCompleted),
         HostedCompactEventKind::NamespaceArchived
         | HostedCompactEventKind::NamespaceArchiveRestored
         | HostedCompactEventKind::NamespacePurgePending
@@ -421,30 +294,6 @@ fn event_kind_from_dto(kind: HostedCompactEventKind) -> ControlPlaneResult<Compa
         | HostedCompactEventKind::WorkspaceKeyRotated => {
             Err(shape_error("unknown compact event kind"))
         }
-    }
-}
-
-fn conflict_state_from_dto(state: HostedConflictOccurrenceState) -> ConflictOccurrenceState {
-    match state {
-        HostedConflictOccurrenceState::Unresolved => ConflictOccurrenceState::Unresolved,
-        HostedConflictOccurrenceState::Accepted => ConflictOccurrenceState::Accepted,
-        HostedConflictOccurrenceState::Rejected => ConflictOccurrenceState::Rejected,
-    }
-}
-
-fn conflict_state_to_dto(state: ConflictOccurrenceState) -> HostedConflictOccurrenceState {
-    match state {
-        ConflictOccurrenceState::Unresolved => HostedConflictOccurrenceState::Unresolved,
-        ConflictOccurrenceState::Accepted => HostedConflictOccurrenceState::Accepted,
-        ConflictOccurrenceState::Rejected => HostedConflictOccurrenceState::Rejected,
-    }
-}
-
-fn reconcile_outcome_from_dto(outcome: HostedConflictReconcileOutcome) -> ConflictReconcileOutcome {
-    match outcome {
-        HostedConflictReconcileOutcome::Applied => ConflictReconcileOutcome::Applied,
-        HostedConflictReconcileOutcome::Idempotent => ConflictReconcileOutcome::Idempotent,
-        HostedConflictReconcileOutcome::Superseded => ConflictReconcileOutcome::Superseded,
     }
 }
 
@@ -581,9 +430,6 @@ fn event_watermarks_to_dto(watermarks: &StatusEventWatermarks) -> HostedEventWat
             .as_ref()
             .map(|event_id| event_id.as_str().to_string()),
         last_scan_at: watermarks.last_scan_at.clone(),
-        sync_state: watermarks.sync_state.clone(),
-        watcher_state: watermarks.watcher_state.clone(),
-        network_state: watermarks.network_state.clone(),
     }
 }
 
@@ -628,84 +474,13 @@ fn status_limit_to_dto(limit: &StatusLimitSnapshot) -> HostedLimitedCapability {
 
 #[cfg(test)]
 mod boundary_tests {
-    use super::super::generated::{
-        HostedConflictMetadataRecord, HostedConflictReconcileResult, HostedObjectKind,
-        HostedObjectPointer,
-    };
     use super::*;
-
-    fn conflict_bundle_dto() -> HostedObjectPointer {
-        HostedObjectPointer {
-            object_key: "conflicts_cb_fixture".to_string(),
-            content_id: "cid_bundle".to_string(),
-            byte_length: 64,
-            hash: "blake3:bundle".to_string(),
-            key_epoch: 3,
-            kind: HostedObjectKind::ConflictBundle,
-            created_at: "2026-07-02T12:00:00Z".to_string(),
-        }
-    }
-
-    fn conflict_record_dto() -> HostedConflictMetadataRecord {
-        HostedConflictMetadataRecord {
-            workspace_id: "workspace_1".to_string(),
-            conflict_id: "conflict_1".to_string(),
-            conflict_kind: "path-divergence".to_string(),
-            paths: vec!["src/main.rs".to_string()],
-            contains_secrets: false,
-            state: HostedConflictOccurrenceState::Accepted,
-            base_snapshot_id: "snap_base".to_string(),
-            remote_snapshot_id: "snap_remote".to_string(),
-            occurrence_version: 2,
-            reason: "both sides edited".to_string(),
-            detected_by_device_id: "device_detector".to_string(),
-            bundle_object: Some(conflict_bundle_dto()),
-            detected_at: "2026-07-02T12:00:00Z".to_string(),
-            resolved_by_device_id: Some("device_resolver".to_string()),
-            resolved_at: Some("2026-07-02T12:05:00Z".to_string()),
-        }
-    }
-
-    #[test]
-    fn conflict_record_dto_maps_state_bundle_and_timestamps() {
-        let record =
-            ConflictMetadataRecord::try_from(conflict_record_dto()).expect("record decodes");
-        assert_eq!(record.state, ConflictOccurrenceState::Accepted);
-        assert_eq!(record.occurrence_version, 2);
-        let bundle = record.bundle_object.expect("bundle object");
-        assert_eq!(bundle.kind, ObjectKind::ConflictBundle);
-        assert_eq!(bundle.object_key, "conflicts_cb_fixture");
-        assert!(record.resolved_at.is_some());
-    }
-
-    #[test]
-    fn conflict_record_dto_rejects_malformed_timestamp() {
-        let mut dto = conflict_record_dto();
-        dto.detected_at = "not-a-timestamp".to_string();
-        let error = ConflictMetadataRecord::try_from(dto).expect_err("must reject");
-        assert!(error.to_string().contains("`detectedAt`"), "got: {error}");
-    }
-
-    #[test]
-    fn reconcile_result_dto_maps_outcome() {
-        let dto = HostedConflictReconcileResult {
-            conflict: conflict_record_dto(),
-            outcome: HostedConflictReconcileOutcome::Idempotent,
-        };
-        let result = ConflictReconcileResult::try_from(dto).expect("result decodes");
-        assert_eq!(result.outcome, ConflictReconcileOutcome::Idempotent);
-        assert_eq!(result.conflict.conflict_id, ConflictId::new("conflict_1"));
-    }
 
     #[test]
     fn event_kind_dto_maps_modeled_kinds_and_rejects_unmodeled() {
         assert_eq!(
             event_kind_from_dto(HostedCompactEventKind::WorkspaceRefAdvanced).expect("modeled"),
             CompactEventKind::WorkspaceRefAdvanced
-        );
-        assert_eq!(
-            event_kind_from_dto(HostedCompactEventKind::LeaseCreated).expect("modeled"),
-            CompactEventKind::LeaseCreated
         );
         // A vocabulary kind the control-plane domain does not model is rejected,
         // matching the former parse_event_kind.

@@ -13,37 +13,31 @@ use bowline_control_plane::{
 };
 use bowline_core::{
     commands::{
-        AgentSessionState, CONTRACT_VERSION, CommandError, CommandErrorOutput, CommandErrorStatus,
-        CommandName, CommandRecoverability, EventsCommandOutput, StatusCommandOutput, WatchFrame,
+        CONTRACT_VERSION, CommandError, CommandErrorOutput, CommandErrorStatus, CommandName,
+        CommandRecoverability, EventsCommandOutput, StatusCommandOutput, WatchFrame,
     },
     events::{EventName, EventSeverity, EventSubjectKind},
     ids::{DeviceId, ProjectId, WorkspaceId},
     policy::{MaterializationMode, PathClassification},
     status::{
-        ComponentState, EventWatermarks, FreshnessVerdict, GitObserverState, LimitedCapability,
-        NetworkState, ObservedWorkspaceSummary, ProjectAttentionSummary, ProjectSetupReadiness,
+        EventWatermarks, FreshnessVerdict, GitObserverState, LimitedCapability,
+        ObservedWorkspaceSummary, ProjectAttentionSummary, ProjectSetupReadiness,
         ProjectSetupReadinessState, RepairCommand, SetupReceiptState, StaleBaseStatus,
         StatusAttention, StatusAvailability, StatusFact, StatusFactAvailabilityImpact,
         StatusFactScope, StatusItem, StatusItemKind, StatusLevel, StatusScope,
-        StatusSnapshotFreshness, StatusSubject, StatusSubjectKind, SyncQueueStatus,
-        WorkspaceStatus, WorkspaceSummary, reduce_status_facts, status_fact_policy,
+        StatusSnapshotFreshness, StatusSubject, StatusSubjectKind, WorkspaceStatus,
+        WorkspaceSummary, reduce_status_facts, status_fact_policy,
     },
     work_views::{WorkViewLifecycle, WorkViewSyncState},
 };
 
 use crate::{
-    agents::{AgentError, recover_provisional_agent_leases},
     events::EventQuery,
     metadata::{
-        AgentLeaseRecord, DatabaseState, MaterializationTaskState, MetadataError, MetadataStore,
-        ObservedLocalPath, ProjectLifecycleState, ProjectLocalMaterializationState, ProjectRecord,
-        SyncOperationCounts, WorkViewRecord, WorkspaceRecord, default_database_path,
+        DatabaseState, MetadataError, MetadataStore, ObservedLocalPath, ProjectLifecycleState,
+        ProjectLocalMaterializationState, ProjectRecord, WorkViewRecord, WorkspaceRecord,
+        default_database_path,
     },
-    sync::conflicts::{
-        ConflictBundleError, ConflictStatusRevision, conflict_status_revision,
-        unresolved_conflict_paths,
-    },
-    work_views::WorkViewError,
 };
 
 pub const MAX_EVENTS_LIMIT: u32 = 500;
@@ -78,7 +72,6 @@ pub enum LocalStatusError {
     MetadataState(DatabaseState),
     Path(std::io::Error),
     Events(crate::events::LocalEventError),
-    ConflictBundle(ConflictBundleError),
 }
 
 impl LocalStatusError {
@@ -89,7 +82,6 @@ impl LocalStatusError {
             Self::MetadataState(_) => false,
             Self::Path(error) => io_error_is_recoverable(error),
             Self::Events(error) => event_error_is_recoverable(error),
-            Self::ConflictBundle(error) => conflict_bundle_error_is_recoverable(error),
         }
     }
 }
@@ -212,7 +204,6 @@ impl fmt::Display for LocalStatusError {
             Self::MetadataState(state) => write!(formatter, "metadata unavailable: {state:?}"),
             Self::Path(error) => write!(formatter, "metadata path failed: {error}"),
             Self::Events(error) => error.fmt(formatter),
-            Self::ConflictBundle(error) => error.fmt(formatter),
         }
     }
 }
@@ -224,7 +215,6 @@ impl Error for LocalStatusError {
             Self::MetadataState(_) => None,
             Self::Path(error) => Some(error),
             Self::Events(error) => Some(error),
-            Self::ConflictBundle(error) => Some(error),
         }
     }
 }
@@ -247,53 +237,18 @@ impl From<crate::events::LocalEventError> for LocalStatusError {
     }
 }
 
-impl From<ConflictBundleError> for LocalStatusError {
-    fn from(error: ConflictBundleError) -> Self {
-        Self::ConflictBundle(error)
-    }
-}
-
 fn metadata_error_is_recoverable(error: &MetadataError) -> bool {
-    match error {
-        MetadataError::Io(error) => io_error_is_recoverable(error),
-        MetadataError::Sqlite(error) => sqlite_error_is_recoverable(error),
-        MetadataError::InvalidStorageMetadata(_)
-        | MetadataError::InvalidCurrentNamespaceProjection { .. }
-        | MetadataError::ImmutableBindingConflict { .. }
-        | MetadataError::IncompleteSnapshotRoot { .. }
-        | MetadataError::FutureIncompatible { .. }
-        | MetadataError::UnsupportedSchema => false,
-    }
+    error.is_recoverable()
 }
 
 fn event_error_is_recoverable(error: &crate::events::LocalEventError) -> bool {
     match error {
         crate::events::LocalEventError::Metadata(error) => metadata_error_is_recoverable(error),
-        crate::events::LocalEventError::Sqlite(error) => sqlite_error_is_recoverable(error),
+        crate::events::LocalEventError::Sqlite(error) => {
+            MetadataError::sqlite_is_recoverable(error)
+        }
         crate::events::LocalEventError::Json(_)
         | crate::events::LocalEventError::DuplicateEventId(_) => false,
-    }
-}
-
-fn conflict_bundle_error_is_recoverable(error: &ConflictBundleError) -> bool {
-    match error {
-        ConflictBundleError::Io(error) => io_error_is_recoverable(error),
-        ConflictBundleError::RecordLockTimeout { .. } => true,
-        ConflictBundleError::Json(_)
-        | ConflictBundleError::MissingOccurrenceField { .. }
-        | ConflictBundleError::OccurrenceSuperseded { .. }
-        | ConflictBundleError::InvalidOccurrenceVersion { .. }
-        | ConflictBundleError::UnsafePath(_) => false,
-    }
-}
-
-fn sqlite_error_is_recoverable(error: &rusqlite::Error) -> bool {
-    match error {
-        rusqlite::Error::SqliteFailure(sqlite_error, _) => matches!(
-            sqlite_error.code,
-            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-        ),
-        _ => false,
     }
 }
 
@@ -317,7 +272,6 @@ mod accumulator;
 mod collector;
 mod common;
 mod compose;
-mod materialization;
 mod scope;
 mod setup;
 mod signals;
@@ -334,8 +288,8 @@ use signals::*;
 #[cfg(test)]
 pub(super) use snapshot::redact_workspace_path;
 pub use snapshot::{command_error_output, redacted_status_snapshot};
+pub(crate) use sync::freshness_for_stale_bases;
 use sync::*;
-pub(crate) use sync::{freshness_for_stale_bases, snapshot_stale_bases};
 use work::*;
 
 #[cfg(test)]

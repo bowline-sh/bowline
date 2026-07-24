@@ -10,11 +10,13 @@ mod tests;
 use acceptor::{AcceptorEvent, AcceptorWake, BlockingAcceptor};
 use connection_executor::ConnectionExecutor;
 use coordinator_runtime::run_scheduler;
+#[cfg(all(test, target_os = "linux"))]
+pub(in crate::daemon) use coordinator_runtime::watcher_bridge::WatcherBridge;
 use supervisor::{DaemonThreads, ShutdownOutcome};
 
 pub(super) fn handle_shutdown_grace_expiry(component: &'static str) {
     eprintln!(
-        "bowline-daemon forced shutdown: {component} exceeded the grace deadline; durable recovery remains authoritative"
+        "bowline-daemon forced shutdown: {component} exceeded the grace deadline; the manifest engine re-syncs on next start"
     );
 }
 
@@ -25,9 +27,7 @@ pub(super) fn force_process_shutdown(socket: &Path) -> ! {
     {
         eprintln!("bowline-daemon forced shutdown could not remove the control socket: {error}");
     }
-    eprintln!(
-        "bowline-daemon forced shutdown grace expired; the process will terminate after durable cancellation was persisted"
-    );
+    eprintln!("bowline-daemon forced shutdown grace expired; the process will terminate");
     std::process::abort();
 }
 
@@ -54,12 +54,6 @@ impl ThreadJoinReport {
         self.joined += other.joined;
         self.forced_recovery |= other.forced_recovery;
     }
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Handshake {
-    pub(super) daemon_version: String,
 }
 
 pub(super) struct StatusSnapshot {
@@ -392,18 +386,6 @@ fn current_uid() -> u32 {
     rustix::process::geteuid().as_raw()
 }
 
-pub(super) fn validate_agent_tool_contract(
-    request: &AgentToolInvokeRequest,
-) -> Result<(), &'static str> {
-    if request.message_type != "agent.tool.invoke" {
-        return Err("agent tool request type is unsupported");
-    }
-    if request.protocol_version != CONTRACT_VERSION {
-        return Err("agent tool protocol version is unsupported");
-    }
-    Ok(())
-}
-
 pub(super) fn current_timestamp() -> String {
     format_timestamp(OffsetDateTime::now_utc())
 }
@@ -426,29 +408,6 @@ pub(super) fn local_peer_credential_checked(
         .is_ok_and(|credentials| credentials.euid() == socket_owner_uid)
 }
 
-#[cfg(test)]
-pub(super) fn handshake(socket: &Path) -> io::Result<Handshake> {
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct DaemonInfo {
-        daemon_version: String,
-    }
-
-    let options = bowline_daemon_rpc::ClientOptions::new("daemon-cli", env!("CARGO_PKG_VERSION"));
-    let client =
-        bowline_daemon_rpc::DaemonClient::connect(socket, options).map_err(io::Error::other)?;
-    let info: DaemonInfo = client
-        .call(
-            "daemon.info",
-            &serde_json::json!({}),
-            Some(Duration::from_secs(2)),
-        )
-        .map_err(io::Error::other)?;
-    Ok(Handshake {
-        daemon_version: info.daemon_version,
-    })
-}
-
 pub(super) fn status_snapshot(socket: &Path) -> io::Result<StatusSnapshot> {
     let options = bowline_daemon_rpc::ClientOptions::new("daemon-cli", env!("CARGO_PKG_VERSION"));
     let client =
@@ -460,6 +419,7 @@ pub(super) fn status_snapshot(socket: &Path) -> io::Result<StatusSnapshot> {
             &bowline_core::wire::generated::DaemonStatusScopeParams {
                 workspace_root: None,
                 project_path: None,
+                requested_path: None,
             },
             Some(Duration::from_secs(2)),
         )
@@ -468,6 +428,23 @@ pub(super) fn status_snapshot(socket: &Path) -> io::Result<StatusSnapshot> {
         daemon_version,
         snapshot: serde_json::to_value(status.snapshot).map_err(io::Error::other)?,
     })
+}
+
+/// Read the daemon's runtime metrics (Plan 111 Step 5), including the engine
+/// cost meters under the `engine` key. Opaque JSON: the CLI prints it verbatim so
+/// the release gate can classify the C1–C5 budgets from the recorded counters.
+pub(super) fn metrics_snapshot(socket: &Path) -> io::Result<serde_json::Value> {
+    let options = bowline_daemon_rpc::ClientOptions::new("daemon-cli", env!("CARGO_PKG_VERSION"));
+    let client =
+        bowline_daemon_rpc::DaemonClient::connect(socket, options).map_err(io::Error::other)?;
+    let metrics: serde_json::Value = client
+        .call(
+            "daemon.metrics",
+            &serde_json::json!({}),
+            Some(Duration::from_secs(2)),
+        )
+        .map_err(io::Error::other)?;
+    Ok(metrics)
 }
 
 pub(super) fn request_shutdown(socket: &Path) -> io::Result<()> {

@@ -124,9 +124,6 @@ export const CONTROL_PLANE_SUPPORT_CAPABILITIES = [
 export type ControlPlaneSupportCapability =
   (typeof CONTROL_PLANE_SUPPORT_CAPABILITIES)[number];
 
-export type ComponentState = "ready" | "degraded" | "unavailable";
-export type NetworkState = "online" | "degraded" | "offline";
-
 export const PROJECT_SETUP_READINESS_STATES = [
   "unknown",
   "runnable",
@@ -169,9 +166,6 @@ export type EventWatermarks = {
   readonly lastScanAt?: string;
   readonly lastEventId?: EventId;
   readonly eventLagMs?: number;
-  readonly syncState?: ComponentState;
-  readonly watcherState?: ComponentState;
-  readonly networkState?: NetworkState;
 };
 
 /**

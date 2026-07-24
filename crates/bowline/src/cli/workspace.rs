@@ -7,22 +7,6 @@ pub(super) use workspace_login::parse_login_command;
 
 pub(super) fn parse_approve_command(values: &ParsedValues) -> Result<Command, ParseError> {
     reject_positionals(values, CommandName::Approve, "device approve")?;
-    if values.flag("--merge-plugin") {
-        return parse_merge_plugin_approve_command(values);
-    }
-    if values.option("--id").is_some()
-        || values.option("--plugin-version").is_some()
-        || values.option("--digest").is_some()
-        || values.option("--matcher-version").is_some()
-        || values.option("--validator-version").is_some()
-    {
-        return command_usage_error(
-            CommandName::Approve,
-            "usage_error",
-            "bowline device approve merge-plugin options require --merge-plugin".to_string(),
-            trust_usage_actions("device approve"),
-        );
-    }
     let selector = trust_selector(values, CommandName::Approve, "device approve")?;
     let selection = parsed_selection(values)
         .finish_for_trust(CommandName::Approve, "device approve")
@@ -30,39 +14,6 @@ pub(super) fn parse_approve_command(values: &ParsedValues) -> Result<Command, Pa
     Ok(Command::Approve(ApproveArgs {
         selection,
         selector,
-        yes: values.flag("--yes"),
-    }))
-}
-
-fn parse_merge_plugin_approve_command(values: &ParsedValues) -> Result<Command, ParseError> {
-    if values.option("--request").is_some() || values.option("--code").is_some() {
-        return command_usage_error(
-            CommandName::Approve,
-            "usage_error",
-            "bowline device approve --merge-plugin cannot be combined with --request or --code"
-                .to_string(),
-            trust_usage_actions("device approve"),
-        );
-    }
-    let selection = parsed_selection(values)
-        .finish_for_trust(CommandName::Approve, "device approve")
-        .map_err(|error| *error)?;
-    let Some(id) = values.option("--id") else {
-        return missing_value(CommandName::Approve, "device approve", "--id");
-    };
-    let Some(version) = values.option("--plugin-version") else {
-        return missing_value(CommandName::Approve, "device approve", "--plugin-version");
-    };
-    let Some(digest) = values.option("--digest") else {
-        return missing_value(CommandName::Approve, "device approve", "--digest");
-    };
-    Ok(Command::ApproveMergePlugin(MergePluginApproveArgs {
-        selection,
-        id: id.to_string(),
-        version: version.to_string(),
-        digest: digest.to_string(),
-        matcher_version: values.option("--matcher-version").map(str::to_string),
-        validator_version: values.option("--validator-version").map(str::to_string),
         yes: values.flag("--yes"),
     }))
 }
@@ -312,6 +263,105 @@ fn required_positional(
         || Err(parse_error(usage_error(command, missing_message))),
         Ok,
     )
+}
+
+pub(super) fn parse_sync_wait_command(values: &ParsedValues) -> Result<Command, ParseError> {
+    use bowline_core::introspection::WorkspaceReadiness;
+    if let Some(unexpected) = values.positionals().first() {
+        return usage_error(
+            CommandName::Unknown,
+            format!("unexpected bowline sync wait argument `{unexpected}`"),
+        );
+    }
+    let Some(workspace_id) = values
+        .option("--workspace")
+        .filter(|value| !value.is_empty())
+    else {
+        return usage_error(
+            CommandName::Unknown,
+            "bowline sync wait requires --workspace <id>",
+        );
+    };
+    let Some(state) = values.option("--state") else {
+        return usage_error(
+            CommandName::Unknown,
+            "bowline sync wait requires --state <state>",
+        );
+    };
+    let Some(target_state) = WorkspaceReadiness::from_token(state) else {
+        return usage_error(
+            CommandName::Unknown,
+            format!(
+                "unknown bowline sync wait --state `{state}`; expected one of {}",
+                readiness_state_list()
+            ),
+        );
+    };
+    let timeout = match values.option("--timeout") {
+        Some(raw) => match crate::sync_wait::parse_timeout(raw) {
+            Ok(duration) => duration,
+            Err(message) => return usage_error(CommandName::Unknown, message),
+        },
+        None => crate::sync_wait::DEFAULT_TIMEOUT,
+    };
+    Ok(Command::SyncWait(SyncWaitArgs {
+        workspace_id: workspace_id.to_string(),
+        target_state,
+        timeout,
+    }))
+}
+
+pub(super) fn parse_sync_retry_command(values: &ParsedValues) -> Result<Command, ParseError> {
+    use crate::sync_attention::RetrySelector;
+    if let Some(unexpected) = values.positionals().first() {
+        return usage_error(
+            CommandName::Unknown,
+            format!("unexpected bowline sync retry argument `{unexpected}`"),
+        );
+    }
+    let operation = values
+        .option("--operation")
+        .filter(|value| !value.is_empty());
+    let all = values.flag("--all");
+    // Require exactly one selector so a caller can never re-queue the whole lane
+    // by forgetting the operation id.
+    match (operation, all) {
+        (Some(incident), false) => Ok(Command::SyncRetry(RetrySelector::Incident(
+            incident.to_string(),
+        ))),
+        (None, true) => Ok(Command::SyncRetry(RetrySelector::All)),
+        _ => usage_error(
+            CommandName::Unknown,
+            "bowline sync retry requires exactly one of --operation <id> or --all",
+        ),
+    }
+}
+
+pub(super) fn parse_sync_dismiss_command(values: &ParsedValues) -> Result<Command, ParseError> {
+    if let Some(unexpected) = values.positionals().first() {
+        return usage_error(
+            CommandName::Unknown,
+            format!("unexpected bowline sync dismiss argument `{unexpected}`"),
+        );
+    }
+    let Some(operation) = values
+        .option("--operation")
+        .filter(|value| !value.is_empty())
+    else {
+        return usage_error(
+            CommandName::Unknown,
+            "bowline sync dismiss requires --operation <id>",
+        );
+    };
+    Ok(Command::SyncDismiss(operation.to_string()))
+}
+
+fn readiness_state_list() -> String {
+    bowline_core::introspection::WorkspaceReadiness::ALL
+        .iter()
+        .map(|state| state.token())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub(super) fn parse_debug_classify_command(values: &ParsedValues) -> Result<Command, ParseError> {

@@ -3,6 +3,13 @@ use super::*;
 
 mod projection;
 
+#[cfg(test)]
+pub(super) fn runtime_adapter_observer_state(
+    runtime: &super::DaemonRuntime,
+) -> bowline_daemon::status_projection::StatusSourceState {
+    projection::runtime_adapter_facts(runtime).observer.state
+}
+
 use projection::{
     ProjectionSourceHandles, device_trust_status_facts, projection_io_error, start_projection,
 };
@@ -10,21 +17,24 @@ use projection::{
 #[cfg(test)]
 use bowline_daemon::status_projection::ProjectionBuildReason;
 use bowline_daemon::status_projection::{
-    DaemonInstanceId, DaemonStatusProjection, DeviceTrustStatusFacts, LatestProjectionReceiver,
-    LocalStatusProjectionCollector, ProjectionServiceConfig, SafetyRefreshInterval,
-    SharedStatusSourceCollector, SharedStatusSourceHandle, StatusInputEvent, StatusProjectionInput,
-    StatusProjectionService, StatusSource, StatusSourceCollector, StatusSourceFacts,
-    StatusSourceState, StatusSourceStateFacts,
+    DaemonInstanceId, DaemonStatusProjection, DeviceTrustStatusFacts, EngineStatusCollector,
+    LatestProjectionReceiver, LocalStatusProjectionCollector, ProjectionServiceConfig,
+    SafetyRefreshInterval, SharedStatusSourceCollector, SharedStatusSourceHandle, StatusInputEvent,
+    StatusProjectionInput, StatusProjectionService, StatusSource, StatusSourceCollector,
+    StatusSourceFacts, StatusSourceState, StatusSourceStateFacts, replace_convergence_status,
+    scoped_engine_convergence_facts,
 };
 
 use bowline_core::{
     commands::StatusCommandOutput,
+    ids::DeviceId,
     status::{
-        StatusFact, StatusFactScope, StatusItem, StatusItemKind, StatusSubject, StatusSubjectKind,
-        status_fact_policy,
+        StatusFact, StatusFactScope, StatusItem, StatusItemKind, StatusScope, StatusSubject,
+        StatusSubjectKind, status_fact_policy,
     },
     wire::generated::DeviceApprovalAffordance,
 };
+use bowline_local::sync::manifest_engine::WorkspacePath;
 use crossbeam_channel::Sender;
 use std::sync::atomic::AtomicU8;
 
@@ -37,7 +47,7 @@ pub(super) enum ShutdownPhase {
     Running = 0,
     StopAccepting = 1,
     CancelRpcWork = 2,
-    StopDurableClaims = 3,
+    StopBackgroundWork = 3,
     FlushBookkeeping = 4,
     JoinThreads = 5,
     RemoveSocketState = 6,
@@ -51,7 +61,7 @@ impl ShutdownPhase {
             0 => Self::Running,
             1 => Self::StopAccepting,
             2 => Self::CancelRpcWork,
-            3 => Self::StopDurableClaims,
+            3 => Self::StopBackgroundWork,
             4 => Self::FlushBookkeeping,
             5 => Self::JoinThreads,
             6 => Self::RemoveSocketState,
@@ -65,7 +75,7 @@ impl ShutdownPhase {
             Self::Running => "running",
             Self::StopAccepting => "stop-accepting",
             Self::CancelRpcWork => "cancel-rpc-work",
-            Self::StopDurableClaims => "stop-durable-claims",
+            Self::StopBackgroundWork => "stop-background-work",
             Self::FlushBookkeeping => "flush-bookkeeping",
             Self::JoinThreads => "join-threads",
             Self::RemoveSocketState => "remove-socket-state",
@@ -101,6 +111,13 @@ pub(super) struct CachedDaemonStatus {
     pub(super) status: StatusCommandOutput,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProjectStatusScope {
+    requested: PathBuf,
+    root: PathBuf,
+    prefix: WorkspacePath,
+}
+
 #[derive(Debug)]
 struct SubscriptionPending {
     snapshot: Option<CachedDaemonStatus>,
@@ -111,15 +128,17 @@ struct SubscriptionPending {
 #[derive(Debug)]
 pub(super) struct StatusSubscription {
     pub(super) id: String,
+    scope: Option<ProjectStatusScope>,
     pending: Mutex<SubscriptionPending>,
     changed: Condvar,
     wake: Option<Sender<()>>,
 }
 
 impl StatusSubscription {
-    fn new(id: String, wake: Option<Sender<()>>) -> Self {
+    fn new(id: String, wake: Option<Sender<()>>, scope: Option<ProjectStatusScope>) -> Self {
         Self {
             id,
+            scope,
             pending: Mutex::new(SubscriptionPending {
                 snapshot: None,
                 gap: false,
@@ -128,6 +147,10 @@ impl StatusSubscription {
             changed: Condvar::new(),
             wake,
         }
+    }
+
+    pub(super) fn scope(&self) -> Option<&ProjectStatusScope> {
+        self.scope.as_ref()
     }
 
     pub(super) fn take_pending(&self) -> Option<(CachedDaemonStatus, bool)> {
@@ -189,8 +212,10 @@ pub(super) struct DaemonServerState {
     acceptor_wake: Mutex<Option<super::protocol::acceptor::AcceptorWake>>,
     coordinator_wake: Mutex<Option<super::coordinator::CoordinatorHandle>>,
     coordinator_metrics: Mutex<Option<Arc<super::coordinator::CoordinatorMetrics>>>,
+    manifest_counters: Mutex<Option<Arc<bowline_local::sync::manifest_engine::EngineCounters>>>,
+    manifest_snapshot: Option<bowline_daemon::manifest_driver::EngineSnapshotHandle>,
     rpc_executor: Mutex<Option<Weak<super::protocol_v2::RpcExecutor>>>,
-    durable_work_wake_pending: AtomicBool,
+    engine_work_wake_pending: AtomicBool,
     projection_wake_pending: Arc<AtomicBool>,
     next_subscription_id: AtomicU64,
     next_source_observation: Mutex<Instant>,
@@ -201,7 +226,7 @@ pub(super) struct DaemonServerState {
     pub(super) active_connections: AtomicUsize,
     connection_readers_started: AtomicUsize,
     connection_readers_joined: AtomicUsize,
-    sync_options: Option<ContinuousSyncOptions>,
+    sync_options: Option<SyncArgs>,
 }
 
 impl DaemonServerState {
@@ -243,8 +268,13 @@ impl DaemonServerState {
             acceptor_wake: Mutex::new(None),
             coordinator_wake: Mutex::new(None),
             coordinator_metrics: Mutex::new(None),
+            manifest_counters: Mutex::new(None),
+            manifest_snapshot: runtime
+                .sync
+                .as_ref()
+                .map(ContinuousSyncRuntime::manifest_snapshot_handle),
             rpc_executor: Mutex::new(None),
-            durable_work_wake_pending: AtomicBool::new(false),
+            engine_work_wake_pending: AtomicBool::new(false),
             projection_wake_pending: Arc::new(AtomicBool::new(false)),
             next_subscription_id: AtomicU64::new(1),
             next_source_observation: Mutex::new(Instant::now()),
@@ -255,7 +285,7 @@ impl DaemonServerState {
             active_connections: AtomicUsize::new(0),
             connection_readers_started: AtomicUsize::new(0),
             connection_readers_joined: AtomicUsize::new(0),
-            sync_options: runtime.sync.as_ref().map(|sync| sync.options.clone()),
+            sync_options: runtime.sync.as_ref().map(|sync| sync.args.clone()),
         };
         state.projection_input.record_rpc_serialization();
         state.publish_finder_projection(&initial);
@@ -289,6 +319,48 @@ impl DaemonServerState {
         self.status.lock().ok().map(|status| status.clone())
     }
 
+    pub(super) fn snapshot_for_scope(
+        &self,
+        scope: Option<&ProjectStatusScope>,
+    ) -> Option<CachedDaemonStatus> {
+        self.snapshot()
+            .and_then(|snapshot| self.apply_status_scope(snapshot, scope))
+    }
+
+    fn apply_status_scope(
+        &self,
+        mut snapshot: CachedDaemonStatus,
+        scope: Option<&ProjectStatusScope>,
+    ) -> Option<CachedDaemonStatus> {
+        let Some(scope) = scope else {
+            return Some(snapshot);
+        };
+        let engine = self.manifest_snapshot.as_ref()?;
+        let facts = scoped_engine_convergence_facts(&engine.current(), &scope.prefix);
+        replace_convergence_status(&mut snapshot.status, &facts, scope.prefix.as_str());
+        snapshot.status.scope = Some(StatusScope::Project);
+        snapshot.status.requested_path = Some(scope.requested.to_string_lossy().into_owned());
+        snapshot.status.resolved_project_root = Some(scope.root.to_string_lossy().into_owned());
+        Some(snapshot)
+    }
+
+    pub(super) fn request_sync_barrier(
+        &self,
+        timeout: Duration,
+    ) -> io::Result<bowline_local::sync::manifest_engine::EngineSnapshot> {
+        self.manifest_snapshot
+            .as_ref()
+            .ok_or_else(|| io::Error::other("daemon is not serving a sync workspace"))?
+            .request_sync_barrier()?
+            .wait(timeout)
+    }
+
+    pub(super) fn serves_workspace(&self, workspace_id: &str) -> bool {
+        self.sync_options
+            .as_ref()
+            .is_some_and(|options| options.workspace_id == workspace_id)
+    }
+
     pub(super) fn register_runtime_metrics(
         &self,
         coordinator: Arc<super::coordinator::CoordinatorMetrics>,
@@ -299,6 +371,18 @@ impl DaemonServerState {
         }
         if let Ok(mut executor) = self.rpc_executor.lock() {
             *executor = Some(rpc_executor);
+        }
+    }
+
+    /// Register the manifest engine's persistent cost meters so the daemon
+    /// metrics RPC can surface them (Plan 111 Step 5). The handle is stable
+    /// across driver rebuilds, so this is a one-time registration.
+    pub(super) fn register_manifest_counters(
+        &self,
+        counters: Arc<bowline_local::sync::manifest_engine::EngineCounters>,
+    ) {
+        if let Ok(mut slot) = self.manifest_counters.lock() {
+            *slot = Some(counters);
         }
     }
 
@@ -331,9 +415,15 @@ impl DaemonServerState {
             .ok()
             .and_then(|executor| executor.as_ref().and_then(Weak::upgrade))
             .map(|executor| executor.metrics().to_json());
+        let engine = self
+            .manifest_counters
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|counters| counters.snapshot().to_json()));
         serde_json::json!({
             "coordinator": coordinator,
             "rpc": rpc,
+            "engine": engine,
             "shutdown": {
                 "phase": self.shutdown_phase().as_str(),
                 "reason": self.shutdown_reason().map(ShutdownReason::as_str),
@@ -344,15 +434,17 @@ impl DaemonServerState {
     pub(super) fn subscribe_with_snapshot(
         &self,
         wake: Option<Sender<()>>,
+        scope: Option<ProjectStatusScope>,
     ) -> Option<(Arc<StatusSubscription>, CachedDaemonStatus)> {
         // Registration owns the subscriber map while it captures status. A
         // publisher either lands before this snapshot or waits and delivers
         // after registration, so setup cannot lose a one-off transition.
         let mut subscriptions = self.subscriptions.lock().ok()?;
         let snapshot = self.status.lock().ok()?.clone();
+        let snapshot = self.apply_status_scope(snapshot, scope.as_ref())?;
         let sequence = self.next_subscription_id.fetch_add(1, Ordering::Relaxed);
         let id = format!("subscription-{}-{sequence}", std::process::id());
-        let subscription = Arc::new(StatusSubscription::new(id.clone(), wake));
+        let subscription = Arc::new(StatusSubscription::new(id.clone(), wake, scope));
         subscriptions.insert(id, Arc::clone(&subscription));
         Some((subscription, snapshot))
     }
@@ -416,20 +508,20 @@ impl DaemonServerState {
         }
     }
 
-    pub(super) fn wake_durable_work(&self) {
-        if self.durable_work_wake_pending.swap(true, Ordering::AcqRel) {
+    pub(super) fn wake_engine_work(&self) {
+        if self.engine_work_wake_pending.swap(true, Ordering::AcqRel) {
             return;
         }
         if let Ok(wake) = self.coordinator_wake.lock()
             && let Some(wake) = wake.as_ref()
         {
             let _already_awake =
-                wake.try_send(super::coordinator::CoordinatorEvent::DurableWorkAvailable);
+                wake.try_send(super::coordinator::CoordinatorEvent::EngineWorkAvailable);
         }
     }
 
-    pub(super) fn take_durable_work_wake(&self) -> bool {
-        self.durable_work_wake_pending.swap(false, Ordering::AcqRel)
+    pub(super) fn take_engine_work_wake(&self) -> bool {
+        self.engine_work_wake_pending.swap(false, Ordering::AcqRel)
     }
 
     pub(super) fn take_projection_wake(&self) -> bool {
@@ -440,11 +532,17 @@ impl DaemonServerState {
         STATUS_HEARTBEAT_INTERVAL
     }
 
+    /// The daemon's sync configuration, for RPC handlers that build per-request
+    /// engine transports (work views). `None` for status-only daemons.
+    pub(super) fn sync_args(&self) -> Option<&SyncArgs> {
+        self.sync_options.as_ref()
+    }
+
     pub(super) fn sync_identity(&self) -> Option<(WorkspaceId, DeviceId)> {
-        self.sync_options.as_ref().map(|options| {
+        self.sync_options.as_ref().map(|args| {
             (
-                options.args.workspace_id(),
-                DeviceId::new(options.args.device_id.clone()),
+                WorkspaceId::new(args.workspace_id.clone()),
+                DeviceId::new(args.device_id.clone()),
             )
         })
     }
@@ -479,9 +577,7 @@ impl DaemonServerState {
             Ok(trust) => {
                 let facts = device_trust_status_facts(
                     &trust,
-                    self.sync_options
-                        .as_ref()
-                        .map(|options| options.args.root.as_path()),
+                    self.sync_options.as_ref().map(|args| args.root.as_path()),
                 );
                 self.update_projection_source(
                     &self.projection_sources.device_trust,
@@ -520,18 +616,40 @@ impl DaemonServerState {
         self.update_projection_source(&self.projection_sources.device_trust, degraded);
     }
 
-    pub(super) fn scope_matches(
+    pub(super) fn resolve_status_scope(
         &self,
         workspace_root: Option<&str>,
         project_path: Option<&str>,
-    ) -> bool {
-        let Some(options) = self.sync_options.as_ref() else {
-            return workspace_root.is_none() && project_path.is_none();
+        requested_path: Option<&str>,
+    ) -> io::Result<Option<ProjectStatusScope>> {
+        let Some(args) = self.sync_options.as_ref() else {
+            return if workspace_root.is_none() && project_path.is_none() {
+                Ok(None)
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "daemon is not serving a sync workspace",
+                ))
+            };
         };
-        if project_path.is_some() {
-            return false;
+        if let Some(project_path) = project_path {
+            return resolve_project_status_scope(&args.root, project_path, requested_path)
+                .map(Some);
         }
-        workspace_root.is_none_or(|root| requested_root_matches(root, &options.args.root))
+        if requested_path.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "requestedPath requires projectPath",
+            ));
+        }
+        if workspace_root.is_none_or(|root| requested_root_matches(root, &args.root)) {
+            Ok(None)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "requested workspace root does not match the active workspace",
+            ))
+        }
     }
 
     pub(super) fn request_shutdown(&self) {
@@ -584,8 +702,8 @@ impl DaemonServerState {
         self.shutdown_phase() >= ShutdownPhase::CancelRpcWork
     }
 
-    pub(super) fn should_stop_durable_claims(&self) -> bool {
-        self.shutdown_phase() >= ShutdownPhase::StopDurableClaims
+    pub(super) fn should_stop_background_work(&self) -> bool {
+        self.shutdown_phase() >= ShutdownPhase::StopBackgroundWork
     }
 
     pub(super) fn cancel_rpc_work(&self) {
@@ -597,122 +715,161 @@ impl DaemonServerState {
         }
     }
 
-    pub(super) fn stop_durable_claims(&self) {
-        self.advance_shutdown(ShutdownPhase::StopDurableClaims);
+    pub(super) fn stop_background_work(&self) {
+        self.advance_shutdown(ShutdownPhase::StopBackgroundWork);
         if let Ok(wake) = self.coordinator_wake.lock()
             && let Some(wake) = wake.as_ref()
         {
             let _already_awake = wake.try_send(super::coordinator::CoordinatorEvent::Shutdown);
         }
-        let Some(options) = self.sync_options.as_ref() else {
-            return;
-        };
-        let cancellation = MetadataStore::open(options.args.state_root.join(DEFAULT_DATABASE_FILE))
-            .and_then(|store| {
-                let workspace_id = options.args.workspace_id();
-                let device_id = DeviceId::new(options.args.device_id.clone());
-                let operations = store.sync_operations(&workspace_id)?;
-                let now = current_timestamp();
-                for operation in operations.into_iter().filter(|operation| {
-                    operation.state == SyncOperationState::Claimed
-                        && operation.claimed_by.as_deref() == Some(self.instance_id.as_str())
-                }) {
-                    store.request_sync_operation_cancellation(&operation.id, &now)?;
-                }
-                store.request_claimed_work_view_accept_cancellations(
-                    &workspace_id,
-                    &device_id,
-                    self.instance_id.as_str(),
-                    &now,
-                )?;
-                Ok(())
-            });
-        if let Err(error) = cancellation {
-            eprintln!("bowline-daemon could not request active sync cancellation: {error}");
-        }
     }
+}
 
-    pub(super) fn enqueue_sync(
-        &self,
-        idempotency_key: &str,
-    ) -> Result<(SyncOperationRecord, bool), MetadataError> {
-        let options = self.sync_options.as_ref().ok_or_else(|| {
-            MetadataError::InvalidStorageMetadata("continuous sync is not configured".to_string())
-        })?;
-        let workspace_id = options.args.workspace_id();
-        let store = MetadataStore::open(options.args.state_root.join(DEFAULT_DATABASE_FILE))?;
-        let now = current_timestamp();
-        let token = stable_token(&format!(
-            "rpc-sync:{}:{}:{idempotency_key}",
-            workspace_id.as_str(),
-            options.args.device_id
+fn resolve_project_status_scope(
+    configured_root: &Path,
+    project_path: &str,
+    requested_path: Option<&str>,
+) -> io::Result<ProjectStatusScope> {
+    let configured_root = fs::canonicalize(configured_root)?;
+    let expanded = expand_status_path(project_path)?;
+    let requested_existed = expanded.exists();
+    let requested = canonicalize_allow_missing(&expanded)?;
+    let mut candidate = if !requested_existed || requested.is_dir() {
+        requested.as_path()
+    } else {
+        requested.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "project path has no parent")
+        })?
+    };
+    if !candidate.starts_with(&configured_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "project path is outside the active workspace",
         ));
-        let operation = SyncOperationRecord {
-            id: format!("rpc-sync-{token}"),
-            workspace_id,
-            kind: SyncOperationKind::Reconcile,
-            resource_key: SyncResourceKey::workspace_sync(options.args.workspace_id()),
-            state: SyncOperationState::Queued,
-            idempotency_key: idempotency_key.to_string(),
-            base_version: None,
-            base_snapshot_id: None,
-            target_snapshot_id: None,
-            device_id: Some(DeviceId::new(options.args.device_id.clone())),
-            payload_json: serde_json::json!({
-                "root": options.args.root,
-                "stateRoot": options.args.state_root,
-                "source": "daemon-rpc-v2"
-            })
-            .to_string(),
-            attempt_count: 0,
-            claimed_by: None,
-            claim_generation: 0,
-            heartbeat_at: None,
-            lease_expires_at: None,
-            cancellation_requested_at: None,
-            next_attempt_at: None,
-            result_json: None,
-            last_error_code: None,
-            last_error: None,
-            created_at: now.clone(),
-            updated_at: now,
-        };
-        let outcome = match store.enqueue_sync_operation(&operation)? {
-            SyncOperationEnqueueOutcome::Inserted(operation) => (operation, false),
-            SyncOperationEnqueueOutcome::Existing(operation) => (operation, true),
-        };
-        self.wake_durable_work();
-        Ok(outcome)
     }
+    let project_root = if requested_existed {
+        loop {
+            if candidate.join(".git").exists() {
+                break candidate.to_path_buf();
+            }
+            if candidate == configured_root {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "project path is not inside a Git project",
+                ));
+            }
+            candidate = candidate.parent().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "project path is outside the active workspace",
+                )
+            })?;
+        }
+    } else {
+        git_root_for_existing_ancestor(&requested, &configured_root)
+            .unwrap_or_else(|| requested.clone())
+    };
+    let relative = project_root
+        .strip_prefix(&configured_root)
+        .map_err(|_| io::Error::other("project scope escaped the active workspace"))?
+        .components()
+        .map(|component| component.as_os_str().to_str())
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "project path is not valid Unicode",
+            )
+        })?
+        .join("/");
+    if relative.is_empty()
+        || bowline_core::workspace_graph::normalize_workspace_path(&relative) != relative
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "project path is not a normalized workspace path",
+        ));
+    }
+    let requested = match requested_path {
+        Some(requested_path) => canonicalize_allow_missing(&expand_status_path(requested_path)?)?,
+        None => requested,
+    };
+    if !requested.starts_with(&project_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "requested path is outside the resolved project",
+        ));
+    }
+    Ok(ProjectStatusScope {
+        requested,
+        root: project_root,
+        prefix: WorkspacePath::new(relative),
+    })
+}
 
-    pub(super) fn sync_operation(
-        &self,
-        operation_id: &str,
-    ) -> Result<Option<SyncOperationRecord>, MetadataError> {
-        let Some(options) = self.sync_options.as_ref() else {
-            return Ok(None);
-        };
-        MetadataStore::open(options.args.state_root.join(DEFAULT_DATABASE_FILE))?
-            .sync_operation_by_id(operation_id)
+fn git_root_for_existing_ancestor(path: &Path, workspace_root: &Path) -> Option<PathBuf> {
+    let mut candidate = path.parent()?;
+    while !candidate.exists() {
+        candidate = candidate.parent()?;
     }
+    let mut candidate = fs::canonicalize(candidate).ok()?;
+    loop {
+        if candidate.join(".git").exists() {
+            return Some(candidate);
+        }
+        if candidate == workspace_root {
+            return None;
+        }
+        candidate = candidate.parent()?.to_path_buf();
+    }
+}
 
-    pub(super) fn cancel_sync_operation(
-        &self,
-        operation_id: &str,
-    ) -> Result<Option<(SyncCancellationOutcome, SyncOperationRecord)>, MetadataError> {
-        let Some(options) = self.sync_options.as_ref() else {
-            return Ok(None);
-        };
-        let store = MetadataStore::open(options.args.state_root.join(DEFAULT_DATABASE_FILE))?;
-        let Some(outcome) =
-            store.request_sync_operation_cancellation(operation_id, &current_timestamp())?
-        else {
-            return Ok(None);
-        };
-        Ok(store
-            .sync_operation_by_id(operation_id)?
-            .map(|operation| (outcome, operation)))
+fn canonicalize_allow_missing(path: &Path) -> io::Result<PathBuf> {
+    if path
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "project path cannot contain parent traversal",
+        ));
     }
+    let mut existing = path;
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        missing.push(
+            existing
+                .file_name()
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "project path has no existing ancestor",
+                    )
+                })?
+                .to_os_string(),
+        );
+        existing = existing.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "project path has no existing ancestor",
+            )
+        })?;
+    }
+    let mut resolved = fs::canonicalize(existing)?;
+    for component in missing.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
+fn expand_status_path(path: &str) -> io::Result<PathBuf> {
+    let Some(relative) = path.strip_prefix("~/") else {
+        return Ok(PathBuf::from(path));
+    };
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(relative))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))
 }
 
 fn requested_root_matches(requested: &str, configured: &Path) -> bool {

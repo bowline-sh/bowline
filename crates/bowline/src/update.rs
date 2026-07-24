@@ -443,9 +443,11 @@ mod tests {
             scope: None,
             requested_path: None,
             resolved_workspace_root: Some("/tmp/workspace".to_string()),
+            resolved_project_root: None,
             workspace_summary: None,
             setup_readiness: None,
             sync_queue: None,
+            convergence: None,
             freshness: bowline_core::status::FreshnessVerdict::Unknown,
             stale_bases: Vec::new(),
             status: bowline_core::status::WorkspaceStatus::healthy(),
@@ -460,12 +462,12 @@ mod tests {
                 last_scan_at: None,
                 last_event_id: None,
                 event_lag_ms: None,
-                sync_state: None,
-                watcher_state: None,
-                network_state: None,
             },
             next_actions: Vec::new(),
             device_approvals: Vec::new(),
+            service: None,
+            authentication: None,
+            sync: None,
         }
     }
 }

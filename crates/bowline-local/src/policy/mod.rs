@@ -13,23 +13,21 @@ use bowline_core::{
 
 use crate::glob::glob_matches;
 
+mod project_view;
+mod state_paths;
+mod traversal;
+mod types;
+
+pub(crate) use project_view::classify_project_view_path;
+pub use project_view::is_work_view_namespace_path;
+pub use state_paths::{is_private_workspace_state_path, is_secret_bearing_path};
+pub use traversal::policy_should_recurse;
+pub(crate) use traversal::{policy_prunes_subtree, policy_syncs_workspace_state};
+pub use types::{PathFacts, PathPolicyDecision};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserPolicy {
     rules: Vec<IgnoreRule>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PathFacts {
-    pub relative_path: String,
-    pub is_dir: bool,
-    pub byte_len: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PathPolicyDecision {
-    pub classification: PathClassification,
-    pub mode: MaterializationMode,
-    pub access: Vec<AccessFlag>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +177,7 @@ pub fn classify_path(facts: &PathFacts, policy: &UserPolicy) -> PathPolicyDecisi
         access: vec![AccessFlag::HumanReadable],
     }
 }
+
 /// Classify a path using only the built-in rules (no `.bowlineignore` policy).
 /// Test-only helper for synthesizing scan observations without touching a
 /// filesystem-backed `UserPolicy`.
@@ -210,6 +209,14 @@ fn classify_builtin(path: &str, is_dir: bool, byte_len: Option<u64>) -> PathPoli
         );
     }
 
+    if is_work_view_namespace_path(path) {
+        return decision(
+            PathClassification::LocalOnly,
+            MaterializationMode::LocalOnly,
+            vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
+        );
+    }
+
     if is_portable_git_worktree_link_policy_path(path, is_dir) {
         return git_opaque_state_decision();
     }
@@ -224,14 +231,6 @@ fn classify_builtin(path: &str, is_dir: bool, byte_len: Option<u64>) -> PathPoli
 
     if parts.contains(&".git") {
         return git_opaque_state_decision();
-    }
-
-    if parts.contains(&".work") {
-        return decision(
-            PathClassification::LocalOnly,
-            MaterializationMode::LocalOnly,
-            vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
-        );
     }
 
     if is_dependency_path(&parts) {

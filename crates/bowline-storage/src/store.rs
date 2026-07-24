@@ -13,7 +13,6 @@ use bowline_core::{
 use serde::{Deserialize, Serialize};
 
 mod clock;
-mod journal;
 mod object_key;
 mod range;
 mod recovery;
@@ -21,11 +20,6 @@ mod request;
 mod streaming;
 
 use clock::StoreClock;
-use journal::upload_journal_dir;
-pub use journal::{
-    SourcePackUploadJournalDigest, SourcePackUploadJournalEntry, SourcePackUploadJournalKey,
-    SourcePackUploadJournalObjectHash, SourcePackUploadJournalPointer,
-};
 pub use object_key::ObjectKey;
 #[cfg(test)]
 pub(super) use object_key::assert_object_key_does_not_leak_path;
@@ -36,12 +30,10 @@ pub use request::{ObjectContentId, ObjectHash, PutObjectReaderRequest, Reopenabl
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ObjectKind {
-    SourcePack,
-    SnapshotManifest,
-    SnapshotMetadataPage,
-    LocatorIndex,
-    AgentOverlay,
-    ConflictBundle,
+    // Manifest-sync engine (Plan 108/110). These are the sealed-envelope purposes:
+    // a file blob (`b_<sealed hash>`) and a workspace manifest (`m_<sealed hash>`).
+    WorkspaceFileV1,
+    WorkspaceManifestV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,21 +186,6 @@ pub trait ByteStore {
         false
     }
 
-    fn source_pack_upload_journal(
-        &self,
-        _key: &SourcePackUploadJournalKey,
-    ) -> Result<Vec<SourcePackUploadJournalEntry>, ByteStoreError> {
-        Ok(Vec::new())
-    }
-
-    fn record_source_pack_upload_journal(
-        &self,
-        _key: &SourcePackUploadJournalKey,
-        _entry: &SourcePackUploadJournalEntry,
-    ) -> Result<(), ByteStoreError> {
-        Ok(())
-    }
-
     fn metrics(&self) -> ByteStoreMetrics;
 }
 
@@ -223,7 +200,6 @@ impl LocalByteStore {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, ByteStoreError> {
         let root = root.into();
         fs::create_dir_all(objects_dir(&root))?;
-        fs::create_dir_all(upload_journal_dir(&root))?;
         Ok(Self {
             root,
             clock: StoreClock::system(),
@@ -237,7 +213,6 @@ impl LocalByteStore {
     ) -> Result<Self, ByteStoreError> {
         let root = root.into();
         fs::create_dir_all(objects_dir(&root))?;
-        fs::create_dir_all(upload_journal_dir(&root))?;
         Ok(Self {
             root,
             clock: StoreClock::deterministic(start_unix_ms),
@@ -658,21 +633,6 @@ impl ByteStore for LocalByteStore {
             .map_err(|error| map_missing(error, key, "object"))?;
         self.metrics.borrow_mut().delete_count += 1;
         Ok(())
-    }
-
-    fn source_pack_upload_journal(
-        &self,
-        key: &SourcePackUploadJournalKey,
-    ) -> Result<Vec<SourcePackUploadJournalEntry>, ByteStoreError> {
-        self.source_pack_upload_journal_entries(key)
-    }
-
-    fn record_source_pack_upload_journal(
-        &self,
-        key: &SourcePackUploadJournalKey,
-        entry: &SourcePackUploadJournalEntry,
-    ) -> Result<(), ByteStoreError> {
-        self.record_source_pack_upload_journal_entry(key, entry)
     }
 
     fn metrics(&self) -> ByteStoreMetrics {

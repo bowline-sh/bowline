@@ -70,93 +70,6 @@ pub(super) fn upsert_work_view_record(
     Ok(())
 }
 
-pub(super) fn validate_exposed_base(
-    record: &WorkViewRecord,
-    descriptor: &WorkViewBaseDescriptor,
-    snapshot: &SnapshotRecord,
-) -> Result<(), MetadataError> {
-    if descriptor.format_version != WORK_VIEW_BASE_DESCRIPTOR_VERSION {
-        return Err(MetadataError::InvalidStorageMetadata(
-            "unsupported work-view base descriptor version".to_string(),
-        ));
-    }
-    if descriptor.workspace_id != record.workspace_id
-        || descriptor.project_id != record.project_id
-        || descriptor.work_view_id != record.id
-        || descriptor.base_snapshot_id != record.base_snapshot_id
-    {
-        return Err(MetadataError::InvalidStorageMetadata(
-            "work-view base descriptor identity does not match the work view".to_string(),
-        ));
-    }
-    if snapshot.workspace_id != descriptor.workspace_id
-        || snapshot.id != descriptor.exposed_snapshot_id
-        || snapshot.root_id != descriptor.exposed_namespace_root_id
-        || snapshot.semantic_manifest_digest != descriptor.exposed_semantic_manifest_digest
-        || snapshot.entry_count != descriptor.exposed_entry_count
-    {
-        return Err(MetadataError::InvalidStorageMetadata(
-            "work-view base descriptor does not match its immutable namespace root".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn replace_exposed_base_records(
-    connection: &Connection,
-    descriptor: &WorkViewBaseDescriptor,
-) -> Result<(), MetadataError> {
-    connection.execute(
-        "DELETE FROM work_view_base_descriptors
-         WHERE workspace_id = ?1 AND work_view_id = ?2",
-        params![
-            descriptor.workspace_id.as_str(),
-            descriptor.work_view_id.as_str()
-        ],
-    )?;
-    connection.execute(
-        "INSERT INTO work_view_base_descriptors
-         (workspace_id, work_view_id, format_version, project_id, base_snapshot_id,
-          project_prefix, policy_fingerprint, exposed_snapshot_id, exposed_namespace_root_id,
-          exposed_semantic_manifest_digest, exposed_entry_count, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![
-            descriptor.workspace_id.as_str(),
-            descriptor.work_view_id.as_str(),
-            i64::from(descriptor.format_version),
-            descriptor.project_id.as_str(),
-            descriptor.base_snapshot_id.as_str(),
-            descriptor.project_prefix.as_str(),
-            descriptor.policy_fingerprint.as_str(),
-            descriptor.exposed_snapshot_id.as_str(),
-            descriptor.exposed_namespace_root_id.as_str(),
-            descriptor.exposed_semantic_manifest_digest.as_str(),
-            i64::try_from(descriptor.exposed_entry_count).map_err(|_| {
-                MetadataError::InvalidStorageMetadata(
-                    "work-view exposed entry count exceeds SQLite range".to_string(),
-                )
-            })?,
-            descriptor.created_at.as_str(),
-        ],
-    )?;
-    connection.execute(
-        "UPDATE work_views
-            SET base_descriptor_version = ?3,
-                exposed_snapshot_id = ?4,
-                policy_fingerprint = ?5,
-                base_review_reason = NULL
-          WHERE workspace_id = ?1 AND id = ?2",
-        params![
-            descriptor.workspace_id.as_str(),
-            descriptor.work_view_id.as_str(),
-            i64::from(descriptor.format_version),
-            descriptor.exposed_snapshot_id.as_str(),
-            descriptor.policy_fingerprint.as_str(),
-        ],
-    )?;
-    Ok(())
-}
-
 impl MetadataStore {
     pub fn delete_unpublished_work_view(
         &self,
@@ -214,24 +127,13 @@ impl MetadataStore {
         let project_path =
             self.workspace_relative_path(&record.workspace_id, &record.project_path)?;
         let transaction = self.connection.unchecked_transaction()?;
-        upsert_work_view_record(&transaction, record, &project_path)?;
-        let changed = transaction.execute(
-            "UPDATE work_views
-                SET materialized_overlay_root_id = ?3,
-                    materialized_overlay_manifest_json = ?4
-              WHERE workspace_id = ?1 AND id = ?2",
-            params![
-                record.workspace_id.as_str(),
-                record.id.as_str(),
-                overlay_root_id,
-                encoded_overlay,
-            ],
+        commit_materialized_overlay_rows(
+            &transaction,
+            record,
+            &project_path,
+            overlay_root_id,
+            encoded_overlay,
         )?;
-        if changed != 1 {
-            return Err(MetadataError::InvalidStorageMetadata(
-                "materialized overlay receipt has no work view".to_string(),
-            ));
-        }
         transaction.commit()?;
         Ok(())
     }
@@ -253,98 +155,6 @@ impl MetadataStore {
             )
             .optional()
             .map_err(Into::into)
-    }
-
-    pub fn insert_work_view_with_exposed_base(
-        &self,
-        record: &WorkViewRecord,
-        descriptor: &WorkViewBaseDescriptor,
-    ) -> Result<(), MetadataError> {
-        let snapshot = self
-            .snapshot(&record.workspace_id, &descriptor.exposed_snapshot_id)?
-            .ok_or_else(|| {
-                MetadataError::InvalidStorageMetadata(
-                    "work-view exposed snapshot root is missing".to_string(),
-                )
-            })?;
-        validate_exposed_base(record, descriptor, &snapshot)?;
-        if !self
-            .snapshot_root_completeness(&record.workspace_id, &snapshot.id)?
-            .complete
-        {
-            return Err(MetadataError::InvalidStorageMetadata(
-                "work-view exposed snapshot graph is incomplete".to_string(),
-            ));
-        }
-        let project_path =
-            self.workspace_relative_path(&record.workspace_id, &record.project_path)?;
-        let transaction = self.connection.unchecked_transaction()?;
-        upsert_work_view_record(&transaction, record, &project_path)?;
-        replace_exposed_base_records(&transaction, descriptor)?;
-        transaction.commit()?;
-        Ok(())
-    }
-
-    pub fn work_view_exposed_base(
-        &self,
-        workspace_id: &WorkspaceId,
-        work_view_id: &WorkViewId,
-    ) -> Result<Option<WorkViewBaseDescriptor>, MetadataError> {
-        self.connection
-            .query_row(
-                "SELECT format_version, project_id, base_snapshot_id, project_prefix,
-                        policy_fingerprint, exposed_snapshot_id, exposed_namespace_root_id,
-                        exposed_semantic_manifest_digest, exposed_entry_count, created_at
-                   FROM work_view_base_descriptors
-                  WHERE workspace_id = ?1 AND work_view_id = ?2",
-                params![workspace_id.as_str(), work_view_id.as_str()],
-                |row| {
-                    Ok(WorkViewBaseDescriptor {
-                        format_version: row.get(0)?,
-                        workspace_id: workspace_id.clone(),
-                        project_id: ProjectId::new(row.get::<_, String>(1)?),
-                        work_view_id: work_view_id.clone(),
-                        base_snapshot_id: SnapshotId::new(row.get::<_, String>(2)?),
-                        project_prefix: row.get(3)?,
-                        policy_fingerprint: row.get(4)?,
-                        exposed_snapshot_id: SnapshotId::new(row.get::<_, String>(5)?),
-                        exposed_namespace_root_id: NamespacePageId::new(row.get::<_, String>(6)?),
-                        exposed_semantic_manifest_digest: ManifestDigest::new(
-                            row.get::<_, String>(7)?,
-                        ),
-                        exposed_entry_count: row.get(8)?,
-                        created_at: row.get(9)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(Into::into)
-    }
-
-    pub fn work_view_base_state(
-        &self,
-        workspace_id: &WorkspaceId,
-        work_view_id: &WorkViewId,
-    ) -> Result<WorkViewBaseState, MetadataError> {
-        let review_reason = self
-            .connection
-            .query_row(
-                "SELECT base_review_reason FROM work_views
-                  WHERE workspace_id = ?1 AND id = ?2",
-                params![workspace_id.as_str(), work_view_id.as_str()],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .optional()?
-            .flatten();
-        if review_reason.as_deref() == Some("legacy-base-unverifiable") {
-            return Ok(WorkViewBaseState::LegacyUnverifiable);
-        }
-        match self.work_view_exposed_base(workspace_id, work_view_id)? {
-            Some(descriptor) => Ok(WorkViewBaseState::Authoritative {
-                descriptor: Box::new(descriptor),
-            }),
-            None => Ok(WorkViewBaseState::Missing),
-        }
     }
 
     pub fn work_views(
@@ -462,4 +272,32 @@ impl MetadataStore {
         let rows = statement.query_map(params![workspace_id.as_str(), name], work_view_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
+}
+
+fn commit_materialized_overlay_rows(
+    connection: &Connection,
+    record: &WorkViewRecord,
+    project_path: &str,
+    overlay_root_id: &str,
+    encoded_overlay: &str,
+) -> Result<(), MetadataError> {
+    upsert_work_view_record(connection, record, project_path)?;
+    let changed = connection.execute(
+        "UPDATE work_views
+            SET materialized_overlay_root_id = ?3,
+                materialized_overlay_manifest_json = ?4
+          WHERE workspace_id = ?1 AND id = ?2",
+        params![
+            record.workspace_id.as_str(),
+            record.id.as_str(),
+            overlay_root_id,
+            encoded_overlay,
+        ],
+    )?;
+    if changed != 1 {
+        return Err(MetadataError::InvalidStorageMetadata(
+            "materialized overlay receipt has no work view".to_string(),
+        ));
+    }
+    Ok(())
 }

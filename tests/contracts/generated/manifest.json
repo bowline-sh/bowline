@@ -800,42 +800,6 @@
       "valuePath": "/positive-values.json#/WireStatusItem"
     },
     {
-      "declaration": "WireComponentState",
-      "expectation": "accept",
-      "id": "WireComponentState.known.Ready",
-      "value": "ready"
-    },
-    {
-      "declaration": "WireComponentState",
-      "expectation": "accept",
-      "id": "WireComponentState.known.Degraded",
-      "value": "degraded"
-    },
-    {
-      "declaration": "WireComponentState",
-      "expectation": "accept",
-      "id": "WireComponentState.known.Unavailable",
-      "value": "unavailable"
-    },
-    {
-      "declaration": "WireNetworkState",
-      "expectation": "accept",
-      "id": "WireNetworkState.known.Online",
-      "value": "online"
-    },
-    {
-      "declaration": "WireNetworkState",
-      "expectation": "accept",
-      "id": "WireNetworkState.known.Degraded",
-      "value": "degraded"
-    },
-    {
-      "declaration": "WireNetworkState",
-      "expectation": "accept",
-      "id": "WireNetworkState.known.Offline",
-      "value": "offline"
-    },
-    {
       "declaration": "WireFreshnessAxis",
       "expectation": "accept",
       "id": "WireFreshnessAxis.known.Snapshot",
@@ -1008,6 +972,126 @@
       "expectation": "accept",
       "id": "WireRepairCommand.minimal",
       "valuePath": "/positive-values.json#/WireRepairCommand"
+    },
+    {
+      "declaration": "WireConvergenceReadinessState",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessState.known.Ready",
+      "value": "ready"
+    },
+    {
+      "declaration": "WireConvergenceReadinessState",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessState.known.Converging",
+      "value": "converging"
+    },
+    {
+      "declaration": "WireConvergenceReadinessState",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessState.known.Recovering",
+      "value": "recovering"
+    },
+    {
+      "declaration": "WireConvergenceReadinessState",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessState.known.Limited",
+      "value": "limited"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.StartupRecovery",
+      "value": "startup-recovery"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.CausesPending",
+      "value": "causes-pending"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.AttemptClaimed",
+      "value": "attempt-claimed"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.AttemptWaitingRetry",
+      "value": "attempt-waiting-retry"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.ReconciliationRequired",
+      "value": "reconciliation-required"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.RecoveryFenceOpen",
+      "value": "recovery-fence-open"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.FilesystemEpochOpen",
+      "value": "filesystem-epoch-open"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.MaterializationIncomplete",
+      "value": "materialization-incomplete"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.MaterializationConflict",
+      "value": "materialization-conflict"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.WorkspaceAuthorityUnpublished",
+      "value": "workspace-authority-unpublished"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.WatcherStarting",
+      "value": "watcher-starting"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.WatcherRecoveryRequired",
+      "value": "watcher-recovery-required"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.ObserverConnecting",
+      "value": "observer-connecting"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.ObserverUnavailable",
+      "value": "observer-unavailable"
+    },
+    {
+      "declaration": "WireConvergenceReadinessReason",
+      "expectation": "accept",
+      "id": "WireConvergenceReadinessReason.known.AttentionRequired",
+      "value": "attention-required"
+    },
+    {
+      "declaration": "WireConvergenceStatusSummary",
+      "expectation": "accept",
+      "id": "WireConvergenceStatusSummary.minimal",
+      "valuePath": "/positive-values.json#/WireConvergenceStatusSummary"
     },
     {
       "declaration": "WireStatusCommandOutput",
@@ -1462,12 +1546,6 @@
     {
       "declaration": "CommandName",
       "expectation": "accept",
-      "id": "CommandName.known.Mcp",
-      "value": "mcp"
-    },
-    {
-      "declaration": "CommandName",
-      "expectation": "accept",
       "id": "CommandName.known.Update",
       "value": "update"
     },
@@ -1552,20 +1630,8 @@
     {
       "declaration": "CommandName",
       "expectation": "accept",
-      "id": "CommandName.known.History",
-      "value": "history"
-    },
-    {
-      "declaration": "CommandName",
-      "expectation": "accept",
       "id": "CommandName.known.Tui",
       "value": "tui"
-    },
-    {
-      "declaration": "CommandName",
-      "expectation": "accept",
-      "id": "CommandName.known.Resolve",
-      "value": "resolve"
     },
     {
       "declaration": "CommandName",
@@ -1636,54 +1702,6 @@
     {
       "declaration": "CommandName",
       "expectation": "accept",
-      "id": "CommandName.known.AgentContext",
-      "value": "agent context"
-    },
-    {
-      "declaration": "CommandName",
-      "expectation": "accept",
-      "id": "CommandName.known.AgentStart",
-      "value": "agent start"
-    },
-    {
-      "declaration": "CommandName",
-      "expectation": "accept",
-      "id": "CommandName.known.AgentPrompt",
-      "value": "agent prompt"
-    },
-    {
-      "declaration": "CommandName",
-      "expectation": "accept",
-      "id": "CommandName.known.AgentComplete",
-      "value": "agent complete"
-    },
-    {
-      "declaration": "CommandName",
-      "expectation": "accept",
-      "id": "CommandName.known.AgentCancel",
-      "value": "agent cancel"
-    },
-    {
-      "declaration": "CommandName",
-      "expectation": "accept",
-      "id": "CommandName.known.AgentExtend",
-      "value": "agent extend"
-    },
-    {
-      "declaration": "CommandName",
-      "expectation": "accept",
-      "id": "CommandName.known.AgentMcpToken",
-      "value": "agent mcp-token"
-    },
-    {
-      "declaration": "CommandName",
-      "expectation": "accept",
-      "id": "CommandName.known.LeaseJoin",
-      "value": "lease join"
-    },
-    {
-      "declaration": "CommandName",
-      "expectation": "accept",
       "id": "CommandName.known.DaemonStart",
       "value": "daemon start"
     },
@@ -1726,14 +1744,14 @@
     {
       "declaration": "CommandName",
       "expectation": "accept",
-      "id": "CommandName.known.Connect",
-      "value": "connect"
+      "id": "CommandName.known.Doctor",
+      "value": "doctor"
     },
     {
       "declaration": "CommandName",
       "expectation": "accept",
-      "id": "CommandName.known.Handoff",
-      "value": "handoff"
+      "id": "CommandName.known.Connect",
+      "value": "connect"
     },
     {
       "declaration": "WireVersionCommandOutput",
@@ -1916,30 +1934,6 @@
       "valuePath": "/positive-values.json#/DaemonDeviceActionParams"
     },
     {
-      "declaration": "DaemonSyncRequestParams",
-      "expectation": "accept",
-      "id": "DaemonSyncRequestParams.minimal",
-      "valuePath": "/positive-values.json#/DaemonSyncRequestParams"
-    },
-    {
-      "declaration": "DaemonSyncOperationKind",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationKind.known.DaemonReconcile",
-      "value": "daemon-reconcile"
-    },
-    {
-      "declaration": "DaemonSyncOperationKind",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationKind.known.ConflictOccurrenceReconcile",
-      "value": "conflict-occurrence-reconcile"
-    },
-    {
-      "declaration": "DaemonSyncOperationKind",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationKind.known.WorkViewOverlaySync",
-      "value": "work-view-overlay-sync"
-    },
-    {
       "declaration": "DaemonSyncResourceKind",
       "expectation": "accept",
       "id": "DaemonSyncResourceKind.known.WorkspaceSync",
@@ -1958,142 +1952,16 @@
       "value": "post-commit"
     },
     {
-      "declaration": "DaemonSyncOperationState",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationState.known.Queued",
-      "value": "queued"
-    },
-    {
-      "declaration": "DaemonSyncOperationState",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationState.known.Claimed",
-      "value": "claimed"
-    },
-    {
-      "declaration": "DaemonSyncOperationState",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationState.known.WaitingRetry",
-      "value": "waiting_retry"
-    },
-    {
-      "declaration": "DaemonSyncOperationState",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationState.known.BlockedOffline",
-      "value": "blocked_offline"
-    },
-    {
-      "declaration": "DaemonSyncOperationState",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationState.known.ReconciliationRequired",
-      "value": "reconciliation_required"
-    },
-    {
-      "declaration": "DaemonSyncOperationState",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationState.known.Attention",
-      "value": "attention"
-    },
-    {
-      "declaration": "DaemonSyncOperationState",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationState.known.Completed",
-      "value": "completed"
-    },
-    {
-      "declaration": "DaemonSyncOperationState",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationState.known.Cancelled",
-      "value": "cancelled"
-    },
-    {
-      "declaration": "DaemonSyncOperationOwnership",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationOwnership.known.Unclaimed",
-      "value": "unclaimed"
-    },
-    {
-      "declaration": "DaemonSyncOperationOwnership",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationOwnership.known.OwnedByThisDaemon",
-      "value": "owned-by-this-daemon"
-    },
-    {
-      "declaration": "DaemonSyncOperationOwnership",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationOwnership.known.OwnedByAnotherDaemon",
-      "value": "owned-by-another-daemon"
-    },
-    {
-      "declaration": "DaemonSyncOperationOwnership",
-      "expectation": "accept",
-      "id": "DaemonSyncOperationOwnership.known.LeaseExpired",
-      "value": "lease-expired"
-    },
-    {
-      "declaration": "DaemonSyncCancellationOutcome",
-      "expectation": "accept",
-      "id": "DaemonSyncCancellationOutcome.known.Requested",
-      "value": "requested"
-    },
-    {
-      "declaration": "DaemonSyncCancellationOutcome",
-      "expectation": "accept",
-      "id": "DaemonSyncCancellationOutcome.known.Cancelled",
-      "value": "cancelled"
-    },
-    {
-      "declaration": "DaemonSyncCancellationOutcome",
-      "expectation": "accept",
-      "id": "DaemonSyncCancellationOutcome.known.AlreadyCompleted",
-      "value": "already-completed"
-    },
-    {
-      "declaration": "DaemonSyncCancellationOutcome",
-      "expectation": "accept",
-      "id": "DaemonSyncCancellationOutcome.known.AlreadyCancelled",
-      "value": "already-cancelled"
-    },
-    {
-      "declaration": "DaemonSyncRequestOutcome",
-      "expectation": "accept",
-      "id": "DaemonSyncRequestOutcome.known.Enqueued",
-      "value": "enqueued"
-    },
-    {
-      "declaration": "DaemonSyncRequestOutcome",
-      "expectation": "accept",
-      "id": "DaemonSyncRequestOutcome.known.Coalesced",
-      "value": "coalesced"
-    },
-    {
       "declaration": "DaemonSyncResource",
       "expectation": "accept",
       "id": "DaemonSyncResource.minimal",
       "valuePath": "/positive-values.json#/DaemonSyncResource"
     },
     {
-      "declaration": "DaemonOperationResult",
-      "expectation": "accept",
-      "id": "DaemonOperationResult.minimal",
-      "valuePath": "/positive-values.json#/DaemonOperationResult"
-    },
-    {
-      "declaration": "DaemonSyncRequestResult",
-      "expectation": "accept",
-      "id": "DaemonSyncRequestResult.minimal",
-      "valuePath": "/positive-values.json#/DaemonSyncRequestResult"
-    },
-    {
       "declaration": "DaemonCancelOperationParams",
       "expectation": "accept",
       "id": "DaemonCancelOperationParams.minimal",
       "valuePath": "/positive-values.json#/DaemonCancelOperationParams"
-    },
-    {
-      "declaration": "DaemonCancelOperationResult",
-      "expectation": "accept",
-      "id": "DaemonCancelOperationResult.minimal",
-      "valuePath": "/positive-values.json#/DaemonCancelOperationResult"
     },
     {
       "declaration": "HostedRefsListWorkspaceRefHistoryRequest",
@@ -2178,138 +2046,6 @@
       "expectation": "accept",
       "id": "HostedRetentionDeleteObjectMetadataAfterGcResponse.minimal",
       "valuePath": "/positive-values.json#/HostedRetentionDeleteObjectMetadataAfterGcResponse"
-    },
-    {
-      "declaration": "HostedWorkViewLifecycleState",
-      "expectation": "accept",
-      "id": "HostedWorkViewLifecycleState.known.Active",
-      "value": "active"
-    },
-    {
-      "declaration": "HostedWorkViewLifecycleState",
-      "expectation": "accept",
-      "id": "HostedWorkViewLifecycleState.known.ReviewReady",
-      "value": "review-ready"
-    },
-    {
-      "declaration": "HostedWorkViewLifecycleState",
-      "expectation": "accept",
-      "id": "HostedWorkViewLifecycleState.known.Accepted",
-      "value": "accepted"
-    },
-    {
-      "declaration": "HostedWorkViewLifecycleState",
-      "expectation": "accept",
-      "id": "HostedWorkViewLifecycleState.known.Discarded",
-      "value": "discarded"
-    },
-    {
-      "declaration": "HostedObjectKind",
-      "expectation": "accept",
-      "id": "HostedObjectKind.known.SourcePack",
-      "value": "source-pack"
-    },
-    {
-      "declaration": "HostedObjectKind",
-      "expectation": "accept",
-      "id": "HostedObjectKind.known.LocatorIndex",
-      "value": "locator-index"
-    },
-    {
-      "declaration": "HostedObjectKind",
-      "expectation": "accept",
-      "id": "HostedObjectKind.known.SnapshotManifest",
-      "value": "snapshot-manifest"
-    },
-    {
-      "declaration": "HostedObjectKind",
-      "expectation": "accept",
-      "id": "HostedObjectKind.known.SnapshotMetadataPage",
-      "value": "snapshot-metadata-page"
-    },
-    {
-      "declaration": "HostedObjectKind",
-      "expectation": "accept",
-      "id": "HostedObjectKind.known.AgentOverlay",
-      "value": "overlay-pack"
-    },
-    {
-      "declaration": "HostedObjectKind",
-      "expectation": "accept",
-      "id": "HostedObjectKind.known.ConflictBundle",
-      "value": "conflict-bundle"
-    },
-    {
-      "declaration": "HostedWorkViewOverlayCommitOutcome",
-      "expectation": "accept",
-      "id": "HostedWorkViewOverlayCommitOutcome.known.Committed",
-      "value": "committed"
-    },
-    {
-      "declaration": "HostedWorkViewOverlayCommitOutcome",
-      "expectation": "accept",
-      "id": "HostedWorkViewOverlayCommitOutcome.known.StaleOverlayHead",
-      "value": "stale-overlay-head"
-    },
-    {
-      "declaration": "HostedObjectPointer",
-      "expectation": "accept",
-      "id": "HostedObjectPointer.minimal",
-      "valuePath": "/positive-values.json#/HostedObjectPointer"
-    },
-    {
-      "declaration": "HostedWorkView",
-      "expectation": "accept",
-      "id": "HostedWorkView.minimal",
-      "valuePath": "/positive-values.json#/HostedWorkView"
-    },
-    {
-      "declaration": "HostedOverlayObjectInput",
-      "expectation": "accept",
-      "id": "HostedOverlayObjectInput.minimal",
-      "valuePath": "/positive-values.json#/HostedOverlayObjectInput"
-    },
-    {
-      "declaration": "HostedWorkViewsListWorkViewsRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsListWorkViewsRequest.minimal",
-      "valuePath": "/positive-values.json#/HostedWorkViewsListWorkViewsRequest"
-    },
-    {
-      "declaration": "HostedWorkViewsListWorkViewsResponse",
-      "expectation": "accept",
-      "id": "HostedWorkViewsListWorkViewsResponse.minimal",
-      "valuePath": "/positive-values.json#/HostedWorkViewsListWorkViewsResponse"
-    },
-    {
-      "declaration": "HostedWorkViewsCreateWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCreateWorkViewRequest.minimal",
-      "valuePath": "/positive-values.json#/HostedWorkViewsCreateWorkViewRequest"
-    },
-    {
-      "declaration": "HostedWorkViewsRestoreWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsRestoreWorkViewRequest.minimal",
-      "valuePath": "/positive-values.json#/HostedWorkViewsRestoreWorkViewRequest"
-    },
-    {
-      "declaration": "HostedWorkViewsUpdateWorkViewLifecycleRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsUpdateWorkViewLifecycleRequest.minimal",
-      "valuePath": "/positive-values.json#/HostedWorkViewsUpdateWorkViewLifecycleRequest"
-    },
-    {
-      "declaration": "HostedWorkViewsCommitOverlayPointerRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCommitOverlayPointerRequest.minimal",
-      "valuePath": "/positive-values.json#/HostedWorkViewsCommitOverlayPointerRequest"
-    },
-    {
-      "declaration": "HostedWorkViewsCommitOverlayPointerResponse",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCommitOverlayPointerResponse.minimal",
-      "valuePath": "/positive-values.json#/HostedWorkViewsCommitOverlayPointerResponse"
     },
     {
       "declaration": "HostedRecoveryEnvelopeState",
@@ -2534,6 +2270,18 @@
       "valuePath": "/positive-values.json#/HostedDevicesRevokeDeviceRequest"
     },
     {
+      "declaration": "HostedObjectKind",
+      "expectation": "accept",
+      "id": "HostedObjectKind.known.Blob",
+      "value": "blob"
+    },
+    {
+      "declaration": "HostedObjectKind",
+      "expectation": "accept",
+      "id": "HostedObjectKind.known.Manifest",
+      "value": "manifest"
+    },
+    {
       "declaration": "HostedObjectMetadata",
       "expectation": "accept",
       "id": "HostedObjectMetadata.minimal",
@@ -2624,42 +2372,6 @@
       "valuePath": "/positive-values.json#/HostedObjectsCreateStorageGcDeleteIntentResponse"
     },
     {
-      "declaration": "HostedConflictOccurrenceState",
-      "expectation": "accept",
-      "id": "HostedConflictOccurrenceState.known.Unresolved",
-      "value": "unresolved"
-    },
-    {
-      "declaration": "HostedConflictOccurrenceState",
-      "expectation": "accept",
-      "id": "HostedConflictOccurrenceState.known.Accepted",
-      "value": "accepted"
-    },
-    {
-      "declaration": "HostedConflictOccurrenceState",
-      "expectation": "accept",
-      "id": "HostedConflictOccurrenceState.known.Rejected",
-      "value": "rejected"
-    },
-    {
-      "declaration": "HostedConflictReconcileOutcome",
-      "expectation": "accept",
-      "id": "HostedConflictReconcileOutcome.known.Applied",
-      "value": "applied"
-    },
-    {
-      "declaration": "HostedConflictReconcileOutcome",
-      "expectation": "accept",
-      "id": "HostedConflictReconcileOutcome.known.Idempotent",
-      "value": "idempotent"
-    },
-    {
-      "declaration": "HostedConflictReconcileOutcome",
-      "expectation": "accept",
-      "id": "HostedConflictReconcileOutcome.known.Superseded",
-      "value": "superseded"
-    },
-    {
       "declaration": "HostedCompactEventKind",
       "expectation": "accept",
       "id": "HostedCompactEventKind.known.WorkspaceCreated",
@@ -2706,12 +2418,6 @@
       "expectation": "accept",
       "id": "HostedCompactEventKind.known.ObjectPointerAdded",
       "value": "object_pointer.added"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.SnapshotRootCommitted",
-      "value": "snapshot_root.committed"
     },
     {
       "declaration": "HostedCompactEventKind",
@@ -2808,108 +2514,6 @@
       "expectation": "accept",
       "id": "HostedCompactEventKind.known.AuthLoginCompleted",
       "value": "auth.login_completed"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.ConflictDetected",
-      "value": "conflict.detected"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.ConflictResolved",
-      "value": "conflict.resolved"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.LeaseCreated",
-      "value": "lease.created"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.LeaseUpdated",
-      "value": "lease.updated"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.LeaseDispatched",
-      "value": "lease.dispatched"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.LeaseClaimed",
-      "value": "lease.claimed"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.LeaseCompleted",
-      "value": "lease.completed"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.LeaseReviewReady",
-      "value": "lease.review_ready"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.OverlayChanged",
-      "value": "overlay.changed"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.WorkCreated",
-      "value": "work.created"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.WorkUpdated",
-      "value": "work.updated"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.WorkReviewReady",
-      "value": "work.review_ready"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.WorkAccepted",
-      "value": "work.accepted"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.WorkDiscarded",
-      "value": "work.discarded"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.WorkRestored",
-      "value": "work.restored"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.WorkCleanupPreviewed",
-      "value": "work.cleanup_previewed"
-    },
-    {
-      "declaration": "HostedCompactEventKind",
-      "expectation": "accept",
-      "id": "HostedCompactEventKind.known.WorkCleanupCompleted",
-      "value": "work.cleanup_completed"
     },
     {
       "declaration": "HostedStatusAvailability",
@@ -3086,36 +2690,6 @@
       "valuePath": "/positive-values.json#/HostedRefsCompareAndSwapWorkspaceRefResponse"
     },
     {
-      "declaration": "HostedConflictMetadataRecord",
-      "expectation": "accept",
-      "id": "HostedConflictMetadataRecord.minimal",
-      "valuePath": "/positive-values.json#/HostedConflictMetadataRecord"
-    },
-    {
-      "declaration": "HostedConflictsListWorkspaceConflictsRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsListWorkspaceConflictsRequest.minimal",
-      "valuePath": "/positive-values.json#/HostedConflictsListWorkspaceConflictsRequest"
-    },
-    {
-      "declaration": "HostedConflictsListWorkspaceConflictsResponse",
-      "expectation": "accept",
-      "id": "HostedConflictsListWorkspaceConflictsResponse.minimal",
-      "valuePath": "/positive-values.json#/HostedConflictsListWorkspaceConflictsResponse"
-    },
-    {
-      "declaration": "HostedConflictsReconcileConflictOccurrenceRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsReconcileConflictOccurrenceRequest.minimal",
-      "valuePath": "/positive-values.json#/HostedConflictsReconcileConflictOccurrenceRequest"
-    },
-    {
-      "declaration": "HostedConflictReconcileResult",
-      "expectation": "accept",
-      "id": "HostedConflictReconcileResult.minimal",
-      "valuePath": "/positive-values.json#/HostedConflictReconcileResult"
-    },
-    {
       "declaration": "HostedCompactEvent",
       "expectation": "accept",
       "id": "HostedCompactEvent.minimal",
@@ -3188,132 +2762,6 @@
       "valuePath": "/positive-values.json#/HostedStatusPublishWorkspaceStatusResponse"
     },
     {
-      "declaration": "HostedLeaseSessionState",
-      "expectation": "accept",
-      "id": "HostedLeaseSessionState.known.Provisional",
-      "value": "provisional"
-    },
-    {
-      "declaration": "HostedLeaseSessionState",
-      "expectation": "accept",
-      "id": "HostedLeaseSessionState.known.Open",
-      "value": "open"
-    },
-    {
-      "declaration": "HostedLeaseSessionState",
-      "expectation": "accept",
-      "id": "HostedLeaseSessionState.known.Completed",
-      "value": "completed"
-    },
-    {
-      "declaration": "HostedLeaseWriteTargetMode",
-      "expectation": "accept",
-      "id": "HostedLeaseWriteTargetMode.known.Direct",
-      "value": "direct"
-    },
-    {
-      "declaration": "HostedLeaseWriteTargetMode",
-      "expectation": "accept",
-      "id": "HostedLeaseWriteTargetMode.known.WorkView",
-      "value": "work-view"
-    },
-    {
-      "declaration": "HostedLeaseEventKind",
-      "expectation": "accept",
-      "id": "HostedLeaseEventKind.known.LeaseCreated",
-      "value": "lease.created"
-    },
-    {
-      "declaration": "HostedLeaseEventKind",
-      "expectation": "accept",
-      "id": "HostedLeaseEventKind.known.LeaseUpdated",
-      "value": "lease.updated"
-    },
-    {
-      "declaration": "HostedLeaseEventKind",
-      "expectation": "accept",
-      "id": "HostedLeaseEventKind.known.LeaseDispatched",
-      "value": "lease.dispatched"
-    },
-    {
-      "declaration": "HostedLeaseEventKind",
-      "expectation": "accept",
-      "id": "HostedLeaseEventKind.known.LeaseClaimed",
-      "value": "lease.claimed"
-    },
-    {
-      "declaration": "HostedLeaseEventKind",
-      "expectation": "accept",
-      "id": "HostedLeaseEventKind.known.LeaseCompleted",
-      "value": "lease.completed"
-    },
-    {
-      "declaration": "HostedLeaseEventKind",
-      "expectation": "accept",
-      "id": "HostedLeaseEventKind.known.LeaseReviewReady",
-      "value": "lease.review_ready"
-    },
-    {
-      "declaration": "HostedLeaseEventKind",
-      "expectation": "accept",
-      "id": "HostedLeaseEventKind.known.OverlayChanged",
-      "value": "overlay.changed"
-    },
-    {
-      "declaration": "HostedLeaseUpdateError",
-      "expectation": "accept",
-      "id": "HostedLeaseUpdateError.known.LeaseMissing",
-      "value": "lease-missing"
-    },
-    {
-      "declaration": "HostedLeaseUpdateError",
-      "expectation": "accept",
-      "id": "HostedLeaseUpdateError.known.StaleLease",
-      "value": "stale-lease"
-    },
-    {
-      "declaration": "HostedLease",
-      "expectation": "accept",
-      "id": "HostedLease.minimal",
-      "valuePath": "/positive-values.json#/HostedLease"
-    },
-    {
-      "declaration": "HostedEventsCreateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsCreateLeaseRequest.minimal",
-      "valuePath": "/positive-values.json#/HostedEventsCreateLeaseRequest"
-    },
-    {
-      "declaration": "HostedEventsCreateLeaseResponse",
-      "expectation": "accept",
-      "id": "HostedEventsCreateLeaseResponse.minimal",
-      "valuePath": "/positive-values.json#/HostedEventsCreateLeaseResponse"
-    },
-    {
-      "declaration": "HostedEventsUpdateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsUpdateLeaseRequest.minimal",
-      "valuePath": "/positive-values.json#/HostedEventsUpdateLeaseRequest"
-    },
-    {
-      "declaration": "HostedEventsUpdateLeaseResponse",
-      "expectation": "accept",
-      "id": "HostedEventsUpdateLeaseResponse.minimal",
-      "valuePath": "/positive-values.json#/HostedEventsUpdateLeaseResponse"
-    },
-    {
-      "declaration": "HostedEventsListLeasesRequest",
-      "expectation": "accept",
-      "id": "HostedEventsListLeasesRequest.minimal",
-      "valuePath": "/positive-values.json#/HostedEventsListLeasesRequest"
-    },
-    {
-      "declaration": "HostedEventsListLeasesResponse",
-      "expectation": "accept",
-      "id": "HostedEventsListLeasesResponse.minimal",
-      "valuePath": "/positive-values.json#/HostedEventsListLeasesResponse"
-    },
-    {
       "declaration": "HostedAuthRegisterAccountSessionRequest",
       "expectation": "accept",
       "id": "HostedAuthRegisterAccountSessionRequest.minimal",
@@ -3324,120 +2772,6 @@
       "expectation": "accept",
       "id": "HostedAuthRegisterAccountSessionResponse.minimal",
       "valuePath": "/positive-values.json#/HostedAuthRegisterAccountSessionResponse"
-    },
-    {
-      "declaration": "HostedMetadataRecordKind",
-      "expectation": "accept",
-      "id": "HostedMetadataRecordKind.known.NamespacePage",
-      "value": "namespace-page"
-    },
-    {
-      "declaration": "HostedMetadataRecordKind",
-      "expectation": "accept",
-      "id": "HostedMetadataRecordKind.known.ContentLayout",
-      "value": "content-layout"
-    },
-    {
-      "declaration": "HostedMetadataRecordKind",
-      "expectation": "accept",
-      "id": "HostedMetadataRecordKind.known.SegmentPage",
-      "value": "segment-page"
-    },
-    {
-      "declaration": "HostedMetadataBindingOutcome",
-      "expectation": "accept",
-      "id": "HostedMetadataBindingOutcome.known.BoundNew",
-      "value": "bound-new"
-    },
-    {
-      "declaration": "HostedMetadataBindingOutcome",
-      "expectation": "accept",
-      "id": "HostedMetadataBindingOutcome.known.ExistingWinner",
-      "value": "existing-winner"
-    },
-    {
-      "declaration": "HostedMetadataPagePointerInput",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointerInput.minimal",
-      "valuePath": "/positive-values.json#/HostedMetadataPagePointerInput"
-    },
-    {
-      "declaration": "HostedMetadataPagePointer",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointer.minimal",
-      "valuePath": "/positive-values.json#/HostedMetadataPagePointer"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointerInput",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointerInput.minimal",
-      "valuePath": "/positive-values.json#/HostedSnapshotManifestPointerInput"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointer",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointer.minimal",
-      "valuePath": "/positive-values.json#/HostedSnapshotManifestPointer"
-    },
-    {
-      "declaration": "HostedMetadataSidecar",
-      "expectation": "accept",
-      "id": "HostedMetadataSidecar.minimal",
-      "valuePath": "/positive-values.json#/HostedMetadataSidecar"
-    },
-    {
-      "declaration": "HostedMetadataBindingInput",
-      "expectation": "accept",
-      "id": "HostedMetadataBindingInput.minimal",
-      "valuePath": "/positive-values.json#/HostedMetadataBindingInput"
-    },
-    {
-      "declaration": "HostedMetadataBindingRecord",
-      "expectation": "accept",
-      "id": "HostedMetadataBindingRecord.minimal",
-      "valuePath": "/positive-values.json#/HostedMetadataBindingRecord"
-    },
-    {
-      "declaration": "HostedObjectsCommitMetadataBindingsRequest",
-      "expectation": "accept",
-      "id": "HostedObjectsCommitMetadataBindingsRequest.minimal",
-      "valuePath": "/positive-values.json#/HostedObjectsCommitMetadataBindingsRequest"
-    },
-    {
-      "declaration": "HostedMetadataBindingsResponse",
-      "expectation": "accept",
-      "id": "HostedMetadataBindingsResponse.minimal",
-      "valuePath": "/positive-values.json#/HostedMetadataBindingsResponse"
-    },
-    {
-      "declaration": "HostedObjectQueriesResolveMetadataBindingsRequest",
-      "expectation": "accept",
-      "id": "HostedObjectQueriesResolveMetadataBindingsRequest.minimal",
-      "valuePath": "/positive-values.json#/HostedObjectQueriesResolveMetadataBindingsRequest"
-    },
-    {
-      "declaration": "HostedObjectsCommitSnapshotRootRequest",
-      "expectation": "accept",
-      "id": "HostedObjectsCommitSnapshotRootRequest.minimal",
-      "valuePath": "/positive-values.json#/HostedObjectsCommitSnapshotRootRequest"
-    },
-    {
-      "declaration": "HostedSnapshotRootRecord",
-      "expectation": "accept",
-      "id": "HostedSnapshotRootRecord.minimal",
-      "valuePath": "/positive-values.json#/HostedSnapshotRootRecord"
-    },
-    {
-      "declaration": "HostedObjectQueriesGetSnapshotRootRequest",
-      "expectation": "accept",
-      "id": "HostedObjectQueriesGetSnapshotRootRequest.minimal",
-      "valuePath": "/positive-values.json#/HostedObjectQueriesGetSnapshotRootRequest"
-    },
-    {
-      "declaration": "HostedSnapshotRootRecordOrNull",
-      "expectation": "accept",
-      "id": "HostedSnapshotRootRecordOrNull.minimal",
-      "valuePath": "/positive-values.json#/HostedSnapshotRootRecordOrNull"
     },
     {
       "declaration": "HostedDashboardProviderEnvironment",
@@ -4304,6 +3638,24 @@
       "valuePath": "/boundary-values.json#/WireRepairCommand.command.maxLength.valid"
     },
     {
+      "declaration": "WireConvergenceStatusSummary",
+      "expectation": "accept",
+      "id": "WireConvergenceStatusSummary.revision.minimum.valid",
+      "valuePath": "/boundary-values.json#/WireConvergenceStatusSummary.revision.minimum.valid"
+    },
+    {
+      "declaration": "WireConvergenceStatusSummary",
+      "expectation": "accept",
+      "id": "WireConvergenceStatusSummary.revision.maximum.valid",
+      "valuePath": "/boundary-values.json#/WireConvergenceStatusSummary.revision.maximum.valid"
+    },
+    {
+      "declaration": "WireConvergenceStatusSummary",
+      "expectation": "accept",
+      "id": "WireConvergenceStatusSummary.reasons.maxItems.valid",
+      "valuePath": "/boundary-values.json#/WireConvergenceStatusSummary.reasons.maxItems.valid"
+    },
+    {
       "declaration": "WireStatusCommandOutput",
       "expectation": "accept",
       "id": "WireStatusCommandOutput.workspaceId.maxLength.valid",
@@ -4338,6 +3690,12 @@
       "expectation": "accept",
       "id": "WireStatusCommandOutput.resolvedWorkspaceRoot.maxLength.valid",
       "valuePath": "/boundary-values.json#/WireStatusCommandOutput.resolvedWorkspaceRoot.maxLength.valid"
+    },
+    {
+      "declaration": "WireStatusCommandOutput",
+      "expectation": "accept",
+      "id": "WireStatusCommandOutput.resolvedProjectRoot.maxLength.valid",
+      "valuePath": "/boundary-values.json#/WireStatusCommandOutput.resolvedProjectRoot.maxLength.valid"
     },
     {
       "declaration": "WireStatusCommandOutput",
@@ -4826,6 +4184,12 @@
       "valuePath": "/boundary-values.json#/DaemonStatusScopeParams.projectPath.maxLength.valid"
     },
     {
+      "declaration": "DaemonStatusScopeParams",
+      "expectation": "accept",
+      "id": "DaemonStatusScopeParams.requestedPath.maxLength.valid",
+      "valuePath": "/boundary-values.json#/DaemonStatusScopeParams.requestedPath.maxLength.valid"
+    },
+    {
       "declaration": "DaemonStatusSnapshotResult",
       "expectation": "accept",
       "id": "DaemonStatusSnapshotResult.instanceId.maxLength.valid",
@@ -4880,18 +4244,6 @@
       "valuePath": "/boundary-values.json#/DaemonDeviceActionParams.idempotencyKey.maxLength.valid"
     },
     {
-      "declaration": "DaemonSyncRequestParams",
-      "expectation": "accept",
-      "id": "DaemonSyncRequestParams.workspaceRoot.maxLength.valid",
-      "valuePath": "/boundary-values.json#/DaemonSyncRequestParams.workspaceRoot.maxLength.valid"
-    },
-    {
-      "declaration": "DaemonSyncRequestParams",
-      "expectation": "accept",
-      "id": "DaemonSyncRequestParams.idempotencyKey.maxLength.valid",
-      "valuePath": "/boundary-values.json#/DaemonSyncRequestParams.idempotencyKey.maxLength.valid"
-    },
-    {
       "declaration": "DaemonSyncResource",
       "expectation": "accept",
       "id": "DaemonSyncResource.workspaceId.maxLength.valid",
@@ -4902,48 +4254,6 @@
       "expectation": "accept",
       "id": "DaemonSyncResource.conflictId.maxLength.valid",
       "valuePath": "/boundary-values.json#/DaemonSyncResource.conflictId.maxLength.valid"
-    },
-    {
-      "declaration": "DaemonOperationResult",
-      "expectation": "accept",
-      "id": "DaemonOperationResult.operationId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/DaemonOperationResult.operationId.maxLength.valid"
-    },
-    {
-      "declaration": "DaemonOperationResult",
-      "expectation": "accept",
-      "id": "DaemonOperationResult.attemptCount.minimum.valid",
-      "valuePath": "/boundary-values.json#/DaemonOperationResult.attemptCount.minimum.valid"
-    },
-    {
-      "declaration": "DaemonOperationResult",
-      "expectation": "accept",
-      "id": "DaemonOperationResult.attemptCount.maximum.valid",
-      "valuePath": "/boundary-values.json#/DaemonOperationResult.attemptCount.maximum.valid"
-    },
-    {
-      "declaration": "DaemonOperationResult",
-      "expectation": "accept",
-      "id": "DaemonOperationResult.claimGeneration.minimum.valid",
-      "valuePath": "/boundary-values.json#/DaemonOperationResult.claimGeneration.minimum.valid"
-    },
-    {
-      "declaration": "DaemonOperationResult",
-      "expectation": "accept",
-      "id": "DaemonOperationResult.claimGeneration.maximum.valid",
-      "valuePath": "/boundary-values.json#/DaemonOperationResult.claimGeneration.maximum.valid"
-    },
-    {
-      "declaration": "DaemonOperationResult",
-      "expectation": "accept",
-      "id": "DaemonOperationResult.claimedBy.maxLength.valid",
-      "valuePath": "/boundary-values.json#/DaemonOperationResult.claimedBy.maxLength.valid"
-    },
-    {
-      "declaration": "DaemonOperationResult",
-      "expectation": "accept",
-      "id": "DaemonOperationResult.lastErrorCode.maxLength.valid",
-      "valuePath": "/boundary-values.json#/DaemonOperationResult.lastErrorCode.maxLength.valid"
     },
     {
       "declaration": "DaemonCancelOperationParams",
@@ -5088,336 +4398,6 @@
       "expectation": "accept",
       "id": "HostedRetentionDeleteObjectMetadataAfterGcRequest.workspaceId.maxLength.valid",
       "valuePath": "/boundary-values.json#/HostedRetentionDeleteObjectMetadataAfterGcRequest.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectPointer",
-      "expectation": "accept",
-      "id": "HostedObjectPointer.objectKey.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectPointer.objectKey.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectPointer",
-      "expectation": "accept",
-      "id": "HostedObjectPointer.contentId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectPointer.contentId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectPointer",
-      "expectation": "accept",
-      "id": "HostedObjectPointer.byteLength.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectPointer.byteLength.minimum.valid"
-    },
-    {
-      "declaration": "HostedObjectPointer",
-      "expectation": "accept",
-      "id": "HostedObjectPointer.byteLength.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectPointer.byteLength.maximum.valid"
-    },
-    {
-      "declaration": "HostedObjectPointer",
-      "expectation": "accept",
-      "id": "HostedObjectPointer.hash.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectPointer.hash.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectPointer",
-      "expectation": "accept",
-      "id": "HostedObjectPointer.keyEpoch.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectPointer.keyEpoch.minimum.valid"
-    },
-    {
-      "declaration": "HostedObjectPointer",
-      "expectation": "accept",
-      "id": "HostedObjectPointer.keyEpoch.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectPointer.keyEpoch.maximum.valid"
-    },
-    {
-      "declaration": "HostedWorkView",
-      "expectation": "accept",
-      "id": "HostedWorkView.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkView.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkView",
-      "expectation": "accept",
-      "id": "HostedWorkView.workViewId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkView.workViewId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkView",
-      "expectation": "accept",
-      "id": "HostedWorkView.projectId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkView.projectId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkView",
-      "expectation": "accept",
-      "id": "HostedWorkView.name.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkView.name.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkView",
-      "expectation": "accept",
-      "id": "HostedWorkView.visiblePath.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkView.visiblePath.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkView",
-      "expectation": "accept",
-      "id": "HostedWorkView.baseSnapshotId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkView.baseSnapshotId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkView",
-      "expectation": "accept",
-      "id": "HostedWorkView.baseWorkspaceVersion.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkView.baseWorkspaceVersion.minimum.valid"
-    },
-    {
-      "declaration": "HostedWorkView",
-      "expectation": "accept",
-      "id": "HostedWorkView.baseWorkspaceVersion.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkView.baseWorkspaceVersion.maximum.valid"
-    },
-    {
-      "declaration": "HostedWorkView",
-      "expectation": "accept",
-      "id": "HostedWorkView.overlayVersion.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkView.overlayVersion.minimum.valid"
-    },
-    {
-      "declaration": "HostedWorkView",
-      "expectation": "accept",
-      "id": "HostedWorkView.overlayVersion.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkView.overlayVersion.maximum.valid"
-    },
-    {
-      "declaration": "HostedWorkView",
-      "expectation": "accept",
-      "id": "HostedWorkView.createdByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkView.createdByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkView",
-      "expectation": "accept",
-      "id": "HostedWorkView.updatedByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkView.updatedByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedOverlayObjectInput",
-      "expectation": "accept",
-      "id": "HostedOverlayObjectInput.objectKey.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedOverlayObjectInput.objectKey.maxLength.valid"
-    },
-    {
-      "declaration": "HostedOverlayObjectInput",
-      "expectation": "accept",
-      "id": "HostedOverlayObjectInput.contentId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedOverlayObjectInput.contentId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedOverlayObjectInput",
-      "expectation": "accept",
-      "id": "HostedOverlayObjectInput.byteLength.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedOverlayObjectInput.byteLength.minimum.valid"
-    },
-    {
-      "declaration": "HostedOverlayObjectInput",
-      "expectation": "accept",
-      "id": "HostedOverlayObjectInput.byteLength.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedOverlayObjectInput.byteLength.maximum.valid"
-    },
-    {
-      "declaration": "HostedOverlayObjectInput",
-      "expectation": "accept",
-      "id": "HostedOverlayObjectInput.hash.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedOverlayObjectInput.hash.maxLength.valid"
-    },
-    {
-      "declaration": "HostedOverlayObjectInput",
-      "expectation": "accept",
-      "id": "HostedOverlayObjectInput.keyEpoch.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedOverlayObjectInput.keyEpoch.minimum.valid"
-    },
-    {
-      "declaration": "HostedOverlayObjectInput",
-      "expectation": "accept",
-      "id": "HostedOverlayObjectInput.keyEpoch.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedOverlayObjectInput.keyEpoch.maximum.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsListWorkViewsRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsListWorkViewsRequest.requestedByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsListWorkViewsRequest.requestedByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsListWorkViewsRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsListWorkViewsRequest.requestedByDeviceProof.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsListWorkViewsRequest.requestedByDeviceProof.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsListWorkViewsRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsListWorkViewsRequest.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsListWorkViewsRequest.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCreateWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCreateWorkViewRequest.baseSnapshotId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCreateWorkViewRequest.baseSnapshotId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCreateWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCreateWorkViewRequest.baseWorkspaceVersion.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCreateWorkViewRequest.baseWorkspaceVersion.minimum.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCreateWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCreateWorkViewRequest.baseWorkspaceVersion.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCreateWorkViewRequest.baseWorkspaceVersion.maximum.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCreateWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCreateWorkViewRequest.createdByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCreateWorkViewRequest.createdByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCreateWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCreateWorkViewRequest.createdByDeviceProof.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCreateWorkViewRequest.createdByDeviceProof.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCreateWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCreateWorkViewRequest.name.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCreateWorkViewRequest.name.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCreateWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCreateWorkViewRequest.projectId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCreateWorkViewRequest.projectId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCreateWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCreateWorkViewRequest.visiblePath.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCreateWorkViewRequest.visiblePath.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCreateWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCreateWorkViewRequest.workViewId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCreateWorkViewRequest.workViewId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCreateWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCreateWorkViewRequest.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCreateWorkViewRequest.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCreateWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCreateWorkViewRequest.expiresAt.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCreateWorkViewRequest.expiresAt.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCreateWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCreateWorkViewRequest.retainUntil.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCreateWorkViewRequest.retainUntil.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsRestoreWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsRestoreWorkViewRequest.restoredByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsRestoreWorkViewRequest.restoredByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsRestoreWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsRestoreWorkViewRequest.restoredByDeviceProof.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsRestoreWorkViewRequest.restoredByDeviceProof.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsRestoreWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsRestoreWorkViewRequest.workViewId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsRestoreWorkViewRequest.workViewId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsRestoreWorkViewRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsRestoreWorkViewRequest.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsRestoreWorkViewRequest.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsUpdateWorkViewLifecycleRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsUpdateWorkViewLifecycleRequest.updatedByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsUpdateWorkViewLifecycleRequest.updatedByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsUpdateWorkViewLifecycleRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsUpdateWorkViewLifecycleRequest.updatedByDeviceProof.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsUpdateWorkViewLifecycleRequest.updatedByDeviceProof.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsUpdateWorkViewLifecycleRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsUpdateWorkViewLifecycleRequest.workViewId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsUpdateWorkViewLifecycleRequest.workViewId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsUpdateWorkViewLifecycleRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsUpdateWorkViewLifecycleRequest.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsUpdateWorkViewLifecycleRequest.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCommitOverlayPointerRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCommitOverlayPointerRequest.committedByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCommitOverlayPointerRequest.committedByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCommitOverlayPointerRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCommitOverlayPointerRequest.committedByDeviceProof.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCommitOverlayPointerRequest.committedByDeviceProof.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCommitOverlayPointerRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCommitOverlayPointerRequest.expectedOverlayVersion.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCommitOverlayPointerRequest.expectedOverlayVersion.minimum.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCommitOverlayPointerRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCommitOverlayPointerRequest.expectedOverlayVersion.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCommitOverlayPointerRequest.expectedOverlayVersion.maximum.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCommitOverlayPointerRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCommitOverlayPointerRequest.workViewId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCommitOverlayPointerRequest.workViewId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedWorkViewsCommitOverlayPointerRequest",
-      "expectation": "accept",
-      "id": "HostedWorkViewsCommitOverlayPointerRequest.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedWorkViewsCommitOverlayPointerRequest.workspaceId.maxLength.valid"
     },
     {
       "declaration": "HostedRecoveryEnvelope",
@@ -6742,6 +5722,12 @@
     {
       "declaration": "HostedObjectsCreateUploadIntentRequest",
       "expectation": "accept",
+      "id": "HostedObjectsCreateUploadIntentRequest.checksumSha256.maxLength.valid",
+      "valuePath": "/boundary-values.json#/HostedObjectsCreateUploadIntentRequest.checksumSha256.maxLength.valid"
+    },
+    {
+      "declaration": "HostedObjectsCreateUploadIntentRequest",
+      "expectation": "accept",
       "id": "HostedObjectsCreateUploadIntentRequest.contentId.maxLength.valid",
       "valuePath": "/boundary-values.json#/HostedObjectsCreateUploadIntentRequest.contentId.maxLength.valid"
     },
@@ -7168,12 +6154,6 @@
     {
       "declaration": "HostedRefsCreateWorkspaceRefRequest",
       "expectation": "accept",
-      "id": "HostedRefsCreateWorkspaceRefRequest.snapshotId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedRefsCreateWorkspaceRefRequest.snapshotId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedRefsCreateWorkspaceRefRequest",
-      "expectation": "accept",
       "id": "HostedRefsCreateWorkspaceRefRequest.workspaceId.maxLength.valid",
       "valuePath": "/boundary-values.json#/HostedRefsCreateWorkspaceRefRequest.workspaceId.maxLength.valid"
     },
@@ -7230,156 +6210,6 @@
       "expectation": "accept",
       "id": "HostedRefsCompareAndSwapWorkspaceRefResponse.error.maxLength.valid",
       "valuePath": "/boundary-values.json#/HostedRefsCompareAndSwapWorkspaceRefResponse.error.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictMetadataRecord",
-      "expectation": "accept",
-      "id": "HostedConflictMetadataRecord.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictMetadataRecord.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictMetadataRecord",
-      "expectation": "accept",
-      "id": "HostedConflictMetadataRecord.conflictId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictMetadataRecord.conflictId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictMetadataRecord",
-      "expectation": "accept",
-      "id": "HostedConflictMetadataRecord.conflictKind.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictMetadataRecord.conflictKind.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictMetadataRecord",
-      "expectation": "accept",
-      "id": "HostedConflictMetadataRecord.paths.maxItems.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictMetadataRecord.paths.maxItems.valid"
-    },
-    {
-      "declaration": "HostedConflictMetadataRecord",
-      "expectation": "accept",
-      "id": "HostedConflictMetadataRecord.baseSnapshotId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictMetadataRecord.baseSnapshotId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictMetadataRecord",
-      "expectation": "accept",
-      "id": "HostedConflictMetadataRecord.remoteSnapshotId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictMetadataRecord.remoteSnapshotId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictMetadataRecord",
-      "expectation": "accept",
-      "id": "HostedConflictMetadataRecord.occurrenceVersion.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictMetadataRecord.occurrenceVersion.minimum.valid"
-    },
-    {
-      "declaration": "HostedConflictMetadataRecord",
-      "expectation": "accept",
-      "id": "HostedConflictMetadataRecord.occurrenceVersion.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictMetadataRecord.occurrenceVersion.maximum.valid"
-    },
-    {
-      "declaration": "HostedConflictMetadataRecord",
-      "expectation": "accept",
-      "id": "HostedConflictMetadataRecord.reason.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictMetadataRecord.reason.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictMetadataRecord",
-      "expectation": "accept",
-      "id": "HostedConflictMetadataRecord.detectedByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictMetadataRecord.detectedByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictMetadataRecord",
-      "expectation": "accept",
-      "id": "HostedConflictMetadataRecord.resolvedByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictMetadataRecord.resolvedByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictsListWorkspaceConflictsRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsListWorkspaceConflictsRequest.requestedByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictsListWorkspaceConflictsRequest.requestedByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictsListWorkspaceConflictsRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsListWorkspaceConflictsRequest.requestedByDeviceProof.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictsListWorkspaceConflictsRequest.requestedByDeviceProof.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictsListWorkspaceConflictsRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsListWorkspaceConflictsRequest.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictsListWorkspaceConflictsRequest.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictsReconcileConflictOccurrenceRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsReconcileConflictOccurrenceRequest.baseSnapshotId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictsReconcileConflictOccurrenceRequest.baseSnapshotId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictsReconcileConflictOccurrenceRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsReconcileConflictOccurrenceRequest.conflictId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictsReconcileConflictOccurrenceRequest.conflictId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictsReconcileConflictOccurrenceRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsReconcileConflictOccurrenceRequest.conflictKind.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictsReconcileConflictOccurrenceRequest.conflictKind.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictsReconcileConflictOccurrenceRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsReconcileConflictOccurrenceRequest.deviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictsReconcileConflictOccurrenceRequest.deviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictsReconcileConflictOccurrenceRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsReconcileConflictOccurrenceRequest.deviceProof.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictsReconcileConflictOccurrenceRequest.deviceProof.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictsReconcileConflictOccurrenceRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsReconcileConflictOccurrenceRequest.occurrenceVersion.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictsReconcileConflictOccurrenceRequest.occurrenceVersion.minimum.valid"
-    },
-    {
-      "declaration": "HostedConflictsReconcileConflictOccurrenceRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsReconcileConflictOccurrenceRequest.occurrenceVersion.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictsReconcileConflictOccurrenceRequest.occurrenceVersion.maximum.valid"
-    },
-    {
-      "declaration": "HostedConflictsReconcileConflictOccurrenceRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsReconcileConflictOccurrenceRequest.paths.maxItems.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictsReconcileConflictOccurrenceRequest.paths.maxItems.valid"
-    },
-    {
-      "declaration": "HostedConflictsReconcileConflictOccurrenceRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsReconcileConflictOccurrenceRequest.reason.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictsReconcileConflictOccurrenceRequest.reason.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictsReconcileConflictOccurrenceRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsReconcileConflictOccurrenceRequest.remoteSnapshotId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictsReconcileConflictOccurrenceRequest.remoteSnapshotId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedConflictsReconcileConflictOccurrenceRequest",
-      "expectation": "accept",
-      "id": "HostedConflictsReconcileConflictOccurrenceRequest.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedConflictsReconcileConflictOccurrenceRequest.workspaceId.maxLength.valid"
     },
     {
       "declaration": "HostedCompactEvent",
@@ -7586,24 +6416,6 @@
       "valuePath": "/boundary-values.json#/HostedEventWatermarks.lastScanAt.maxLength.valid"
     },
     {
-      "declaration": "HostedEventWatermarks",
-      "expectation": "accept",
-      "id": "HostedEventWatermarks.syncState.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventWatermarks.syncState.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventWatermarks",
-      "expectation": "accept",
-      "id": "HostedEventWatermarks.watcherState.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventWatermarks.watcherState.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventWatermarks",
-      "expectation": "accept",
-      "id": "HostedEventWatermarks.networkState.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventWatermarks.networkState.maxLength.valid"
-    },
-    {
       "declaration": "HostedWorkspaceSummary",
       "expectation": "accept",
       "id": "HostedWorkspaceSummary.totalProjects.minimum.valid",
@@ -7784,228 +6596,6 @@
       "valuePath": "/boundary-values.json#/HostedStatusPublishWorkspaceStatusResponse.version.maximum.valid"
     },
     {
-      "declaration": "HostedLease",
-      "expectation": "accept",
-      "id": "HostedLease.leaseId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedLease.leaseId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedLease",
-      "expectation": "accept",
-      "id": "HostedLease.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedLease.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedLease",
-      "expectation": "accept",
-      "id": "HostedLease.projectId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedLease.projectId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedLease",
-      "expectation": "accept",
-      "id": "HostedLease.deviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedLease.deviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedLease",
-      "expectation": "accept",
-      "id": "HostedLease.targetDeviceRef.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedLease.targetDeviceRef.maxLength.valid"
-    },
-    {
-      "declaration": "HostedLease",
-      "expectation": "accept",
-      "id": "HostedLease.originDeviceRef.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedLease.originDeviceRef.maxLength.valid"
-    },
-    {
-      "declaration": "HostedLease",
-      "expectation": "accept",
-      "id": "HostedLease.workViewId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedLease.workViewId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedLease",
-      "expectation": "accept",
-      "id": "HostedLease.baseSnapshotId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedLease.baseSnapshotId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedLease",
-      "expectation": "accept",
-      "id": "HostedLease.taskLabel.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedLease.taskLabel.maxLength.valid"
-    },
-    {
-      "declaration": "HostedLease",
-      "expectation": "accept",
-      "id": "HostedLease.version.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedLease.version.minimum.valid"
-    },
-    {
-      "declaration": "HostedLease",
-      "expectation": "accept",
-      "id": "HostedLease.version.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedLease.version.maximum.valid"
-    },
-    {
-      "declaration": "HostedLease",
-      "expectation": "accept",
-      "id": "HostedLease.statusCode.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedLease.statusCode.maxLength.valid"
-    },
-    {
-      "declaration": "HostedLease",
-      "expectation": "accept",
-      "id": "HostedLease.expiresAt.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedLease.expiresAt.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsCreateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsCreateLeaseRequest.baseSnapshotId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsCreateLeaseRequest.baseSnapshotId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsCreateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsCreateLeaseRequest.deviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsCreateLeaseRequest.deviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsCreateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsCreateLeaseRequest.deviceProof.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsCreateLeaseRequest.deviceProof.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsCreateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsCreateLeaseRequest.expiresAt.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsCreateLeaseRequest.expiresAt.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsCreateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsCreateLeaseRequest.leaseId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsCreateLeaseRequest.leaseId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsCreateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsCreateLeaseRequest.projectId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsCreateLeaseRequest.projectId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsCreateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsCreateLeaseRequest.statusCode.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsCreateLeaseRequest.statusCode.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsCreateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsCreateLeaseRequest.taskLabel.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsCreateLeaseRequest.taskLabel.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsCreateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsCreateLeaseRequest.targetDeviceRef.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsCreateLeaseRequest.targetDeviceRef.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsCreateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsCreateLeaseRequest.originDeviceRef.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsCreateLeaseRequest.originDeviceRef.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsCreateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsCreateLeaseRequest.workViewId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsCreateLeaseRequest.workViewId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsCreateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsCreateLeaseRequest.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsCreateLeaseRequest.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsUpdateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsUpdateLeaseRequest.expectedVersion.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsUpdateLeaseRequest.expectedVersion.minimum.valid"
-    },
-    {
-      "declaration": "HostedEventsUpdateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsUpdateLeaseRequest.expectedVersion.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsUpdateLeaseRequest.expectedVersion.maximum.valid"
-    },
-    {
-      "declaration": "HostedEventsUpdateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsUpdateLeaseRequest.leaseId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsUpdateLeaseRequest.leaseId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsUpdateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsUpdateLeaseRequest.statusCode.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsUpdateLeaseRequest.statusCode.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsUpdateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsUpdateLeaseRequest.updatedByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsUpdateLeaseRequest.updatedByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsUpdateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsUpdateLeaseRequest.updatedByDeviceProof.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsUpdateLeaseRequest.updatedByDeviceProof.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsUpdateLeaseRequest",
-      "expectation": "accept",
-      "id": "HostedEventsUpdateLeaseRequest.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsUpdateLeaseRequest.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsUpdateLeaseResponse",
-      "expectation": "accept",
-      "id": "HostedEventsUpdateLeaseResponse.leaseId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsUpdateLeaseResponse.leaseId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsUpdateLeaseResponse",
-      "expectation": "accept",
-      "id": "HostedEventsUpdateLeaseResponse.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsUpdateLeaseResponse.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsListLeasesRequest",
-      "expectation": "accept",
-      "id": "HostedEventsListLeasesRequest.requestedByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsListLeasesRequest.requestedByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsListLeasesRequest",
-      "expectation": "accept",
-      "id": "HostedEventsListLeasesRequest.requestedByDeviceProof.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsListLeasesRequest.requestedByDeviceProof.maxLength.valid"
-    },
-    {
-      "declaration": "HostedEventsListLeasesRequest",
-      "expectation": "accept",
-      "id": "HostedEventsListLeasesRequest.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedEventsListLeasesRequest.workspaceId.maxLength.valid"
-    },
-    {
       "declaration": "HostedAuthRegisterAccountSessionRequest",
       "expectation": "accept",
       "id": "HostedAuthRegisterAccountSessionRequest.accessToken.maxLength.valid",
@@ -8028,372 +6618,6 @@
       "expectation": "accept",
       "id": "HostedAuthRegisterAccountSessionResponse.revocationToken.maxLength.valid",
       "valuePath": "/boundary-values.json#/HostedAuthRegisterAccountSessionResponse.revocationToken.maxLength.valid"
-    },
-    {
-      "declaration": "HostedMetadataPagePointerInput",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointerInput.byteLength.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataPagePointerInput.byteLength.minimum.valid"
-    },
-    {
-      "declaration": "HostedMetadataPagePointerInput",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointerInput.byteLength.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataPagePointerInput.byteLength.maximum.valid"
-    },
-    {
-      "declaration": "HostedMetadataPagePointerInput",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointerInput.contentId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataPagePointerInput.contentId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedMetadataPagePointerInput",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointerInput.hash.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataPagePointerInput.hash.maxLength.valid"
-    },
-    {
-      "declaration": "HostedMetadataPagePointerInput",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointerInput.keyEpoch.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataPagePointerInput.keyEpoch.minimum.valid"
-    },
-    {
-      "declaration": "HostedMetadataPagePointerInput",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointerInput.keyEpoch.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataPagePointerInput.keyEpoch.maximum.valid"
-    },
-    {
-      "declaration": "HostedMetadataPagePointerInput",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointerInput.objectKey.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataPagePointerInput.objectKey.maxLength.valid"
-    },
-    {
-      "declaration": "HostedMetadataPagePointer",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointer.byteLength.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataPagePointer.byteLength.minimum.valid"
-    },
-    {
-      "declaration": "HostedMetadataPagePointer",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointer.byteLength.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataPagePointer.byteLength.maximum.valid"
-    },
-    {
-      "declaration": "HostedMetadataPagePointer",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointer.contentId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataPagePointer.contentId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedMetadataPagePointer",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointer.hash.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataPagePointer.hash.maxLength.valid"
-    },
-    {
-      "declaration": "HostedMetadataPagePointer",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointer.keyEpoch.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataPagePointer.keyEpoch.minimum.valid"
-    },
-    {
-      "declaration": "HostedMetadataPagePointer",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointer.keyEpoch.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataPagePointer.keyEpoch.maximum.valid"
-    },
-    {
-      "declaration": "HostedMetadataPagePointer",
-      "expectation": "accept",
-      "id": "HostedMetadataPagePointer.objectKey.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataPagePointer.objectKey.maxLength.valid"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointerInput",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointerInput.byteLength.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotManifestPointerInput.byteLength.minimum.valid"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointerInput",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointerInput.byteLength.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotManifestPointerInput.byteLength.maximum.valid"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointerInput",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointerInput.contentId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotManifestPointerInput.contentId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointerInput",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointerInput.hash.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotManifestPointerInput.hash.maxLength.valid"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointerInput",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointerInput.keyEpoch.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotManifestPointerInput.keyEpoch.minimum.valid"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointerInput",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointerInput.keyEpoch.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotManifestPointerInput.keyEpoch.maximum.valid"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointerInput",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointerInput.objectKey.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotManifestPointerInput.objectKey.maxLength.valid"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointer",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointer.byteLength.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotManifestPointer.byteLength.minimum.valid"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointer",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointer.byteLength.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotManifestPointer.byteLength.maximum.valid"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointer",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointer.contentId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotManifestPointer.contentId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointer",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointer.hash.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotManifestPointer.hash.maxLength.valid"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointer",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointer.keyEpoch.minimum.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotManifestPointer.keyEpoch.minimum.valid"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointer",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointer.keyEpoch.maximum.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotManifestPointer.keyEpoch.maximum.valid"
-    },
-    {
-      "declaration": "HostedSnapshotManifestPointer",
-      "expectation": "accept",
-      "id": "HostedSnapshotManifestPointer.objectKey.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotManifestPointer.objectKey.maxLength.valid"
-    },
-    {
-      "declaration": "HostedMetadataSidecar",
-      "expectation": "accept",
-      "id": "HostedMetadataSidecar.childLogicalIds.maxItems.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataSidecar.childLogicalIds.maxItems.valid"
-    },
-    {
-      "declaration": "HostedMetadataSidecar",
-      "expectation": "accept",
-      "id": "HostedMetadataSidecar.directObjectKeys.maxItems.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataSidecar.directObjectKeys.maxItems.valid"
-    },
-    {
-      "declaration": "HostedMetadataSidecar",
-      "expectation": "accept",
-      "id": "HostedMetadataSidecar.digest.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataSidecar.digest.maxLength.valid"
-    },
-    {
-      "declaration": "HostedMetadataBindingInput",
-      "expectation": "accept",
-      "id": "HostedMetadataBindingInput.logicalId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataBindingInput.logicalId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedMetadataBindingRecord",
-      "expectation": "accept",
-      "id": "HostedMetadataBindingRecord.logicalId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataBindingRecord.logicalId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedMetadataBindingRecord",
-      "expectation": "accept",
-      "id": "HostedMetadataBindingRecord.sidecarDigest.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataBindingRecord.sidecarDigest.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectsCommitMetadataBindingsRequest",
-      "expectation": "accept",
-      "id": "HostedObjectsCommitMetadataBindingsRequest.bindings.maxItems.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCommitMetadataBindingsRequest.bindings.maxItems.valid"
-    },
-    {
-      "declaration": "HostedObjectsCommitMetadataBindingsRequest",
-      "expectation": "accept",
-      "id": "HostedObjectsCommitMetadataBindingsRequest.committedByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCommitMetadataBindingsRequest.committedByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectsCommitMetadataBindingsRequest",
-      "expectation": "accept",
-      "id": "HostedObjectsCommitMetadataBindingsRequest.committedByDeviceProof.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCommitMetadataBindingsRequest.committedByDeviceProof.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectsCommitMetadataBindingsRequest",
-      "expectation": "accept",
-      "id": "HostedObjectsCommitMetadataBindingsRequest.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCommitMetadataBindingsRequest.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedMetadataBindingsResponse",
-      "expectation": "accept",
-      "id": "HostedMetadataBindingsResponse.bindings.maxItems.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataBindingsResponse.bindings.maxItems.valid"
-    },
-    {
-      "declaration": "HostedMetadataBindingsResponse",
-      "expectation": "accept",
-      "id": "HostedMetadataBindingsResponse.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedMetadataBindingsResponse.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectQueriesResolveMetadataBindingsRequest",
-      "expectation": "accept",
-      "id": "HostedObjectQueriesResolveMetadataBindingsRequest.logicalIds.maxItems.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectQueriesResolveMetadataBindingsRequest.logicalIds.maxItems.valid"
-    },
-    {
-      "declaration": "HostedObjectQueriesResolveMetadataBindingsRequest",
-      "expectation": "accept",
-      "id": "HostedObjectQueriesResolveMetadataBindingsRequest.requestedByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectQueriesResolveMetadataBindingsRequest.requestedByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectQueriesResolveMetadataBindingsRequest",
-      "expectation": "accept",
-      "id": "HostedObjectQueriesResolveMetadataBindingsRequest.requestedByDeviceProof.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectQueriesResolveMetadataBindingsRequest.requestedByDeviceProof.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectQueriesResolveMetadataBindingsRequest",
-      "expectation": "accept",
-      "id": "HostedObjectQueriesResolveMetadataBindingsRequest.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectQueriesResolveMetadataBindingsRequest.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectsCommitSnapshotRootRequest",
-      "expectation": "accept",
-      "id": "HostedObjectsCommitSnapshotRootRequest.committedByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCommitSnapshotRootRequest.committedByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectsCommitSnapshotRootRequest",
-      "expectation": "accept",
-      "id": "HostedObjectsCommitSnapshotRootRequest.committedByDeviceProof.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCommitSnapshotRootRequest.committedByDeviceProof.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectsCommitSnapshotRootRequest",
-      "expectation": "accept",
-      "id": "HostedObjectsCommitSnapshotRootRequest.extraRootLogicalIds.maxItems.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCommitSnapshotRootRequest.extraRootLogicalIds.maxItems.valid"
-    },
-    {
-      "declaration": "HostedObjectsCommitSnapshotRootRequest",
-      "expectation": "accept",
-      "id": "HostedObjectsCommitSnapshotRootRequest.manifestId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCommitSnapshotRootRequest.manifestId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectsCommitSnapshotRootRequest",
-      "expectation": "accept",
-      "id": "HostedObjectsCommitSnapshotRootRequest.namespaceRootId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCommitSnapshotRootRequest.namespaceRootId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectsCommitSnapshotRootRequest",
-      "expectation": "accept",
-      "id": "HostedObjectsCommitSnapshotRootRequest.snapshotId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCommitSnapshotRootRequest.snapshotId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectsCommitSnapshotRootRequest",
-      "expectation": "accept",
-      "id": "HostedObjectsCommitSnapshotRootRequest.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCommitSnapshotRootRequest.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedSnapshotRootRecord",
-      "expectation": "accept",
-      "id": "HostedSnapshotRootRecord.committedByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotRootRecord.committedByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedSnapshotRootRecord",
-      "expectation": "accept",
-      "id": "HostedSnapshotRootRecord.extraRootLogicalIds.maxItems.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotRootRecord.extraRootLogicalIds.maxItems.valid"
-    },
-    {
-      "declaration": "HostedSnapshotRootRecord",
-      "expectation": "accept",
-      "id": "HostedSnapshotRootRecord.manifestId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotRootRecord.manifestId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedSnapshotRootRecord",
-      "expectation": "accept",
-      "id": "HostedSnapshotRootRecord.namespaceRootId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotRootRecord.namespaceRootId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedSnapshotRootRecord",
-      "expectation": "accept",
-      "id": "HostedSnapshotRootRecord.snapshotId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotRootRecord.snapshotId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedSnapshotRootRecord",
-      "expectation": "accept",
-      "id": "HostedSnapshotRootRecord.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedSnapshotRootRecord.workspaceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectQueriesGetSnapshotRootRequest",
-      "expectation": "accept",
-      "id": "HostedObjectQueriesGetSnapshotRootRequest.requestedByDeviceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectQueriesGetSnapshotRootRequest.requestedByDeviceId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectQueriesGetSnapshotRootRequest",
-      "expectation": "accept",
-      "id": "HostedObjectQueriesGetSnapshotRootRequest.requestedByDeviceProof.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectQueriesGetSnapshotRootRequest.requestedByDeviceProof.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectQueriesGetSnapshotRootRequest",
-      "expectation": "accept",
-      "id": "HostedObjectQueriesGetSnapshotRootRequest.snapshotId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectQueriesGetSnapshotRootRequest.snapshotId.maxLength.valid"
-    },
-    {
-      "declaration": "HostedObjectQueriesGetSnapshotRootRequest",
-      "expectation": "accept",
-      "id": "HostedObjectQueriesGetSnapshotRootRequest.workspaceId.maxLength.valid",
-      "valuePath": "/boundary-values.json#/HostedObjectQueriesGetSnapshotRootRequest.workspaceId.maxLength.valid"
     },
     {
       "declaration": "HostedProjectionMetadata",
@@ -9038,5 +7262,5 @@
       "valuePath": "/boundary-values.json#/HostedDashboardListDashboardRecoveryEnvelopesResponse.revision.maximum.valid"
     }
   ],
-  "schemaHash": "90aaff183a675d00a355085f8a588d3d135b786f9e88fb8cde5c8a153078173e"
+  "schemaHash": "4ba7588109ebc1681e45961ce7cfc67a1cfb121e39447807957b0f64adb3ab98"
 }

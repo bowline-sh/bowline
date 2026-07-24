@@ -3,11 +3,6 @@ import { isEventName, isStatusLevel } from "./generated-guards";
 import type { StatusLevel, WorkspaceStatus } from "./status";
 
 export {
-  isAgentContextCommandOutput,
-  isAgentLeaseCreateCommandOutput,
-  isAgentMcpTokenCommandOutput,
-  isAgentPromptCommandOutput,
-  isAgentToolResult,
   isBootstrapSshCommandOutput,
   isCommandErrorOutput,
   isContentLayout,
@@ -20,6 +15,7 @@ export {
   isDeviceApprovalAffordances,
   isDevicesCommandOutput,
   isDiagnosticsCollectCommandOutput,
+  isDoctorCommandOutput,
   isDryRunCommandOutput,
   isEventName,
   isEventsCommandOutput,

@@ -1,8 +1,13 @@
-use std::env;
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 use bowline_control_plane::HostedControlPlaneClient;
 use bowline_core::ids::WorkspaceId;
-use bowline_local::device_keys::{AccountSessionCredentials, DeviceKeyStore};
+use bowline_local::device_keys::{
+    AccountSessionCredentials, DeviceKeyStore, clear_account_session_from_daemon_env,
+};
 
 use super::{hosted_convex_url, nonempty_env_value, workos_access_token};
 
@@ -13,7 +18,51 @@ pub fn account_session_id(store: &dyn DeviceKeyStore) -> Option<String> {
         .ok()
         .flatten()
         .map(|session| session.session_id)
+        .or_else(|| {
+            persisted_account_session_revocation()
+                .ok()
+                .flatten()
+                .map(|session| session.session_id)
+        })
         .or_else(|| stored_account_session_id(store))
+}
+
+pub fn persisted_account_session_revocation() -> Result<Option<AccountSessionRevocation>, String> {
+    let Some(state_root) = super::selected_metadata_database_path()
+        .as_deref()
+        .and_then(persisted_account_session_state_root)
+    else {
+        return Ok(None);
+    };
+    persisted_account_session_revocation_from(&state_root)
+}
+
+pub fn clear_persisted_account_session() -> Result<bool, String> {
+    let Some(state_root) = super::selected_metadata_database_path()
+        .as_deref()
+        .and_then(persisted_account_session_state_root)
+    else {
+        return Ok(false);
+    };
+    clear_persisted_account_session_from(&state_root)
+}
+
+pub(super) fn clear_persisted_account_session_from(state_root: &Path) -> Result<bool, String> {
+    clear_account_session_from_daemon_env(state_root)
+        .map_err(|error| format!("could not clear persisted account session: {error}"))
+}
+
+pub(super) fn persisted_account_session_state_root(db_path: &Path) -> Option<PathBuf> {
+    super::metadata_state_root(db_path)
+}
+
+pub(super) fn persisted_account_session_revocation_from(
+    state_root: &Path,
+) -> Result<Option<AccountSessionRevocation>, String> {
+    let session_id = super::persisted_daemon_env_value(state_root, "BOWLINE_ACCOUNT_SESSION_ID");
+    let revocation_token =
+        super::persisted_daemon_env_value(state_root, "BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN");
+    validated_account_session_revocation(session_id, revocation_token)
 }
 
 fn stored_account_session_id(store: &dyn DeviceKeyStore) -> Option<String> {
@@ -30,6 +79,13 @@ pub fn environment_account_session_revocation() -> Result<Option<AccountSessionR
     let session_id = nonempty_env_value(env::var("BOWLINE_ACCOUNT_SESSION_ID").ok());
     let revocation_token =
         nonempty_env_value(env::var("BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN").ok());
+    validated_account_session_revocation(session_id, revocation_token)
+}
+
+fn validated_account_session_revocation(
+    session_id: Option<String>,
+    revocation_token: Option<String>,
+) -> Result<Option<AccountSessionRevocation>, String> {
     match (session_id, revocation_token) {
         (None, None) => Ok(None),
         (Some(session_id), Some(revocation_token))

@@ -1,11 +1,20 @@
 use super::*;
-use bowline_core::devices::display_matching_code;
 use bowline_core::wire::generated::{
     DaemonStatusEventPayload, DaemonStatusScopeParams, DaemonStatusSnapshotResult,
     DaemonStatusSubscribeResult,
 };
 use bowline_core::wire::status_command_from_wire;
 use bowline_daemon_rpc::{ClientOptions, DaemonClient};
+use std::fs;
+
+mod device_facts;
+// Re-export at crate visibility so `crate::status_commands::…` callers resolve
+// the device-facts helpers exactly as before the split.
+pub(crate) use device_facts::{append_status_fact, apply_device_status};
+// Test-only helpers exercised directly by unit tests (here and in lib parse
+// tests via `use status_commands::*`); gated so non-test builds see no re-export.
+#[cfg(test)]
+pub(crate) use device_facts::{apply_device_status_for_local_device, device_status_item};
 
 type DeviceTrustSnapshot = bowline_control_plane::DeviceApprovalRequestList;
 
@@ -13,13 +22,28 @@ type DeviceTrustSnapshot = bowline_control_plane::DeviceApprovalRequestList;
 // without turning a 1 Hz status watch into a 1 Hz control-plane poll.
 const TRUST_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
+// The service-supervisor probe shells out to launchd/systemd, so a `status
+// --watch` stream must not run it per frame. Its state changes rarely; refresh
+// on the same slow cadence as device trust.
+const SERVICE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CachedDeviceTrust {
     workspace_id: WorkspaceId,
     trust: DeviceTrustSnapshot,
 }
 
-pub(super) fn print_status(args: StatusArgs, json: bool) -> ExitCode {
+/// Outcome of a device-trust fetch. `Unavailable` means the control plane could
+/// not be reached or errored; it is NOT proof the device lacks trust. Callers
+/// must fail closed on it and never raise the authentication rung, so a transient
+/// control-plane error can never upgrade an approval-pending device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum DeviceTrustFetch {
+    Fetched(DeviceTrustSnapshot),
+    Unavailable,
+}
+
+pub(super) fn print_status(args: StatusArgs, json: bool, socket: &Path) -> ExitCode {
     let generated_at = generated_at();
     let options = StatusOptions {
         db_path: metadata_db_path(),
@@ -29,10 +53,10 @@ pub(super) fn print_status(args: StatusArgs, json: bool) -> ExitCode {
     };
 
     if args.watch {
-        return print_status_watch(options, generated_at, json);
+        return print_status_watch(options, generated_at, json, socket);
     }
 
-    match compose_status_for_cli(options) {
+    match compose_status_for_cli(options, socket) {
         Ok(output) if json => {
             print_json(&output);
             ExitCode::SUCCESS
@@ -77,7 +101,7 @@ pub(super) fn print_tui(args: TuiArgs, json: bool, socket: &Path) -> ExitCode {
         workspace_scope: false,
         generated_at: generated_at.clone(),
     };
-    match compose_status_for_cli(options) {
+    match compose_status_for_cli(options, socket) {
         Ok(output) if !io::stdin().is_terminal() || !io::stdout().is_terminal() => {
             let pres = surface::style::Presentation::detect(false);
             let human = surface::human::render_status(&output, &pres);
@@ -104,39 +128,306 @@ pub(super) fn print_tui(args: TuiArgs, json: bool, socket: &Path) -> ExitCode {
 
 pub(super) fn compose_status_for_cli(
     options: StatusOptions,
+    socket: &Path,
 ) -> Result<StatusCommandOutput, bowline_local::status::LocalStatusError> {
+    let requested_path = options.requested_path.clone();
+    let workspace_scope = options.workspace_scope;
     let mut output = bowline_local::status::compose_status(options)?;
-    attach_device_status_if_available(&mut output);
+    let project_scope =
+        project_scope_for_output(workspace_scope, requested_path.as_deref(), &output);
+    // Fetch device trust once and drive both the human-facing device facts and
+    // the machine-readable introspection block from it.
+    let trust = fetch_device_trust(output.workspace_id.as_str());
+    if let DeviceTrustFetch::Fetched(snapshot) = &trust {
+        apply_device_status(&mut output, snapshot);
+    }
     attach_update_status_if_available(&mut output, true);
+    attach_machine_introspection(&mut output, &trust, socket, project_scope.as_deref());
     abbreviate_status_requested_path(&mut output);
     Ok(output)
 }
 
-#[derive(Debug)]
-struct TrustRefreshSchedule {
-    next_fetch: Instant,
+/// Attach the compact `service`/`authentication`/`sync` introspection contract
+/// (contract: status --json) derived from live service, device-trust, and
+/// daemon-sync state. These fields exist only on the live CLI surface. The
+/// `socket` is the resolved global `--socket`, so daemon reads honor the override
+/// every other daemon-touching command uses.
+fn attach_machine_introspection(
+    output: &mut StatusCommandOutput,
+    trust: &DeviceTrustFetch,
+    socket: &Path,
+    project_scope: Option<&Path>,
+) {
+    output.service = Some(daemon_service_introspection());
+    let state = authentication_state(&output.workspace_id, trust, account_authenticated());
+    output.authentication =
+        Some(bowline_core::introspection::AuthenticationIntrospection { state });
+    let daemon = match project_scope {
+        Some(path) => crate::wire::daemon_status_snapshot_for_project(socket, path),
+        None => crate::wire::daemon_status_snapshot(socket),
+    };
+    if let Some(daemon) = daemon {
+        overlay_daemon_sync_facts(output, &daemon);
+    }
+    output.sync = sync_introspection_for(output, socket);
 }
 
-impl TrustRefreshSchedule {
-    fn new(now: Instant) -> Self {
-        Self { next_fetch: now }
+/// Overlay the daemon-owned convergence facts when its active workspace matches
+/// the locally composed status. Local metadata still owns inventory and path
+/// scope; the live manifest engine alone owns queue and readiness truth.
+fn overlay_daemon_sync_facts(output: &mut StatusCommandOutput, daemon: &StatusCommandOutput) {
+    if output.workspace_id != daemon.workspace_id {
+        return;
+    }
+    bowline_core::status::overlay_convergence_status(output, daemon);
+    output.scope.clone_from(&daemon.scope);
+    output
+        .resolved_project_root
+        .clone_from(&daemon.resolved_project_root);
+}
+
+fn find_git_project_root(requested_path: &str) -> Option<PathBuf> {
+    let expanded = if let Some(relative) = requested_path.strip_prefix("~/") {
+        env::var_os("HOME").map(PathBuf::from)?.join(relative)
+    } else {
+        PathBuf::from(requested_path)
+    };
+    let mut existing = expanded.as_path();
+    while !existing.exists() {
+        existing = existing.parent()?;
+    }
+    let requested = fs::canonicalize(existing).ok()?;
+    let mut candidate = if requested.is_dir() {
+        requested.as_path()
+    } else {
+        requested.parent()?
+    };
+    loop {
+        if candidate.join(".git").exists() {
+            return Some(candidate.to_path_buf());
+        }
+        candidate = candidate.parent()?;
+    }
+}
+
+fn project_scope_for_output(
+    workspace_scope: bool,
+    requested_path: Option<&str>,
+    output: &StatusCommandOutput,
+) -> Option<PathBuf> {
+    if workspace_scope {
+        return None;
+    }
+    requested_path
+        .or(output.requested_path.as_deref())
+        .and_then(find_git_project_root)
+        .or_else(|| {
+            output
+                .resolved_project_root
+                .as_deref()
+                .and_then(expand_status_path)
+        })
+}
+
+fn expand_status_path(path: &str) -> Option<PathBuf> {
+    path.strip_prefix("~/").map_or_else(
+        || Some(PathBuf::from(path)),
+        |relative| {
+            env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(relative))
+        },
+    )
+}
+
+/// Reduce account-login and device-trust state onto the authentication ladder.
+pub(super) fn authentication_state(
+    workspace_id: &WorkspaceId,
+    trust: &DeviceTrustFetch,
+    authenticated: bool,
+) -> bowline_core::introspection::AuthenticationState {
+    use bowline_core::introspection::AuthenticationState;
+    if !authenticated {
+        return AuthenticationState::Unauthenticated;
+    }
+    let DeviceTrustFetch::Fetched(trust) = trust else {
+        // Logged in, but the control plane could not confirm this device's trust.
+        // Fail closed: a failed fetch must never raise the rung to Authenticated,
+        // or a transient error during `sync wait` polling would upgrade an
+        // approval-pending device. Report the lower approval-pending rung so the
+        // wait keeps polling and never satisfies an `authenticated`/`ready` target
+        // on error; a successful fetch then resolves the true state.
+        return AuthenticationState::ApprovalPending;
+    };
+    // Resolve the local device id only now: `daemon_device_id` reaches the
+    // control plane and materializes local metadata, so deferring it until a
+    // trust snapshot must actually be reduced keeps the read-only `status` path
+    // free of side effects (no metadata database is created just to report).
+    let local_device_id = runtime::daemon_device_id(workspace_id);
+    reduce_device_trust(trust, &local_device_id)
+}
+
+/// Ladder reduction for a known device-trust snapshot against the resolved local
+/// device id. Callers guarantee the account is authenticated with known trust;
+/// the two trust-independent states are decided in [`authentication_state`].
+fn reduce_device_trust(
+    trust: &DeviceTrustSnapshot,
+    local_device_id: &DeviceId,
+) -> bowline_core::introspection::AuthenticationState {
+    use bowline_core::introspection::AuthenticationState;
+    let local_id = local_device_id.as_str();
+    if trust
+        .revoked_devices
+        .iter()
+        .any(|device| device.device_id == local_id)
+    {
+        return AuthenticationState::Unauthenticated;
+    }
+    if trust
+        .authorized_devices
+        .iter()
+        .any(|device| device.device_id == local_id)
+    {
+        return AuthenticationState::Authenticated;
+    }
+    if trust
+        .pending_requests
+        .iter()
+        .any(|request| request.device_id == local_id)
+        || !trust.authorized_devices.is_empty()
+    {
+        // Either this device has an open request, or other devices are approved
+        // and this one is not yet — both are approval-pending.
+        return AuthenticationState::ApprovalPending;
+    }
+    // Account authenticated with no authorized devices yet (first-device setup).
+    AuthenticationState::Authenticated
+}
+
+/// Whether a usable account session exists locally, without triggering an
+/// interactive secret-store prompt.
+pub(super) fn account_authenticated() -> bool {
+    account_context_available_from_sources(
+        runtime::persisted_account_session_revocation()
+            .ok()
+            .flatten()
+            .is_some(),
+        runtime::passive_secret_store_probe_allowed(),
+        || {
+            let Ok(key_store) = runtime::key_store() else {
+                return false;
+            };
+            runtime::account_session_id(&*key_store).is_some()
+                || matches!(key_store.load_account_tokens(), Ok(Some(_)))
+        },
+    )
+}
+
+fn account_context_available_from_sources(
+    persisted_session: bool,
+    passive_secret_store_probe_allowed: bool,
+    load_local_session: impl FnOnce() -> bool,
+) -> bool {
+    persisted_session || (passive_secret_store_probe_allowed && load_local_session())
+}
+
+/// A slow refresh timer for an ambient input a watch loop re-reads periodically
+/// (device trust, service state) rather than on every frame. Starts due so the
+/// first tick always primes the cache.
+#[derive(Debug)]
+struct RefreshCadence {
+    next_due: Instant,
+    interval: Duration,
+}
+
+impl RefreshCadence {
+    fn new(now: Instant, interval: Duration) -> Self {
+        Self {
+            next_due: now,
+            interval,
+        }
     }
 
     fn due(&self, now: Instant) -> bool {
-        now >= self.next_fetch
+        now >= self.next_due
     }
 
     fn record_attempt(&mut self, now: Instant) {
-        self.next_fetch = now + TRUST_REFRESH_INTERVAL;
+        self.next_due = now + self.interval;
     }
+}
+
+/// Caches the cost-heavy service-supervisor probe so a `status --watch` stream
+/// can enrich every emitted frame with the machine-introspection block without
+/// shelling out to launchd/systemd per frame. Device trust is supplied by the
+/// caller (each watch path already caches it on its own cadence); sync activity
+/// is derived fresh from each frame's own queue so live changes are never masked.
+#[derive(Debug)]
+struct WatchIntrospection {
+    socket: PathBuf,
+    service: Option<bowline_core::introspection::ServiceIntrospection>,
+    service_refresh: RefreshCadence,
+}
+
+impl WatchIntrospection {
+    fn new(socket: PathBuf, now: Instant) -> Self {
+        Self {
+            socket,
+            service: None,
+            service_refresh: RefreshCadence::new(now, SERVICE_REFRESH_INTERVAL),
+        }
+    }
+
+    fn attach(&mut self, output: &mut StatusCommandOutput, trust: &DeviceTrustFetch, now: Instant) {
+        if self.service.is_none() || self.service_refresh.due(now) {
+            self.service = Some(daemon_service_introspection());
+            self.service_refresh.record_attempt(now);
+        }
+        output.service = self.service.clone();
+        output.authentication = Some(bowline_core::introspection::AuthenticationIntrospection {
+            state: authentication_state(&output.workspace_id, trust, account_authenticated()),
+        });
+        output.sync = sync_introspection_for(output, &self.socket);
+    }
+}
+
+/// Map a watch loop's cached trust snapshot onto the fail-closed fetch outcome
+/// the authentication ladder consumes. A cache miss (never fetched, or the last
+/// fetch failed) is `Unavailable`, so authentication never claims more than the
+/// last confirmed trust state.
+fn device_trust_fetch_from_cache(
+    cache: &Option<CachedDeviceTrust>,
+    workspace_id: &WorkspaceId,
+) -> DeviceTrustFetch {
+    match cached_device_trust_for_workspace(cache, workspace_id) {
+        Some(snapshot) => DeviceTrustFetch::Fetched(snapshot.clone()),
+        None => DeviceTrustFetch::Unavailable,
+    }
+}
+
+/// Resolve the compact sync view: prefer the locally composed queue, and fall
+/// back to the daemon's live snapshot over the resolved socket so `sync` is
+/// present whenever a daemon is running, not only when the local metadata path
+/// happens to carry a queue.
+fn sync_introspection_for(
+    output: &StatusCommandOutput,
+    socket: &Path,
+) -> Option<bowline_core::introspection::SyncIntrospection> {
+    output
+        .sync_queue
+        .as_ref()
+        .map(bowline_core::introspection::SyncIntrospection::from_queue)
+        .or_else(|| crate::wire::daemon_sync_introspection(socket))
 }
 
 fn update_cached_device_trust(
     cached_trust: &mut Option<CachedDeviceTrust>,
     workspace_id: &WorkspaceId,
-    fetched_trust: Option<DeviceTrustSnapshot>,
+    fetched_trust: DeviceTrustFetch,
 ) {
-    if let Some(trust) = fetched_trust {
+    // Only a confirmed fetch overwrites the cache; an `Unavailable` result leaves
+    // the last known trust in place rather than clobbering it with a failure.
+    if let DeviceTrustFetch::Fetched(trust) = fetched_trust {
         *cached_trust = Some(CachedDeviceTrust {
             workspace_id: workspace_id.clone(),
             trust,
@@ -154,283 +445,27 @@ fn cached_device_trust_for_workspace<'a>(
         .map(|cached| &cached.trust)
 }
 
-pub(super) fn attach_device_status_if_available(output: &mut StatusCommandOutput) {
-    if let Some(trust) = fetch_device_trust(output.workspace_id.as_str()) {
-        apply_device_status(output, &trust);
-    }
-}
-
-pub(super) fn fetch_device_trust(workspace_id: &str) -> Option<DeviceTrustSnapshot> {
-    if !runtime::passive_secret_store_probe_allowed() {
-        return None;
-    }
-
-    let Ok(key_store) = runtime::key_store() else {
-        return None;
-    };
-    if !matches!(key_store.load_account_tokens(), Ok(Some(_))) {
-        return None;
+pub(super) fn fetch_device_trust(workspace_id: &str) -> DeviceTrustFetch {
+    if !account_context_available_from_sources(
+        runtime::persisted_account_session_revocation()
+            .ok()
+            .flatten()
+            .is_some(),
+        runtime::passive_secret_store_probe_allowed(),
+        || {
+            runtime::key_store()
+                .ok()
+                .is_some_and(|key_store| matches!(key_store.load_account_tokens(), Ok(Some(_))))
+        },
+    ) {
+        return DeviceTrustFetch::Unavailable;
     }
     let Ok(control_plane) = runtime::control_plane() else {
-        return None;
+        return DeviceTrustFetch::Unavailable;
     };
-    control_plane
-        .list_device_trust(&bowline_core::ids::WorkspaceId::new(workspace_id))
-        .ok()
-}
-
-pub(super) fn apply_device_status(output: &mut StatusCommandOutput, trust: &DeviceTrustSnapshot) {
-    let local_device_id = runtime::daemon_device_id(&output.workspace_id);
-    apply_device_status_for_local_device(output, trust, &local_device_id);
-}
-
-fn apply_device_status_for_local_device(
-    output: &mut StatusCommandOutput,
-    trust: &DeviceTrustSnapshot,
-    local_device_id: &DeviceId,
-) {
-    let local_id = local_device_id.as_str();
-    if let Some(revoked) = trust
-        .revoked_devices
-        .iter()
-        .find(|device| device.device_id == local_id)
-    {
-        append_status_fact(
-            output,
-            "device.revoked",
-            format!("device-revoked:{local_id}"),
-            format!("device-trust:{local_id}"),
-            StatusFactScope::Device,
-            Some(local_id),
-            None,
-        );
-        output.status.attention_items.push(format!(
-            "This device was revoked from workspace {}.",
-            output.workspace_id.as_str()
-        ));
-        let item = device_status_item(
-            output,
-            StatusSubjectKind::Device,
-            revoked.device_id.as_str(),
-            Some(DeviceId::new(revoked.device_id.clone())),
-            format!(
-                "This device is revoked; future sync and trust operations are blocked. Reason: {}",
-                revoked.reason
-            ),
-        );
-        output.items.push(item);
-        output.next_actions.push(RepairCommand::inspect(
-            "Inspect workspace status".to_string(),
-            Some(status_command(output, &[])),
-        ));
-        return;
-    }
-
-    if let Some(device) = trust
-        .authorized_devices
-        .iter()
-        .find(|device| device.device_id == local_id)
-    {
-        let item = device_status_item(
-            output,
-            StatusSubjectKind::Device,
-            device.device_id.as_str(),
-            Some(DeviceId::new(device.device_id.clone())),
-            trusted_device_summary(device.device_id.as_str(), device.device_name.as_str()),
-        );
-        output.items.push(item);
-    } else if let Some(request) = trust
-        .pending_requests
-        .iter()
-        .find(|request| request.device_id == local_id)
-    {
-        append_status_fact(
-            output,
-            "device.untrusted",
-            format!("device-pending:{local_id}"),
-            format!("device-trust:{local_id}"),
-            StatusFactScope::Device,
-            Some(local_id),
-            None,
-        );
-        output
-            .status
-            .attention_items
-            .push("This device is waiting for approval before it can sync.".to_string());
-        let item = device_status_item(
-            output,
-            StatusSubjectKind::DeviceApprovalRequest,
-            request.request_id.as_str(),
-            Some(DeviceId::new(request.device_id.clone())),
-            "This device has a pending approval request.".to_string(),
-        );
-        output.items.push(item);
-    } else if !trust.authorized_devices.is_empty() {
-        append_status_fact(
-            output,
-            "device.untrusted",
-            format!("device-untrusted:{local_id}"),
-            format!("device-trust:{local_id}"),
-            StatusFactScope::Device,
-            Some(local_id),
-            None,
-        );
-        output
-            .status
-            .attention_items
-            .push("This device is not trusted for the workspace yet.".to_string());
-        let setup_command = format!(
-            "bowline setup{}",
-            io_helpers::root_flag(output.resolved_workspace_root.as_deref())
-        );
-        let item = device_status_item(
-            output,
-            StatusSubjectKind::Device,
-            local_device_id.as_str(),
-            Some(local_device_id.clone()),
-            format!("Run `{setup_command}` to request workspace trust."),
-        );
-        output.items.push(item);
-    }
-
-    if !trust.pending_requests.is_empty() {
-        for request in &trust.pending_requests {
-            append_status_fact(
-                output,
-                "device.approval_requested",
-                format!("device-approval:{}", request.request_id.as_str()),
-                format!("device-approval:{}", request.request_id.as_str()),
-                StatusFactScope::Device,
-                Some(request.device_id.as_str()),
-                Some(request.request_id.as_str()),
-            );
-        }
-        output.status.attention_items.push(format!(
-            "{} device approval request(s) are waiting.",
-            trust.pending_requests.len()
-        ));
-        // Trusted local surface: the concrete approve affordance (matching code +
-        // `bowline device approve --code …`) is local trust material. It rides on
-        // `device_approvals`, correlated to its status item by `request_id`, and
-        // must never be written to hosted/persisted status payloads.
-        let pending_items = trust
-            .pending_requests
-            .iter()
-            .map(|request| {
-                let display_code = display_matching_code(&request.matching_code);
-                output.device_approvals.push(DeviceApprovalAffordance {
-                    request_id: request.request_id.as_str().to_string(),
-                    device_name: request.device_name.clone(),
-                    code: display_code.clone(),
-                    approve_command: approve_command(
-                        output,
-                        io_helpers::shell_word(display_code.as_str()),
-                    ),
-                });
-                device_status_item(
-                    output,
-                    StatusSubjectKind::DeviceApprovalRequest,
-                    request.request_id.as_str(),
-                    Some(DeviceId::new(request.device_id.clone())),
-                    format!(
-                        "{} is waiting for approval with matching code {}.",
-                        request.device_name, display_code
-                    ),
-                )
-            })
-            .collect::<Vec<_>>();
-        output.items.extend(pending_items);
-        output.next_actions.push(RepairCommand::inspect(
-            "Review workspace status".to_string(),
-            Some(status_command(output, &[])),
-        ));
-    }
-}
-
-pub(super) fn append_status_fact(
-    output: &mut StatusCommandOutput,
-    kind: &str,
-    id: impl Into<String>,
-    dedupe_key: impl Into<String>,
-    scope: StatusFactScope,
-    scope_id: Option<&str>,
-    action_target_id: Option<&str>,
-) {
-    let policy = status_fact_policy(kind);
-    let mut fact = StatusFact::new(
-        id,
-        kind,
-        policy.authority,
-        scope,
-        output.generated_at.clone(),
-        dedupe_key,
-    );
-    if let Some(scope_id) = scope_id {
-        fact = fact.with_scope_id(scope_id);
-    }
-    if let (Some(action), Some(target_id)) = (fact.action.as_mut(), action_target_id) {
-        action.target_id = Some(target_id.to_string());
-    }
-    let mut facts = std::mem::take(&mut output.status_summary.facts);
-    facts.push(fact);
-    let summary = reduce_status_facts(facts, 1, output.generated_at.clone());
-    output.status.level = summary.presentation_level();
-    output.status_summary = summary;
-}
-
-fn status_command(output: &StatusCommandOutput, extra: &[&str]) -> String {
-    let mut command = format!(
-        "bowline status{}",
-        io_helpers::root_flag(output.resolved_workspace_root.as_deref())
-    );
-    for arg in extra {
-        command.push(' ');
-        command.push_str(arg);
-    }
-    command
-}
-
-fn approve_command(output: &StatusCommandOutput, code: String) -> String {
-    format!(
-        "bowline device approve{} --code {code}",
-        io_helpers::root_flag(output.resolved_workspace_root.as_deref())
-    )
-}
-
-pub(super) fn trusted_device_summary(device_id: &str, device_name: &str) -> String {
-    if device_name == device_id {
-        return format!("This device is trusted as {device_id}.");
-    }
-    format!("This device is trusted as {device_id} ({device_name}).")
-}
-
-pub(super) fn device_status_item(
-    output: &StatusCommandOutput,
-    subject_kind: StatusSubjectKind,
-    subject_id: impl Into<String>,
-    device_id: Option<DeviceId>,
-    summary: String,
-) -> StatusItem {
-    StatusItem {
-        kind: StatusItemKind::Device,
-        summary,
-        subject: Some(StatusSubject {
-            kind: subject_kind,
-            id: subject_id.into(),
-            path: None,
-        }),
-        path: None,
-        classification: None,
-        mode: None,
-        access: Vec::new(),
-        event_id: None,
-        event_name: None,
-        device_id,
-        lease_id: None,
-        project_id: output.project_id.clone(),
-        snapshot_id: None,
-        policy_version: None,
-        env_record_id: None,
+    match control_plane.list_device_trust(&bowline_core::ids::WorkspaceId::new(workspace_id)) {
+        Ok(trust) => DeviceTrustFetch::Fetched(trust),
+        Err(_) => DeviceTrustFetch::Unavailable,
     }
 }
 
@@ -438,14 +473,15 @@ pub(super) fn print_status_watch(
     options: StatusOptions,
     started_at: String,
     json: bool,
+    socket: &Path,
 ) -> ExitCode {
     let pres = surface::style::Presentation::detect(json);
     if env::var_os(ENV_METADATA_DB).is_none()
-        && let Ok(exit_code) = print_daemon_status_watch(&options, &pres, &started_at, json)
+        && let Ok(exit_code) = print_daemon_status_watch(&options, &pres, &started_at, json, socket)
     {
         return exit_code;
     }
-    let mut state = StatusWatchState::new();
+    let mut state = StatusWatchState::new(socket.to_path_buf());
 
     loop {
         match next_status_watch_tick(&mut state, &options) {
@@ -479,18 +515,27 @@ fn print_daemon_status_watch(
     pres: &surface::style::Presentation,
     started_at: &str,
     json: bool,
+    socket: &Path,
 ) -> Result<ExitCode, ()> {
-    let socket = default_control_socket_path().map_err(|_| ())?;
     let client =
-        DaemonClient::connect(&socket, ClientOptions::new("cli", CLI_VERSION)).map_err(|_| ())?;
-    let scope = DaemonStatusScopeParams {
-        workspace_root: options.requested_path.clone(),
-        project_path: None,
-    };
+        DaemonClient::connect(socket, ClientOptions::new("cli", CLI_VERSION)).map_err(|_| ())?;
+    let local_status = bowline_local::status::compose_status(options.clone()).map_err(|_| ())?;
+    let project_scope = project_scope_for_output(
+        options.workspace_scope,
+        options.requested_path.as_deref(),
+        &local_status,
+    );
+    let scope = daemon_status_scope_params(options, project_scope.as_deref());
     let subscription: DaemonStatusSubscribeResult = client
         .call("status.subscribe", &scope, Some(Duration::from_secs(2)))
         .map_err(|_| ())?;
-    let initial = status_command_from_wire(subscription.snapshot).map_err(|_| ())?;
+    // The daemon's snapshot carries no CLI-surface introspection, so enrich every
+    // frame with the same service/authentication/sync block as one-shot
+    // `status --json`. The enricher caches the service probe and device trust on a
+    // slow cadence so an event-driven stream never pays them per frame.
+    let mut enricher = DaemonWatchEnricher::new(socket.to_path_buf());
+    let mut initial = status_command_from_wire(subscription.snapshot).map_err(|_| ())?;
+    enricher.enrich(&mut initial);
     let frame = status_watch_frame(initial, subscription.sequence);
     if let Err(exit_code) = write_watch_frame_or_exit(&frame, json, pres, started_at) {
         return Ok(exit_code);
@@ -502,25 +547,74 @@ fn print_daemon_status_watch(
         let event = events.recv().map_err(|_| ())?;
         let payload: DaemonStatusEventPayload =
             serde_json::from_value(event.payload).map_err(|_| ())?;
-        if payload.gap || payload.resync_required {
+        let sequence = event.sequence;
+        let snapshot = if payload.gap || payload.resync_required {
             let replacement: DaemonStatusSnapshotResult = client
                 .call("status.getSnapshot", &scope, Some(Duration::from_secs(2)))
                 .map_err(|_| ())?;
-            let status = status_command_from_wire(replacement.snapshot).map_err(|_| ())?;
-            let frame = status_watch_frame(status, event.sequence);
-            if let Err(exit_code) = write_watch_frame_or_exit(&frame, json, pres, started_at) {
-                return Ok(exit_code);
-            }
-            continue;
-        }
-        let Some(snapshot) = payload.snapshot else {
+            replacement.snapshot
+        } else if let Some(snapshot) = payload.snapshot {
+            snapshot
+        } else {
             continue;
         };
-        let status = status_command_from_wire(snapshot).map_err(|_| ())?;
-        let frame = status_watch_frame(status, event.sequence);
+        let mut status = status_command_from_wire(snapshot).map_err(|_| ())?;
+        enricher.enrich(&mut status);
+        let frame = status_watch_frame(status, sequence);
         if let Err(exit_code) = write_watch_frame_or_exit(&frame, json, pres, started_at) {
             return Ok(exit_code);
         }
+    }
+}
+
+fn daemon_status_scope_params(
+    options: &StatusOptions,
+    project_scope: Option<&Path>,
+) -> DaemonStatusScopeParams {
+    DaemonStatusScopeParams {
+        workspace_root: project_scope
+            .is_none()
+            .then(|| options.requested_path.clone())
+            .flatten(),
+        project_path: project_scope.map(|path| path.to_string_lossy().into_owned()),
+        requested_path: project_scope
+            .is_some()
+            .then(|| options.requested_path.clone())
+            .flatten(),
+    }
+}
+
+/// Enriches daemon-sourced watch frames with the machine-introspection block.
+/// Owns the service cache plus a device-trust cache refreshed on the trust
+/// cadence, so the event stream stays cheap.
+struct DaemonWatchEnricher {
+    introspection: WatchIntrospection,
+    trust: Option<CachedDeviceTrust>,
+    trust_refresh: RefreshCadence,
+}
+
+impl DaemonWatchEnricher {
+    fn new(socket: PathBuf) -> Self {
+        let now = Instant::now();
+        Self {
+            introspection: WatchIntrospection::new(socket, now),
+            trust: None,
+            trust_refresh: RefreshCadence::new(now, TRUST_REFRESH_INTERVAL),
+        }
+    }
+
+    fn enrich(&mut self, output: &mut StatusCommandOutput) {
+        let now = Instant::now();
+        if self.trust_refresh.due(now) {
+            update_cached_device_trust(
+                &mut self.trust,
+                &output.workspace_id,
+                fetch_device_trust(output.workspace_id.as_str()),
+            );
+            self.trust_refresh.record_attempt(now);
+        }
+        let trust = device_trust_fetch_from_cache(&self.trust, &output.workspace_id);
+        self.introspection.attach(output, &trust, now);
     }
 }
 
@@ -561,21 +655,24 @@ struct StatusWatchState {
     last_output: Option<StatusCommandOutput>,
     backoff: Duration,
     cached_trust: Option<CachedDeviceTrust>,
-    trust_refresh: TrustRefreshSchedule,
+    trust_refresh: RefreshCadence,
     composer: Option<bowline_local::status::RevisionedStatusComposer>,
     update_revision: Option<update::UpdateStatusRevision>,
+    introspection: WatchIntrospection,
 }
 
 impl StatusWatchState {
-    fn new() -> Self {
+    fn new(socket: PathBuf) -> Self {
+        let now = Instant::now();
         Self {
             sequence: 1,
             last_output: None,
             backoff: Duration::from_secs(1),
             cached_trust: None,
-            trust_refresh: TrustRefreshSchedule::new(Instant::now()),
+            trust_refresh: RefreshCadence::new(now, TRUST_REFRESH_INTERVAL),
             composer: None,
             update_revision: None,
+            introspection: WatchIntrospection::new(socket, now),
         }
     }
 }
@@ -674,6 +771,12 @@ fn compose_status_watch_output(
         apply_device_status(&mut output, trust);
     }
     attach_update_status_if_available(&mut output, false);
+    // Carry the same service/authentication/sync introspection as one-shot
+    // `status --json`. Trust is already refreshed above (reused, not re-fetched);
+    // the enricher caches the service probe on its own cadence, so this runs only
+    // on changed frames without a per-frame supervisor shell-out.
+    let trust = device_trust_fetch_from_cache(&state.cached_trust, &output.workspace_id);
+    state.introspection.attach(&mut output, &trust, now);
     abbreviate_status_requested_path(&mut output);
     Ok(Some(output))
 }

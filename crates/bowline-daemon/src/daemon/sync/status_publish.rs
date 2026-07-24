@@ -47,7 +47,7 @@ impl ContinuousSyncRuntime {
         projection_input: &StatusProjectionInput,
     ) -> Option<PreparedStatusPublish> {
         let request = StatusPublishRequest {
-            args: self.options.args.clone(),
+            args: self.args.clone(),
         };
         let Ok(payload) = StatusPublishPayload::from_projection(request, projection) else {
             eprintln!("bowline-daemon status projection serialization failed");

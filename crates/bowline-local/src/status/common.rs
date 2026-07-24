@@ -1,20 +1,5 @@
 use super::*;
 
-pub(super) fn component_item(
-    kind: StatusItemKind,
-    summary: &str,
-    event_name: EventName,
-) -> StatusItem {
-    let mut item = base_status_item(kind, summary);
-    item.subject = Some(StatusSubject {
-        kind: StatusSubjectKind::Component,
-        id: format!("{kind:?}").to_ascii_lowercase(),
-        path: None,
-    });
-    item.event_name = Some(event_name);
-    item
-}
-
 pub(super) fn base_status_item(kind: StatusItemKind, summary: &str) -> StatusItem {
     StatusItem {
         kind,

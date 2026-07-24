@@ -2,6 +2,41 @@ use super::common::*;
 use super::*;
 
 impl MetadataStore {
+    pub(crate) fn with_classified_transaction<T, E>(
+        &mut self,
+        operation: impl FnOnce(&mut MetadataStore) -> Result<T, E>,
+    ) -> Result<T, super::ClassifiedTransactionError<E>>
+    where
+        E: From<MetadataError>,
+    {
+        if !self.connection.is_autocommit() {
+            return operation(self).map_err(super::ClassifiedTransactionError::BeforeCommit);
+        }
+        self.connection
+            .execute("BEGIN IMMEDIATE", [])
+            .map_err(MetadataError::from)
+            .map_err(E::from)
+            .map_err(super::ClassifiedTransactionError::BeforeCommit)?;
+        let value = match operation(self) {
+            Ok(value) => value,
+            Err(error) => {
+                if let Err(rollback_error) = self.connection.execute("ROLLBACK", []) {
+                    eprintln!("bowline metadata transaction rollback failed: {rollback_error}");
+                }
+                return Err(super::ClassifiedTransactionError::BeforeCommit(error));
+            }
+        };
+        if let Err(error) = self.connection.execute("COMMIT", []) {
+            if let Err(rollback_error) = self.connection.execute("ROLLBACK", []) {
+                eprintln!("bowline metadata transaction rollback failed: {rollback_error}");
+            }
+            return Err(super::ClassifiedTransactionError::CommitAcknowledgement(
+                MetadataError::from(error),
+            ));
+        }
+        Ok(value)
+    }
+
     pub(crate) fn data_version(&self) -> Result<u64, MetadataError> {
         self.connection
             .query_row("PRAGMA data_version", [], |row| row.get(0))
@@ -61,7 +96,14 @@ impl MetadataStore {
 
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let state = match Connection::open_with_flags(&path, flags) {
-            Ok(connection) => inspect_open_connection(&connection),
+            Ok(connection) => match configure_read_only_connection(
+                &connection,
+                MetadataReadRole::SchemaInspection,
+            ) {
+                Ok(()) => inspect_open_connection(&connection),
+                Err(MetadataError::Sqlite(error)) => classify_open_error(&error),
+                Err(_) => DatabaseState::Corrupt,
+            },
             Err(error) => classify_open_error(&error),
         };
 
@@ -95,76 +137,18 @@ impl MetadataStore {
         Ok(())
     }
 
-    pub fn with_transaction<T>(
-        &mut self,
-        f: impl FnOnce(&Transaction<'_>) -> rusqlite::Result<T>,
-    ) -> Result<T, MetadataError> {
-        let transaction = self.connection.transaction()?;
-        let result = f(&transaction)?;
-        transaction.commit()?;
-        Ok(result)
-    }
-
-    pub fn with_committed<T, E>(
+    pub(crate) fn with_committed<T, E>(
         &mut self,
         f: impl FnOnce(&mut MetadataStore) -> Result<T, E>,
     ) -> Result<T, E>
     where
         E: From<MetadataError>,
     {
-        if !self.connection.is_autocommit() {
-            return f(self);
-        }
-        self.connection
-            .execute("BEGIN IMMEDIATE", [])
-            .map_err(MetadataError::from)?;
-        match f(self) {
-            Ok(value) => {
-                if let Err(error) = self.connection.execute("COMMIT", []) {
-                    if let Err(rollback_error) = self.connection.execute("ROLLBACK", []) {
-                        eprintln!("bowline metadata transaction rollback failed: {rollback_error}");
-                    }
-                    return Err(MetadataError::from(error).into());
-                }
-                Ok(value)
-            }
-            Err(error) => {
-                if let Err(rollback_error) = self.connection.execute("ROLLBACK", []) {
-                    eprintln!("bowline metadata transaction rollback failed: {rollback_error}");
-                }
-                Err(error)
-            }
-        }
-    }
-
-    pub(crate) fn in_immediate_transaction<T, E>(
-        &self,
-        f: impl FnOnce() -> Result<T, E>,
-    ) -> Result<T, E>
-    where
-        E: From<MetadataError>,
-    {
-        if !self.connection.is_autocommit() {
-            return f();
-        }
-        self.connection
-            .execute("BEGIN IMMEDIATE", [])
-            .map_err(MetadataError::from)?;
-        match f() {
-            Ok(value) => {
-                if let Err(error) = self.connection.execute("COMMIT", []) {
-                    if let Err(rollback_error) = self.connection.execute("ROLLBACK", []) {
-                        eprintln!("bowline metadata transaction rollback failed: {rollback_error}");
-                    }
-                    return Err(MetadataError::from(error).into());
-                }
-                Ok(value)
-            }
-            Err(error) => {
-                if let Err(rollback_error) = self.connection.execute("ROLLBACK", []) {
-                    eprintln!("bowline metadata transaction rollback failed: {rollback_error}");
-                }
-                Err(error)
+        match self.with_classified_transaction(f) {
+            Ok(value) => Ok(value),
+            Err(super::ClassifiedTransactionError::BeforeCommit(error)) => Err(error),
+            Err(super::ClassifiedTransactionError::CommitAcknowledgement(error)) => {
+                Err(error.into())
             }
         }
     }

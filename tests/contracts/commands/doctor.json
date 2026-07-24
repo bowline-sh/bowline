@@ -1,0 +1,87 @@
+{
+  "contractVersion": 8,
+  "command": "doctor",
+  "generatedAt": "1970-01-01T00:00:00Z",
+  "engine": "manifest",
+  "workspaceId": "ws_doctor_golden",
+  "summary": {
+    "ok": 1,
+    "degraded": 0,
+    "unavailable": 13,
+    "failed": 0,
+    "attentionRequired": false
+  },
+  "checks": [
+    {
+      "id": "engine-sqlite-integrity",
+      "status": "unavailable",
+      "reason": "engine-database-missing"
+    },
+    {
+      "id": "ancestor-ref-consistency",
+      "status": "unavailable",
+      "reason": "engine-database-missing"
+    },
+    {
+      "id": "intent-recoverability",
+      "status": "unavailable",
+      "reason": "engine-database-missing"
+    },
+    {
+      "id": "watcher-health",
+      "status": "unavailable",
+      "reason": "daemon-unreachable"
+    },
+    {
+      "id": "ref-fetch-verification",
+      "status": "unavailable",
+      "reason": "control-plane-unreachable"
+    },
+    {
+      "id": "ref-metadata-object-existence",
+      "status": "unavailable",
+      "reason": "control-plane-unreachable"
+    },
+    {
+      "id": "sealed-content-id-verification",
+      "status": "unavailable",
+      "reason": "seal-verification-unavailable"
+    },
+    {
+      "id": "workspace-key-availability",
+      "status": "unavailable",
+      "reason": "key-unavailable"
+    },
+    {
+      "id": "retry-age",
+      "status": "unavailable",
+      "reason": "daemon-unreachable"
+    },
+    {
+      "id": "portable-path-collisions",
+      "status": "unavailable",
+      "reason": "engine-database-missing"
+    },
+    {
+      "id": "temp-capacity",
+      "status": "unavailable",
+      "reason": "state-root-unavailable"
+    },
+    {
+      "id": "atomic-rename-capability",
+      "status": "unavailable",
+      "reason": "state-root-unavailable"
+    },
+    {
+      "id": "deployment-identity",
+      "status": "unavailable",
+      "reason": "identity-unknown"
+    },
+    {
+      "id": "installed-candidate-hash",
+      "status": "ok",
+      "reason": "hash-computed",
+      "opaque": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

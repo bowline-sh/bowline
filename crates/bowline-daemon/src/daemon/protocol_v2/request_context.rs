@@ -124,11 +124,7 @@ impl CancellationToken {
 pub(super) enum CancellationPoint {
     HandlerStart,
     BeforeProjectionRead,
-    BeforeDatabaseRead,
-    BeforeDatabaseMutation,
-    BeforeDurableEnqueue,
     BeforeExternalCall,
-    BetweenChunks,
     BeforeCommitFence,
 }
 
@@ -137,11 +133,7 @@ impl CancellationPoint {
         match self {
             Self::HandlerStart => "handler-start",
             Self::BeforeProjectionRead => "before-projection-read",
-            Self::BeforeDatabaseRead => "before-database-read",
-            Self::BeforeDatabaseMutation => "before-database-mutation",
-            Self::BeforeDurableEnqueue => "before-durable-enqueue",
             Self::BeforeExternalCall => "before-external-call",
-            Self::BetweenChunks => "between-chunks",
             Self::BeforeCommitFence => "before-commit-fence",
         }
     }

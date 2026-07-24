@@ -16,9 +16,8 @@ use bowline_storage::{
 use serde::Serialize;
 
 use crate::{
-    metadata::{EnvRecord, MetadataError, MetadataStore},
-    scanner::ScanReport,
-    sync::ObservationWriteScope,
+    metadata::{EnvRecord, EnvRecordSourceReplacement, MetadataError, MetadataStore},
+    scanner::{ObservationWriteScope, ScanReport},
 };
 
 use super::parser::{EnvLineKind, ParsedEnvFile, parse_env_text};
@@ -32,34 +31,7 @@ pub struct EnvImportReport {
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedEnvImport {
     pub(crate) report: EnvImportReport,
-    replacements: Vec<PreparedEnvSource>,
-}
-
-impl PreparedEnvImport {
-    pub(crate) fn replace_source_records(&mut self, source_path: String, records: Vec<EnvRecord>) {
-        if let Some(existing) = self
-            .replacements
-            .iter_mut()
-            .find(|source| source.source_path == source_path)
-        {
-            self.report.imported_record_count =
-                self.report.imported_record_count - existing.records.len() + records.len();
-            existing.records = records;
-            return;
-        }
-        self.report.imported_file_count += 1;
-        self.report.imported_record_count += records.len();
-        self.replacements.push(PreparedEnvSource {
-            source_path,
-            records,
-        });
-    }
-}
-
-#[derive(Debug, Clone)]
-struct PreparedEnvSource {
-    source_path: String,
-    records: Vec<EnvRecord>,
+    replacements: Vec<EnvRecordSourceReplacement>,
 }
 
 #[derive(Debug)]
@@ -88,7 +60,7 @@ pub fn import_env_records_from_scan(
         now,
     )?;
     let report = prepared.report.clone();
-    store.with_committed(|store| apply_prepared_env_records(store, workspace_id, &prepared))?;
+    store.commit_env_record_replacements(workspace_id, &prepared.replacements)?;
     Ok(report)
 }
 
@@ -129,10 +101,7 @@ pub(crate) fn prepare_env_records_from_scan(
         .filter(|source| !current_env_sources.contains(source))
         .collect::<BTreeSet<_>>();
     for source in stale_sources {
-        replacements.push(PreparedEnvSource {
-            source_path: source,
-            records: Vec::new(),
-        });
+        replacements.push(EnvRecordSourceReplacement::new(source, Vec::new()));
     }
 
     for observed in &report.paths {
@@ -158,10 +127,10 @@ pub(crate) fn prepare_env_records_from_scan(
         )?;
         imported_record_count += records.len();
         imported_file_count += 1;
-        replacements.push(PreparedEnvSource {
-            source_path: observed.path.clone(),
+        replacements.push(EnvRecordSourceReplacement::new(
+            observed.path.clone(),
             records,
-        });
+        ));
     }
 
     Ok(PreparedEnvImport {
@@ -171,39 +140,6 @@ pub(crate) fn prepare_env_records_from_scan(
         },
         replacements,
     })
-}
-
-pub(crate) fn apply_prepared_env_records(
-    store: &mut MetadataStore,
-    workspace_id: &WorkspaceId,
-    prepared: &PreparedEnvImport,
-) -> Result<(), MetadataError> {
-    for source in &prepared.replacements {
-        store.replace_env_records_for_source_uncommitted(
-            workspace_id,
-            &source.source_path,
-            &source.records,
-        )?;
-    }
-    Ok(())
-}
-
-pub(crate) fn records_for_env_bytes(
-    workspace_id: &WorkspaceId,
-    project_id: Option<bowline_core::ids::ProjectId>,
-    source_path: &str,
-    bytes: &[u8],
-    workspace_content_key: Option<[u8; 32]>,
-    now: &str,
-) -> Result<Vec<EnvRecord>, EnvImportError> {
-    let parsed = parse_env_text(source_path, profile_for_env_path(source_path), bytes);
-    records_for_parsed_env(
-        workspace_id,
-        project_id,
-        &parsed,
-        workspace_content_key,
-        now,
-    )
 }
 
 pub(crate) fn records_for_parsed_env(
@@ -312,6 +248,9 @@ pub(crate) fn records_for_parsed_env(
                     metadata_json: "{\"redacted\":true}".to_string(),
                     updated_at: now.to_string(),
                 });
+                // Opaque lines break adjacency: a machine-local marker only
+                // applies to the immediately following key-value line.
+                mark_next_key_machine_local = false;
             }
             EnvLineKind::Blank => {
                 mark_next_key_machine_local = false;
@@ -379,7 +318,7 @@ fn env_value_context(
 ) -> EnvelopeContext {
     EnvelopeContext {
         workspace_id_hash: workspace_id_hash(workspace_id.as_str()),
-        object_kind: ObjectKind::SourcePack,
+        object_kind: ObjectKind::WorkspaceFileV1,
         object_id: format!(
             "env-value:{}",
             blake3::hash(source_path.as_bytes()).to_hex()
@@ -435,13 +374,20 @@ fn profile_for_env_path(path: &str) -> String {
     match name {
         ".env" => "default".to_string(),
         ".env.local" => "local".to_string(),
-        _ => name
-            .strip_prefix(".env.")
-            .or_else(|| name.strip_suffix(".env"))
-            .filter(|profile| !profile.is_empty())
-            .unwrap_or("default")
-            .trim_matches('.')
-            .to_string(),
+        _ => {
+            // Trim dots before the empty check so ".env.." / "..env" fall back
+            // to "default" instead of producing an empty profile name.
+            let profile = name
+                .strip_prefix(".env.")
+                .or_else(|| name.strip_suffix(".env"))
+                .unwrap_or("default")
+                .trim_matches('.');
+            if profile.is_empty() {
+                "default".to_string()
+            } else {
+                profile.to_string()
+            }
+        }
     }
 }
 
@@ -614,7 +560,7 @@ mod tests {
         )
         .expect("prepare env");
         store
-            .with_committed(|store| apply_prepared_env_records(store, workspace_id, &prepared))
+            .commit_env_record_replacements(workspace_id, &prepared.replacements)
             .expect("apply env");
     }
 
@@ -659,6 +605,10 @@ mod tests {
         assert_eq!(profile_for_env_path(".env.development"), "development");
         assert_eq!(profile_for_env_path(".env.production"), "production");
         assert_eq!(profile_for_env_path("sub/dir/.env"), "default");
+        assert_eq!(profile_for_env_path(".env.."), "default");
+        assert_eq!(profile_for_env_path("..env"), "default");
+        assert_eq!(profile_for_env_path(".env..."), "default");
+        assert_eq!(profile_for_env_path(".env."), "default");
     }
 
     #[test]

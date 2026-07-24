@@ -49,6 +49,10 @@ pub(super) fn abbreviate_status_requested_path(output: &mut StatusCommandOutput)
         .requested_path
         .as_deref()
         .map(abbreviate_requested_path);
+    output.resolved_project_root = output
+        .resolved_project_root
+        .as_deref()
+        .map(abbreviate_requested_path);
 }
 
 pub(super) fn abbreviate_events_requested_path(output: &mut EventsCommandOutput) {

@@ -63,8 +63,8 @@ impl StatusTimestamp {
 #[serde(rename_all = "kebab-case")]
 pub enum StatusSource {
     Metadata,
+    Convergence,
     SyncRuntime,
-    StoreHealth,
     DeviceTrust,
     UpdateAvailability,
     NotificationState,
@@ -75,8 +75,8 @@ impl StatusSource {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Metadata => "metadata",
+            Self::Convergence => "convergence",
             Self::SyncRuntime => "sync-runtime",
-            Self::StoreHealth => "store-health",
             Self::DeviceTrust => "device-trust",
             Self::UpdateAvailability => "update-availability",
             Self::NotificationState => "notification-state",

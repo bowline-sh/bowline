@@ -1,10 +1,3 @@
-export type {
-  AgentContextCommandOutput,
-  AgentLeaseCreateCommandOutput,
-  AgentMcpTokenCommandOutput,
-  AgentPromptCommandOutput,
-  AgentToolResult,
-} from "./agent";
 export type { BootstrapSshCommandOutput } from "./bootstrap";
 export type {
   CommandErrorOutput,
@@ -14,6 +7,7 @@ export type {
   DaemonServiceOutput,
   DaemonStatusOutput,
   DiagnosticsCollectCommandOutput,
+  DoctorCommandOutput,
   DevicesCommandOutput,
   DryRunCommandOutput,
   HelpCommandOutput,

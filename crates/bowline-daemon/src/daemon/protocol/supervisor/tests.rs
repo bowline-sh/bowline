@@ -53,7 +53,7 @@ fn live_supervisor_cleanly_joins_every_fixed_worker_and_cleans_socket_last() {
     let live_metrics = state.runtime_metrics();
     assert_eq!(
         live_metrics["coordinator"]["configuredWorkers"],
-        serde_json::json!(19)
+        serde_json::json!(5)
     );
     assert_eq!(
         live_metrics["rpc"]["configuredQueryWorkers"],
@@ -73,14 +73,13 @@ fn live_supervisor_cleanly_joins_every_fixed_worker_and_cleans_socket_last() {
         + 1 // scheduler owner
         + 1 // status projection worker
         + 1 // shutdown watchdog
-        + 19 // mutation/query/sync/control/notification lane workers
+        + 5 // control-plane/notification lane workers
         + 12; // query/status and mutation RPC workers
     assert_eq!(report.outcome, ShutdownOutcome::Clean);
     assert_eq!(report.expected_threads, expected);
     assert_eq!(report.joined_threads, expected);
-    assert_eq!(report.coordinator_metrics.configured_workers, 19);
-    assert_eq!(report.coordinator_metrics.joined_workers, 19);
-    assert_eq!(report.coordinator_metrics.active_resources, 0);
+    assert_eq!(report.coordinator_metrics.configured_workers, 5);
+    assert_eq!(report.coordinator_metrics.joined_workers, 5);
     assert_eq!(state.shutdown_phase(), ShutdownPhase::JoinThreads);
     assert!(socket.exists(), "socket remains until all threads join");
 
@@ -104,9 +103,9 @@ fn shutdown_phases_are_monotonic_and_mutation_admission_closes_first() {
     state.cancel_rpc_work();
     assert_eq!(state.shutdown_phase(), ShutdownPhase::CancelRpcWork);
     assert!(state.should_stop_connections());
-    state.stop_durable_claims();
-    assert_eq!(state.shutdown_phase(), ShutdownPhase::StopDurableClaims);
-    assert!(state.should_stop_durable_claims());
+    state.stop_background_work();
+    assert_eq!(state.shutdown_phase(), ShutdownPhase::StopBackgroundWork);
+    assert!(state.should_stop_background_work());
     state.advance_shutdown(ShutdownPhase::FlushBookkeeping);
     state.advance_shutdown(ShutdownPhase::JoinThreads);
     state.advance_shutdown(ShutdownPhase::RemoveSocketState);

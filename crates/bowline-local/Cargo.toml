@@ -7,7 +7,6 @@ version.workspace = true
 
 [features]
 default = []
-fault-injection = []
 test-support = []
 
 [dependencies]

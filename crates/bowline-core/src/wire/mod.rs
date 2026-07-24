@@ -1,6 +1,7 @@
 pub mod generated;
 pub mod generated_daemon_rpc;
 pub mod generated_status;
+pub mod generated_status_convergence;
 pub mod generated_status_fact_authorities;
 pub mod generated_status_output;
 pub mod generated_status_output_support;

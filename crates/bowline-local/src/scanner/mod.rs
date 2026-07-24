@@ -7,14 +7,20 @@ use std::{
 };
 
 use bowline_core::{
+    git_paths::is_git_directory_path,
     ids::ProjectId,
-    policy::{MaterializationMode, PathClassification},
     status::{GitObserverState, ObservedWorkspaceSummary},
     workspace_graph::{FileExecutability, normalize_workspace_path},
 };
 
-use crate::policy::{PathFacts, PathPolicyDecision, UserPolicy, classify_path};
-use crate::sync::stat_cache::{FileTimestampNanos, StatFingerprint, path_is_under_any_root};
+use crate::policy::{
+    PathFacts, PathPolicyDecision, UserPolicy, classify_path, policy_prunes_subtree,
+    policy_should_recurse, policy_syncs_workspace_state,
+};
+mod observation_scope;
+mod stat_fingerprint;
+pub use observation_scope::ObservationWriteScope;
+pub use stat_fingerprint::{FileTimestampNanos, StatFingerprint, path_is_under_any_root};
 
 mod git;
 use git::{git_config_has_remote, git_remote_tracking_is_stale, git_untracked_file_count};
@@ -404,10 +410,11 @@ impl Scanner<'_> {
             },
             &self.policy,
         );
-        let pruned_by_policy = pruned_by_default_policy(&policy);
-        let should_recurse = is_dir && should_recurse_path(&policy, &self.policy, &path);
+        let pruned_by_policy = policy_prunes_subtree(&policy);
+        let should_recurse = is_dir && policy_should_recurse(&policy, &self.policy, &path);
+        let is_git_dir = is_dir && is_git_directory_path(&path);
         let should_record =
-            !limited_to_includes || !pruned_by_policy || syncs_as_workspace_state(&policy);
+            !limited_to_includes || !pruned_by_policy || policy_syncs_workspace_state(&policy);
         if should_record {
             self.paths.push(PathObservation {
                 path,
@@ -422,7 +429,7 @@ impl Scanner<'_> {
         }
 
         Ok(ObservedChild {
-            is_git_dir: is_dir && entry.file_name() == ".git",
+            is_git_dir,
             should_recurse,
             pruned_by_policy,
             relative_path,
@@ -700,46 +707,6 @@ fn observed_executability(
     // Non-Unix executable inference is intentionally out of scope for the
     // Unix mode-bit contract.
     FileExecutability::Regular
-}
-
-fn should_recurse_path(
-    decision: &PathPolicyDecision,
-    user_policy: &UserPolicy,
-    path: &str,
-) -> bool {
-    if user_policy.has_include_below(path) {
-        return true;
-    }
-
-    !matches!(
-        decision.classification,
-        PathClassification::Dependency
-            | PathClassification::Generated
-            | PathClassification::Cache
-            | PathClassification::LocalOnly
-            | PathClassification::Blocked
-    )
-}
-
-fn pruned_by_default_policy(decision: &PathPolicyDecision) -> bool {
-    matches!(
-        decision.classification,
-        PathClassification::Dependency
-            | PathClassification::Generated
-            | PathClassification::Cache
-            | PathClassification::LocalOnly
-            | PathClassification::Blocked
-    )
-}
-
-fn syncs_as_workspace_state(decision: &PathPolicyDecision) -> bool {
-    matches!(
-        decision.mode,
-        MaterializationMode::WorkspaceSync
-            | MaterializationMode::EncryptedSync
-            | MaterializationMode::Lazy
-            | MaterializationMode::ProjectEnv
-    )
 }
 
 fn is_project_root(path: &Path) -> bool {

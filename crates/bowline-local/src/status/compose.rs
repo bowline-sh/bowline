@@ -5,7 +5,6 @@ const MAX_BLOCKED_PATH_ITEMS: usize = 20;
 pub(super) struct StatusInputs {
     pub(super) projects: Vec<ProjectRecord>,
     pub(super) work_views: Vec<WorkViewRecord>,
-    pub(super) agent_leases: Vec<AgentLeaseRecord>,
 }
 
 pub(super) fn compose_from_store(
@@ -19,7 +18,7 @@ pub(super) fn compose_from_store(
 pub(super) fn compose_from_store_for_workspace(
     store: &MetadataStore,
     options: StatusOptions,
-    state_root: PathBuf,
+    _state_root: PathBuf,
     configured_workspace_id: Option<&WorkspaceId>,
 ) -> Result<StatusCommandOutput, LocalStatusError> {
     if let Some(workspace_id) = configured_workspace_id
@@ -63,6 +62,7 @@ pub(super) fn compose_from_store_for_workspace(
         .unwrap_or("~/Code")
         .to_string();
     let project_id = resolved.project_id.clone();
+    let resolved_project_root = resolved.project_path.as_deref().map(display_root_path);
     let scope = if options.workspace_scope || project_id.is_none() {
         StatusScope::Workspace
     } else {
@@ -72,40 +72,18 @@ pub(super) fn compose_from_store_for_workspace(
     let watermarks = store.scoped_event_watermarks(query)?;
     let recent_events = store.list_events_scoped(resolved.event_query(20))?;
     let status_events = store.list_status_signal_events_scoped(resolved.event_query(0))?;
-    let unresolved_conflict_paths = unresolved_conflict_paths(&state_root)?
-        .into_iter()
-        .filter(|path| !status_path_is_source_control_metadata(path))
-        .collect::<BTreeSet<_>>();
-    recover_provisional_agent_leases(store, &workspace_id, &options.generated_at)
-        .map_err(agent_recovery_status_error)?;
+    // Post-cutover a conflict is an ordinary conflict-aside file synced by the
+    // manifest engine — there is no local conflict-record store to project, so
+    // legacy conflict signal events are always treated as resolved.
+    let unresolved_conflict_paths = BTreeSet::new();
+    let _ = &recent_events;
     let inputs = StatusInputs {
         projects: store.projects(&workspace_id)?,
         work_views: store.work_views(&workspace_id, true, None)?,
-        agent_leases: store.agent_leases(&workspace_id)?,
     };
     let mut acc = StatusAccumulator::new(&options.generated_at);
 
-    let requested_limited_path = options
-        .requested_path
-        .as_ref()
-        .filter(|_| !options.workspace_scope)
-        .map(String::as_str);
-    apply_watermark_status(&watermarks, requested_limited_path, &mut acc);
-    apply_status_signal_events(
-        &status_events,
-        &watermarks,
-        &unresolved_conflict_paths,
-        &mut acc,
-    );
-    let sync_counts = sync_operation_counts_for_local_device(store, &workspace_id, &recent_events)?;
-    apply_sync_operation_status(&workspace_id, &sync_counts, &mut acc);
-    super::materialization::apply_materialization_status(store, &workspace_id, &mut acc)?;
-    apply_unresolved_conflict_status(
-        &unresolved_conflict_paths,
-        &workspace_id,
-        workspace_root.as_deref().unwrap_or("~/Code"),
-        &mut acc,
-    )?;
+    apply_status_signal_events(&status_events, &unresolved_conflict_paths, &mut acc);
 
     let total_projects = store.project_count(&workspace_id)?;
     let observed = store.observed_summary(&workspace_id)?;
@@ -147,18 +125,15 @@ pub(super) fn compose_from_store_for_workspace(
     apply_blocked_and_local_only_paths(store, &workspace_id, &mut acc)?;
     apply_env_setup_metadata(store, &workspace_id, project_id.as_ref(), &mut acc)?;
     apply_work_view_metadata(&inputs.work_views, project_id.as_ref(), &mut acc);
-    apply_agent_lease_metadata(
-        &inputs.agent_leases,
-        &inputs.work_views,
-        project_id.as_ref(),
-        &mut acc,
-    );
-    let sync_queue = sync_queue_status(&sync_counts);
+    // Engine sync state (queue depth, convergence phase) is projected at the
+    // daemon seam from `EngineSnapshot` (Plan 111 Step 1); the in-process
+    // composer reports metadata-only facts and leaves these fields empty.
+    let sync_queue = None;
+    let convergence = None;
     let stale_bases = snapshot_stale_bases_from_inputs(
         store,
         &workspace_id,
         &inputs.projects,
-        &inputs.agent_leases,
         &inputs.work_views,
         project_id.as_ref(),
     )?;
@@ -193,6 +168,7 @@ pub(super) fn compose_from_store_for_workspace(
         scope: Some(scope),
         requested_path: options.requested_path,
         resolved_workspace_root,
+        resolved_project_root,
         workspace_summary: Some(WorkspaceSummary {
             projects_needing_attention,
             total_projects: Some(total_projects),
@@ -200,6 +176,7 @@ pub(super) fn compose_from_store_for_workspace(
         }),
         setup_readiness,
         sync_queue,
+        convergence,
         freshness,
         stale_bases,
         status: WorkspaceStatus {
@@ -212,19 +189,10 @@ pub(super) fn compose_from_store_for_workspace(
         event_watermarks: watermarks,
         next_actions,
         device_approvals: Vec::new(),
+        service: None,
+        authentication: None,
+        sync: None,
     })
-}
-
-pub(super) fn conflict_resolution_action(workspace_root: &str) -> RepairCommand {
-    RepairCommand::mutating(
-        "Resolve conflicts".to_string(),
-        Some(format!("bowline resolve {}", shell_word(workspace_root))),
-    )
-}
-
-pub(super) fn status_path_is_source_control_metadata(path: &str) -> bool {
-    path.split('/')
-        .any(|component| matches!(component, ".git" | ".jj" | ".hg" | ".svn"))
 }
 
 pub(super) fn recent_events_action(root: &str) -> RepairCommand {
@@ -251,9 +219,11 @@ pub(super) fn missing_metadata_status(options: &StatusOptions) -> StatusCommandO
             .as_deref()
             .map(display_root_path)
             .or_else(|| Some("~/Code".to_string())),
+        resolved_project_root: None,
         workspace_summary: Some(WorkspaceSummary::empty()),
         setup_readiness: None,
         sync_queue: None,
+        convergence: None,
         freshness: bowline_core::status::FreshnessVerdict::Unknown,
         stale_bases: Vec::new(),
         status: WorkspaceStatus {
@@ -283,6 +253,9 @@ pub(super) fn missing_metadata_status(options: &StatusOptions) -> StatusCommandO
             None,
         )],
         device_approvals: Vec::new(),
+        service: None,
+        authentication: None,
+        sync: None,
     }
 }
 
@@ -735,12 +708,7 @@ pub(super) fn project_attention_summaries(
                 .as_deref()
                 .unwrap_or("1970-01-01T00:00:00Z"),
         );
-        apply_status_signal_events(
-            &events,
-            watermarks,
-            unresolved_conflict_paths,
-            &mut project_acc,
-        );
+        apply_status_signal_events(&events, unresolved_conflict_paths, &mut project_acc);
         let summary = reduce_status_facts(
             project_acc.facts.clone(),
             1,
@@ -848,9 +816,11 @@ pub(super) fn limited_metadata_status(
             .as_deref()
             .map(display_root_path)
             .or_else(|| Some("~/Code".to_string())),
+        resolved_project_root: None,
         workspace_summary: Some(WorkspaceSummary::empty()),
         setup_readiness: None,
         sync_queue: None,
+        convergence: None,
         freshness: bowline_core::status::FreshnessVerdict::Unknown,
         stale_bases: Vec::new(),
         status: WorkspaceStatus {
@@ -878,5 +848,8 @@ pub(super) fn limited_metadata_status(
             None,
         )],
         device_approvals: Vec::new(),
+        service: None,
+        authentication: None,
+        sync: None,
     }
 }

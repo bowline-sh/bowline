@@ -10,10 +10,11 @@ impl WorkspaceControlPlaneClient for FakeControlPlaneClient {
             return Ok(existing_ref.clone());
         }
 
+        // Pure establishment: a headless version-0 genesis ref.
         let workspace_ref = WorkspaceRef {
             workspace_id: workspace_id.clone(),
             version: 0,
-            snapshot_id: SnapshotId::new("empty"),
+            snapshot_id: None,
             updated_at: self.clock.now(),
             updated_by_device_id: None,
         };
@@ -29,7 +30,7 @@ impl WorkspaceControlPlaneClient for FakeControlPlaneClient {
             .push(self.build_event(
                 workspace_id,
                 CompactEventKind::WorkspaceCreated,
-                &workspace_ref.snapshot_id,
+                workspace_id.as_str(),
             ));
 
         Ok(workspace_ref)
@@ -63,6 +64,9 @@ impl WorkspaceControlPlaneClient for FakeControlPlaneClient {
             ));
         }
         let mut state = self.state.lock().expect("fake control plane poisoned");
+        // Match hosted assertTrustedDevice: revoked devices cannot advance the head.
+        Self::ensure_trusted_device_if_configured(&state, workspace_id, Some(writer_device_id))
+            .map_err(|error| CompareAndSwapError::Storage(error.to_string()))?;
         if let Some(injected_current) = state.next_workspace_ref_cas_stale.remove(workspace_id) {
             state
                 .workspace_refs
@@ -90,7 +94,7 @@ impl WorkspaceControlPlaneClient for FakeControlPlaneClient {
         let next_ref = WorkspaceRef {
             workspace_id: workspace_id.clone(),
             version: current.version + 1,
-            snapshot_id: new_snapshot_id.clone(),
+            snapshot_id: Some(new_snapshot_id.clone()),
             updated_at: self.clock.now(),
             updated_by_device_id: Some(writer_device_id.clone()),
         };
@@ -160,129 +164,5 @@ impl WorkspaceControlPlaneClient for FakeControlPlaneClient {
         });
         rows.truncate(limit as usize);
         Ok(rows)
-    }
-
-    fn reconcile_conflict_occurrence(
-        &self,
-        input: ConflictOccurrenceReconcile,
-    ) -> ControlPlaneResult<ConflictReconcileResult> {
-        self.ensure_workspace(&input.workspace_id)?;
-        self.ensure_local_device(&input.device_id)?;
-        let mut state = self.state.lock().expect("fake control plane poisoned");
-        if let Some(error) = state.conflict_reconcile_failures.pop_front() {
-            return Err(error);
-        }
-        let key = (input.workspace_id.clone(), input.conflict_id.clone());
-        if let Some(existing) = state.conflicts.get(&key) {
-            if input.occurrence_version < existing.occurrence_version {
-                return Ok(ConflictReconcileResult {
-                    conflict: existing.clone(),
-                    outcome: ConflictReconcileOutcome::Superseded,
-                });
-            }
-            if input.occurrence_version == existing.occurrence_version {
-                if !conflict_metadata_same_occurrence(existing, &input) {
-                    return Err(ControlPlaneError::Conflict {
-                        resource: "conflict occurrence",
-                        reason: "conflict occurrence identity does not match its version",
-                    });
-                }
-                if existing.state == input.desired_state {
-                    return Ok(ConflictReconcileResult {
-                        conflict: existing.clone(),
-                        outcome: ConflictReconcileOutcome::Idempotent,
-                    });
-                }
-                if existing.state != ConflictOccurrenceState::Unresolved
-                    || input.desired_state == ConflictOccurrenceState::Unresolved
-                {
-                    return Err(ControlPlaneError::Conflict {
-                        resource: "conflict occurrence",
-                        reason: "conflict occurrence is already terminal",
-                    });
-                }
-                let resolved_at = self.clock.now();
-                let record = state
-                    .conflicts
-                    .get_mut(&key)
-                    .expect("conflict occurrence exists after immutable lookup");
-                record.state = input.desired_state;
-                record.resolved_by_device_id = Some(input.device_id.clone());
-                record.resolved_at = Some(resolved_at);
-                let record = record.clone();
-                state
-                    .events
-                    .entry(input.workspace_id.clone())
-                    .or_default()
-                    .push(self.build_event(
-                        &input.workspace_id,
-                        CompactEventKind::ConflictResolved,
-                        &input.conflict_id,
-                    ));
-                return Ok(ConflictReconcileResult {
-                    conflict: record,
-                    outcome: ConflictReconcileOutcome::Applied,
-                });
-            }
-        }
-        if input.desired_state != ConflictOccurrenceState::Unresolved {
-            return Err(ControlPlaneError::Conflict {
-                resource: "conflict occurrence",
-                reason: "conflict resolution requires an exact existing occurrence",
-            });
-        }
-        let detected_at = self.clock.now();
-        let record = ConflictMetadataRecord {
-            workspace_id: input.workspace_id.clone(),
-            conflict_id: input.conflict_id.clone(),
-            conflict_kind: input.conflict_kind,
-            paths: input.paths,
-            contains_secrets: input.contains_secrets,
-            state: ConflictOccurrenceState::Unresolved,
-            base_snapshot_id: input.base_snapshot_id,
-            remote_snapshot_id: input.remote_snapshot_id,
-            occurrence_version: input.occurrence_version,
-            reason: input.reason,
-            detected_by_device_id: input.device_id,
-            bundle_object: input.bundle_object,
-            detected_at,
-            resolved_by_device_id: None,
-            resolved_at: None,
-        };
-        state.conflicts.insert(key, record.clone());
-        state
-            .events
-            .entry(input.workspace_id.clone())
-            .or_default()
-            .push(self.build_event(
-                &input.workspace_id,
-                CompactEventKind::ConflictDetected,
-                &input.conflict_id,
-            ));
-        Ok(ConflictReconcileResult {
-            conflict: record,
-            outcome: ConflictReconcileOutcome::Applied,
-        })
-    }
-
-    fn list_workspace_conflicts(
-        &self,
-        workspace_id: &WorkspaceId,
-        requested_by_device_id: &DeviceId,
-    ) -> ControlPlaneResult<Vec<ConflictMetadataRecord>> {
-        self.ensure_workspace(workspace_id)?;
-        self.ensure_local_device(requested_by_device_id)?;
-        Ok(self
-            .state
-            .lock()
-            .expect("fake control plane poisoned")
-            .conflicts
-            .values()
-            .filter(|record| {
-                &record.workspace_id == workspace_id
-                    && record.state == ConflictOccurrenceState::Unresolved
-            })
-            .cloned()
-            .collect())
     }
 }

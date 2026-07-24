@@ -19,7 +19,6 @@
     "crates/bowline-daemon-rpc",
     "crates/bowline-local",
     "crates/bowline-storage",
-    "crates/bowline-testkit",
     "docs/architecture/oss-composition-and-build-boundaries.md",
     "docs/architecture/trust-contract.md",
     "docs/release-signing-key-policy.md",

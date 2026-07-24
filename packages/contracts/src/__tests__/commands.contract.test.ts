@@ -2,11 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   COMMAND_NAMES,
-  isAgentContextCommandOutput,
-  isAgentLeaseCreateCommandOutput,
-  isAgentMcpTokenCommandOutput,
-  isAgentPromptCommandOutput,
-  isAgentToolResult,
   isBootstrapSshCommandOutput,
   isCommandErrorOutput,
   isContractCommandOutput,
@@ -16,11 +11,11 @@ import {
   isDaemonStatusOutput,
   isDevicesCommandOutput,
   isDiagnosticsCollectCommandOutput,
+  isDoctorCommandOutput,
   isDryRunCommandOutput,
   isEventsCommandOutput,
   isHelpCommandOutput,
   isHandoffCommandOutput,
-  isHandoffInstallReceipt,
   isHistoryCommandOutput,
   isLoginCommandOutput,
   isLogoutCommandOutput,
@@ -48,11 +43,6 @@ import {
 import { isStringArray } from "../guard-primitives";
 
 const commandOutputGuards: Record<string, (value: unknown) => boolean> = {
-  AgentContextCommandOutput: isAgentContextCommandOutput,
-  AgentLeaseCreateCommandOutput: isAgentLeaseCreateCommandOutput,
-  AgentMcpTokenCommandOutput: isAgentMcpTokenCommandOutput,
-  AgentPromptCommandOutput: isAgentPromptCommandOutput,
-  AgentToolResult: isAgentToolResult,
   BootstrapSshCommandOutput: isBootstrapSshCommandOutput,
   CommandNames: isStringArray,
   ContractCommandOutput: isContractCommandOutput,
@@ -62,6 +52,7 @@ const commandOutputGuards: Record<string, (value: unknown) => boolean> = {
   DaemonStatusOutput: isDaemonStatusOutput,
   DevicesCommandOutput: isDevicesCommandOutput,
   DiagnosticsCollectCommandOutput: isDiagnosticsCollectCommandOutput,
+  DoctorCommandOutput: isDoctorCommandOutput,
   DryRunCommandOutput: isDryRunCommandOutput,
   EventsCommandOutput: isEventsCommandOutput,
   HelpCommandOutput: isHelpCommandOutput,
@@ -161,7 +152,6 @@ describe("workspace command contracts", () => {
 
   it("accepts discovery and dry-run command fixtures", () => {
     expect(isHelpCommandOutput(readCommandFixture("help"))).toBe(true);
-    expect(isHistoryCommandOutput(readCommandFixture("history"))).toBe(true);
     expect(isVersionCommandOutput(readCommandFixture("version"))).toBe(true);
     expect(
       isUpdateCommandOutput({
@@ -190,85 +180,6 @@ describe("workspace command contracts", () => {
     expect(isDryRunCommandOutput(readCommandFixture("dry-run"))).toBe(true);
   });
 
-  it("accepts handoff command outcome fixtures", () => {
-    for (const fixtureName of [
-      "handoff-dry-run",
-      "handoff-confirmation-required",
-      "handoff-receipt",
-      "handoff-no-supported-session",
-      "handoff-target-not-trusted",
-      "handoff-trust-stale",
-      "handoff-tmux-missing",
-    ]) {
-      expect(isHandoffCommandOutput(readCommandFixture(fixtureName))).toBe(
-        true,
-      );
-    }
-
-    const receipt = readCommandFixture("handoff-receipt");
-    expect(isHandoffCommandOutput(receipt)).toBe(true);
-    if (!isHandoffCommandOutput(receipt)) return;
-    expect(receipt.outcome).toBe("receipt");
-    expect(receipt.receipt?.monitoring).toBe(false);
-    expect(receipt.receipt?.workspaceLock).toBe(false);
-    expect(receipt.receipt?.agentRuntimeVerified).toBe(false);
-  });
-
-  it("rejects impossible handoff outcome combinations", () => {
-    const receipt = readCommandFixture("handoff-receipt");
-    expect(isHandoffCommandOutput(receipt)).toBe(true);
-    if (!isHandoffCommandOutput(receipt)) return;
-
-    expect(isHandoffCommandOutput({ ...receipt, receipt: undefined })).toBe(
-      false,
-    );
-    expect(
-      isHandoffCommandOutput({
-        ...receipt,
-        outcome: "dry_run",
-      }),
-    ).toBe(false);
-    expect(
-      isHandoffCommandOutput({
-        ...receipt,
-        receipt: {
-          ...receipt.receipt,
-          monitoring: true,
-        },
-      }),
-    ).toBe(false);
-    expect(
-      isHandoffCommandOutput({
-        ...receipt,
-        receipt: {
-          ...receipt.receipt,
-          agentRuntimeVerified: true,
-        },
-      }),
-    ).toBe(false);
-  });
-
-  it("accepts hidden handoff installer receipts", () => {
-    expect(
-      isHandoffInstallReceipt({
-        agent: "codex",
-        sessionMode: "resume_existing",
-        sessionId: "sess_codex_1",
-        installedFiles: ["/agent-home/.codex/sessions/sess_codex_1.jsonl"],
-        remoteProjectPath: "~/Code/bowline",
-      }),
-    ).toBe(true);
-
-    expect(
-      isHandoffInstallReceipt({
-        agent: "codex",
-        sessionMode: "resume_existing",
-        installedFiles: [123],
-        remoteProjectPath: "~/Code/bowline",
-      }),
-    ).toBe(false);
-  });
-
   it("has guards for every advertised command output type", () => {
     const contract = readCommandFixture("contract");
     expect(isContractCommandOutput(contract)).toBe(true);
@@ -281,7 +192,7 @@ describe("workspace command contracts", () => {
     expect(missing).toEqual([]);
   });
 
-  it("accepts daemon, diagnostics, and agent tool command surfaces", () => {
+  it("accepts daemon and diagnostics command surfaces", () => {
     expect(
       isDaemonCommandOutput({
         contractVersion: 8,
@@ -331,17 +242,6 @@ describe("workspace command contracts", () => {
         generatedAt: "2026-06-29T12:00:00Z",
         redactionRules: ["home-path"],
         bundle: "bowline diagnostics",
-      }),
-    ).toBe(true);
-
-    expect(
-      isAgentToolResult({
-        requestId: "req_1",
-        leaseId: "lease_1",
-        tool: "list_overlay_changes",
-        outcome: "allowed",
-        summary: "overlay changes listed",
-        payload: { changes: [] },
       }),
     ).toBe(true);
   });
@@ -557,28 +457,6 @@ describe("workspace command contracts", () => {
     expect(
       isWorkLifecycleCommandOutput(readCommandFixture("work-discard")),
     ).toBe(true);
-  });
-
-  it("accepts Phase 10 agent lease command fixtures without nonce or secrets", () => {
-    const lease = readCommandFixture("agent-lease-create");
-    const context = readCommandFixture("agent-context");
-    const prompt = readCommandFixture("agent-prompt");
-
-    expect(isAgentLeaseCreateCommandOutput(lease)).toBe(true);
-    expect(isAgentContextCommandOutput(context)).toBe(true);
-    expect(isAgentPromptCommandOutput(prompt)).toBe(true);
-    expect(JSON.stringify([lease, context, prompt])).not.toContain("nonce");
-    expect(JSON.stringify([lease, context, prompt])).not.toContain(
-      "SECRET_VALUE",
-    );
-  });
-
-  it("keeps fractional agent prompt recipe versions valid", () => {
-    const output = expectRecord(readCommandFixture("agent-prompt"));
-    const prompt = expectRecord(output.prompt);
-    prompt.recipeVersion = 1.5;
-
-    expect(isAgentPromptCommandOutput(output)).toBe(true);
   });
 
   it("keeps review-ready work as attention, not limited", () => {

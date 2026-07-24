@@ -9,7 +9,7 @@ use std::env;
 use std::io::{self, IsTerminal};
 
 use bowline_core::commands::StatusCommandOutput;
-use bowline_core::status::{RepairCommand, StatusLevel};
+use bowline_core::status::{ConvergenceReadinessState, RepairCommand, StatusLevel};
 use crossterm::style::Stylize;
 
 /// Fixed rule width used whenever we are not attached to an interactive
@@ -176,8 +176,8 @@ impl Verdict {
 /// A Healthy workspace still doing startup/catch-up work.
 fn is_in_progress(output: &StatusCommandOutput) -> bool {
     let sync_catching_up = !matches!(
-        output.event_watermarks.sync_state,
-        Some(bowline_core::status::ComponentState::Ready)
+        output.convergence.as_ref().map(|status| status.state),
+        Some(ConvergenceReadinessState::Ready)
     );
     let has_workspace = output
         .workspace_summary

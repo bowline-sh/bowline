@@ -1,237 +1,202 @@
+use super::watcher_bridge::WatcherBridgeStartError;
 use super::*;
+use bowline_local::metadata::MetadataStore;
 
-#[test]
-fn watcher_wake_coalesces_and_upgrades_overflow_before_dirty_take() {
-    let wake = WatcherWakeState::default();
-    assert!(wake.begin_wake());
-    assert!(
-        !wake.begin_wake(),
-        "only one coordinator wake stays pending"
-    );
-    wake.record_overflow();
+use bowline_local::sync::manifest_engine::{EngineEvent, WorkspacePath};
 
-    let scope = DirtyScopeKey::new("workspace-coalescing");
-    let metrics = Arc::new(CoordinatorMetrics::default());
-    let mut coordinator = CoordinatorState::new(SystemCoordinatorClock::new(), metrics);
-    let actions = coordinator.handle_event(CoordinatorEvent::FilesystemDirty(
-        FilesystemDirty::one(scope.clone(), DirtyPath::new("first-change")),
-    ));
-    assert!(matches!(
-        actions.as_slice(),
-        [CoordinatorAction::DirtyReady(_)]
-    ));
-
-    assert!(wake.reset_for_dirty_ready());
-    let upgrade = coordinator.handle_event(CoordinatorEvent::WatcherOverflow(scope.clone()));
-    assert!(
-        upgrade.is_empty(),
-        "overflow upgrades the pending dirty wake"
-    );
-    assert!(matches!(
-        coordinator.take_dirty(&scope),
-        Some(PendingDirtyBatch::FullScan(_))
-    ));
-    assert!(wake.begin_wake(), "DirtyReady releases the next wake token");
+fn watcher_changed(event: Event) -> WatcherSignal {
+    WatcherSignal::Changed { event }
 }
 
-#[test]
-fn failed_wake_send_retains_the_coalescing_token_for_coordinator_recovery() {
-    let wake = WatcherWakeState::default();
-    assert!(wake.begin_wake());
-    wake.record_delivery_failure();
-    assert!(wake.delivery_failed());
-    assert!(!wake.begin_wake());
-    assert!(!wake.reset_for_dirty_ready());
-    assert!(!wake.delivery_failed());
-    assert!(wake.begin_wake());
+/// A manifest driver whose thread records forwarded engine events instead of
+/// running the real engine, so the watcher bridge's output is observable.
+fn recording_driver() -> (
+    bowline_daemon::manifest_driver::ManifestDriver,
+    Arc<Mutex<Vec<EngineEvent>>>,
+) {
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&recorded);
+    let driver = bowline_daemon::manifest_driver::ManifestDriver::spawn(move |inbox, _snapshot| {
+        while let Ok(event) = inbox.recv() {
+            if matches!(event, EngineEvent::Shutdown) {
+                break;
+            }
+            if let Ok(mut recorded) = sink.lock() {
+                recorded.push(event);
+            }
+        }
+    })
+    .expect("recording driver spawns");
+    (driver, recorded)
 }
 
-#[test]
-fn one_saturated_overflow_wake_is_recovered_without_a_second_watcher_signal() {
-    let runtime = DaemonRuntime {
-        sync: None,
-        notify_approvals: false,
-        notification_dedupe: Arc::new(Mutex::new(NotificationDedupe::default())),
-        next_notification_poll: Instant::now(),
-        pending_notification_status: None,
-    };
-    let state = Arc::new(DaemonServerState::new(&runtime).expect("daemon state"));
-    let clock = SystemCoordinatorClock::new();
-    let metrics = Arc::new(CoordinatorMetrics::default());
-    let coordinator_state = CoordinatorState::new(clock.clone(), Arc::clone(&metrics));
-    let (handle, events) = coordinator_channel(1);
-    let mut driver = CoordinatorDriver::new(coordinator_state, events);
-    let executor = CoordinatorExecutor::new(
-        CoordinatorExecutorConfig::testing([1, 1, 1, 1, 1], 2),
-        handle.clone(),
-        Arc::clone(&metrics),
-    )
-    .expect("executor starts");
-    let wake = WatcherWakeState::default();
-    assert!(wake.begin_wake());
-    wake.record_overflow();
-    wake.record_delivery_failure();
-    let (completion_tx, completion_rx) = crossbeam_channel::unbounded();
-    let (loss_fallback_tx, loss_fallback_rx) = crossbeam_channel::unbounded();
-    let mut scheduler = SchedulerCoordinator::new(
-        Arc::new(Mutex::new(runtime)),
-        state,
-        handle,
-        clock,
-        SchedulerChannels {
-            completion_tx,
-            completion_rx,
-            loss_fallback_tx,
-            loss_fallback_rx,
-        },
-        wake.clone(),
-        Some(DirtyScopeKey::new("workspace-overflow")),
-    );
-
-    assert!(!scheduler.recover_saturated_watcher_wake(&executor, &mut driver));
-    assert_eq!(metrics.snapshot().filesystem_overflows, 1);
-    assert!(!wake.delivery_failed());
-    assert!(
-        wake.begin_wake(),
-        "recovery releases exactly one wake token"
-    );
-    executor.shutdown_and_join().expect("executor joins");
-}
-
-#[test]
-fn watcher_bridge_backpressures_real_backlog_without_inventing_overflow() {
-    let temp = std::env::temp_dir().join(format!(
-        "bowline-watcher-bridge-bounded-{}-{}",
-        std::process::id(),
-        OffsetDateTime::now_utc().unix_timestamp_nanos()
-    ));
-    let mut runtime = DaemonRuntime {
-        sync: Some(crate::daemon::tests::watcher_test_runtime(
-            temp.join("Code"),
-            temp.clone(),
-            "ws_watcher_bridge_bounded",
-        )),
-        notify_approvals: false,
-        notification_dedupe: Arc::new(Mutex::new(NotificationDedupe::default())),
-        next_notification_poll: Instant::now(),
-        pending_notification_status: None,
-    };
+/// Install a recording driver on a watcher test runtime and wire a manual
+/// watcher signal channel into it.
+fn runtime_with_recording_driver(
+    root: PathBuf,
+    state_root: PathBuf,
+    workspace_id: &str,
+) -> (
+    DaemonRuntime,
+    mpsc::Sender<WatcherSignal>,
+    Arc<Mutex<Vec<EngineEvent>>>,
+) {
+    let mut sync = crate::daemon::tests::watcher_test_runtime(root, state_root, workspace_id);
     let (signal_tx, signal_rx) = mpsc::channel();
-    runtime.sync.as_mut().expect("sync runtime").change_rx = Some(signal_rx);
-    let state = Arc::new(DaemonServerState::new(&runtime).expect("daemon state"));
-    let clock = SystemCoordinatorClock::new();
-    let metrics = Arc::new(CoordinatorMetrics::default());
-    let coordinator_state = CoordinatorState::new(clock.clone(), Arc::clone(&metrics));
-    let (handle, events) = coordinator_channel(1);
-    handle
-        .try_send(CoordinatorEvent::StatusInput(
-            bowline_daemon::status_projection::StatusInputEvent::RefreshAll,
-        ))
-        .expect("event queue is deliberately saturated");
-    let bridge = WatcherBridge::start(&mut runtime, handle.clone())
-        .expect("watcher bridge starts")
-        .expect("configured receiver creates a bridge");
-    let wake = bridge.wake_state();
-    let scope = bridge.scope();
-    for index in 0..64 {
-        signal_tx
-            .send(WatcherSignal::Changed(
-                Event::new(EventKind::Modify(ModifyKind::Any))
-                    .add_path(temp.join(format!("file-{index}"))),
-            ))
-            .expect("synthetic watcher signal sends");
-    }
-    let wait_deadline = Instant::now() + Duration::from_secs(2);
-    while !wake.delivery_failed() && Instant::now() < wait_deadline {
-        std::thread::yield_now();
-    }
-    assert!(wake.delivery_failed(), "saturated wake is observed");
+    sync.change_rx = Some(signal_rx);
+    let (driver, recorded) = recording_driver();
+    sync.manifest_engine = crate::daemon::sync::ManifestEngineHost::Active(driver);
+    let runtime = DaemonRuntime {
+        sync: Some(sync),
+        notify_approvals: false,
+        notification_dedupe: Arc::new(Mutex::new(NotificationDedupe::default())),
+        next_notification_poll: Instant::now(),
+        pending_notification_status: None,
+    };
+    (runtime, signal_tx, recorded)
+}
 
-    let runtime = Arc::new(Mutex::new(runtime));
-    let (completion_tx, completion_rx) = crossbeam_channel::unbounded();
-    let (loss_fallback_tx, loss_fallback_rx) = crossbeam_channel::unbounded();
-    let mut scheduler = SchedulerCoordinator::new(
-        Arc::clone(&runtime),
-        state,
-        handle.clone(),
-        clock,
-        SchedulerChannels {
-            completion_tx,
-            completion_rx,
-            loss_fallback_tx,
-            loss_fallback_rx,
-        },
-        wake,
-        Some(scope),
-    );
-    let mut driver = CoordinatorDriver::new(coordinator_state, events);
-    let executor = CoordinatorExecutor::new(
-        CoordinatorExecutorConfig::testing([1, 1, 1, 1, 1], 2),
-        handle,
-        metrics,
-    )
-    .expect("executor starts");
-    driver.run_turn().expect("saturating event drains");
-    // This test owns watcher recovery only; a real hosted refresh makes executor shutdown depend on the network.
-    scheduler.trust_refresh_in_flight = true;
-    assert!(!scheduler.recover_saturated_watcher_wake(&executor, &mut driver));
-    let runtime_guard = runtime.lock().expect("runtime locks");
-    let sync = runtime_guard.sync.as_ref().expect("sync runtime remains");
-    assert!(
-        sync.change_rx.is_some(),
-        "lossless backlog remains available"
-    );
-    assert!(!sync.watcher_recovery.full_reconcile_required);
-    assert_eq!(sync.watcher_recovery.overflow_total, 0);
-    drop(runtime_guard);
+/// Poll the recorded engine events until `predicate` matches one, or fail.
+fn await_recorded_event(
+    recorded: &Arc<Mutex<Vec<EngineEvent>>>,
+    predicate: impl Fn(&EngineEvent) -> bool,
+) -> EngineEvent {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Ok(events) = recorded.lock()
+            && let Some(event) = events.iter().find(|event| predicate(event))
+        {
+            return event.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected engine event never arrived"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn watcher_bridge_forwards_rename_as_engine_paths() {
+    let temp = crate::daemon::tests::unique_temp_dir("watcher-bridge-engine-rename");
+    let root = temp.join("Code");
+    let state_root = temp.join("state");
+    fs::create_dir_all(root.join("src")).expect("workspace root");
+    fs::create_dir_all(&state_root).expect("state root");
+    let source_path = root.join("src/old.rs");
+    let destination_path = root.join("src/new.rs");
+    fs::write(&destination_path, "fn renamed() {}\n").expect("destination");
+    let (mut runtime, signal_tx, recorded) =
+        runtime_with_recording_driver(root, state_root, "workspace-engine-rename");
+    let bridge = WatcherBridge::start(&mut runtime)
+        .expect("bridge starts")
+        .expect("watcher receiver configured");
+
+    signal_tx
+        .send(watcher_changed(
+            Event::new(EventKind::Modify(ModifyKind::Name(
+                notify::event::RenameMode::Both,
+            )))
+            .add_path(source_path)
+            .add_path(destination_path),
+        ))
+        .expect("rename sends");
+    let event = await_recorded_event(&recorded, |event| matches!(event, EngineEvent::Paths(_)));
+    let EngineEvent::Paths(paths) = event else {
+        panic!("expected Paths event");
+    };
+    assert!(paths.contains(&WorkspacePath::new("src/old.rs")));
+    assert!(paths.contains(&WorkspacePath::new("src/new.rs")));
 
     drop(signal_tx);
-    runtime
-        .lock()
-        .expect("runtime locks for shutdown")
-        .sync
-        .as_mut()
-        .expect("sync runtime remains for shutdown")
-        .change_rx
-        .take();
-    bridge.join().expect("watcher bridge joins");
-    executor.shutdown_and_join().expect("executor joins");
+    drop(bridge);
     let _ = fs::remove_dir_all(temp);
 }
 
 #[test]
-fn one_lost_sync_worker_recovers_only_its_exact_active_claim() {
-    let mut in_flight = HashMap::from([
-        ("workspace-a-claim".to_string(), "recovery-a"),
-        ("workspace-b-claim".to_string(), "recovery-b"),
-    ]);
-    let lost_job = CoordinatorJobId::new("workspace-a-claim");
+fn watcher_bridge_forwards_overflow_as_full_scan() {
+    let temp = crate::daemon::tests::unique_temp_dir("watcher-bridge-engine-overflow");
+    let root = temp.join("Code");
+    let state_root = temp.join("state");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::create_dir_all(&state_root).expect("state root");
+    let (mut runtime, signal_tx, recorded) =
+        runtime_with_recording_driver(root, state_root, "workspace-engine-overflow");
+    let bridge = WatcherBridge::start(&mut runtime)
+        .expect("bridge starts")
+        .expect("watcher receiver configured");
 
-    let recovered = take_exact_worker_loss(&mut in_flight, Some(&lost_job));
+    signal_tx
+        .send(WatcherSignal::Recoverable)
+        .expect("overflow sends");
+    let event = await_recorded_event(&recorded, |event| {
+        matches!(event, EngineEvent::FullScanRequired(_))
+    });
+    assert!(matches!(event, EngineEvent::FullScanRequired(_)));
 
-    assert_eq!(
-        recovered,
-        Some(("workspace-a-claim".to_string(), "recovery-a"))
-    );
-    assert_eq!(
-        in_flight,
-        HashMap::from([("workspace-b-claim".to_string(), "recovery-b")])
-    );
-    assert_eq!(take_exact_worker_loss(&mut in_flight, None), None);
+    drop(signal_tx);
+    drop(bridge);
+    let _ = fs::remove_dir_all(temp);
 }
 
 #[test]
-fn missing_domain_completion_has_no_one_second_wait_fallback() {
-    let source = include_str!("../coordinator_runtime.rs");
-    let handle_completion = source
-        .split_once("fn handle_completion")
-        .and_then(|(_, tail)| tail.split_once("fn drain_domain_completions"))
-        .map(|(body, _)| body)
-        .expect("handle_completion source section");
+fn watcher_bridge_without_engine_does_not_start() {
+    let temp = crate::daemon::tests::unique_temp_dir("watcher-bridge-no-engine");
+    let root = temp.join("Code");
+    let state_root = temp.join("state");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::create_dir_all(&state_root).expect("state root");
+    let mut sync =
+        crate::daemon::tests::watcher_test_runtime(root, state_root, "workspace-no-engine");
+    let (_signal_tx, signal_rx) = mpsc::channel();
+    sync.change_rx = Some(signal_rx);
+    let mut runtime = DaemonRuntime {
+        sync: Some(sync),
+        notify_approvals: false,
+        notification_dedupe: Arc::new(Mutex::new(NotificationDedupe::default())),
+        next_notification_poll: Instant::now(),
+        pending_notification_status: None,
+    };
+    // No manifest driver means no engine to forward to, so the bridge is absent.
+    assert!(
+        WatcherBridge::start(&mut runtime)
+            .expect("start ok")
+            .is_none()
+    );
+    let _ = fs::remove_dir_all(temp);
+}
 
-    assert!(!handle_completion.contains("recv_timeout"));
-    assert!(!handle_completion.contains("from_secs(1)"));
-    assert!(handle_completion.contains("WorkerCompletion::worker_lost"));
+#[test]
+fn watcher_bridge_spawn_failure_does_not_strand_receiver() {
+    let temp = std::env::temp_dir().join(format!(
+        "bowline-watcher-bridge-rearm-{}-{}",
+        std::process::id(),
+        OffsetDateTime::now_utc().unix_timestamp_nanos()
+    ));
+    let watched_root = temp.join("Code");
+    fs::create_dir_all(watched_root.join("nested")).expect("watched root");
+    let (mut runtime, _signal_tx, _recorded) = runtime_with_recording_driver(
+        watched_root.clone(),
+        temp.clone(),
+        "ws_watcher_bridge_rearm",
+    );
+    let start_result = WatcherBridge::start_with_spawner(&mut runtime, |_worker| {
+        Err(io::Error::other("injected watcher bridge spawn failure"))
+    });
+    assert!(matches!(
+        start_result,
+        Err(WatcherBridgeStartError::ThreadSpawn { .. })
+    ));
+    assert!(
+        runtime
+            .sync
+            .as_ref()
+            .expect("sync runtime")
+            .change_rx
+            .is_some(),
+        "failed bridge spawn leaves the real receiver retryable"
+    );
+    let _ = fs::remove_dir_all(temp);
 }
 
 #[test]
@@ -245,21 +210,14 @@ fn saturated_side_lane_fallbacks_clear_both_in_flight_flags_for_resubmit() {
     };
     let state = Arc::new(DaemonServerState::new(&runtime).expect("daemon state"));
     let (handle, _events) = coordinator_channel(4);
-    let (completion_tx, completion_rx) = crossbeam_channel::unbounded();
     let (loss_fallback_tx, loss_fallback_rx) = crossbeam_channel::unbounded();
     let mut scheduler = SchedulerCoordinator::new(
         Arc::new(Mutex::new(runtime)),
         state,
         handle,
         SystemCoordinatorClock::new(),
-        SchedulerChannels {
-            completion_tx,
-            completion_rx,
-            loss_fallback_tx: loss_fallback_tx.clone(),
-            loss_fallback_rx,
-        },
-        WatcherWakeState::default(),
-        None,
+        loss_fallback_tx.clone(),
+        loss_fallback_rx,
     );
     let notification_job = CoordinatorJobId::new("notification-poll-1");
     scheduler.notification_in_flight = Some(notification_job.clone());
@@ -288,21 +246,14 @@ fn stale_side_lane_completion_cannot_clear_a_replacement_invocation() {
     };
     let state = Arc::new(DaemonServerState::new(&runtime).expect("daemon state"));
     let (handle, _events) = coordinator_channel(4);
-    let (completion_tx, completion_rx) = crossbeam_channel::unbounded();
     let (loss_fallback_tx, loss_fallback_rx) = crossbeam_channel::unbounded();
     let mut scheduler = SchedulerCoordinator::new(
         Arc::new(Mutex::new(runtime)),
         state,
         handle,
         SystemCoordinatorClock::new(),
-        SchedulerChannels {
-            completion_tx,
-            completion_rx,
-            loss_fallback_tx,
-            loss_fallback_rx,
-        },
-        WatcherWakeState::default(),
-        None,
+        loss_fallback_tx,
+        loss_fallback_rx,
     );
     let stale = CoordinatorJobId::new("status-publish-1");
     let replacement = CoordinatorJobId::new("status-publish-2");
@@ -312,7 +263,6 @@ fn stale_side_lane_completion_cannot_clear_a_replacement_invocation() {
         !scheduler.handle_side_lane_worker_completion(&CoordinatorWorkerCompletion {
             job_id: stale,
             lane: CoordinatorLane::ControlPlane,
-            resource: None,
             outcome: CoordinatorWorkerOutcome::Succeeded,
         })
     );
@@ -325,7 +275,6 @@ fn stale_side_lane_completion_cannot_clear_a_replacement_invocation() {
         scheduler.handle_side_lane_worker_completion(&CoordinatorWorkerCompletion {
             job_id: replacement,
             lane: CoordinatorLane::ControlPlane,
-            resource: None,
             outcome: CoordinatorWorkerOutcome::Panicked,
         })
     );
@@ -333,34 +282,33 @@ fn stale_side_lane_completion_cannot_clear_a_replacement_invocation() {
 }
 
 #[test]
-fn three_durable_control_jobs_leave_one_worker_for_trust_and_status() {
-    assert_eq!(MAX_DURABLE_CONTROL_PLANE_IN_FLIGHT, 3);
+fn three_blocked_control_jobs_leave_one_worker_for_trust_and_status() {
+    let blocked_jobs = 3;
     let (handle, _events) = coordinator_channel(16);
     let metrics = Arc::new(CoordinatorMetrics::default());
     let executor = CoordinatorExecutor::new(CoordinatorExecutorConfig::default(), handle, metrics)
         .expect("executor starts");
     let (started_tx, started_rx) = crossbeam_channel::bounded(3);
     let (release_tx, release_rx) = crossbeam_channel::bounded(3);
-    for ordinal in 0..MAX_DURABLE_CONTROL_PLANE_IN_FLIGHT {
+    for ordinal in 0..blocked_jobs {
         let started = started_tx.clone();
         let release = release_rx.clone();
         executor
             .submit(CoordinatorJob::new(
-                CoordinatorJobId::new(format!("durable-control-{ordinal}")),
+                CoordinatorJobId::new(format!("blocked-control-{ordinal}")),
                 CoordinatorLane::ControlPlane,
-                Some(CoordinatorResourceKey::new(format!("workspace-{ordinal}"))),
                 move || {
                     started.send(()).expect("started signal sends");
                     release.recv().expect("release arrives");
                     Ok(())
                 },
             ))
-            .expect("durable control work submits");
+            .expect("blocked control work submits");
     }
-    for _ in 0..MAX_DURABLE_CONTROL_PLANE_IN_FLIGHT {
+    for _ in 0..blocked_jobs {
         started_rx
             .recv_timeout(Duration::from_secs(2))
-            .expect("three durable jobs start");
+            .expect("three blocked jobs start");
     }
     let (side_tx, side_rx) = crossbeam_channel::bounded(2);
     for name in ["trust-refresh-proof", "status-publish-proof"] {
@@ -369,7 +317,6 @@ fn three_durable_control_jobs_leave_one_worker_for_trust_and_status() {
             .submit(CoordinatorJob::new(
                 CoordinatorJobId::new(name),
                 CoordinatorLane::ControlPlane,
-                None,
                 move || {
                     completed.send(()).expect("side completion sends");
                     Ok(())
@@ -380,10 +327,10 @@ fn three_durable_control_jobs_leave_one_worker_for_trust_and_status() {
     for _ in 0..2 {
         side_rx
             .recv_timeout(Duration::from_secs(2))
-            .expect("trust and status progress while durable jobs remain blocked");
+            .expect("trust and status progress while blocked jobs remain");
     }
-    for _ in 0..MAX_DURABLE_CONTROL_PLANE_IN_FLIGHT {
-        release_tx.send(()).expect("durable job releases");
+    for _ in 0..blocked_jobs {
+        release_tx.send(()).expect("blocked job releases");
     }
     executor.shutdown_and_join().expect("executor joins");
 }
@@ -408,25 +355,18 @@ fn coordinator_owned_deadlines_survive_a_saturated_event_channel() {
         ))
         .expect("synthetic event fills the coordinator queue");
     let mut driver = CoordinatorDriver::new(coordinator_state, events);
-    let (completion_tx, completion_rx) = crossbeam_channel::unbounded();
     let (loss_fallback_tx, loss_fallback_rx) = crossbeam_channel::unbounded();
     let scheduler = SchedulerCoordinator::new(
         Arc::new(Mutex::new(runtime)),
         state,
         handle,
         clock,
-        SchedulerChannels {
-            completion_tx,
-            completion_rx,
-            loss_fallback_tx,
-            loss_fallback_rx,
-        },
-        WatcherWakeState::default(),
-        None,
+        loss_fallback_tx,
+        loss_fallback_rx,
     );
 
     scheduler.schedule_deadline(
-        CoordinatorDeadlineKind::LeaseRenewal(CoordinatorJobId::new("claim-1")),
+        CoordinatorDeadlineKind::EngineRetry(CoordinatorJobId::new("engine-retry-1")),
         Duration::from_secs(15),
         &mut driver,
     );
@@ -498,8 +438,7 @@ fn prepared_hosted_status_io_runs_without_the_coordinator_runtime_lock() {
     let root = state_root.join("Code");
     fs::create_dir_all(&root).expect("workspace root");
     let store =
-        crate::daemon::store_access::open_store_for_test(state_root.join(DEFAULT_DATABASE_FILE))
-            .expect("metadata opens");
+        MetadataStore::open(state_root.join(DEFAULT_DATABASE_FILE)).expect("metadata opens");
     store
         .insert_workspace(&workspace_id, "Code", "2026-07-15T00:00:00Z")
         .expect("workspace inserts");

@@ -15,9 +15,7 @@ pub use bowline_control_plane::{
     ControlPlaneResult, ControlPlaneTimestamp as FakeTimestamp, DeterministicClock,
     DeterministicIdGenerator, DeviceApproval as FakeDeviceGrant, DeviceApprovalInput,
     DeviceRequest as FakeDeviceRequest, DeviceRequestInput, DownloadIntent, DownloadIntentRequest,
-    FakeControlPlaneClient, Lease as FakeLease, MetadataBindingCommit, MetadataBindingInput,
-    MetadataBindingRecord, MetadataRecordKind, MetadataSidecar, SignedUrlIntent,
-    SnapshotRootCommit, SnapshotRootRecord, StaleWorkspaceRef, UploadIntent, UploadIntentRequest,
+    FakeControlPlaneClient, SignedUrlIntent, StaleWorkspaceRef, UploadIntent, UploadIntentRequest,
     WorkspaceControlPlaneClient, WorkspaceRef, is_opaque_object_key,
 };
 use bowline_core::ids::WorkspaceId;

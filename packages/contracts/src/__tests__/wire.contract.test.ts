@@ -145,7 +145,7 @@ describe("generated wire contracts", () => {
     expect(registry.schemaHash).toBe(WIRE_SCHEMA_HASH);
     expect(registry.machineContractVersion).toBe(CONTRACT_VERSION);
     expect(enumValues.EventName).toEqual(EVENT_NAMES);
-    expect(arrayField(registry, "hostedEndpoints")).toHaveLength(52);
+    expect(arrayField(registry, "hostedEndpoints")).toHaveLength(38);
   });
 
   it("preserves unknown event names while tracking every known name", () => {

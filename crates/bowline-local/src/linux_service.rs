@@ -3,6 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use bowline_core::fs_atomic::{AtomicWriteOptions, write_atomic};
+
 use crate::{
     bootstrap::process::ProcessRunner,
     service_runtime::{self, ServiceRuntimeError},
@@ -41,6 +43,13 @@ pub enum LinuxServiceState {
     Active,
     Inactive,
     Unknown(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxServiceEnablement {
+    Enabled,
+    EnabledRuntime,
+    Disabled,
 }
 
 service_runtime::service_error! {
@@ -98,6 +107,78 @@ where
     Ok(outcome(unit_path(unit_dir), LinuxServiceState::Restarted))
 }
 
+pub fn stop_service<R>(
+    runner: &R,
+    unit_dir: &Path,
+) -> Result<LinuxServiceOutcome, LinuxServiceError>
+where
+    R: ProcessRunner,
+{
+    run_systemctl(runner, &["stop", SERVICE_NAME])?;
+    Ok(outcome(unit_path(unit_dir), LinuxServiceState::Inactive))
+}
+
+pub fn restore_service<R>(
+    runner: &R,
+    unit_dir: &Path,
+    definition: &[u8],
+    enablement: LinuxServiceEnablement,
+) -> Result<LinuxServiceOutcome, LinuxServiceError>
+where
+    R: ProcessRunner,
+{
+    fs::create_dir_all(unit_dir)?;
+    let path = unit_path(unit_dir);
+    write_atomic(
+        &path,
+        definition,
+        AtomicWriteOptions {
+            unix_mode: Some(0o644),
+            reject_symlink: true,
+            replace_existing: true,
+        },
+    )?;
+    run_systemctl(runner, &["daemon-reload"])?;
+    match enablement {
+        LinuxServiceEnablement::Enabled => run_systemctl(runner, &["enable", SERVICE_NAME])?,
+        LinuxServiceEnablement::EnabledRuntime => {
+            run_systemctl(runner, &["disable", SERVICE_NAME])?;
+            run_systemctl(runner, &["enable", "--runtime", SERVICE_NAME])?;
+        }
+        LinuxServiceEnablement::Disabled => run_systemctl(runner, &["disable", SERVICE_NAME])?,
+    }
+    run_systemctl(runner, &["restart", SERVICE_NAME])?;
+    Ok(outcome(path, LinuxServiceState::Restarted))
+}
+
+pub fn service_enablement<R>(runner: &R) -> Result<LinuxServiceEnablement, LinuxServiceError>
+where
+    R: ProcessRunner,
+{
+    let output = service_runtime::run_service_command(
+        runner,
+        "systemctl",
+        [
+            "--user",
+            "show",
+            SERVICE_NAME,
+            "--property=UnitFileState",
+            "--value",
+        ],
+        |_| false,
+        systemctl_failure,
+    )
+    .map_err(LinuxServiceError::from)?;
+    match output.stdout.lines().next().unwrap_or("").trim() {
+        "enabled" => Ok(LinuxServiceEnablement::Enabled),
+        "enabled-runtime" => Ok(LinuxServiceEnablement::EnabledRuntime),
+        "disabled" | "static" | "indirect" => Ok(LinuxServiceEnablement::Disabled),
+        state => Err(LinuxServiceError::Unavailable(format!(
+            "systemd unit-file state `{state}` cannot be restored safely"
+        ))),
+    }
+}
+
 pub fn uninstall_service<R>(
     runner: &R,
     unit_dir: &Path,
@@ -127,7 +208,7 @@ pub fn service_status<R>(
 where
     R: ProcessRunner,
 {
-    let output = service_runtime::run_service_command(
+    let output = match service_runtime::run_service_command(
         runner,
         "systemctl",
         [
@@ -139,12 +220,21 @@ where
         ],
         |_| false,
         systemctl_failure,
-    )
-    .map_err(LinuxServiceError::from)?;
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            let error = LinuxServiceError::from(error);
+            if missing_unit_error(&error) {
+                return Ok(outcome(unit_path(unit_dir), LinuxServiceState::Inactive));
+            }
+            return Err(error);
+        }
+    };
     let active = output.stdout.lines().next().unwrap_or("").trim();
     let state = match active {
         "active" => LinuxServiceState::Active,
-        "inactive" | "deactivating" | "activating" | "" => LinuxServiceState::Inactive,
+        "activating" | "deactivating" => LinuxServiceState::Active,
+        "inactive" | "failed" | "" => LinuxServiceState::Inactive,
         other => LinuxServiceState::Unknown(other.to_string()),
     };
     Ok(outcome(unit_path(unit_dir), state))
@@ -266,8 +356,9 @@ mod tests {
     };
 
     use super::{
-        LinuxServiceConfig, LinuxServiceOptions, LinuxServiceState, install_or_update_service,
-        render_systemd_user_unit, restart_service, service_status, uninstall_service, unit_path,
+        LinuxServiceConfig, LinuxServiceEnablement, LinuxServiceOptions, LinuxServiceState,
+        install_or_update_service, render_systemd_user_unit, restart_service, restore_service,
+        service_enablement, service_status, stop_service, uninstall_service, unit_path,
     };
 
     #[test]
@@ -365,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn status_preserves_failed_user_service_state() {
+    fn status_treats_terminal_failure_as_repairable_inactive() {
         let runner = RecordingRunner::with_output(ProcessOutput {
             status_code: 0,
             stdout: "failed\n".to_string(),
@@ -375,10 +466,37 @@ mod tests {
         let outcome =
             service_status(&runner, PathBuf::from("/tmp/units").as_path()).expect("status");
 
-        assert_eq!(
-            outcome.state,
-            LinuxServiceState::Unknown("failed".to_string())
-        );
+        assert_eq!(outcome.state, LinuxServiceState::Inactive);
+    }
+
+    #[test]
+    fn status_treats_missing_unit_as_inactive_first_install() {
+        let runner = RecordingRunner::with_output(ProcessOutput {
+            status_code: 4,
+            stdout: String::new(),
+            stderr: "Unit bowline.service could not be found.".to_string(),
+        });
+
+        let outcome =
+            service_status(&runner, PathBuf::from("/tmp/units").as_path()).expect("status");
+
+        assert_eq!(outcome.state, LinuxServiceState::Inactive);
+    }
+
+    #[test]
+    fn status_treats_transitions_as_supervisor_owned() {
+        for state in ["activating", "deactivating"] {
+            let runner = RecordingRunner::with_output(ProcessOutput {
+                status_code: 0,
+                stdout: format!("{state}\n"),
+                stderr: String::new(),
+            });
+
+            let outcome =
+                service_status(&runner, PathBuf::from("/tmp/units").as_path()).expect("status");
+
+            assert_eq!(outcome.state, LinuxServiceState::Active);
+        }
     }
 
     #[test]
@@ -399,6 +517,133 @@ mod tests {
                 vec!["systemctl", "--user", "restart", "bowline.service"],
                 vec!["systemctl", "--user", "disable", "--now", "bowline.service"],
                 vec!["systemctl", "--user", "daemon-reload"],
+            ]
+        );
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn stop_retains_unit_and_registration() {
+        let temp = tempfile_dir("bowline-service-stop");
+        fs::create_dir_all(&temp).expect("unit dir");
+        fs::write(unit_path(&temp), "unit").expect("unit");
+        let runner = RecordingRunner::ok();
+
+        let stopped = stop_service(&runner, &temp).expect("stop");
+
+        assert_eq!(stopped.state, LinuxServiceState::Inactive);
+        assert!(unit_path(&temp).exists());
+        assert_eq!(
+            *runner.calls.borrow(),
+            vec![vec!["systemctl", "--user", "stop", "bowline.service"]]
+        );
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn restore_replaces_definition_before_reload_and_restart() {
+        let temp = tempfile_dir("bowline-service-restore");
+        fs::create_dir_all(&temp).expect("unit dir");
+        fs::write(unit_path(&temp), "broken").expect("broken unit");
+        let runner = RecordingRunner::ok();
+
+        let restored = restore_service(
+            &runner,
+            &temp,
+            b"previous unit",
+            LinuxServiceEnablement::Enabled,
+        )
+        .expect("restore");
+
+        assert_eq!(restored.state, LinuxServiceState::Restarted);
+        assert_eq!(
+            fs::read(unit_path(&temp)).expect("restored unit"),
+            b"previous unit"
+        );
+        assert_eq!(
+            *runner.calls.borrow(),
+            vec![
+                vec!["systemctl", "--user", "daemon-reload"],
+                vec!["systemctl", "--user", "enable", "bowline.service"],
+                vec!["systemctl", "--user", "restart", "bowline.service"],
+            ]
+        );
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn restore_preserves_disabled_service_state() {
+        let temp = tempfile_dir("bowline-service-restore-disabled");
+        fs::create_dir_all(&temp).expect("unit dir");
+        fs::write(unit_path(&temp), "broken").expect("broken unit");
+        let runner = RecordingRunner::ok();
+
+        restore_service(
+            &runner,
+            &temp,
+            b"previous unit",
+            LinuxServiceEnablement::Disabled,
+        )
+        .expect("restore");
+
+        assert_eq!(
+            *runner.calls.borrow(),
+            vec![
+                vec!["systemctl", "--user", "daemon-reload"],
+                vec!["systemctl", "--user", "disable", "bowline.service"],
+                vec!["systemctl", "--user", "restart", "bowline.service"],
+            ]
+        );
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn service_enablement_reads_unit_file_state() {
+        for (state, expected) in [
+            ("enabled", LinuxServiceEnablement::Enabled),
+            ("enabled-runtime", LinuxServiceEnablement::EnabledRuntime),
+            ("disabled", LinuxServiceEnablement::Disabled),
+            ("static", LinuxServiceEnablement::Disabled),
+            ("indirect", LinuxServiceEnablement::Disabled),
+        ] {
+            let runner = RecordingRunner::with_output(ProcessOutput {
+                status_code: 0,
+                stdout: format!("{state}\n"),
+                stderr: String::new(),
+            });
+
+            assert_eq!(service_enablement(&runner).expect("enablement"), expected);
+        }
+    }
+
+    #[test]
+    fn restore_preserves_runtime_only_enablement() {
+        let temp = tempfile_dir("bowline-service-restore-runtime");
+        fs::create_dir_all(&temp).expect("unit dir");
+        fs::write(unit_path(&temp), "broken").expect("broken unit");
+        let runner = RecordingRunner::ok();
+
+        restore_service(
+            &runner,
+            &temp,
+            b"previous unit",
+            LinuxServiceEnablement::EnabledRuntime,
+        )
+        .expect("restore");
+
+        assert_eq!(
+            *runner.calls.borrow(),
+            vec![
+                vec!["systemctl", "--user", "daemon-reload"],
+                vec!["systemctl", "--user", "disable", "bowline.service"],
+                vec![
+                    "systemctl",
+                    "--user",
+                    "enable",
+                    "--runtime",
+                    "bowline.service"
+                ],
+                vec!["systemctl", "--user", "restart", "bowline.service"],
             ]
         );
         let _ = fs::remove_dir_all(temp);

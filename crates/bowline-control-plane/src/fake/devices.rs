@@ -16,8 +16,6 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             ),
             workspace_id: input.workspace_id,
             token: self.ids.next_id("bootstrap-token"),
-            lease_id: input.lease_id,
-            lease_handoff_digest: input.lease_handoff_digest,
             runtime: input.runtime,
             setup_receipts_digest: input.setup_receipts_digest,
             expires_at: ControlPlaneTimestamp {
@@ -83,8 +81,6 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             matching_code: input.matching_code,
             account_id: input.account_id,
             host: input.host,
-            lease_handoff_digest: input.lease_handoff_digest,
-            lease_id: input.lease_id,
             root: input.root,
             runtime: input.runtime,
             setup_receipts_digest: input.setup_receipts_digest,

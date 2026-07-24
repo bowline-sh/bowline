@@ -13,42 +13,6 @@
       }
     },
     {
-      "id": "command.agent-context",
-      "family": "commands",
-      "path": "commands/agent-context.json",
-      "format": "json",
-      "kind": "AgentContextCommandOutput",
-      "languageDecoders": {
-        "rust": "AgentContextCommandOutput",
-        "typescript": "AgentContextCommandOutput",
-        "swift": "CommandFixture"
-      }
-    },
-    {
-      "id": "command.agent-lease-create",
-      "family": "commands",
-      "path": "commands/agent-lease-create.json",
-      "format": "json",
-      "kind": "AgentLeaseCreateCommandOutput",
-      "languageDecoders": {
-        "rust": "AgentLeaseCreateCommandOutput",
-        "typescript": "AgentLeaseCreateCommandOutput",
-        "swift": "CommandFixture"
-      }
-    },
-    {
-      "id": "command.agent-prompt",
-      "family": "commands",
-      "path": "commands/agent-prompt.json",
-      "format": "json",
-      "kind": "AgentPromptCommandOutput",
-      "languageDecoders": {
-        "rust": "AgentPromptCommandOutput",
-        "typescript": "AgentPromptCommandOutput",
-        "swift": "CommandFixture"
-      }
-    },
-    {
       "id": "command.contract",
       "family": "commands",
       "path": "commands/contract.json",
@@ -109,88 +73,6 @@
       }
     },
     {
-      "id": "command.handoff-confirmation-required",
-      "family": "commands",
-      "path": "commands/handoff-confirmation-required.json",
-      "format": "json",
-      "kind": "HandoffCommandOutput",
-      "languageDecoders": {
-        "typescript": "HandoffCommandOutput"
-      }
-    },
-    {
-      "id": "command.handoff-dry-run",
-      "family": "commands",
-      "path": "commands/handoff-dry-run.json",
-      "format": "json",
-      "kind": "HandoffCommandOutput",
-      "languageDecoders": {
-        "typescript": "HandoffCommandOutput"
-      }
-    },
-    {
-      "id": "command.handoff-no-supported-session",
-      "family": "commands",
-      "path": "commands/handoff-no-supported-session.json",
-      "format": "json",
-      "kind": "HandoffCommandOutput",
-      "languageDecoders": {
-        "typescript": "HandoffCommandOutput"
-      }
-    },
-    {
-      "id": "command.handoff-receipt",
-      "family": "commands",
-      "path": "commands/handoff-receipt.json",
-      "format": "json",
-      "kind": "HandoffCommandOutput",
-      "languageDecoders": {
-        "typescript": "HandoffCommandOutput"
-      }
-    },
-    {
-      "id": "command.handoff-target-not-trusted",
-      "family": "commands",
-      "path": "commands/handoff-target-not-trusted.json",
-      "format": "json",
-      "kind": "HandoffCommandOutput",
-      "languageDecoders": {
-        "typescript": "HandoffCommandOutput"
-      }
-    },
-    {
-      "id": "command.handoff-tmux-missing",
-      "family": "commands",
-      "path": "commands/handoff-tmux-missing.json",
-      "format": "json",
-      "kind": "HandoffCommandOutput",
-      "languageDecoders": {
-        "typescript": "HandoffCommandOutput"
-      }
-    },
-    {
-      "id": "command.handoff-trust-stale",
-      "family": "commands",
-      "path": "commands/handoff-trust-stale.json",
-      "format": "json",
-      "kind": "HandoffCommandOutput",
-      "languageDecoders": {
-        "typescript": "HandoffCommandOutput"
-      }
-    },
-    {
-      "id": "command.history",
-      "family": "commands",
-      "path": "commands/history.json",
-      "format": "json",
-      "kind": "HistoryCommandOutput",
-      "languageDecoders": {
-        "rust": "HistoryCommandOutput",
-        "typescript": "HistoryCommandOutput",
-        "swift": "CommandFixture"
-      }
-    },
-    {
       "id": "command.setup-blocked",
       "family": "commands",
       "path": "commands/setup-blocked.json",
@@ -223,6 +105,18 @@
       "languageDecoders": {
         "rust": "VersionCommandOutput",
         "typescript": "VersionCommandOutput",
+        "swift": "CommandFixture"
+      }
+    },
+    {
+      "id": "command.doctor",
+      "family": "commands",
+      "path": "commands/doctor.json",
+      "format": "json",
+      "kind": "DoctorCommandOutput",
+      "languageDecoders": {
+        "rust": "DoctorCommandOutput",
+        "typescript": "DoctorCommandOutput",
         "swift": "CommandFixture"
       }
     },
@@ -356,18 +250,6 @@
       }
     },
     {
-      "id": "status.active-lease",
-      "family": "status",
-      "path": "status/active-lease.json",
-      "format": "json",
-      "kind": "StatusCommandOutput",
-      "languageDecoders": {
-        "rust": "StatusCommandOutput",
-        "typescript": "StatusCommandOutput",
-        "swift": "StatusCommandOutput"
-      }
-    },
-    {
       "id": "status.attention",
       "family": "status",
       "path": "status/attention.json",
@@ -476,33 +358,9 @@
       }
     },
     {
-      "id": "status.review-ready-lease",
-      "family": "status",
-      "path": "status/review-ready-lease.json",
-      "format": "json",
-      "kind": "StatusCommandOutput",
-      "languageDecoders": {
-        "rust": "StatusCommandOutput",
-        "typescript": "StatusCommandOutput",
-        "swift": "StatusCommandOutput"
-      }
-    },
-    {
       "id": "status.setup-readiness-blocked",
       "family": "status",
       "path": "status/setup-readiness-blocked.json",
-      "format": "json",
-      "kind": "StatusCommandOutput",
-      "languageDecoders": {
-        "rust": "StatusCommandOutput",
-        "typescript": "StatusCommandOutput",
-        "swift": "StatusCommandOutput"
-      }
-    },
-    {
-      "id": "status.stale-agent-base",
-      "family": "status",
-      "path": "status/stale-agent-base.json",
       "format": "json",
       "kind": "StatusCommandOutput",
       "languageDecoders": {

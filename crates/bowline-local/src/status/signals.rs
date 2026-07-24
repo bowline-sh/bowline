@@ -122,7 +122,6 @@ fn event_fact_kind(name: &EventName) -> Option<&'static str> {
 
 pub(super) fn apply_status_signal_events(
     events: &[bowline_core::events::WorkspaceEvent],
-    watermarks: &EventWatermarks,
     unresolved_conflict_paths: &BTreeSet<String>,
     acc: &mut StatusAccumulator,
 ) {
@@ -145,10 +144,8 @@ pub(super) fn apply_status_signal_events(
         {
             continue;
         }
-        if should_apply_event_status(event, watermarks) {
-            apply_event_status(event, acc);
-            applied.insert(key);
-        }
+        apply_event_status(event, acc);
+        applied.insert(key);
     }
 }
 
@@ -287,27 +284,6 @@ pub(super) fn status_identity(event: &bowline_core::events::WorkspaceEvent) -> S
         return format!("project:{}", project_id.as_str());
     }
     format!("workspace:{}", event.workspace_id.as_str())
-}
-
-pub(super) fn should_apply_event_status(
-    event: &bowline_core::events::WorkspaceEvent,
-    watermarks: &EventWatermarks,
-) -> bool {
-    match &event.name {
-        EventName::SyncLimited | EventName::SyncDegraded => matches!(
-            watermarks.sync_state,
-            Some(ComponentState::Degraded | ComponentState::Unavailable)
-        ),
-        EventName::WatcherDegraded => matches!(
-            watermarks.watcher_state,
-            Some(ComponentState::Degraded | ComponentState::Unavailable)
-        ),
-        EventName::NetworkOffline => matches!(
-            watermarks.network_state,
-            Some(NetworkState::Offline | NetworkState::Degraded)
-        ),
-        _ => true,
-    }
 }
 
 pub(super) fn status_subject_kind(kind: EventSubjectKind) -> StatusSubjectKind {

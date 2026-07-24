@@ -3,23 +3,19 @@
 
 use std::fs;
 use std::io::{self, BufRead, BufReader};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bowline_core::{
     events::{EventName, EventSeverity, WorkspaceEvent},
-    ids::{DeviceId, EventId, ProjectId, SnapshotId, WorkspaceId},
+    ids::{EventId, ProjectId, WorkspaceId},
 };
 use bowline_local::{
-    metadata::{
-        MetadataStore, Platform, SyncOperationKind, SyncOperationRecord, SyncOperationState,
-        SyncResourceKey, database_path_for_platform,
-    },
-    sync::{ConflictRecord, ConflictSpan},
+    metadata::{MetadataStore, Platform, database_path_for_platform},
     workspace::{TempWorkspace, WorkspaceMutationDetector},
 };
 use serde_json::Value;
@@ -120,8 +116,6 @@ mod discovery_workspace;
 mod lifecycle_errors;
 #[path = "cli_contract/output_mode_errors.rs"]
 mod output_mode_errors;
-#[path = "cli_contract/resolve.rs"]
-mod resolve;
 #[path = "cli_contract/status_events.rs"]
 mod status_events;
 
@@ -184,12 +178,63 @@ fn unique_socket(label: &str) -> PathBuf {
     // prepare_socket refuses parents not owned by the current uid, so sockets
     // must live under a per-user dir, not directly in world-writable /tmp.
     // The label is dropped from the path because macOS caps unix socket paths
-    // at ~104 bytes and $TMPDIR is already long; uniqueness comes from the
-    // suffix.
+    // at ~104 bytes and $TMPDIR is already long. Reserve the directory
+    // atomically: timestamp-only suffixes can repeat across second boundaries,
+    // and a stale directory from a reused PID must not collide with this run.
     let _ = label;
-    let dir = std::env::temp_dir().join(format!("bl-{}", unique_suffix()));
-    fs::create_dir_all(&dir).expect("socket dir");
-    dir.join("s.sock")
+    reserve_unique_socket_dir()
+        .expect("socket directory reservation should succeed")
+        .join("s.sock")
+}
+
+fn reserve_unique_socket_dir() -> io::Result<PathBuf> {
+    static SOCKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let sequence = SOCKET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("bl-{}-{sequence}", std::process::id()));
+        match fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[test]
+fn unique_socket_reserves_distinct_directories() {
+    let first = unique_socket("first");
+    let second = unique_socket("second");
+
+    assert_ne!(first, second);
+    assert!(first.parent().is_some_and(Path::is_dir));
+    assert!(second.parent().is_some_and(Path::is_dir));
+
+    fs::remove_dir_all(first.parent().expect("first socket parent")).expect("remove first socket");
+    fs::remove_dir_all(second.parent().expect("second socket parent"))
+        .expect("remove second socket");
+}
+
+fn accept_cli_test_client(listener: &UnixListener, deadline: Instant) -> io::Result<UnixStream> {
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("accepted stream should become blocking");
+                return Ok(stream);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "timed out waiting for CLI test client",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn unique_db(label: &str) -> PathBuf {
@@ -218,69 +263,6 @@ fn unique_suffix() -> String {
 
 fn seed_two_project_events(db_path: &PathBuf) {
     seed_two_project_events_with_root(db_path, "~/Code");
-}
-
-fn seed_daemon_component_status(db_path: &Path) {
-    let workspace_id = WorkspaceId::new("ws_code");
-    let store = MetadataStore::open(db_path).expect("metadata opens");
-    store
-        .insert_workspace(&workspace_id, "User Code", "2026-06-26T12:00:00Z")
-        .expect("workspace insert");
-    store
-        .insert_root("root_code", &workspace_id, "~/Code", "2026-06-26T12:00:00Z")
-        .expect("root insert");
-    store
-        .set_component_state("sync", "degraded", "2026-06-26T12:00:01Z")
-        .expect("sync state");
-    store
-        .set_component_state("watcher", "unavailable", "2026-06-26T12:00:01Z")
-        .expect("watcher state");
-    store
-        .set_component_state("network", "offline", "2026-06-26T12:00:01Z")
-        .expect("network state");
-}
-
-fn seed_sync_queue_workspace(db_path: &Path) {
-    let workspace_id = WorkspaceId::new("ws_code");
-    let store = MetadataStore::open(db_path).expect("metadata opens");
-    store
-        .insert_workspace(&workspace_id, "User Code", "2026-06-26T12:00:00Z")
-        .expect("workspace insert");
-    store
-        .insert_root("root_code", &workspace_id, "~/Code", "2026-06-26T12:00:00Z")
-        .expect("root insert");
-}
-
-fn enqueue_sync_queue_watch_change(db_path: &Path) {
-    let workspace_id = WorkspaceId::new("ws_code");
-    let store = MetadataStore::open(db_path).expect("metadata opens");
-    store
-        .enqueue_sync_operation(&SyncOperationRecord {
-            id: "watch_queue_retry".to_string(),
-            workspace_id: workspace_id.clone(),
-            kind: SyncOperationKind::Reconcile,
-            resource_key: SyncResourceKey::workspace_sync(workspace_id),
-            state: SyncOperationState::WaitingRetry,
-            idempotency_key: "watch-queue-retry".to_string(),
-            base_version: None,
-            base_snapshot_id: None,
-            target_snapshot_id: None,
-            device_id: Some(DeviceId::new("device_cli_watch")),
-            payload_json: "{}".to_string(),
-            attempt_count: 1,
-            claimed_by: None,
-            claim_generation: 0,
-            heartbeat_at: None,
-            lease_expires_at: None,
-            cancellation_requested_at: None,
-            next_attempt_at: Some("2026-06-26T12:01:00Z".to_string()),
-            result_json: None,
-            last_error_code: None,
-            last_error: Some("retry later".to_string()),
-            created_at: "2026-06-26T12:00:01Z".to_string(),
-            updated_at: "2026-06-26T12:00:01Z".to_string(),
-        })
-        .expect("sync operation enqueue");
 }
 
 fn seed_daemon_start_workspace(db_path: &Path, code_root: &Path) {
@@ -377,129 +359,6 @@ fn project_event(
     event
 }
 
-fn create_conflict_bundle(bundle: &Path, contains_secrets: bool) {
-    create_conflict_bundle_with_id(
-        bundle,
-        "conflict_same_line",
-        "apps/web/.env.local",
-        contains_secrets,
-    );
-}
-
-fn create_conflict_bundle_with_workspace_root(
-    bundle: &Path,
-    contains_secrets: bool,
-    workspace_root: &Path,
-) {
-    create_conflict_bundle_manifest(
-        bundle,
-        "conflict_same_line",
-        "apps/web/.env.local",
-        contains_secrets,
-        Some(workspace_root),
-    );
-}
-
-fn create_conflict_bundle_with_id(
-    bundle: &Path,
-    conflict_id: &str,
-    affected_file: &str,
-    contains_secrets: bool,
-) {
-    create_conflict_bundle_manifest(bundle, conflict_id, affected_file, contains_secrets, None);
-}
-
-fn create_conflict_bundle_manifest(
-    bundle: &Path,
-    conflict_id: &str,
-    affected_file: &str,
-    contains_secrets: bool,
-    workspace_root: Option<&Path>,
-) {
-    fs::create_dir_all(bundle.join("base").join("apps").join("web")).expect("base dir");
-    fs::create_dir_all(bundle.join("local").join("apps").join("web")).expect("local dir");
-    fs::create_dir_all(bundle.join("remote").join("apps").join("web")).expect("remote dir");
-    fs::create_dir_all(bundle.join("resolution")).expect("resolution dir");
-    let mut record = ConflictRecord::same_path(affected_file);
-    record.id = conflict_id.to_string();
-    record.bundle_path = Some(bundle.to_path_buf());
-    record.workspace_root = workspace_root.map(Path::to_path_buf);
-    record.base_snapshot_id = Some("snap_fixture_base".to_string());
-    record.remote_snapshot_id = Some("snap_fixture_remote".to_string());
-    record.contains_secrets = contains_secrets;
-    write_conflict_manifest(bundle, &record);
-    if contains_secrets {
-        for side in ["base", "local", "remote"] {
-            let path = bundle.join(side).join(affected_file);
-            fs::create_dir_all(path.parent().expect("conflict file parent"))
-                .expect("conflict file parent directory");
-            fs::write(path, b"API_TOKEN=SECRET_VALUE\n").expect("secret-bearing conflict side");
-        }
-    }
-}
-
-fn create_typed_conflict_bundle(bundle: &Path) {
-    fs::create_dir_all(bundle.join("base").join("apps").join("web").join("src")).expect("base dir");
-    fs::create_dir_all(bundle.join("local").join("apps").join("web").join("src"))
-        .expect("local dir");
-    fs::create_dir_all(bundle.join("remote").join("apps").join("web").join("src"))
-        .expect("remote dir");
-    fs::create_dir_all(bundle.join("resolution")).expect("resolution dir");
-    let path = "apps/web/src/auth.ts";
-    let mut record = ConflictRecord::same_path_span(
-        path,
-        ConflictSpan {
-            path: path.to_string(),
-            base_start_line: 14,
-            base_end_line: 22,
-            local_start_line: 14,
-            local_end_line: 22,
-            remote_start_line: 14,
-            remote_end_line: 22,
-            base_context_hash: None,
-            local_context_hash: None,
-            remote_context_hash: None,
-        },
-    );
-    record.id = "conflict_typed_span".to_string();
-    record.bundle_path = Some(bundle.to_path_buf());
-    record.base_snapshot_id = Some("snap_fixture_base".to_string());
-    record.remote_snapshot_id = Some("snap_fixture_remote".to_string());
-    write_conflict_manifest(bundle, &record);
-}
-
-fn create_conflict_bundle_with_paths(
-    bundle: &Path,
-    conflict_id: &str,
-    affected_files: &[&str],
-    contains_secrets: bool,
-) {
-    fs::create_dir_all(bundle.join("base").join("apps").join("web")).expect("base dir");
-    fs::create_dir_all(bundle.join("local").join("apps").join("web")).expect("local dir");
-    fs::create_dir_all(bundle.join("remote").join("apps").join("web")).expect("remote dir");
-    fs::create_dir_all(bundle.join("resolution")).expect("resolution dir");
-    let first_path = affected_files.first().expect("at least one conflict path");
-    let mut record = ConflictRecord::same_path(first_path);
-    record.id = conflict_id.to_string();
-    record.paths = affected_files
-        .iter()
-        .map(|path| (*path).to_string())
-        .collect();
-    record.bundle_path = Some(bundle.to_path_buf());
-    record.base_snapshot_id = Some("snap_fixture_base".to_string());
-    record.remote_snapshot_id = Some("snap_fixture_remote".to_string());
-    record.contains_secrets = contains_secrets;
-    write_conflict_manifest(bundle, &record);
-}
-
-fn write_conflict_manifest(bundle: &Path, record: &ConflictRecord) {
-    fs::write(
-        bundle.join("manifest.json"),
-        serde_json::to_vec_pretty(record).expect("conflict record serializes"),
-    )
-    .expect("manifest");
-}
-
 fn seed_workspace_for_work_views(db_path: &Path, code_root: &Path) {
     let mut store = MetadataStore::open(db_path).expect("metadata opens");
     let workspace_id = WorkspaceId::new("ws_cli_phase9");
@@ -524,18 +383,10 @@ fn seed_workspace_for_work_views(db_path: &Path, code_root: &Path) {
             "2026-06-25T12:00:00Z",
         )
         .expect("project");
-    bowline_testkit::persist_project_snapshot_fixture(
-        &mut store,
-        &workspace_id,
-        &project_id,
-        code_root,
-        "apps/web",
-        db_path.parent().expect("metadata state root"),
-        "2026-06-25T12:00:00Z",
-    );
+    let _ = &mut store;
 }
 
-fn seed_additional_work_view_project(db_path: &Path, code_root: &Path, path: &str) {
+fn seed_additional_work_view_project(db_path: &Path, _code_root: &Path, path: &str) {
     let mut store = MetadataStore::open(db_path).expect("metadata opens");
     let workspace_id = WorkspaceId::new("ws_cli_phase9");
     let project_id = ProjectId::new(format!("proj_cli_{}", path.replace('/', "_")));
@@ -548,18 +399,124 @@ fn seed_additional_work_view_project(db_path: &Path, code_root: &Path, path: &st
             "2026-07-10T12:00:00Z",
         )
         .expect("additional project");
-    bowline_testkit::persist_project_snapshot_fixture(
-        &mut store,
-        &workspace_id,
-        &project_id,
-        code_root,
-        path,
-        db_path.parent().expect("metadata state root"),
-        "2026-07-10T12:00:00Z",
-    );
+    let _ = &mut store;
 }
 
 fn parse_stdout_json(output: Output) -> Value {
     let stdout = String::from_utf8(output.stdout).expect("json should be utf8");
     serde_json::from_str(&stdout).expect("stdout should be json")
+}
+
+/// A scripted daemon socket for `work create` CLI-contract tests: it answers
+/// the version handshake and `work.create` by mirroring the real daemon's
+/// effect — materializing the project tree directly into the project-scoped
+/// view directory — and returning a fixed base manifest key. Engine behavior is covered by the
+/// bowline-daemon `work_views` tests; these tests pin the CLI's wire contract.
+fn spawn_work_create_server(listener: UnixListener, creates: usize) -> thread::JoinHandle<()> {
+    spawn_work_rpc_server(listener, creates)
+}
+
+/// A scripted daemon socket handling one work RPC per connection: `work.create`
+/// materializes the view directory (mirroring the daemon's pull), `work.review`
+/// reports one captured added file, `work.accept` reports a published merged
+/// head. Fixed keys keep the CLI-side wire assertions deterministic.
+fn spawn_work_rpc_server(listener: UnixListener, connections: usize) -> thread::JoinHandle<()> {
+    use bowline_core::wire::generated::{
+        DaemonClientHello, DaemonRpcRequest, DaemonRpcResponse, DaemonServerHello,
+        MACHINE_CONTRACT_VERSION,
+    };
+    use bowline_daemon_rpc::{DAEMON_RPC_PROTOCOL_VERSION, FrameCodec};
+    thread::spawn(move || {
+        for _ in 0..connections {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            let mut stream =
+                accept_cli_test_client(&listener, deadline).expect("work RPC client connects");
+            let codec = FrameCodec::default();
+            codec.read_magic(&mut stream).expect("RPC magic reads");
+            let _: DaemonClientHello = codec.read(&mut stream).expect("client hello reads");
+            codec
+                .write(
+                    &mut stream,
+                    &DaemonServerHello {
+                        protocol_version: DAEMON_RPC_PROTOCOL_VERSION,
+                        contract_version: MACHINE_CONTRACT_VERSION,
+                        schema_hash: bowline_core::wire::generated::WIRE_SCHEMA_HASH.to_string(),
+                        daemon_version: "test-daemon".to_string(),
+                        capabilities: vec!["work.create".to_string()],
+                        instance_id: "test-work-daemon".to_string(),
+                    },
+                )
+                .expect("server hello writes");
+            let request: DaemonRpcRequest = codec.read(&mut stream).expect("work request reads");
+            assert!(
+                matches!(
+                    request.method.as_str(),
+                    "work.create" | "work.review" | "work.accept"
+                ),
+                "unexpected work RPC method: {}",
+                request.method
+            );
+            let result = match request.method.as_str() {
+                "work.create" => {
+                    let view_dir =
+                        PathBuf::from(request.params["viewDir"].as_str().expect("viewDir param"));
+                    materialize_fake_view(&view_dir);
+                    serde_json::json!({ "baseManifestKey": "m_cli_contract_base" })
+                }
+                "work.review" => serde_json::json!({
+                    "overlayManifestKey": "m_cli_contract_overlay",
+                    "changes": [
+                        { "path": "apps/web/src/feature.ts", "kind": "added" },
+                    ],
+                }),
+                "work.accept" => serde_json::json!({
+                    "overlayManifestKey": "m_cli_contract_overlay",
+                    "baseManifestKey": "m_cli_contract_rebased",
+                    "publishedManifestKey": "m_cli_contract_head2",
+                    "conflictAsides": [],
+                    "acceptedPaths": ["src/feature.ts"],
+                }),
+                _ => serde_json::Value::Null, // unreachable: asserted above
+            };
+            codec
+                .write(
+                    &mut stream,
+                    &DaemonRpcResponse {
+                        request_id: request.request_id,
+                        result: Some(result),
+                        error: None,
+                    },
+                )
+                .expect("work response writes");
+        }
+    })
+}
+
+/// Mirror the daemon's project-scoped materialization effect.
+fn materialize_fake_view(view_dir: &Path) {
+    let components: Vec<std::ffi::OsString> =
+        view_dir.iter().map(std::ffi::OsStr::to_os_string).collect();
+    let work_index = components
+        .iter()
+        .rposition(|component| component == ".work")
+        .expect("view dir lives under .work");
+    let root: PathBuf = components[..work_index].iter().collect();
+    let project_rel: PathBuf = components[work_index + 1..components.len() - 1]
+        .iter()
+        .collect();
+    copy_tree(&root.join(&project_rel), view_dir);
+}
+
+fn copy_tree(source: &Path, target: &Path) {
+    fs::create_dir_all(target).expect("copy target dir");
+    for entry in fs::read_dir(source).expect("copy source dir") {
+        let entry = entry.expect("copy source entry");
+        let file_type = entry.file_type().expect("copy source file type");
+        let destination = target.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_tree(&entry.path(), &destination);
+        } else {
+            fs::copy(entry.path(), &destination).expect("copy source file");
+        }
+    }
 }

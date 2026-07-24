@@ -34,10 +34,7 @@
   "limits": [],
   "eventWatermarks": {
     "lastEventId": "evt_work_ready_001",
-    "eventLagMs": 0,
-    "syncState": "ready",
-    "watcherState": "ready",
-    "networkState": "online"
+    "eventLagMs": 0
   },
   "nextActions": [
     {

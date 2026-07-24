@@ -14,7 +14,6 @@ use bowline_core::{
     ids::{DeviceApprovalRequestId, DeviceId, WorkspaceId},
     status::RepairCommand,
 };
-use bowline_local::metadata::{MetadataStore, default_database_path};
 use bowline_local::trust::{self, ApproveDeviceOptions, DeviceRequestOptions, grants};
 
 use crate::{TrustRequestSelector, WorkspaceSelection, resolve_explicit_path, runtime};
@@ -292,14 +291,6 @@ pub fn revoke(
         .map_err(classify_control_plane_error)?;
     let revoked_device_id = DeviceId::new(revoked.device_id);
     let revoked_at = revoked.revoked_at.to_string();
-    if let Err(error) =
-        revoke_local_mcp_tokens_for_device(&workspace_id, &revoked_device_id, &revoked_at)
-    {
-        eprintln!(
-            "bowline device revoke failed to revoke local MCP tokens for {}: {error}",
-            revoked_device_id.as_str()
-        );
-    }
     let revoked_device = RevokedDevice {
         id: revoked_device_id,
         name: revoked.device_name,
@@ -327,28 +318,6 @@ pub fn revoke(
         recovery_key: Some(RecoveryKeyState::missing()),
         next_actions: Vec::new(),
     })
-}
-
-fn revoke_local_mcp_tokens_for_device(
-    workspace_id: &WorkspaceId,
-    device_id: &DeviceId,
-    revoked_at: &str,
-) -> Result<(), String> {
-    let db_path = crate::io_helpers::metadata_db_path()
-        .or_else(|| default_database_path().ok())
-        .ok_or_else(|| "metadata database path is unavailable".to_string())?;
-    let store = MetadataStore::open(db_path).map_err(|error| error.to_string())?;
-    for lease in store
-        .agent_leases(workspace_id)
-        .map_err(|error| error.to_string())?
-    {
-        if &lease.device_id == device_id {
-            store
-                .revoke_agent_mcp_tokens_for_lease(&lease.id, revoked_at)
-                .map_err(|error| error.to_string())?;
-        }
-    }
-    Ok(())
 }
 
 pub fn run(
@@ -428,7 +397,6 @@ pub fn run(
                     device_name: runtime::device_name(),
                     platform: runtime::platform(),
                     host: None,
-                    lease_id: None,
                     root: Some(selection.root),
                     runtime: None,
                     generated_at: generated_at.clone(),
@@ -562,8 +530,6 @@ fn local_request(
             }
         },
         host: request.host,
-        lease_id: request.lease_id.map(String::from),
-        lease_handoff_digest: request.lease_handoff_digest,
         root: request.root,
         setup_receipts_digest: request.setup_receipts_digest,
     }
@@ -692,8 +658,6 @@ mod tests {
             expires_at: "2026-07-09T12:10:00Z".to_string(),
             state: DeviceApprovalRequestState::Pending,
             host: None,
-            lease_id: None,
-            lease_handoff_digest: None,
             root: Some("~/Code".to_string()),
             setup_receipts_digest: None,
         }

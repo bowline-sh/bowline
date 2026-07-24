@@ -3,7 +3,6 @@
     "help",
     "version",
     "contract",
-    "mcp",
     "update",
     "unknown",
     "login",
@@ -18,9 +17,7 @@
     "device request",
     "device accept",
     "events",
-    "history",
     "tui",
-    "resolve",
     "forget-local",
     "archive",
     "purge",
@@ -32,14 +29,6 @@
     "work discard",
     "work restore",
     "work cleanup",
-    "agent context",
-    "agent start",
-    "agent prompt",
-    "agent complete",
-    "agent cancel",
-    "agent extend",
-    "agent mcp-token",
-    "lease join",
     "daemon start",
     "daemon stop",
     "daemon status",
@@ -47,28 +36,11 @@
     "daemon restart",
     "daemon uninstall",
     "diagnostics collect",
-    "connect",
-    "handoff"
+    "doctor",
+    "connect"
   ],
   "DaemonCancelOperationParams": {
     "operationId": "sync-op-1"
-  },
-  "DaemonCancelOperationResult": {
-    "operation": {
-      "attemptCount": 0,
-      "claimGeneration": 0,
-      "createdAt": "2026-07-12T00:00:00Z",
-      "kind": "daemon-reconcile",
-      "operationId": "sync-op-1",
-      "ownership": "unclaimed",
-      "resource": {
-        "kind": "workspace-sync",
-        "workspaceId": "ws_fixture"
-      },
-      "state": "queued",
-      "updatedAt": "2026-07-12T00:00:00Z"
-    },
-    "outcome": "requested"
   },
   "DaemonClientHello": {
     "capabilities": [
@@ -85,20 +57,6 @@
   "DaemonDeviceActionParams": {
     "idempotencyKey": "action-1",
     "requestId": "device-request:ws_fixture:dev_fixture"
-  },
-  "DaemonOperationResult": {
-    "attemptCount": 0,
-    "claimGeneration": 0,
-    "createdAt": "2026-07-12T00:00:00Z",
-    "kind": "daemon-reconcile",
-    "operationId": "sync-op-1",
-    "ownership": "unclaimed",
-    "resource": {
-      "kind": "workspace-sync",
-      "workspaceId": "ws_fixture"
-    },
-    "state": "queued",
-    "updatedAt": "2026-07-12T00:00:00Z"
   },
   "DaemonRpcCancel": {
     "requestId": "request-1"
@@ -209,57 +167,6 @@
       "workspaceId": "ws_fixture"
     },
     "subscriptionId": "subscription-1"
-  },
-  "DaemonSyncCancellationOutcome": [
-    "requested",
-    "cancelled",
-    "already-completed",
-    "already-cancelled"
-  ],
-  "DaemonSyncOperationKind": [
-    "daemon-reconcile",
-    "conflict-occurrence-reconcile",
-    "work-view-overlay-sync"
-  ],
-  "DaemonSyncOperationOwnership": [
-    "unclaimed",
-    "owned-by-this-daemon",
-    "owned-by-another-daemon",
-    "lease-expired"
-  ],
-  "DaemonSyncOperationState": [
-    "queued",
-    "claimed",
-    "waiting_retry",
-    "blocked_offline",
-    "reconciliation_required",
-    "attention",
-    "completed",
-    "cancelled"
-  ],
-  "DaemonSyncRequestOutcome": [
-    "enqueued",
-    "coalesced"
-  ],
-  "DaemonSyncRequestParams": {
-    "idempotencyKey": "sync-1"
-  },
-  "DaemonSyncRequestResult": {
-    "operation": {
-      "attemptCount": 0,
-      "claimGeneration": 0,
-      "createdAt": "2026-07-12T00:00:00Z",
-      "kind": "daemon-reconcile",
-      "operationId": "sync-op-1",
-      "ownership": "unclaimed",
-      "resource": {
-        "kind": "workspace-sync",
-        "workspaceId": "ws_fixture"
-      },
-      "state": "queued",
-      "updatedAt": "2026-07-12T00:00:00Z"
-    },
-    "outcome": "enqueued"
   },
   "DaemonSyncResource": {
     "kind": "workspace-sync",
@@ -381,7 +288,6 @@
     "namespace.purge_cancelled",
     "workspace_status.published",
     "object_pointer.added",
-    "snapshot_root.committed",
     "device.requested",
     "device.harness_approved",
     "device.approval_requested",
@@ -397,92 +303,8 @@
     "recovery_key.rotated",
     "recovery_key.revoked",
     "auth.login_started",
-    "auth.login_completed",
-    "conflict.detected",
-    "conflict.resolved",
-    "lease.created",
-    "lease.updated",
-    "lease.dispatched",
-    "lease.claimed",
-    "lease.completed",
-    "lease.review_ready",
-    "overlay.changed",
-    "work.created",
-    "work.updated",
-    "work.review_ready",
-    "work.accepted",
-    "work.discarded",
-    "work.restored",
-    "work.cleanup_previewed",
-    "work.cleanup_completed"
+    "auth.login_completed"
   ],
-  "HostedConflictMetadataRecord": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "detectedAt": "2026-06-23T12:00:00Z",
-    "detectedByDeviceId": "dev_detector",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "state": "unresolved",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictOccurrenceState": [
-    "unresolved",
-    "accepted",
-    "rejected"
-  ],
-  "HostedConflictReconcileOutcome": [
-    "applied",
-    "idempotent",
-    "superseded"
-  ],
-  "HostedConflictReconcileResult": {
-    "conflict": {
-      "baseSnapshotId": "snap_base",
-      "conflictId": "conflict_1",
-      "conflictKind": "path-divergence",
-      "containsSecrets": false,
-      "detectedAt": "2026-06-23T12:00:00Z",
-      "detectedByDeviceId": "dev_detector",
-      "occurrenceVersion": 1,
-      "paths": [
-        "src/main.rs"
-      ],
-      "reason": "both sides edited",
-      "remoteSnapshotId": "snap_remote",
-      "state": "unresolved",
-      "workspaceId": "ws_code"
-    },
-    "outcome": "applied"
-  },
-  "HostedConflictsListWorkspaceConflictsRequest": {
-    "requestedByDeviceId": "dev_reader",
-    "requestedByDeviceProof": "proof_list",
-    "workspaceId": "ws_code"
-  },
-  "HostedConflictsListWorkspaceConflictsResponse": [],
-  "HostedConflictsReconcileConflictOccurrenceRequest": {
-    "baseSnapshotId": "snap_base",
-    "conflictId": "conflict_1",
-    "conflictKind": "path-divergence",
-    "containsSecrets": false,
-    "desiredState": "unresolved",
-    "deviceId": "dev_writer",
-    "deviceProof": "proof_reconcile",
-    "occurrenceVersion": 1,
-    "paths": [
-      "src/main.rs"
-    ],
-    "reason": "both sides edited",
-    "remoteSnapshotId": "snap_remote",
-    "workspaceId": "ws_code"
-  },
   "HostedDashboardAccount": {
     "accountId": "account_1",
     "workOsUserId": "user_1"
@@ -705,7 +527,6 @@
     "workspaceId": "workspace_1"
   },
   "HostedDashboardWorkspaceRef": {
-    "snapshotId": "snapshot_1",
     "updatedAt": "2026-07-14T12:00:00Z",
     "version": 4
   },
@@ -845,93 +666,13 @@
     "length": 8,
     "offset": 4
   },
-  "HostedEventsCreateLeaseRequest": {
-    "baseSnapshotId": "snap_fixture",
-    "deviceId": "dev_fixture",
-    "deviceProof": "dapp_p256_v1_x",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "statusCode": "active",
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedEventsCreateLeaseResponse": {
-    "event": null,
-    "lease": {
-      "baseSnapshotId": "snap_fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "deviceId": "dev_fixture",
-      "expiresAt": "t000000000100",
-      "leaseId": "lease_fixture",
-      "projectId": "proj_fixture",
-      "sessionState": "open",
-      "statusCode": "active",
-      "updatedAt": "2026-07-12T00:00:00Z",
-      "version": 0,
-      "workspaceId": "ws_fixture",
-      "writeTargetMode": "direct"
-    }
-  },
   "HostedEventsListCompactEventsRequest": {
     "workspaceId": "ws_code"
   },
   "HostedEventsListCompactEventsResponse": [],
-  "HostedEventsListLeasesRequest": {
-    "requestedByDeviceId": "dev_fixture",
-    "requestedByDeviceProof": "dapp_p256_v1_x",
-    "workspaceId": "ws_fixture"
-  },
-  "HostedEventsListLeasesResponse": [],
-  "HostedEventsUpdateLeaseRequest": {
-    "expectedVersion": 0,
-    "leaseId": "lease_fixture",
-    "updatedByDeviceId": "dev_fixture",
-    "updatedByDeviceProof": "dapp_p256_v1_x",
-    "workspaceId": "ws_fixture"
-  },
-  "HostedEventsUpdateLeaseResponse": {
-    "ok": true
-  },
   "HostedEventWatermarks": {},
   "HostedGcDeleteSkipReason": [
     "missing"
-  ],
-  "HostedLease": {
-    "baseSnapshotId": "snap_fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "deviceId": "dev_fixture",
-    "expiresAt": "t000000000100",
-    "leaseId": "lease_fixture",
-    "projectId": "proj_fixture",
-    "sessionState": "open",
-    "statusCode": "active",
-    "updatedAt": "2026-07-12T00:00:00Z",
-    "version": 0,
-    "workspaceId": "ws_fixture",
-    "writeTargetMode": "direct"
-  },
-  "HostedLeaseEventKind": [
-    "lease.created",
-    "lease.updated",
-    "lease.dispatched",
-    "lease.claimed",
-    "lease.completed",
-    "lease.review_ready",
-    "overlay.changed"
-  ],
-  "HostedLeaseSessionState": [
-    "provisional",
-    "open",
-    "completed"
-  ],
-  "HostedLeaseUpdateError": [
-    "lease-missing",
-    "stale-lease"
-  ],
-  "HostedLeaseWriteTargetMode": [
-    "direct",
-    "work-view"
   ],
   "HostedLimitedCapability": {
     "capability": "sync",
@@ -940,147 +681,34 @@
     ],
     "unavailableBecause": "offline"
   },
-  "HostedMetadataBindingInput": {
-    "logicalId": "fixture",
-    "object": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-metadata-page",
-      "objectKey": "fixture"
-    },
-    "recordKind": "namespace-page",
-    "sidecar": {
-      "childLogicalIds": [],
-      "digest": "fixture",
-      "directObjectKeys": []
-    }
-  },
-  "HostedMetadataBindingOutcome": [
-    "bound-new",
-    "existing-winner"
-  ],
-  "HostedMetadataBindingRecord": {
-    "logicalId": "fixture",
-    "object": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-metadata-page",
-      "objectKey": "fixture"
-    },
-    "recordKind": "namespace-page"
-  },
-  "HostedMetadataBindingsResponse": {
-    "bindings": [],
-    "workspaceId": "fixture"
-  },
-  "HostedMetadataPagePointer": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-metadata-page",
-    "objectKey": "fixture"
-  },
-  "HostedMetadataPagePointerInput": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-metadata-page",
-    "objectKey": "fixture"
-  },
-  "HostedMetadataRecordKind": [
-    "namespace-page",
-    "content-layout",
-    "segment-page"
-  ],
-  "HostedMetadataSidecar": {
-    "childLogicalIds": [],
-    "digest": "fixture",
-    "directObjectKeys": []
-  },
   "HostedObjectKind": [
-    "source-pack",
-    "locator-index",
-    "snapshot-manifest",
-    "snapshot-metadata-page",
-    "overlay-pack",
-    "conflict-bundle"
+    "blob",
+    "manifest"
   ],
   "HostedObjectMetadata": {
     "byteLength": 256,
     "createdAt": "2026-06-23T12:00:00Z",
     "hash": "b3_fixture",
     "keyEpoch": 1,
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "current",
     "workspaceId": "ws_code"
   },
   "HostedObjectMetadataOrNull": null,
-  "HostedObjectPointer": {
-    "byteLength": 128,
-    "contentId": "cid_overlay",
-    "createdAt": "2026-06-23T12:00:00Z",
-    "hash": "b3_fixture",
-    "keyEpoch": 1,
-    "kind": "overlay-pack",
-    "objectKey": "packs_pk_fixture"
-  },
   "HostedObjectPointerInput": {
     "byteLength": 256,
     "contentId": "cid_fixture",
     "hash": "b3_fixture",
     "keyEpoch": 1,
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture"
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
   },
   "HostedObjectQueriesGetObjectMetadataRequest": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "requestedByDeviceProof": "proof_head_metadata",
     "workspaceId": "ws_code"
-  },
-  "HostedObjectQueriesGetSnapshotRootRequest": {
-    "requestedByDeviceId": "fixture",
-    "requestedByDeviceProof": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectQueriesResolveMetadataBindingsRequest": {
-    "logicalIds": [],
-    "requestedByDeviceId": "fixture",
-    "requestedByDeviceProof": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectsCommitMetadataBindingsRequest": {
-    "bindings": [],
-    "committedByDeviceId": "fixture",
-    "committedByDeviceProof": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedObjectsCommitSnapshotRootRequest": {
-    "committedByDeviceId": "fixture",
-    "committedByDeviceProof": "fixture",
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
   },
   "HostedObjectsCommitUploadedObjectMetadataRequest": {
     "committedByDeviceId": "device_1",
@@ -1090,13 +718,13 @@
       "contentId": "cid_fixture",
       "hash": "b3_fixture",
       "keyEpoch": 1,
-      "kind": "source-pack",
-      "objectKey": "packs_pk_fixture"
+      "kind": "blob",
+      "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
     },
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateDownloadIntentRequest": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "requestedByDeviceProof": "proof_download_intent",
     "workspaceId": "ws_code"
@@ -1105,21 +733,21 @@
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
     "method": "GET",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "signedUrl": "https://r2.example/get",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateStorageGcDeleteIntentRequest": {
     "authToken": "cp_token",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateStorageGcDeleteIntentResponse": {
     "expiresAt": "2026-06-23T12:00:00Z",
     "keyEpoch": 1,
-    "kind": "source-pack",
+    "kind": "blob",
     "method": "DELETE",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "retentionState": "delete-eligible",
     "signedUrl": "https://r2.example/delete",
     "workspaceId": "ws_code"
@@ -1127,25 +755,26 @@
   "HostedObjectsCreateUploadIntentRequest": {
     "authorityFormatVersion": 2,
     "byteLength": 256,
+    "checksumSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     "createdByDeviceId": "device_1",
     "createdByDeviceProof": "proof_upload_intent",
-    "kind": "source-pack",
-    "objectKey": "packs_pk_fixture",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadIntentResponse": {
     "byteLength": 256,
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
-    "kind": "source-pack",
+    "kind": "blob",
     "method": "PUT",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "signedUrl": "https://r2.example/put",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadVerificationIntentRequest": {
     "byteLength": 256,
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "requestedByDeviceProof": "proof_upload_verification",
     "workspaceId": "ws_code"
@@ -1155,25 +784,17 @@
     "expiresAt": "2026-06-23T12:00:00Z",
     "intentId": "intent_1",
     "method": "GET",
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "signedUrl": "https://r2.example/get",
     "workspaceId": "ws_code"
   },
   "HostedObjectsMarkObjectRetentionStateRequest": {
-    "objectKey": "packs_pk_fixture",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "requestedByDeviceId": "device_1",
     "requestedByDeviceProof": "proof_retention",
     "retentionState": "retained",
     "workspaceId": "ws_code"
-  },
-  "HostedOverlayObjectInput": {
-    "byteLength": 128,
-    "contentId": "cid_overlay",
-    "hash": "b3_fixture",
-    "keyEpoch": 1,
-    "kind": "overlay-pack",
-    "objectKey": "packs_pk_fixture"
   },
   "HostedProjectionMetadata": {
     "generatedAt": "2026-07-14T12:00:00Z",
@@ -1278,7 +899,6 @@
     "ok": true
   },
   "HostedRefsCreateWorkspaceRefRequest": {
-    "snapshotId": "snap_empty",
     "workspaceId": "ws_code"
   },
   "HostedRefsGetWorkspaceRefRequest": {
@@ -1322,43 +942,6 @@
     "revokedByDeviceId": "device_owner",
     "workspaceId": "ws_code"
   },
-  "HostedSnapshotManifestPointer": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "createdAt": "2026-07-12T00:00:00Z",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-manifest",
-    "objectKey": "fixture"
-  },
-  "HostedSnapshotManifestPointerInput": {
-    "byteLength": 0,
-    "contentId": "fixture",
-    "hash": "fixture",
-    "keyEpoch": 1,
-    "kind": "snapshot-manifest",
-    "objectKey": "fixture"
-  },
-  "HostedSnapshotRootRecord": {
-    "committedAt": "2026-07-12T00:00:00Z",
-    "committedByDeviceId": "fixture",
-    "complete": false,
-    "extraRootLogicalIds": [],
-    "manifestId": "fixture",
-    "manifestObject": {
-      "byteLength": 0,
-      "contentId": "fixture",
-      "createdAt": "2026-07-12T00:00:00Z",
-      "hash": "fixture",
-      "keyEpoch": 1,
-      "kind": "snapshot-manifest",
-      "objectKey": "fixture"
-    },
-    "namespaceRootId": "fixture",
-    "snapshotId": "fixture",
-    "workspaceId": "fixture"
-  },
-  "HostedSnapshotRootRecordOrNull": null,
   "HostedStatusActionReference": {
     "kind": "resolve-conflict"
   },
@@ -1454,7 +1037,6 @@
     "waitingRetry": 0
   },
   "HostedWorkspaceRef": {
-    "snapshotId": "snap_head",
     "updatedAt": "2026-06-23T12:00:00Z",
     "version": 7,
     "workspaceId": "ws_code"
@@ -1467,81 +1049,6 @@
   },
   "HostedWorkspaceRefOrNull": null,
   "HostedWorkspaceSummary": {},
-  "HostedWorkView": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdAt": "2026-06-23T12:00:00Z",
-    "createdByDeviceId": "dev_creator",
-    "lifecycle": "active",
-    "name": "Primary",
-    "overlayHead": null,
-    "overlayVersion": 0,
-    "projectId": "proj_code",
-    "updatedAt": "2026-06-23T12:00:00Z",
-    "updatedByDeviceId": "dev_updater",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewLifecycleState": [
-    "active",
-    "review-ready",
-    "accepted",
-    "discarded"
-  ],
-  "HostedWorkViewOverlayCommitOutcome": [
-    "committed",
-    "stale-overlay-head"
-  ],
-  "HostedWorkViewsCommitOverlayPointerRequest": {
-    "committedByDeviceId": "dev_committer",
-    "committedByDeviceProof": "proof_overlay",
-    "expectedOverlayVersion": 0,
-    "overlayObject": {
-      "byteLength": 128,
-      "contentId": "cid_overlay",
-      "hash": "b3_fixture",
-      "keyEpoch": 1,
-      "kind": "overlay-pack",
-      "objectKey": "packs_pk_fixture"
-    },
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsCommitOverlayPointerResponse": {
-    "outcome": "committed"
-  },
-  "HostedWorkViewsCreateWorkViewRequest": {
-    "baseSnapshotId": "snap_base",
-    "baseWorkspaceVersion": 1,
-    "createdByDeviceId": "dev_creator",
-    "createdByDeviceProof": "proof_create",
-    "name": "Primary",
-    "projectId": "proj_code",
-    "visiblePath": ".work/primary",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsListWorkViewsRequest": {
-    "includeAll": false,
-    "requestedByDeviceId": "dev_reader",
-    "requestedByDeviceProof": "proof_list",
-    "workspaceId": "ws_code"
-  },
-  "HostedWorkViewsListWorkViewsResponse": [],
-  "HostedWorkViewsRestoreWorkViewRequest": {
-    "restoredByDeviceId": "dev_restorer",
-    "restoredByDeviceProof": "proof_restore",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
-  "HostedWorkViewsUpdateWorkViewLifecycleRequest": {
-    "lifecycle": "review-ready",
-    "updatedByDeviceId": "dev_updater",
-    "updatedByDeviceProof": "proof_lifecycle",
-    "workspaceId": "ws_code",
-    "workViewId": "work_primary"
-  },
   "MachineContractVersion": 1,
   "OpaqueJson": {},
   "StatusActionKind": "fixture",
@@ -1640,11 +1147,6 @@
     "unsupported",
     "none"
   ],
-  "WireComponentState": [
-    "ready",
-    "degraded",
-    "unavailable"
-  ],
   "WireContractCommandOutput": {
     "command": "contract",
     "contractVersion": 8,
@@ -1658,6 +1160,34 @@
     "encrypted-object-store",
     "recovery"
   ],
+  "WireConvergenceReadinessReason": [
+    "startup-recovery",
+    "causes-pending",
+    "attempt-claimed",
+    "attempt-waiting-retry",
+    "reconciliation-required",
+    "recovery-fence-open",
+    "filesystem-epoch-open",
+    "materialization-incomplete",
+    "materialization-conflict",
+    "workspace-authority-unpublished",
+    "watcher-starting",
+    "watcher-recovery-required",
+    "observer-connecting",
+    "observer-unavailable",
+    "attention-required"
+  ],
+  "WireConvergenceReadinessState": [
+    "ready",
+    "converging",
+    "recovering",
+    "limited"
+  ],
+  "WireConvergenceStatusSummary": {
+    "reasons": [],
+    "revision": 42,
+    "state": "ready"
+  },
   "WireEventActor": {
     "kind": "system"
   },
@@ -1734,11 +1264,6 @@
     "ignore",
     "local-only",
     "blocked"
-  ],
-  "WireNetworkState": [
-    "online",
-    "degraded",
-    "offline"
   ],
   "WireObservedWorkspaceSummary": {
     "blockedPathCount": 0,

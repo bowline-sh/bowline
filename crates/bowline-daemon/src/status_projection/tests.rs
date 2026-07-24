@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
     sync::{
         Arc,
@@ -18,6 +18,114 @@ use bowline_local::status::{LocalStatusFacts, LocalStatusRevision, StatusOptions
 use super::retry::RetrySchedule;
 use super::types::semantic_fingerprint;
 use super::*;
+
+#[test]
+fn canonical_convergence_status_owns_readiness_and_queue_projection() {
+    use bowline_local::sync::manifest_engine::{Degradation, EnginePhase, EngineSnapshot};
+
+    let metadata = missing_status("2026-07-19T12:00:00Z");
+    // A caught-up engine at revision 42 maps to a Ready, empty-queue v8 summary.
+    let status = engine_convergence_facts(&EngineSnapshot {
+        revision: 42,
+        phase: EnginePhase::Idle,
+        observed_ref: None,
+        applied_manifest: None,
+        pending_intents: 0,
+        dirty: 0,
+        dirty_paths: Arc::new(BTreeSet::new()),
+        dirty_subtree_paths: Arc::new(BTreeSet::new()),
+        pending_intent_paths: Arc::new(BTreeSet::new()),
+        scan_required: false,
+        unattributed_pull_pending: false,
+        cycle_active: false,
+        last_success_at: None,
+        degradation: Degradation::Nominal,
+    });
+    let mut sources = BTreeMap::from([
+        (
+            StatusSource::Convergence,
+            SourceRevision {
+                source: StatusSource::Convergence,
+                revision: StatusSourceRevision::new(42),
+                observed_at: StatusTimestamp::new("2026-07-19T12:00:00Z"),
+                freshness: SourceFreshness::Current,
+            },
+        ),
+        (
+            StatusSource::SyncRuntime,
+            SourceRevision {
+                source: StatusSource::SyncRuntime,
+                revision: StatusSourceRevision::new(99),
+                observed_at: StatusTimestamp::new("2026-07-19T12:00:00Z"),
+                freshness: SourceFreshness::Current,
+            },
+        ),
+    ]);
+    let source_facts = BTreeMap::from([
+        (
+            StatusSource::Convergence,
+            StatusSourceFacts::Convergence(Box::new(status)),
+        ),
+        (
+            StatusSource::SyncRuntime,
+            StatusSourceFacts::SyncRuntime(StatusSourceStateFacts {
+                state: StatusSourceState::Ready,
+                pending_count: 9,
+            }),
+        ),
+    ]);
+    let output = super::reducer::reduce_projection_status(
+        &metadata,
+        &sources,
+        &source_facts,
+        &StatusTimestamp::new("2026-07-19T12:00:00Z"),
+    );
+
+    let convergence = output.convergence.expect("convergence summary");
+    assert_eq!(convergence.revision, 42);
+    assert_eq!(
+        convergence.state,
+        bowline_core::status::ConvergenceReadinessState::Ready
+    );
+    assert!(convergence.reasons.is_empty());
+    assert_eq!(output.sync_queue.expect("canonical queue").queued, 0);
+
+    sources
+        .get_mut(&StatusSource::Convergence)
+        .expect("convergence revision")
+        .freshness = SourceFreshness::Stale;
+    let stale = super::reducer::reduce_projection_status(
+        &metadata,
+        &sources,
+        &source_facts,
+        &StatusTimestamp::new("2026-07-19T12:00:01Z"),
+    );
+    assert!(stale.convergence.is_none());
+    assert!(stale.sync_queue.is_none());
+
+    sources
+        .get_mut(&StatusSource::Convergence)
+        .expect("convergence revision")
+        .freshness = SourceFreshness::Failed;
+    let unavailable = super::reducer::reduce_projection_status(
+        &metadata,
+        &sources,
+        &source_facts,
+        &StatusTimestamp::new("2026-07-19T12:00:02Z"),
+    );
+    assert!(unavailable.convergence.is_none());
+    assert!(unavailable.sync_queue.is_none());
+    assert!(unavailable.items.iter().any(|item| {
+        item.kind == bowline_core::status::StatusItemKind::Continuity
+            && item.summary == "Workspace convergence status collection failed."
+    }));
+    assert!(
+        unavailable
+            .limits
+            .iter()
+            .any(|limit| limit.capability == "convergence")
+    );
+}
 
 #[test]
 fn fingerprint_ignores_order_and_explicit_observation_metadata() {
@@ -212,7 +320,7 @@ fn collector_failure_retains_stale_facts_or_discards_failed_facts_by_policy() {
         FakeOutcome::Updated(StatusSourceState::Ready),
         FakeOutcome::Failed(StatusCollectorFailureCode::InjectedFailure),
     ]);
-    let store_outcomes = VecDeque::from([
+    let update_outcomes = VecDeque::from([
         FakeOutcome::Updated(StatusSourceState::Ready),
         FakeOutcome::Failed(StatusCollectorFailureCode::InjectedFailure),
     ]);
@@ -227,10 +335,10 @@ fn collector_failure_retains_stale_facts_or_discards_failed_facts_by_policy() {
                 trust_outcomes,
             )),
             Box::new(FakeCollector::state(
-                StatusSource::StoreHealth,
+                StatusSource::UpdateAvailability,
                 StatusSourceFailurePolicy::Discard,
                 Arc::new(AtomicU64::new(0)),
-                store_outcomes,
+                update_outcomes,
             )),
         ],
     );
@@ -253,18 +361,29 @@ fn collector_failure_retains_stale_facts_or_discards_failed_facts_by_policy() {
 
     service
         .input()
-        .send(StatusInputEvent::SourceChanged(StatusSource::StoreHealth))
-        .expect("dirty store health");
+        .send(StatusInputEvent::SourceChanged(
+            StatusSource::UpdateAvailability,
+        ))
+        .expect("dirty update availability");
     let failed = subscription
         .updates
         .recv_timeout(Duration::from_secs(1))
         .expect("failed projection");
     assert_eq!(
-        failed.sources[&StatusSource::StoreHealth].freshness,
+        failed.sources[&StatusSource::UpdateAvailability].freshness,
         SourceFreshness::Failed
     );
-    assert_eq!(failed.sources[&StatusSource::StoreHealth].revision.get(), 1);
-    assert!(!failed.source_facts.contains_key(&StatusSource::StoreHealth));
+    assert_eq!(
+        failed.sources[&StatusSource::UpdateAvailability]
+            .revision
+            .get(),
+        1
+    );
+    assert!(
+        !failed
+            .source_facts
+            .contains_key(&StatusSource::UpdateAvailability)
+    );
     assert_eq!(
         failed.sources[&StatusSource::DeviceTrust]
             .observed_at
@@ -372,7 +491,7 @@ fn initial_failure_then_unchanged_stays_failed_until_updated_recovery() {
 
 #[test]
 fn discard_failure_then_unchanged_stays_failed_until_updated_recovery() {
-    let store_calls = Arc::new(AtomicU64::new(0));
+    let notification_calls = Arc::new(AtomicU64::new(0));
     let config = ProjectionServiceConfig::new(
         DaemonInstanceId::new("test-instance"),
         Duration::from_secs(60),
@@ -387,9 +506,9 @@ fn discard_failure_then_unchanged_stays_failed_until_updated_recovery() {
         vec![
             Box::new(FakeCollector::metadata(Arc::new(AtomicU64::new(0)))),
             Box::new(FakeCollector::state(
-                StatusSource::StoreHealth,
+                StatusSource::NotificationState,
                 StatusSourceFailurePolicy::Discard,
-                Arc::clone(&store_calls),
+                Arc::clone(&notification_calls),
                 VecDeque::from([
                     FakeOutcome::Updated(StatusSourceState::Ready),
                     FakeOutcome::Failed(StatusCollectorFailureCode::InjectedFailure),
@@ -402,29 +521,35 @@ fn discard_failure_then_unchanged_stays_failed_until_updated_recovery() {
     let subscription = service.subscribe().expect("discard failure subscription");
     service
         .input()
-        .send(StatusInputEvent::SourceChanged(StatusSource::StoreHealth))
+        .send(StatusInputEvent::SourceChanged(
+            StatusSource::NotificationState,
+        ))
         .expect("discard failure input");
     let failed = subscription
         .updates
         .recv_timeout(Duration::from_secs(1))
         .expect("discard failed projection");
     assert_eq!(
-        failed.sources[&StatusSource::StoreHealth].freshness,
+        failed.sources[&StatusSource::NotificationState].freshness,
         SourceFreshness::Failed
     );
-    assert!(!failed.source_facts.contains_key(&StatusSource::StoreHealth));
+    assert!(
+        !failed
+            .source_facts
+            .contains_key(&StatusSource::NotificationState)
+    );
 
-    wait_for_contract_retry_schedule(&service, StatusSource::StoreHealth, 1);
+    wait_for_contract_retry_schedule(&service, StatusSource::NotificationState, 1);
     let after_unchanged = service.current().expect("discard failed current");
     assert_eq!(after_unchanged.sequence, failed.sequence);
     assert_eq!(
-        after_unchanged.sources[&StatusSource::StoreHealth].freshness,
+        after_unchanged.sources[&StatusSource::NotificationState].freshness,
         SourceFreshness::Failed
     );
     assert!(
         !after_unchanged
             .source_facts
-            .contains_key(&StatusSource::StoreHealth)
+            .contains_key(&StatusSource::NotificationState)
     );
     assert_eq!(
         after_unchanged.status.status_summary.availability,
@@ -436,30 +561,30 @@ fn discard_failure_then_unchanged_stays_failed_until_updated_recovery() {
         .expect("discard updated recovery");
     assert_eq!(recovered.sequence, failed.sequence.next());
     assert_eq!(
-        recovered.sources[&StatusSource::StoreHealth].freshness,
+        recovered.sources[&StatusSource::NotificationState].freshness,
         SourceFreshness::Current
     );
     assert!(
         recovered
             .source_facts
-            .contains_key(&StatusSource::StoreHealth)
+            .contains_key(&StatusSource::NotificationState)
     );
-    assert_eq!(store_calls.load(Ordering::SeqCst), 4);
-    wait_for_contract_retry_recovery(&service, StatusSource::StoreHealth, 1);
+    assert_eq!(notification_calls.load(Ordering::SeqCst), 4);
+    wait_for_contract_retry_recovery(&service, StatusSource::NotificationState, 1);
     let metrics = service.metrics().expect("discard unchanged metrics");
     assert_eq!(metrics.broadcasts, 2);
     assert_eq!(
-        metrics.collector_contract_retries_scheduled[&StatusSource::StoreHealth],
+        metrics.collector_contract_retries_scheduled[&StatusSource::NotificationState],
         1
     );
     assert_eq!(
-        metrics.collector_contract_retry_attempts[&StatusSource::StoreHealth],
+        metrics.collector_contract_retry_attempts[&StatusSource::NotificationState],
         1
     );
     assert_eq!(
         metrics
             .collector_skips
-            .get(&StatusSource::StoreHealth)
+            .get(&StatusSource::NotificationState)
             .copied()
             .unwrap_or(0),
         0
@@ -655,7 +780,6 @@ fn input_flood_coalesces_dirty_state_without_starving_sources_heartbeat_or_shutd
     let sources = [
         StatusSource::Metadata,
         StatusSource::SyncRuntime,
-        StatusSource::StoreHealth,
         StatusSource::DeviceTrust,
         StatusSource::UpdateAvailability,
         StatusSource::NotificationState,
@@ -1245,7 +1369,7 @@ fn supplemental_degradation_and_failure_reduce_into_visible_status() {
                 ]),
             )),
             Box::new(FakeCollector::state(
-                StatusSource::StoreHealth,
+                StatusSource::ServiceRuntime,
                 StatusSourceFailurePolicy::Discard,
                 Arc::new(AtomicU64::new(0)),
                 VecDeque::from([
@@ -1312,8 +1436,10 @@ fn supplemental_degradation_and_failure_reduce_into_visible_status() {
 
     service
         .input()
-        .send(StatusInputEvent::SourceChanged(StatusSource::StoreHealth))
-        .expect("fail store health");
+        .send(StatusInputEvent::SourceChanged(
+            StatusSource::ServiceRuntime,
+        ))
+        .expect("fail service runtime");
     let failed = subscription
         .updates
         .recv_timeout(Duration::from_secs(1))
@@ -1335,15 +1461,15 @@ fn supplemental_degradation_and_failure_reduce_into_visible_status() {
         bowline_core::status::StatusLevel::Attention
     );
     assert!(failed.status.items.iter().any(|item| {
-        item.kind == bowline_core::status::StatusItemKind::Metadata
-            && item.summary == "Store health status collection failed."
+        item.kind == bowline_core::status::StatusItemKind::Watcher
+            && item.summary == "Service runtime status collection failed."
     }));
     assert!(
         failed
             .status
             .limits
             .iter()
-            .any(|limit| limit.capability == "store-health")
+            .any(|limit| limit.capability == "service-runtime")
     );
 }
 
@@ -1351,7 +1477,7 @@ fn supplemental_degradation_and_failure_reduce_into_visible_status() {
 fn collector_contract_error_replays_valid_stage_and_recovers_without_external_retrigger() {
     let metadata_calls = Arc::new(AtomicU64::new(0));
     let sync_calls = Arc::new(AtomicU64::new(0));
-    let store_calls = Arc::new(AtomicU64::new(0));
+    let update_calls = Arc::new(AtomicU64::new(0));
     let trust_calls = Arc::new(AtomicU64::new(0));
     let config = ProjectionServiceConfig::new(
         DaemonInstanceId::new("test-instance"),
@@ -1377,9 +1503,9 @@ fn collector_contract_error_replays_valid_stage_and_recovers_without_external_re
                 ]),
             )),
             Box::new(FakeCollector::state(
-                StatusSource::StoreHealth,
+                StatusSource::UpdateAvailability,
                 StatusSourceFailurePolicy::RetainLastKnown,
-                Arc::clone(&store_calls),
+                Arc::clone(&update_calls),
                 VecDeque::from([
                     FakeOutcome::Updated(StatusSourceState::Ready),
                     FakeOutcome::Updated(StatusSourceState::Degraded),
@@ -1405,7 +1531,7 @@ fn collector_contract_error_replays_valid_stage_and_recovers_without_external_re
 
     let current = service.current().expect("current projection");
     assert_eq!(metadata_calls.load(Ordering::SeqCst), 2);
-    assert_eq!(store_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(update_calls.load(Ordering::SeqCst), 1);
     assert_eq!(trust_calls.load(Ordering::SeqCst), 1);
     assert_eq!(current.sequence, subscription.initial.sequence);
     assert_eq!(
@@ -1425,7 +1551,7 @@ fn collector_contract_error_replays_valid_stage_and_recovers_without_external_re
         .expect("automatic recovered projection");
     assert_eq!(metadata_calls.load(Ordering::SeqCst), 2);
     assert_eq!(sync_calls.load(Ordering::SeqCst), 3);
-    assert_eq!(store_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(update_calls.load(Ordering::SeqCst), 2);
     assert_eq!(trust_calls.load(Ordering::SeqCst), 2);
     assert_eq!(recovered.sources[&StatusSource::Metadata].revision.get(), 2);
     let StatusSourceFacts::Metadata(metadata) = &recovered.source_facts[&StatusSource::Metadata]
@@ -1433,12 +1559,13 @@ fn collector_contract_error_replays_valid_stage_and_recovers_without_external_re
         panic!("metadata facts must remain typed");
     };
     assert_eq!(metadata.revision.get(), 2);
-    let StatusSourceFacts::StoreHealth(store) = &recovered.source_facts[&StatusSource::StoreHealth]
+    let StatusSourceFacts::UpdateAvailability(update) =
+        &recovered.source_facts[&StatusSource::UpdateAvailability]
     else {
-        panic!("store health facts must remain typed");
+        panic!("update availability facts must remain typed");
     };
-    assert_eq!(store.state, StatusSourceState::Degraded);
-    assert_eq!(store.pending_count, 2);
+    assert_eq!(update.state, StatusSourceState::Degraded);
+    assert_eq!(update.pending_count, 2);
     let StatusSourceFacts::DeviceTrust(trust) = &recovered.source_facts[&StatusSource::DeviceTrust]
     else {
         panic!("device trust facts must remain typed");
@@ -1927,12 +2054,13 @@ impl FakeCollector {
         };
         match self.source {
             StatusSource::SyncRuntime => StatusSourceFacts::SyncRuntime(facts),
-            StatusSource::StoreHealth => StatusSourceFacts::StoreHealth(facts),
             StatusSource::DeviceTrust => StatusSourceFacts::DeviceTrust(facts),
             StatusSource::UpdateAvailability => StatusSourceFacts::UpdateAvailability(facts),
             StatusSource::NotificationState => StatusSourceFacts::NotificationState(facts),
             StatusSource::ServiceRuntime => StatusSourceFacts::ServiceRuntime(facts),
-            StatusSource::Metadata => unreachable!("metadata uses typed local facts"),
+            StatusSource::Metadata | StatusSource::Convergence => {
+                unreachable!("durable collectors use typed facts")
+            }
         }
     }
 }

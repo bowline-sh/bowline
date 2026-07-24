@@ -3,7 +3,6 @@ use super::*;
 struct LifecycleFixture {
     _temp: TempWorkspace,
     project_path: String,
-    db_path: PathBuf,
     envs: Vec<(&'static str, String)>,
 }
 
@@ -31,7 +30,6 @@ impl LifecycleFixture {
         Self {
             _temp: temp,
             project_path: "apps/web".to_string(),
-            db_path,
             envs,
         }
     }
@@ -61,43 +59,6 @@ fn lifecycle_state_errors_are_user_action_required() {
         let output = fixture.run(&args);
         assert_lifecycle_error(output, 4, "user-action", expected_code);
     }
-}
-
-#[test]
-fn lifecycle_unsynced_work_is_user_action_required() {
-    let fixture = LifecycleFixture::new("cli-lifecycle-unsynced");
-    let store = MetadataStore::open(&fixture.db_path).expect("metadata opens");
-    let workspace_id = WorkspaceId::new("ws_cli_phase9");
-    store
-        .enqueue_sync_operation(&SyncOperationRecord {
-            id: "lifecycle_unsynced".to_string(),
-            workspace_id: workspace_id.clone(),
-            kind: SyncOperationKind::Reconcile,
-            resource_key: SyncResourceKey::workspace_sync(workspace_id),
-            state: SyncOperationState::Queued,
-            idempotency_key: "lifecycle-unsynced".to_string(),
-            base_version: None,
-            base_snapshot_id: None,
-            target_snapshot_id: None,
-            device_id: Some(DeviceId::new("device_lifecycle")),
-            payload_json: "{}".to_string(),
-            attempt_count: 0,
-            claimed_by: None,
-            claim_generation: 0,
-            heartbeat_at: None,
-            lease_expires_at: None,
-            cancellation_requested_at: None,
-            next_attempt_at: None,
-            result_json: None,
-            last_error_code: None,
-            last_error: None,
-            created_at: "2026-07-10T11:59:00Z".to_string(),
-            updated_at: "2026-07-10T11:59:00Z".to_string(),
-        })
-        .expect("sync operation enqueue");
-
-    let output = fixture.run(&["archive", &fixture.project_path, "--json"]);
-    assert_lifecycle_error(output, 4, "user-action", "unsynced_local_work");
 }
 
 #[test]

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{DeviceControlPlaneClient, LeaseControlPlaneClient, WorkspaceControlPlaneClient};
+use crate::{DeviceControlPlaneClient, WorkspaceControlPlaneClient};
 
 impl FakeControlPlaneClient {
     pub fn new(clock: DeterministicClock, ids: DeterministicIdGenerator) -> Self {
@@ -8,7 +8,6 @@ impl FakeControlPlaneClient {
             ids,
             local_device_id: None,
             state: Arc::new(Mutex::new(FakeControlPlaneState::default())),
-            #[cfg(test)]
             signed_url_overrides: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
@@ -18,17 +17,11 @@ impl FakeControlPlaneClient {
         self
     }
 
-    pub fn with_conflict_reconcile_failure(self, error: ControlPlaneError) -> Self {
-        self.state
-            .lock()
-            .expect("fake control plane poisoned")
-            .conflict_reconcile_failures
-            .push_back(error);
-        self
-    }
-
     pub fn create_workspace(&self, workspace_id: impl Into<String>) -> WorkspaceRef {
-        self.create_workspace_ref(&WorkspaceId::new(workspace_id))
+        // Pure establishment: seeds a headless version-0 genesis ref. The first
+        // real head arrives later via a genesis compare-and-swap.
+        let workspace_id = WorkspaceId::new(workspace_id);
+        self.create_workspace_ref(&workspace_id)
             .expect("fake workspace creation is infallible")
     }
 
@@ -102,28 +95,6 @@ impl FakeControlPlaneClient {
         .ok()
     }
 
-    pub fn create_lease_for_harness(&self, workspace_id: &str, device_id: &str) -> Lease {
-        let created_at = self.clock.now();
-        self.create_lease(LeaseCreate {
-            lease_id: LeaseId::new(self.ids.next_id("lease")),
-            workspace_id: WorkspaceId::new(workspace_id),
-            project_id: bowline_core::ids::ProjectId::new("project-harness"),
-            device_id: DeviceId::new(device_id),
-            target_device_ref: None,
-            origin_device_ref: None,
-            write_target_mode: LeaseWriteTargetMode::Direct,
-            work_view_id: None,
-            base_snapshot_id: SnapshotId::new("empty"),
-            task_label: None,
-            session_state: LeaseSessionState::Open,
-            status_code: "open".to_string(),
-            expires_at: crate::ControlPlaneTimestamp {
-                tick: created_at.tick + 3_600,
-            },
-        })
-        .expect("fake harness lease creation is infallible without trust")
-    }
-
     pub fn put_object_pointer(&self, workspace_id: &str, pointer: ObjectPointer) -> CompactEvent {
         let workspace_id = WorkspaceId::new(workspace_id);
         let event = self.build_event(
@@ -181,21 +152,6 @@ impl FakeControlPlaneClient {
             .expect("fake control plane poisoned")
             .next_workspace_ref_cas_stale
             .insert(WorkspaceId::new(workspace_id), current);
-    }
-
-    pub fn make_next_overlay_commit_stale_with_same_object_for_harness(
-        &self,
-        workspace_id: &str,
-        work_view_id: &str,
-    ) {
-        self.state
-            .lock()
-            .expect("fake control plane poisoned")
-            .same_object_stale_overlay_commits
-            .insert((
-                WorkspaceId::new(workspace_id),
-                WorkViewId::new(work_view_id),
-            ));
     }
 
     pub fn events(&self, workspace_id: &str) -> Vec<CompactEvent> {
@@ -270,24 +226,12 @@ impl FakeControlPlaneClient {
         }
     }
 
-    pub(super) fn ensure_local_device(&self, device_id: &DeviceId) -> ControlPlaneResult<()> {
-        match self.local_device_id.as_deref() {
-            Some(local_device_id) if local_device_id != device_id.as_str() => {
-                Err(device_not_trusted(
-                    "fake operation must be performed by the configured local device",
-                ))
-            }
-            _ => Ok(()),
-        }
-    }
-
     pub(super) fn fake_signed_url(
         &self,
         action: &str,
         object_key: &str,
         range: Option<&ByteRange>,
     ) -> String {
-        #[cfg(test)]
         if let Some(url) = self
             .signed_url_overrides
             .lock()

@@ -12,8 +12,6 @@ pub struct StorageObjectRef {
     pub referenced_by_snapshot: Option<SnapshotId>,
     pub referenced_by_work_view_base: bool,
     pub referenced_by_active_overlay: bool,
-    pub referenced_by_active_lease: bool,
-    pub referenced_by_conflict_bundle: bool,
     pub verified: bool,
 }
 
@@ -45,8 +43,6 @@ pub fn plan_gc(objects: &[StorageObjectRef]) -> StorageGcPlan {
             || object.referenced_by_snapshot.is_some()
             || object.referenced_by_work_view_base
             || object.referenced_by_active_overlay
-            || object.referenced_by_active_lease
-            || object.referenced_by_conflict_bundle
             || !object.verified
         {
             retained.push(object.key.clone());
@@ -126,10 +122,18 @@ mod tests {
 
     #[test]
     fn gc_dry_run_keeps_current_head_and_retained_orphans() {
-        let current = ObjectKey::new("packs_pk_0011223344556677").expect("key");
-        let retained_orphan = ObjectKey::new("packs_pk_8899aabbccddeeff").expect("key");
-        let expired_orphan = ObjectKey::new("packs_pk_0123456789abcdef").expect("key");
-        let old = ObjectKey::new("packs_pk_fedcba9876543210").expect("key");
+        let current =
+            ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+                .expect("key");
+        let retained_orphan =
+            ObjectKey::new("b_8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff")
+                .expect("key");
+        let expired_orphan =
+            ObjectKey::new("b_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+                .expect("key");
+        let old =
+            ObjectKey::new("b_fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210")
+                .expect("key");
 
         let plan = plan_gc(&[
             StorageObjectRef {
@@ -139,8 +143,6 @@ mod tests {
                 referenced_by_snapshot: None,
                 referenced_by_work_view_base: false,
                 referenced_by_active_overlay: false,
-                referenced_by_active_lease: false,
-                referenced_by_conflict_bundle: false,
                 verified: true,
             },
             StorageObjectRef {
@@ -150,8 +152,6 @@ mod tests {
                 referenced_by_snapshot: None,
                 referenced_by_work_view_base: false,
                 referenced_by_active_overlay: false,
-                referenced_by_active_lease: false,
-                referenced_by_conflict_bundle: false,
                 verified: true,
             },
             StorageObjectRef {
@@ -161,8 +161,6 @@ mod tests {
                 referenced_by_snapshot: None,
                 referenced_by_work_view_base: false,
                 referenced_by_active_overlay: false,
-                referenced_by_active_lease: false,
-                referenced_by_conflict_bundle: false,
                 verified: true,
             },
             StorageObjectRef {
@@ -172,8 +170,6 @@ mod tests {
                 referenced_by_snapshot: Some(SnapshotId::new("snap_old")),
                 referenced_by_work_view_base: false,
                 referenced_by_active_overlay: false,
-                referenced_by_active_lease: false,
-                referenced_by_conflict_bundle: false,
                 verified: true,
             },
         ]);
@@ -186,41 +182,32 @@ mod tests {
     }
 
     #[test]
-    fn gc_retains_work_view_overlay_lease_conflict_and_unverified_objects() {
-        let work_view = retained_ref("packs_pk_0011223344556677", |object| {
-            object.referenced_by_work_view_base = true;
-        });
-        let overlay = retained_ref("packs_pk_8899aabbccddeeff", |object| {
-            object.referenced_by_active_overlay = true;
-        });
-        let lease = retained_ref("packs_pk_0123456789abcdef", |object| {
-            object.referenced_by_active_lease = true;
-        });
-        let conflict = retained_ref("packs_pk_fedcba9876543210", |object| {
-            object.referenced_by_conflict_bundle = true;
-        });
-        let unverified = retained_ref("packs_pk_abcdef0123456789", |object| {
-            object.verified = false;
-        });
+    fn gc_retains_work_view_overlay_and_unverified_objects() {
+        let work_view = retained_ref(
+            "b_0011223344556677001122334455667700112233445566770011223344556677",
+            |object| {
+                object.referenced_by_work_view_base = true;
+            },
+        );
+        let overlay = retained_ref(
+            "b_8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff",
+            |object| {
+                object.referenced_by_active_overlay = true;
+            },
+        );
+        let unverified = retained_ref(
+            "b_abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            |object| {
+                object.verified = false;
+            },
+        );
 
-        let plan = plan_gc(&[
-            work_view.clone(),
-            overlay.clone(),
-            lease.clone(),
-            conflict.clone(),
-            unverified.clone(),
-        ]);
+        let plan = plan_gc(&[work_view.clone(), overlay.clone(), unverified.clone()]);
 
         assert!(plan.delete_candidates.is_empty());
         assert_eq!(
             plan.retained,
-            vec![
-                work_view.key,
-                overlay.key,
-                lease.key,
-                conflict.key,
-                unverified.key
-            ]
+            vec![work_view.key, overlay.key, unverified.key]
         );
     }
 
@@ -228,11 +215,13 @@ mod tests {
     fn gc_execution_rechecks_references_before_delete() {
         let temp = TempDir::new("gc-recheck");
         let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
-        let candidate_key = ObjectKey::new("packs_pk_0011223344556677").expect("key");
+        let candidate_key =
+            ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+                .expect("key");
         store
             .put_object(
                 candidate_key.clone(),
-                ObjectKind::SourcePack,
+                ObjectKind::WorkspaceFileV1,
                 b"expired orphan",
                 None,
             )
@@ -257,11 +246,13 @@ mod tests {
     fn gc_execution_deletes_still_eligible_known_object_key() {
         let temp = TempDir::new("gc-delete");
         let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
-        let candidate_key = ObjectKey::new("packs_pk_8899aabbccddeeff").expect("key");
+        let candidate_key =
+            ObjectKey::new("b_8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff")
+                .expect("key");
         store
             .put_object(
                 candidate_key.clone(),
-                ObjectKind::SourcePack,
+                ObjectKind::WorkspaceFileV1,
                 b"expired orphan",
                 None,
             )
@@ -283,7 +274,9 @@ mod tests {
 
     #[test]
     fn gc_execution_reports_retryable_failure_without_claiming_delete() {
-        let candidate_key = ObjectKey::new("packs_pk_0123456789abcdef").expect("key");
+        let candidate_key =
+            ObjectKey::new("b_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+                .expect("key");
         let latest = [eligible_ref(candidate_key.clone())];
         let planned = plan_gc(&latest);
         let store = FailingDeleteStore;
@@ -309,8 +302,6 @@ mod tests {
             referenced_by_snapshot: None,
             referenced_by_work_view_base: false,
             referenced_by_active_overlay: false,
-            referenced_by_active_lease: false,
-            referenced_by_conflict_bundle: false,
             verified: true,
         }
     }
@@ -323,8 +314,6 @@ mod tests {
             referenced_by_snapshot: None,
             referenced_by_work_view_base: false,
             referenced_by_active_overlay: false,
-            referenced_by_active_lease: false,
-            referenced_by_conflict_bundle: false,
             verified: true,
         };
         edit(&mut object);

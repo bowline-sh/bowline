@@ -1,6 +1,14 @@
 use super::*;
 use std::process::Stdio;
 
+mod install;
+pub(super) use install::daemon_service_install;
+#[cfg(test)]
+pub(super) use install::{
+    daemon_service_active_from_status, install_daemon_service_with_takeover,
+    previous_active_service_definition, stop_unmanaged_daemon, wait_for_stable_socket_absence,
+};
+
 pub(super) fn print_daemon_service_install(socket: &Path, json: bool) -> ExitCode {
     let generated_at = generated_at();
     match daemon_service_install(socket) {
@@ -64,24 +72,6 @@ pub(super) fn print_daemon_service_uninstall(json: bool) -> ExitCode {
             CommandExitCode::BlockedOrDegradedBySafety.into()
         }
     }
-}
-
-pub(super) fn daemon_service_install(socket: &Path) -> Result<DaemonServiceOutcome, String> {
-    if linux_service::current_platform_supported() {
-        return daemon_linux_service_options(socket).and_then(|options| {
-            linux_service::install_or_update_service(&SystemProcessRunner, &options)
-                .map(DaemonServiceOutcome::from)
-                .map_err(|error| error.to_string())
-        });
-    }
-    if macos_service::current_platform_supported() {
-        return daemon_macos_service_options(socket).and_then(|options| {
-            macos_service::install_or_update_service(&SystemProcessRunner, &options)
-                .map(DaemonServiceOutcome::from)
-                .map_err(|error| error.to_string())
-        });
-    }
-    Err("daemon service commands are available only on Linux and macOS".to_string())
 }
 
 pub(super) fn daemon_service_restart() -> Result<DaemonServiceOutcome, String> {
@@ -264,11 +254,9 @@ pub(super) struct DaemonServiceOutcome {
 
 pub(super) fn daemon_launch_config(socket: &Path) -> Result<DaemonLaunchConfig, String> {
     let db_path = metadata_db_path_or_default()?;
-    let state_root = db_path
-        .parent()
-        .ok_or_else(|| "metadata database path has no parent directory".to_string())?
-        .to_path_buf();
     let store = MetadataStore::open(&db_path).map_err(|error| error.to_string())?;
+    let state_root = runtime::metadata_state_root(&db_path)
+        .ok_or_else(|| "metadata database path could not be resolved".to_string())?;
     let workspace_id = daemon_workspace_id_for_store(&store)?;
     let root = store
         .accepted_roots(&workspace_id)
@@ -326,10 +314,8 @@ pub(super) fn daemon_service_launch_config_for_store(
     store: &MetadataStore,
     daemon: PathBuf,
 ) -> Result<DaemonLaunchConfig, String> {
-    let state_root = db_path
-        .parent()
-        .ok_or_else(|| "metadata database path has no parent directory".to_string())?
-        .to_path_buf();
+    let state_root = runtime::metadata_state_root(db_path)
+        .ok_or_else(|| "metadata database path could not be resolved".to_string())?;
     let workspace_id = daemon_workspace_id_for_store(store)?;
     if workspace_id.as_str() == "ws_code" {
         return Err(
@@ -634,6 +620,29 @@ pub(super) fn daemon_status_json(
         service: service.map(daemon_service_state_from_status),
     })
     .expect("daemon status output should serialize")
+}
+
+/// Which OS service supervisor owns the daemon on this host. Platform support is
+/// the single source of truth for the manager label.
+pub(super) fn daemon_service_manager() -> bowline_core::introspection::ServiceManager {
+    use bowline_core::introspection::ServiceManager;
+    if linux_service::current_platform_supported() {
+        ServiceManager::Systemd
+    } else if macos_service::current_platform_supported() {
+        ServiceManager::Launchd
+    } else {
+        ServiceManager::None
+    }
+}
+
+/// Compact service view for `bowline status --json`. Always returns a value: an
+/// unsupported host reports `manager: none` with an honest `unsupported` state.
+pub(super) fn daemon_service_introspection() -> bowline_core::introspection::ServiceIntrospection {
+    let manager = daemon_service_manager();
+    let state = daemon_service_status(&SystemProcessRunner)
+        .map(|status| status.state)
+        .unwrap_or_else(|| "unsupported".to_string());
+    bowline_core::introspection::ServiceIntrospection { state, manager }
 }
 
 pub(super) fn daemon_service_status<R>(runner: &R) -> Option<DaemonServiceStatus>

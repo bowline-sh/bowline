@@ -1,4 +1,5 @@
 use super::*;
+use std::{thread, time::Duration};
 
 pub(super) fn wait_for_remote_daemon<R>(
     runner: &R,
@@ -220,15 +221,6 @@ pub(super) fn remote_daemon_is_running(stdout: &str) -> bool {
             .pointer("/daemon/state")
             .and_then(|state| state.as_str())
             == Some("running")
-    })
-}
-
-pub(super) fn remote_daemon_is_stopped(stdout: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(stdout).is_ok_and(|value| {
-        value
-            .pointer("/daemon/state")
-            .and_then(|state| state.as_str())
-            == Some("stopped")
     })
 }
 

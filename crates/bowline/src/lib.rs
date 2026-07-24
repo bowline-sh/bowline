@@ -8,8 +8,6 @@ use std::process::{Command as ProcessCommand, ExitCode};
 use std::time::{Duration, Instant};
 use std::{env, panic, thread};
 
-mod agent;
-mod agent_adapters;
 mod bootstrap;
 mod cli;
 mod command_error_classification;
@@ -18,25 +16,23 @@ mod debug;
 mod device_commands;
 mod devices;
 mod dispatch;
+mod doctor;
 mod errors;
-mod handoff_commands;
-mod handoff_trust;
 mod idempotency;
 mod io_helpers;
-mod lease;
 mod lifecycle;
 mod login;
 mod login_init;
 mod logout;
-mod mcp;
 mod recovery;
 mod registry;
 mod render;
-mod resolve;
 mod runtime;
 mod service;
 mod status_commands;
 mod surface;
+mod sync_attention;
+mod sync_wait;
 mod update;
 mod wire;
 mod work;
@@ -44,11 +40,7 @@ mod work_agent_commands;
 mod workspace_root_selection;
 
 #[cfg(test)]
-mod handoff_commands_tests;
-#[cfg(test)]
 mod lib_daemon_tests;
-#[cfg(test)]
-mod lib_handoff_parse_tests;
 #[cfg(test)]
 mod lib_parse_tests;
 
@@ -58,10 +50,11 @@ use bowline_core::commands::{
     CommandErrorOutput, CommandErrorStatus, CommandExitCode, CommandName, CommandRecoverability,
     ContractCommandOutput, ContractFixtureDescriptor, ContractSummaryCommandOutput,
     DaemonCommandOutput, DaemonProcessOutput, DaemonServiceOutput, DaemonServiceState,
-    DaemonStatusOutput, DiagnosticsCollectCommandOutput, DryRunCommandOutput, DryRunStatus,
-    EventsCommandOutput, HandoffAgent, HelpCommandOutput, ScopedContractCommandOutput,
-    SetupCommandOutput, SetupProjectOutcome, SetupProjectOutput, SetupProjectState,
-    StatusCommandOutput, UpdateCommandOutput, VersionCommandOutput, WatchFrame,
+    DaemonStatusOutput, DiagnosticsCollectCommandOutput, DoctorCheck, DoctorCheckId,
+    DoctorCommandOutput, DoctorSummary, DryRunCommandOutput, DryRunStatus, EventsCommandOutput,
+    HelpCommandOutput, ScopedContractCommandOutput, SetupCommandOutput, SetupProjectOutcome,
+    SetupProjectOutput, SetupProjectState, StatusCommandOutput, UpdateCommandOutput,
+    VersionCommandOutput, WatchFrame,
 };
 use bowline_core::devices::{AccountLoginState, AccountLoginStatus};
 use bowline_core::events::EVENT_SCHEMA_VERSION;
@@ -180,7 +173,6 @@ use daemon::*;
 use debug::*;
 use device_commands::*;
 use errors::*;
-use handoff_commands::*;
 use io_helpers::*;
 use lifecycle::*;
 use login_init::*;
