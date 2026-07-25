@@ -14,6 +14,7 @@ use crate::bootstrap::{
 
 const REMOTE_INSTALL_PATH: &str = "~/.local/bin/bowline";
 const REMOTE_DAEMON_INSTALL_PATH: &str = "~/.local/bin/bowline-daemon";
+const EMBEDDED_INSTALLER: &str = include_str!("../../../../scripts/install.sh");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootstrapInstallOptions {
@@ -46,7 +47,6 @@ pub enum BootstrapInstallError {
     ProbeFailed { status_code: i32, stderr: String },
     UploadFailed { status_code: i32, stderr: String },
     InstallFailed { status_code: i32, stderr: String },
-    RemoteBuildFailed { status_code: i32, stderr: String },
     MissingArtifact(PathBuf),
     UnsupportedDefaultArtifact { local: String, remote: String },
 }
@@ -63,7 +63,7 @@ where
     })?;
     let platform = detect_remote_platform(runner, &options.host)?;
     if options.artifact.is_none() && local_platform_label() != platform.label() {
-        return install_or_update_from_remote_source(runner, options, platform);
+        return install_or_update_from_public_release(runner, options, platform);
     }
     let artifacts = choose_artifacts(options.artifact.as_deref(), &platform)?;
     let artifact_sha256 = sha256_hex(&artifacts.cli)?;
@@ -106,7 +106,7 @@ where
     })
 }
 
-fn install_or_update_from_remote_source<R>(
+fn install_or_update_from_public_release<R>(
     runner: &R,
     options: &BootstrapInstallOptions,
     platform: RemotePlatform,
@@ -114,12 +114,25 @@ fn install_or_update_from_remote_source<R>(
 where
     R: ProcessRunner,
 {
-    let source_root = env::current_dir()?;
-    let remote_source = "~/.cache/bowline/bootstrap-source";
     run_remote_setup(runner, options)?;
-    sync_source_to_remote(runner, &options.host, &source_root, remote_source)?;
-    let (artifact_sha256, daemon_artifact_sha256) =
-        build_and_install_remote_source(runner, &options.host, remote_source)?;
+    let cli = remote_shell_path(REMOTE_INSTALL_PATH);
+    let daemon = remote_shell_path(REMOTE_DAEMON_INSTALL_PATH);
+    let version = shell_quote(env!("CARGO_PKG_VERSION"));
+    let command = format!(
+        "set -e; installer=$(mktemp \"${{TMPDIR:-/tmp}}/bowline-install.XXXXXX\"); trap 'rm -f \"$installer\"' EXIT HUP INT TERM; cat >\"$installer\"; sh \"$installer\" --cli-only --version {version}; if command -v sha256sum >/dev/null 2>&1; then cli_hash=$(sha256sum {cli} | awk '{{print $1}}'); daemon_hash=$(sha256sum {daemon} | awk '{{print $1}}'); else cli_hash=$(shasum -a 256 {cli} | awk '{{print $1}}'); daemon_hash=$(shasum -a 256 {daemon} | awk '{{print $1}}'); fi; printf 'BOWLINE_BOOTSTRAP_HASH %s %s\\n' \"$cli_hash\" \"$daemon_hash\""
+    );
+    let output = runner.run_with_stdin(
+        "ssh",
+        &ssh_args(&options.host, &command),
+        EMBEDDED_INSTALLER,
+    )?;
+    if output.status_code != 0 {
+        return Err(BootstrapInstallError::InstallFailed {
+            status_code: output.status_code,
+            stderr: output.stderr,
+        });
+    }
+    let (artifact_sha256, daemon_artifact_sha256) = parse_remote_install_hashes(&output.stdout)?;
 
     Ok(RemoteBowlineInstall {
         platform,
@@ -128,6 +141,33 @@ where
         artifact_sha256,
         daemon_artifact_sha256,
     })
+}
+
+fn parse_remote_install_hashes(stdout: &str) -> Result<(String, String), BootstrapInstallError> {
+    let hashes = stdout.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        if fields.next()? != "BOWLINE_BOOTSTRAP_HASH" {
+            return None;
+        }
+        Some((fields.next()?.to_string(), fields.next()?.to_string()))
+    });
+    let Some((cli_hash, daemon_hash)) = hashes else {
+        return Err(BootstrapInstallError::InstallFailed {
+            status_code: 0,
+            stderr: "remote installer did not report installed binary checksums".to_string(),
+        });
+    };
+    if !is_sha256(&cli_hash) || !is_sha256(&daemon_hash) {
+        return Err(BootstrapInstallError::InstallFailed {
+            status_code: 0,
+            stderr: "remote installer reported invalid binary checksums".to_string(),
+        });
+    }
+    Ok((cli_hash, daemon_hash))
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit())
 }
 
 fn detect_remote_platform<R>(
@@ -232,96 +272,6 @@ where
         });
     }
     Ok(())
-}
-
-fn sync_source_to_remote<R>(
-    runner: &R,
-    host: &str,
-    source_root: &Path,
-    remote_source: &str,
-) -> Result<(), BootstrapInstallError>
-where
-    R: ProcessRunner,
-{
-    let mkdir = format!("mkdir -p {}", remote_shell_path(remote_source));
-    let setup = runner.run("ssh", &ssh_args(host, &mkdir))?;
-    if setup.status_code != 0 {
-        return Err(BootstrapInstallError::InstallFailed {
-            status_code: setup.status_code,
-            stderr: setup.stderr,
-        });
-    }
-
-    let mut source = source_root.display().to_string();
-    if !source.ends_with('/') {
-        source.push('/');
-    }
-    let target = format!("{host}:{remote_source}/");
-    let args = vec![
-        "-az".to_string(),
-        "--delete".to_string(),
-        "--exclude".to_string(),
-        "target".to_string(),
-        "--exclude".to_string(),
-        ".git".to_string(),
-        "--exclude".to_string(),
-        "node_modules".to_string(),
-        "--exclude".to_string(),
-        ".tmp".to_string(),
-        source,
-        target,
-    ];
-    let output = runner.run("rsync", &args)?;
-    if output.status_code != 0 {
-        return Err(BootstrapInstallError::UploadFailed {
-            status_code: output.status_code,
-            stderr: output.stderr,
-        });
-    }
-    Ok(())
-}
-
-fn build_and_install_remote_source<R>(
-    runner: &R,
-    host: &str,
-    remote_source: &str,
-) -> Result<(String, String), BootstrapInstallError>
-where
-    R: ProcessRunner,
-{
-    let source = remote_shell_path(remote_source);
-    let cli_install = remote_shell_path(REMOTE_INSTALL_PATH);
-    let daemon_install = remote_shell_path(REMOTE_DAEMON_INSTALL_PATH);
-    let command = format!(
-        "set -e; cd {source}; cargo build -p bowline -p bowline-daemon; install -m 755 target/debug/bowline {cli_install}; install -m 755 target/debug/bowline-daemon {daemon_install}; sha256sum {cli_install} {daemon_install}"
-    );
-    let output = runner.run("ssh", &ssh_args(host, &command))?;
-    if output.status_code != 0 {
-        return Err(BootstrapInstallError::RemoteBuildFailed {
-            status_code: output.status_code,
-            stderr: output.stderr,
-        });
-    }
-    let hashes = output
-        .stdout
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .filter(|hash| hash.len() == 64 && hash.chars().all(|ch| ch.is_ascii_hexdigit()))
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    let Some(cli_hash) = hashes.first().cloned() else {
-        return Err(BootstrapInstallError::RemoteBuildFailed {
-            status_code: 0,
-            stderr: "remote build did not print the bowline checksum".to_string(),
-        });
-    };
-    let Some(daemon_hash) = hashes.get(1).cloned() else {
-        return Err(BootstrapInstallError::RemoteBuildFailed {
-            status_code: 0,
-            stderr: "remote build did not print the bowline-daemon checksum".to_string(),
-        });
-    };
-    Ok((cli_hash, daemon_hash))
 }
 
 fn upload_artifact<R>(
@@ -464,13 +414,6 @@ impl fmt::Display for BootstrapInstallError {
                 formatter,
                 "remote bowline install failed with status {status_code}: {stderr}"
             ),
-            Self::RemoteBuildFailed {
-                status_code,
-                stderr,
-            } => write!(
-                formatter,
-                "remote bowline build failed with status {status_code}: {stderr}"
-            ),
             Self::MissingArtifact(path) => {
                 write!(
                     formatter,
@@ -510,11 +453,17 @@ impl From<io::Error> for BootstrapInstallError {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, path::PathBuf, rc::Rc};
+    use std::{cell::RefCell, collections::VecDeque, path::PathBuf, rc::Rc};
 
-    use super::{RemotePlatform, local_platform_label, verify_and_install};
+    use super::{
+        BootstrapInstallOptions, RemotePlatform, install_or_update_from_public_release,
+        local_platform_label, parse_remote_install_hashes, verify_and_install,
+    };
     use crate::bootstrap::process::{ProcessError, ProcessOutput, ProcessRunner};
     use crate::bootstrap::ssh::remote_shell_path;
+
+    type ProcessCall = (String, Vec<String>);
+    type RecordedCalls = Rc<RefCell<Vec<ProcessCall>>>;
 
     #[derive(Clone)]
     struct RecordingRunner {
@@ -529,6 +478,47 @@ mod tests {
                 stdout: String::new(),
                 stderr: String::new(),
             })
+        }
+    }
+
+    #[derive(Clone)]
+    struct ScriptedRunner {
+        calls: RecordedCalls,
+        outputs: Rc<RefCell<VecDeque<ProcessOutput>>>,
+        stdin: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl ProcessRunner for ScriptedRunner {
+        fn run(&self, program: &str, args: &[String]) -> Result<ProcessOutput, ProcessError> {
+            self.calls
+                .borrow_mut()
+                .push((program.to_string(), args.to_vec()));
+            self.next_output(program)
+        }
+
+        fn run_with_stdin(
+            &self,
+            program: &str,
+            args: &[String],
+            stdin: &str,
+        ) -> Result<ProcessOutput, ProcessError> {
+            self.calls
+                .borrow_mut()
+                .push((program.to_string(), args.to_vec()));
+            self.stdin.borrow_mut().push(stdin.to_string());
+            self.next_output(program)
+        }
+    }
+
+    impl ScriptedRunner {
+        fn next_output(&self, program: &str) -> Result<ProcessOutput, ProcessError> {
+            self.outputs
+                .borrow_mut()
+                .pop_front()
+                .ok_or_else(|| ProcessError::TimedOut {
+                    program: program.to_string(),
+                    seconds: 0,
+                })
         }
     }
 
@@ -585,5 +575,72 @@ mod tests {
         assert!(command.contains("else actual=$(shasum -a 256"));
         assert!(!command.contains("actual=$(("));
         assert!(command.contains("bowline bootstrap checksum mismatch"));
+    }
+
+    #[test]
+    fn cross_platform_default_installs_public_release_without_syncing_source() {
+        let cli_hash = "a".repeat(64);
+        let daemon_hash = "b".repeat(64);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let runner = ScriptedRunner {
+            calls: calls.clone(),
+            outputs: Rc::new(RefCell::new(VecDeque::from([
+                ProcessOutput {
+                    status_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                },
+                ProcessOutput {
+                    status_code: 0,
+                    stdout: format!(
+                        "installed bowline\nBOWLINE_BOOTSTRAP_HASH {cli_hash} {daemon_hash}\n"
+                    ),
+                    stderr: String::new(),
+                },
+            ]))),
+            stdin: Rc::new(RefCell::new(Vec::new())),
+        };
+
+        let installed = install_or_update_from_public_release(
+            &runner,
+            &BootstrapInstallOptions {
+                host: "linux-box".to_string(),
+                root: "~/Code".to_string(),
+                artifact: None,
+            },
+            RemotePlatform {
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        )
+        .expect("public release installs");
+
+        assert_eq!(installed.artifact_sha256, cli_hash);
+        assert_eq!(installed.daemon_artifact_sha256, daemon_hash);
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().all(|(program, _)| program == "ssh"));
+        let install_command = calls[1].1.last().expect("remote command");
+        assert!(install_command.contains("cat >\"$installer\""));
+        assert!(install_command.contains(&format!(
+            "sh \"$installer\" --cli-only --version {}",
+            env!("CARGO_PKG_VERSION")
+        )));
+        assert!(install_command.contains("BOWLINE_BOOTSTRAP_HASH"));
+        assert!(!install_command.contains("cargo build"));
+        assert!(!install_command.contains("bootstrap-source"));
+        let stdin = runner.stdin.borrow();
+        assert_eq!(stdin.len(), 1);
+        assert!(stdin[0].starts_with("#!/bin/sh\nset -eu\n"));
+        assert!(stdin[0].contains("RELEASE_SIGNING_PUBKEY="));
+    }
+
+    #[test]
+    fn public_release_hash_marker_is_strict() {
+        assert!(parse_remote_install_hashes("installed\n").is_err());
+        assert!(
+            parse_remote_install_hashes("BOWLINE_BOOTSTRAP_HASH not-a-hash also-not-a-hash\n")
+                .is_err()
+        );
     }
 }
