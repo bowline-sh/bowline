@@ -1,15 +1,52 @@
 use crate::commands::StatusCommandOutput;
 
-use super::reduce_status_facts;
+use super::{RepairCommand, reduce_status_facts};
 
 pub const WORKSPACE_CONVERGENCE_FACT_ID: &str = "workspace-convergence";
 pub const PROJECT_CONVERGENCE_FACT_ID: &str = "project-convergence";
+/// The deletion breaker's own fact. Convergence-owned like the two above, so a
+/// surface that replaces convergence replaces this with it rather than leaving a
+/// refusal on screen that the live engine is no longer making.
+pub const MASS_DELETION_BLOCKED_FACT_ID: &str = "sync-mass-deletion-blocked";
 
 pub fn is_convergence_fact_id(id: &str) -> bool {
     matches!(
         id,
-        WORKSPACE_CONVERGENCE_FACT_ID | PROJECT_CONVERGENCE_FACT_ID
+        WORKSPACE_CONVERGENCE_FACT_ID | PROJECT_CONVERGENCE_FACT_ID | MASS_DELETION_BLOCKED_FACT_ID
     )
+}
+
+/// The two-step loop a refused removal batch puts the user in: read exactly what
+/// would be deleted, then authorise that one push.
+///
+/// Defined once because two surfaces publish it — the daemon's own projection
+/// and the CLI status that overlays it — and a drift between them would point a
+/// user at a command that does not exist.
+fn mass_deletion_next_actions() -> [RepairCommand; 2] {
+    [
+        RepairCommand::inspect(
+            "List the files this deletion would remove",
+            Some("bowline deletions".to_string()),
+        ),
+        RepairCommand::mutating(
+            "Confirm the deletion and let sync continue",
+            Some("bowline deletions --confirm".to_string()),
+        ),
+    ]
+}
+
+/// Republish the next actions convergence owns, from the facts `output` now
+/// carries. Idempotent by construction: [`remove_convergence_surfaces`] drops the
+/// previous copy, and this is the only writer of them.
+pub fn apply_convergence_next_actions(output: &mut StatusCommandOutput) {
+    let blocked = output
+        .status_summary
+        .facts
+        .iter()
+        .any(|fact| fact.id.as_str() == MASS_DELETION_BLOCKED_FACT_ID);
+    if blocked {
+        output.next_actions.extend(mass_deletion_next_actions());
+    }
 }
 
 pub fn remove_convergence_surfaces(output: &mut StatusCommandOutput) {
@@ -40,6 +77,8 @@ pub fn remove_convergence_surfaces(output: &mut StatusCommandOutput) {
         .status
         .attention_items
         .retain(|summary| !convergence_summaries.contains(summary));
+    let owned = mass_deletion_next_actions();
+    output.next_actions.retain(|action| !owned.contains(action));
 }
 
 /// Merge the convergence-owned portion of a daemon projection into a
@@ -93,4 +132,5 @@ pub fn overlay_convergence_status(target: &mut StatusCommandOutput, source: &Sta
     );
     target.status_summary.freshness = prior_freshness;
     target.status.level = target.status_summary.presentation_level();
+    apply_convergence_next_actions(target);
 }

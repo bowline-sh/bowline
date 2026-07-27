@@ -18,7 +18,7 @@ use bowline_core::status::{
     StatusAttention, StatusFactAvailabilityImpact, SyncQueueStatus,
 };
 use bowline_local::sync::manifest_engine::{
-    Degradation, EnginePhase, EngineSnapshot, WorkspacePath,
+    Degradation, EnginePhase, EngineSnapshot, WorkspacePath, mass_deletion_threshold,
 };
 
 use crate::manifest_driver::EngineSnapshotHandle;
@@ -40,6 +40,37 @@ pub struct EngineConvergenceFacts {
     pub availability: StatusFactAvailabilityImpact,
     pub attention: StatusAttention,
     pub limited: bool,
+    /// Present exactly while the deletion breaker is refusing a push. Carried
+    /// apart from the readiness reasons because `attention-required` is shared by
+    /// four unrelated conditions: a user who is told only that cannot tell a
+    /// blocked deletion from an unmounted root, and the two have opposite
+    /// remedies.
+    pub blocked_deletions: Option<BlockedDeletions>,
+}
+
+/// The refused removal batch, as status reports it: what would be deleted, what
+/// it was measured against, and the ceiling it exceeded. Counts only — the paths
+/// stay on the device, behind `bowline deletions`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockedDeletions {
+    pub removals: usize,
+    pub entries: usize,
+    pub threshold: usize,
+}
+
+impl BlockedDeletions {
+    /// Read the block off a snapshot, deriving the ceiling from the same
+    /// function the guard applied rather than storing a second copy of it.
+    fn from_snapshot(snapshot: &EngineSnapshot) -> Option<Self> {
+        match snapshot.degradation {
+            Degradation::MassDeletionBlocked { removals, entries } => Some(Self {
+                removals,
+                entries,
+                threshold: mass_deletion_threshold(entries),
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// Map one engine snapshot to the v8 convergence + sync-queue facts.
@@ -64,6 +95,7 @@ pub fn engine_convergence_facts(snapshot: &EngineSnapshot) -> EngineConvergenceF
         availability,
         attention,
         limited: state == ConvergenceReadinessState::Limited,
+        blocked_deletions: BlockedDeletions::from_snapshot(snapshot),
     }
 }
 
@@ -127,6 +159,7 @@ pub fn scoped_engine_convergence_facts(
         availability,
         attention,
         limited: state == ConvergenceReadinessState::Limited,
+        blocked_deletions: BlockedDeletions::from_snapshot(snapshot),
     }
 }
 
@@ -135,7 +168,12 @@ fn scoped_readiness_state(
     queue: &SyncQueueStatus,
 ) -> ConvergenceReadinessState {
     match snapshot.degradation {
-        Degradation::IntegrityStalled => ConvergenceReadinessState::Limited,
+        // Each of these blocks publishing until a human or the engine's own
+        // guard clears it, so none of them may read as transient progress.
+        Degradation::IntegrityStalled
+        | Degradation::RootUnavailable(_)
+        | Degradation::MassDeletionBlocked { .. }
+        | Degradation::StoreUnavailable => ConvergenceReadinessState::Limited,
         Degradation::OfflineRetrying { .. } => ConvergenceReadinessState::Recovering,
         Degradation::FullScanRequired(_) => ConvergenceReadinessState::Converging,
         Degradation::Nominal => match snapshot.phase {
@@ -172,7 +210,10 @@ fn scoped_readiness_reasons(
         Degradation::OfflineRetrying { .. } => {
             reasons.insert(ConvergenceReadinessReason::AttemptWaitingRetry);
         }
-        Degradation::IntegrityStalled => {
+        Degradation::IntegrityStalled
+        | Degradation::RootUnavailable(_)
+        | Degradation::MassDeletionBlocked { .. }
+        | Degradation::StoreUnavailable => {
             reasons.insert(ConvergenceReadinessReason::AttentionRequired);
         }
         Degradation::Nominal => {}
@@ -220,7 +261,12 @@ fn saturated_u64(value: usize) -> u64 {
 /// idle engine is `ready` and any in-progress phase is `converging`.
 fn readiness_state(snapshot: &EngineSnapshot) -> ConvergenceReadinessState {
     match snapshot.degradation {
-        Degradation::IntegrityStalled => ConvergenceReadinessState::Limited,
+        // Each of these blocks publishing until a human or the engine's own
+        // guard clears it, so none of them may read as transient progress.
+        Degradation::IntegrityStalled
+        | Degradation::RootUnavailable(_)
+        | Degradation::MassDeletionBlocked { .. }
+        | Degradation::StoreUnavailable => ConvergenceReadinessState::Limited,
         Degradation::OfflineRetrying { .. } => ConvergenceReadinessState::Recovering,
         Degradation::FullScanRequired(_) => ConvergenceReadinessState::Converging,
         Degradation::Nominal => match snapshot.phase {
@@ -262,7 +308,10 @@ fn readiness_reasons(
         Degradation::OfflineRetrying { .. } => {
             reasons.insert(ConvergenceReadinessReason::AttemptWaitingRetry);
         }
-        Degradation::IntegrityStalled => {
+        Degradation::IntegrityStalled
+        | Degradation::RootUnavailable(_)
+        | Degradation::MassDeletionBlocked { .. }
+        | Degradation::StoreUnavailable => {
             reasons.insert(ConvergenceReadinessReason::AttentionRequired);
         }
         Degradation::Nominal => {}
@@ -443,6 +492,8 @@ mod tests {
             cycle_active: false,
             last_success_at: None,
             degradation,
+            unsyncable: Arc::new(std::collections::BTreeMap::new()),
+            refused_removals: Arc::new(BTreeSet::new()),
         }
     }
 
@@ -544,6 +595,65 @@ mod tests {
                 .summary
                 .reasons
                 .contains(&ConvergenceReadinessReason::AttentionRequired)
+        );
+    }
+
+    #[test]
+    fn a_blocked_deletion_is_distinguishable_from_the_other_attention_states() {
+        let blocked = engine_convergence_facts(&snapshot(
+            EnginePhase::Stalled,
+            Degradation::MassDeletionBlocked {
+                removals: 72,
+                entries: 121,
+            },
+            0,
+            0,
+        ));
+
+        assert!(blocked.limited);
+        assert_eq!(
+            blocked.blocked_deletions,
+            Some(super::BlockedDeletions {
+                removals: 72,
+                entries: 121,
+                // max(64, 121/4) — derived, never a stored second copy.
+                threshold: 64,
+            }),
+            "status carries the counts a user needs to judge the batch"
+        );
+        // The three other conditions that share `attention-required` carry no
+        // block, so a consumer can tell them apart on this field alone.
+        for degradation in [
+            Degradation::IntegrityStalled,
+            Degradation::StoreUnavailable,
+            Degradation::RootUnavailable(bowline_local::sync::manifest_engine::RootFault::Missing),
+        ] {
+            let other =
+                engine_convergence_facts(&snapshot(EnginePhase::Stalled, degradation, 0, 0));
+            assert!(other.limited);
+            assert_eq!(other.blocked_deletions, None, "{degradation:?}");
+        }
+    }
+
+    #[test]
+    fn a_project_scope_reports_the_workspace_wide_deletion_block() {
+        let blocked = scoped_engine_convergence_facts(
+            &snapshot(
+                EnginePhase::Stalled,
+                Degradation::MassDeletionBlocked {
+                    removals: 72,
+                    entries: 121,
+                },
+                0,
+                0,
+            ),
+            &WorkspacePath::new("projects/app"),
+        );
+
+        assert!(!blocked.ready);
+        assert!(
+            blocked.blocked_deletions.is_some(),
+            "sync publishes nothing for any project while the batch is refused"
         );
     }
 

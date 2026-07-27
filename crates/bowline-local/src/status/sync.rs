@@ -19,7 +19,13 @@ pub(super) fn metadata_item(summary: &str, event_name: Option<EventName>) -> Sta
     item
 }
 
+/// A stale base converges on its own once the daemon catches up, so watching is
+/// a genuine next step for that condition.
 const STALE_BASE_REMEDY_COMMAND: &str = "bowline status --watch";
+/// A broken git observer never converges by waiting. Watching status would show
+/// the same frame forever, so the remedy has to be the command that inspects
+/// the machine.
+const GIT_OBSERVATION_REMEDY_COMMAND: &str = "bowline doctor";
 
 pub(crate) fn snapshot_stale_bases_from_inputs(
     store: &MetadataStore,
@@ -93,7 +99,7 @@ pub(crate) fn snapshot_stale_bases_from_inputs(
                         "Git observation for {} is partial; freshness cannot be proven.",
                         project.path
                     ),
-                    Some(STALE_BASE_REMEDY_COMMAND.to_string()),
+                    Some(GIT_OBSERVATION_REMEDY_COMMAND.to_string()),
                 ),
                 GitObserverState::Unavailable => (
                     FreshnessVerdict::Unknown,
@@ -101,7 +107,7 @@ pub(crate) fn snapshot_stale_bases_from_inputs(
                         "Git observation for {} is unavailable; freshness cannot be proven.",
                         project.path
                     ),
-                    Some(STALE_BASE_REMEDY_COMMAND.to_string()),
+                    Some(GIT_OBSERVATION_REMEDY_COMMAND.to_string()),
                 ),
             };
             stale_bases.push(StaleBaseStatus::git(

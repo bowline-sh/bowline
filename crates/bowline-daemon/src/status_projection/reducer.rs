@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use bowline_core::{
     commands::StatusCommandOutput,
     status::{
-        LimitedCapability, PROJECT_CONVERGENCE_FACT_ID, StatusAttention, StatusFact,
-        StatusFactAvailabilityImpact, StatusFactScope, StatusItem, StatusItemKind,
-        StatusSnapshotFreshness, StatusSubject, StatusSubjectKind, SyncQueueStatus,
-        WORKSPACE_CONVERGENCE_FACT_ID, reduce_status_facts, remove_convergence_surfaces,
+        LimitedCapability, MASS_DELETION_BLOCKED_FACT_ID, PROJECT_CONVERGENCE_FACT_ID,
+        StatusAttention, StatusFact, StatusFactAvailabilityImpact, StatusFactScope, StatusItem,
+        StatusItemKind, StatusSnapshotFreshness, StatusSubject, StatusSubjectKind, SyncQueueStatus,
+        WORKSPACE_CONVERGENCE_FACT_ID, apply_convergence_next_actions, reduce_status_facts,
+        remove_convergence_surfaces,
     },
 };
 
@@ -108,6 +109,7 @@ pub(crate) fn reduce_projection_status(
     output.status.attention_items.dedup();
     output.items.extend(supplemental_items);
     output.limits.extend(supplemental_limits);
+    apply_convergence_next_actions(&mut output);
     output
 }
 
@@ -151,6 +153,7 @@ pub fn replace_convergence_status(
     output.status_summary = reduce_status_facts(facts, snapshot_version, generated_at.as_str());
     output.status_summary.freshness = prior_freshness;
     output.status.level = output.status_summary.presentation_level();
+    apply_convergence_next_actions(output);
 }
 
 fn projection_freshness(
@@ -485,6 +488,85 @@ fn apply_convergence_status(
             path: None,
         });
     }
+    if let Some(blocked) = status.blocked_deletions {
+        apply_blocked_deletions(
+            blocked,
+            BlockedDeletionOutputs {
+                facts,
+                items,
+                attention,
+                generated_at,
+            },
+        );
+    }
+}
+
+struct BlockedDeletionOutputs<'a> {
+    facts: &'a mut Vec<StatusFact>,
+    items: &'a mut Vec<StatusItem>,
+    attention: &'a mut Vec<String>,
+    generated_at: &'a StatusTimestamp,
+}
+
+/// Surface a refused removal batch as its own fact and attention item; its next
+/// actions come from the one convergence-owned list in `bowline_core::status`.
+///
+/// Without this the condition reduces to `attention-required` at revision N,
+/// which is true of an unmounted root and a failing store as well — so the one
+/// state a user can actually clear reads exactly like three they cannot, and
+/// names no command. The counts are the whole explanation.
+fn apply_blocked_deletions(
+    blocked: super::engine_status::BlockedDeletions,
+    outputs: BlockedDeletionOutputs<'_>,
+) {
+    let BlockedDeletionOutputs {
+        facts,
+        items,
+        attention,
+        generated_at,
+    } = outputs;
+    let summary = format!(
+        "Sync is paused: publishing would delete {} of {} synced files, above the {} allowed \
+         without confirmation. Run `bowline deletions` to see what would go.",
+        blocked.removals, blocked.entries, blocked.threshold
+    );
+    let mut fact = StatusFact::new(
+        MASS_DELETION_BLOCKED_FACT_ID,
+        "sync.mass_deletion_blocked",
+        "workspace-convergence",
+        StatusFactScope::Workspace,
+        generated_at.as_str(),
+        MASS_DELETION_BLOCKED_FACT_ID,
+    );
+    fact.parameters
+        .insert("removals".to_string(), blocked.removals.to_string());
+    fact.parameters
+        .insert("entries".to_string(), blocked.entries.to_string());
+    fact.parameters
+        .insert("threshold".to_string(), blocked.threshold.to_string());
+    facts.push(fact);
+    attention.push(summary.clone());
+    items.push(StatusItem {
+        kind: StatusItemKind::Continuity,
+        summary,
+        subject: Some(StatusSubject {
+            kind: StatusSubjectKind::Component,
+            id: MASS_DELETION_BLOCKED_FACT_ID.to_string(),
+            path: None,
+        }),
+        path: None,
+        classification: None,
+        mode: None,
+        access: Vec::new(),
+        event_id: None,
+        event_name: None,
+        device_id: None,
+        lease_id: None,
+        project_id: None,
+        snapshot_id: None,
+        policy_version: None,
+        env_record_id: None,
+    });
 }
 
 fn state_impacts(state: StatusSourceState) -> (StatusFactAvailabilityImpact, StatusAttention) {

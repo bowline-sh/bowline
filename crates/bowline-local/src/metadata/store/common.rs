@@ -239,6 +239,28 @@ pub(super) fn parse_project_lifecycle_state(
     })
 }
 
+pub(super) fn parse_setup_receipt_state(
+    value: String,
+) -> Result<SetupReceiptState, rusqlite::Error> {
+    SetupReceiptState::from_wire(&value).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("unknown setup receipt state `{value}`").into(),
+        )
+    })
+}
+
+pub(super) fn parse_project_hot_state(value: String) -> Result<ProjectHotState, rusqlite::Error> {
+    ProjectHotState::from_wire(&value).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("unknown project hot state `{value}`").into(),
+        )
+    })
+}
+
 pub(super) fn parse_project_local_materialization_state(
     value: String,
 ) -> Result<ProjectLocalMaterializationState, rusqlite::Error> {
@@ -309,7 +331,7 @@ pub(super) fn setup_receipt_from_row(
         workspace_id: WorkspaceId::new(row.get::<_, String>(1)?),
         project_id: row.get::<_, Option<String>>(2)?.map(ProjectId::new),
         command: row.get(3)?,
-        state: row.get(4)?,
+        state: parse_setup_receipt_state(row.get::<_, String>(4)?)?,
         receipt_json: row.get(5)?,
         updated_at: row.get(6)?,
         recipe_hash: row.get(7)?,

@@ -131,7 +131,7 @@ pub(super) fn print_work_lifecycle(
     );
     match result {
         Ok(output) if json => {
-            print_json(&output);
+            print_json(&output.json_payload());
             ExitCode::SUCCESS
         }
         Ok(output) => {

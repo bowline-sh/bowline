@@ -27,6 +27,38 @@ use crate::metadata::{
 const DEFAULT_PURGE_GRACE_DAYS: u32 = 14;
 const MIN_PURGE_GRACE_DAYS: u32 = 1;
 const MAX_PURGE_GRACE_DAYS: u32 = 90;
+/// Above this many entries the preview stops enumerating individual files and
+/// reports one row per top-level directory instead. A delete preview that
+/// enumerates a `node_modules` tree into JSON is unreadable and unbounded.
+const MAX_PREVIEW_PATHS: usize = 1000;
+
+/// Whether the caller has proof that this project's local work is already
+/// pushed. `forget_local` destroys an entire project tree including untracked
+/// files and `.env`, so the daemon's answer is a precondition, not advice —
+/// "no answer" is refused exactly like "not converged".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncConvergence {
+    Converged,
+    PendingWork { paths: Vec<String> },
+    Unproven(ConvergenceUnproven),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConvergenceUnproven {
+    DaemonUnreachable,
+    DaemonNotReady,
+    ProbeFailed,
+}
+
+impl ConvergenceUnproven {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::DaemonUnreachable => "the sync daemon is not reachable",
+            Self::DaemonNotReady => "the sync daemon has not reached a ready state",
+            Self::ProbeFailed => "the sync state probe failed",
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct NamespaceLifecycleOptions {
@@ -34,9 +66,11 @@ pub struct NamespaceLifecycleOptions {
     pub project_path: String,
     pub generated_at: String,
     pub yes: bool,
+    pub dry_run: bool,
     pub restore: bool,
     pub cancel: bool,
     pub grace_days: Option<u32>,
+    pub convergence: SyncConvergence,
 }
 
 #[derive(Debug)]
@@ -46,6 +80,7 @@ pub enum NamespaceLifecycleError {
     ProjectMissing(String),
     ConfirmationRequired,
     UnsyncedWork { paths: Vec<String> },
+    ConvergenceUnproven(ConvergenceUnproven),
     InvalidState(String),
     EventAppend(String),
 }
@@ -55,10 +90,30 @@ pub fn forget_local(
 ) -> Result<NamespaceLifecycleCommandOutput, NamespaceLifecycleError> {
     let context = LifecycleContext::open(&options.project_path, options.db_path)?;
     let preview = deletion_preview(&context.project_path)?;
-    ensure_no_unsynced_work(&context)?;
+    if options.dry_run {
+        return Ok(output(
+            CommandName::ForgetLocal,
+            NamespaceLifecycleAction::ForgetLocal,
+            &options.generated_at,
+            &context,
+            preview,
+            false,
+            vec![RepairCommand::mutating(
+                "Delete these local bytes on this device".to_string(),
+                Some(format!(
+                    "bowline forget-local {} --yes",
+                    quote_word(&context.project.path)
+                )),
+            )],
+        ));
+    }
+    // Confirmation is local and answerable offline, so it gates first: a caller
+    // who omitted --yes must be told that, not handed a daemon probe failure
+    // they cannot act on.
     if !options.yes {
         return Err(NamespaceLifecycleError::ConfirmationRequired);
     }
+    ensure_no_unsynced_work(&options.convergence)?;
     if context.project_path.exists() {
         fs::remove_dir_all(&context.project_path)?;
     }
@@ -97,7 +152,22 @@ pub fn archive(
     options: NamespaceLifecycleOptions,
 ) -> Result<NamespaceLifecycleCommandOutput, NamespaceLifecycleError> {
     let context = LifecycleContext::open(&options.project_path, options.db_path)?;
-    ensure_no_unsynced_work(&context)?;
+    if options.dry_run {
+        return Ok(output(
+            CommandName::Archive,
+            if options.restore {
+                NamespaceLifecycleAction::Restore
+            } else {
+                NamespaceLifecycleAction::Archive
+            },
+            &options.generated_at,
+            &context,
+            deletion_preview(&context.project_path)?,
+            false,
+            Vec::new(),
+        ));
+    }
+    ensure_no_unsynced_work(&options.convergence)?;
     if options.restore {
         context.store.set_project_lifecycle(
             &context.workspace_id,
@@ -172,6 +242,23 @@ pub fn purge(
     }
     let mut preview = deletion_preview(&context.project_path)?;
     preview.pack_count = pack_count(&context.store, &context.workspace_id, &context.project.id)?;
+
+    if options.dry_run {
+        preview.grace_days = Some(clamp_grace_days(options.grace_days)?);
+        return Ok(output(
+            CommandName::Purge,
+            if options.cancel {
+                NamespaceLifecycleAction::PurgeCancel
+            } else {
+                NamespaceLifecycleAction::PurgePending
+            },
+            &options.generated_at,
+            &context,
+            preview,
+            false,
+            Vec::new(),
+        ));
+    }
 
     if options.cancel {
         if context.project.lifecycle_state != ProjectLifecycleState::PurgePending {
@@ -283,39 +370,49 @@ impl LifecycleContext {
     }
 }
 
-fn ensure_no_unsynced_work(context: &LifecycleContext) -> Result<(), NamespaceLifecycleError> {
-    // The old engine's convergence journal and conflict records are gone
-    // (Plan 111): conflicts are ordinary conflict-aside files that sync like
-    // any file, and pending-push truth lives in the daemon's manifest-engine
-    // state, not `local.sqlite3`. The destructive-action gate therefore moves
-    // to the engine phase check (Plan 111 Step 6 `bowline doctor` / daemon
-    // Ready state); locally there is nothing left that can prove unsynced
-    // work, so this seam no longer blocks.
-    let _ = context;
-    Ok(())
+fn ensure_no_unsynced_work(convergence: &SyncConvergence) -> Result<(), NamespaceLifecycleError> {
+    match convergence {
+        SyncConvergence::Converged => Ok(()),
+        SyncConvergence::PendingWork { paths } => Err(NamespaceLifecycleError::UnsyncedWork {
+            paths: paths.clone(),
+        }),
+        SyncConvergence::Unproven(reason) => {
+            Err(NamespaceLifecycleError::ConvergenceUnproven(*reason))
+        }
+    }
 }
 
 fn deletion_preview(path: &Path) -> Result<NamespaceLifecyclePreview, NamespaceLifecycleError> {
-    let mut paths = Vec::new();
-    let mut byte_total = 0_u64;
+    let mut walk = PreviewWalk::default();
     if path.exists() {
-        collect_preview(path, path, &mut paths, &mut byte_total)?;
+        collect_preview(path, path, &mut walk)?;
     }
+    let mut paths = if walk.paths.len() > MAX_PREVIEW_PATHS {
+        walk.top_level
+    } else {
+        walk.paths
+    };
     paths.sort();
     Ok(NamespaceLifecyclePreview {
         paths,
-        byte_total,
+        byte_total: walk.byte_total,
         pack_count: 0,
         grace_days: None,
         purge_after: None,
     })
 }
 
+#[derive(Default)]
+struct PreviewWalk {
+    paths: Vec<String>,
+    top_level: Vec<String>,
+    byte_total: u64,
+}
+
 fn collect_preview(
     root: &Path,
     path: &Path,
-    paths: &mut Vec<String>,
-    byte_total: &mut u64,
+    walk: &mut PreviewWalk,
 ) -> Result<(), NamespaceLifecycleError> {
     let metadata = fs::symlink_metadata(path)?;
     let relative = path
@@ -325,16 +422,19 @@ fn collect_preview(
         .trim_start_matches('/')
         .to_string();
     if relative.is_empty() {
-        paths.push(".".to_string());
+        walk.paths.push(".".to_string());
     } else {
-        paths.push(relative);
+        if !relative.contains('/') {
+            walk.top_level.push(relative.clone());
+        }
+        walk.paths.push(relative);
     }
     if metadata.is_file() {
-        *byte_total = byte_total.saturating_add(metadata.len());
+        walk.byte_total = walk.byte_total.saturating_add(metadata.len());
     }
     if metadata.is_dir() {
         for entry in fs::read_dir(path)? {
-            collect_preview(root, &entry?.path(), paths, byte_total)?;
+            collect_preview(root, &entry?.path(), walk)?;
         }
     }
     Ok(())
@@ -453,6 +553,13 @@ impl fmt::Display for NamespaceLifecycleError {
                     formatter,
                     "project has unsynced local work: {}",
                     paths.join(", ")
+                )
+            }
+            Self::ConvergenceUnproven(reason) => {
+                write!(
+                    formatter,
+                    "refusing to delete local bytes: {}",
+                    reason.as_str()
                 )
             }
             Self::InvalidState(message) => formatter.write_str(message),
@@ -620,9 +727,90 @@ mod tests {
             project_path: project_path.to_string(),
             generated_at: NOW.to_string(),
             yes: true,
+            dry_run: false,
             restore: false,
             cancel: false,
             grace_days: None,
+            convergence: SyncConvergence::Converged,
         }
+    }
+
+    #[test]
+    fn forget_local_refuses_to_delete_unsynced_work() {
+        let fixture = fixture("lifecycle-forget-unsynced");
+
+        let error = forget_local(NamespaceLifecycleOptions {
+            convergence: SyncConvergence::PendingWork {
+                paths: vec!["apps/web/.env".to_string()],
+            },
+            ..options(&fixture, "apps/web")
+        })
+        .expect_err("pending work blocks deletion");
+
+        assert!(matches!(
+            error,
+            NamespaceLifecycleError::UnsyncedWork { ref paths }
+                if paths == &vec!["apps/web/.env".to_string()]
+        ));
+        assert!(fixture.temp.root().join("apps/web/src/index.ts").exists());
+    }
+
+    #[test]
+    fn forget_local_refuses_when_sync_state_cannot_be_proven() {
+        let fixture = fixture("lifecycle-forget-unproven");
+
+        let error = forget_local(NamespaceLifecycleOptions {
+            convergence: SyncConvergence::Unproven(ConvergenceUnproven::DaemonUnreachable),
+            ..options(&fixture, "apps/web")
+        })
+        .expect_err("an unreachable daemon blocks deletion");
+
+        assert!(matches!(
+            error,
+            NamespaceLifecycleError::ConvergenceUnproven(ConvergenceUnproven::DaemonUnreachable)
+        ));
+        assert!(fixture.temp.root().join("apps/web/src/index.ts").exists());
+    }
+
+    #[test]
+    fn forget_local_dry_run_returns_the_real_preview_without_deleting() {
+        let fixture = fixture("lifecycle-forget-dry-run");
+
+        let output = forget_local(NamespaceLifecycleOptions {
+            dry_run: true,
+            yes: false,
+            convergence: SyncConvergence::Unproven(ConvergenceUnproven::DaemonUnreachable),
+            ..options(&fixture, "apps/web")
+        })
+        .expect("dry run succeeds without confirmation or a daemon");
+
+        assert!(!output.changed);
+        assert_eq!(output.preview.byte_total, 6);
+        assert!(
+            output
+                .preview
+                .paths
+                .iter()
+                .any(|path| path == "src/index.ts")
+        );
+        assert!(fixture.temp.root().join("apps/web/src/index.ts").exists());
+    }
+
+    #[test]
+    fn deletion_preview_summarises_top_level_directories_for_huge_trees() {
+        let fixture = fixture("lifecycle-preview-cap");
+        for index in 0..(MAX_PREVIEW_PATHS + 8) {
+            fixture
+                .temp
+                .write_project_file("apps/web", format!("node_modules/pkg{index}.js"), b"x")
+                .unwrap();
+        }
+
+        let preview = deletion_preview(fixture.temp.root().join("apps/web").as_path()).unwrap();
+
+        assert!(preview.paths.len() < MAX_PREVIEW_PATHS);
+        assert!(preview.paths.iter().any(|path| path == "node_modules"));
+        assert!(preview.paths.iter().any(|path| path == "src"));
+        assert!(!preview.paths.iter().any(|path| path.contains('/')));
     }
 }

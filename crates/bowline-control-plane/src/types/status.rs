@@ -1,5 +1,7 @@
 use bowline_core::ids::{DeviceId, EventId, SnapshotId, WorkspaceId};
-use bowline_core::status::StatusFact;
+use bowline_core::status::{
+    StatusAttention, StatusAvailability, StatusFact, StatusSnapshotFreshness,
+};
 
 /// Redacted live workspace status snapshot published by a trusted device (the
 /// daemon) to the control plane so the dashboard can show convergence
@@ -8,11 +10,11 @@ use bowline_core::status::StatusFact;
 pub struct WorkspaceStatusSnapshot {
     pub workspace_id: WorkspaceId,
     pub snapshot_id: SnapshotId,
-    pub availability: String,
-    pub attention: String,
+    pub availability: StatusAvailability,
+    pub attention: StatusAttention,
     pub primary_fact_id: Option<String>,
     pub facts: Vec<StatusFact>,
-    pub freshness: String,
+    pub freshness: StatusSnapshotFreshness,
     pub schema_hash: String,
     pub snapshot_version: u64,
     pub producer_version: String,
@@ -35,12 +37,31 @@ impl WorkspaceStatusSnapshot {
             "workspaceId={}\nsnapshotId={}\navailability={}\nattention={}\nschemaHash={}\nsnapshotVersion={}\nobservedAt={}",
             self.workspace_id.as_str(),
             self.snapshot_id.as_str(),
-            self.availability,
-            self.attention,
+            availability_wire_value(self.availability),
+            attention_wire_value(self.attention),
             self.schema_hash,
             self.snapshot_version,
             self.observed_at
         )
+    }
+}
+
+/// Wire spellings for the signed status proof subject. They must stay
+/// byte-identical to the `status:publishWorkspaceStatus` contract enums, which
+/// the total matches in the hosted encoder pin.
+pub fn availability_wire_value(availability: StatusAvailability) -> &'static str {
+    match availability {
+        StatusAvailability::Ready => "ready",
+        StatusAvailability::Degraded => "degraded",
+        StatusAvailability::Unavailable => "unavailable",
+    }
+}
+
+pub fn attention_wire_value(attention: StatusAttention) -> &'static str {
+    match attention {
+        StatusAttention::None => "none",
+        StatusAttention::Recommended => "recommended",
+        StatusAttention::Required => "required",
     }
 }
 

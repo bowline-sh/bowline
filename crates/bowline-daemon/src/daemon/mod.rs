@@ -1,52 +1,11 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::env;
-use std::error::Error;
-use std::fmt;
-use std::fs;
-use std::io::{self, Read, Write};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::{
-    Arc, Condvar, Mutex, Weak,
-    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-    mpsc::{self, Receiver},
-};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-#[cfg(test)]
-use bowline_control_plane::ControlPlaneTimestamp;
-use bowline_control_plane::{
-    AuthorizedDeviceRecord, ControlPlaneError, DeviceApprovalRequestList, DeviceControlPlaneClient,
-    HostedControlPlaneClient, SignedUrlByteStore, SignedUrlHttpClient,
-};
-use bowline_core::{
-    devices::display_matching_code,
-    hosted::{DEFAULT_CONVEX_URL, DEFAULT_WORKOS_CLIENT_ID},
-    ids::{DeviceId, WorkspaceId},
-    policy::{MaterializationMode, PathClassification},
-    workspace_graph::normalize_workspace_path,
-};
-use bowline_local::{
-    account::workos,
-    device_keys::{DeviceKeyError, DeviceKeyStore, DeviceProofVerifier, default_device_key_store},
-    metadata::{DEFAULT_DATABASE_FILE, default_control_socket_path},
-    notifications::{
-        DesktopNotificationSender, NotificationDedupe, NotificationDispatchReport,
-        NotificationSender, dispatch_new_notifications_with_checkpoint, pending_device_payloads,
-    },
-    policy::{PathFacts, UserPolicy, classify_path},
-    trust::grants,
-};
-use notify::{
-    Event, RecommendedWatcher, RecursiveMode, Watcher,
-    event::{EventKind, ModifyKind, RemoveKind},
-};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use uds::UnixStreamExt;
-
-const PHASE: &str = "0D";
 const PROTOCOL: &str = bowline_daemon_rpc::DAEMON_RPC_PROTOCOL;
 const PROTOCOL_VERSION: u32 = bowline_daemon_rpc::DAEMON_RPC_PROTOCOL_VERSION as u32;
 const DEFAULT_SOCKET_FALLBACK: &str = ".bowline/runtime/bowline-daemon.sock";
@@ -59,17 +18,35 @@ const STATUS_PUBLISH_INTERVAL: Duration = Duration::from_secs(60);
 const STATUS_PUBLISH_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(300);
 const REMOTE_OBSERVER_RECONNECT_INITIAL: Duration = Duration::from_millis(250);
 const REMOTE_OBSERVER_RECONNECT_MAX: Duration = Duration::from_secs(5);
+// A refused credential does not heal on the transport schedule: every reopen
+// registers another account session against a control plane that has already
+// refused this identity twice. The status projection carries the condition while
+// this waits, so slowing down costs visibility nothing.
+const REMOTE_OBSERVER_REAUTH_RECONNECT_MAX: Duration = Duration::from_secs(60);
+// A remote head signed by a device this workspace does not authorize is not a
+// transport fault: reopening the subscription re-reads the same unverifiable
+// head. The observer keeps watching (the head can move, or that device can be
+// approved) but on the slow schedule, and its bounded trust re-reads — not this
+// interval — are what can actually clear the condition.
+const REMOTE_OBSERVER_UNTRUSTED_SIGNER_RECONNECT_MAX: Duration = Duration::from_secs(60);
 const WATCHER_DRAIN_BUDGET: usize = 512;
-static DAEMON_ENV: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+static DAEMON_ENV: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+/// The state root this daemon was started against. Remembered because a session
+/// the control plane refuses has to be replaced *and written back* to the
+/// `daemon.env` the daemon was provisioned from, or the next start begins with
+/// the same refused credential.
+static DAEMON_STATE_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+mod account_session;
 mod cli;
 mod control_plane;
 mod coordinator;
 mod finder_status;
 mod hosted_context;
-mod protocol;
-mod protocol_v2;
+mod log_supervisor;
+mod rpc_service;
 mod server_state;
+mod socket_server;
 mod status;
 mod sync;
 mod watcher;
@@ -91,65 +68,39 @@ pub(crate) fn entrypoint() -> ExitCode {
     cli::entrypoint()
 }
 
-pub(super) fn load_persisted_daemon_env(state_root: &Path) {
-    let entries = fs::read_to_string(state_root.join("daemon.env"))
-        .ok()
-        .map(|contents| {
-            contents
-                .lines()
-                .filter_map(|line| line.split_once('='))
-                .filter(|(key, value)| valid_persisted_daemon_env_key(key) && !value.is_empty())
-                .map(|(key, value)| (key.to_string(), value.to_string()))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+/// Binds this process to its daemon state root: loads the persisted `daemon.env`
+/// overlay and remembers where it came from.
+///
+/// The allow-list and the parser are `bowline_local::daemon_env`'s, never a
+/// second copy here — a daemon that read the file differently from the CLI that
+/// writes it would silently lose its account session.
+pub(super) fn bind_daemon_state_root(state_root: &Path) {
     if let Ok(mut daemon_env) = DAEMON_ENV.lock() {
-        *daemon_env = entries;
+        *daemon_env = bowline_local::daemon_env::read(state_root);
     }
+    if let Ok(mut root) = DAEMON_STATE_ROOT.lock() {
+        *root = Some(state_root.to_path_buf());
+    }
+}
+
+pub(super) fn daemon_state_root() -> Option<PathBuf> {
+    DAEMON_STATE_ROOT.lock().ok()?.clone()
 }
 
 pub(super) fn daemon_env_var(name: &str) -> Option<String> {
     env::var(name)
         .ok()
         .filter(|value| !value.is_empty())
-        .or_else(|| {
-            DAEMON_ENV
-                .lock()
-                .ok()
-                .and_then(|daemon_env| {
-                    daemon_env
-                        .iter()
-                        .find_map(|(key, value)| (key == name).then(|| value.clone()))
-                })
-                .filter(|value| !value.is_empty())
-        })
+        .or_else(|| DAEMON_ENV.lock().ok()?.get(name).cloned())
 }
 
-fn valid_persisted_daemon_env_key(key: &str) -> bool {
-    matches!(
-        key,
-        "CONVEX_URL"
-            | "BOWLINE_WORKSPACE_ID"
-            | "BOWLINE_DEVICE_ID"
-            | "BOWLINE_DEVICE_NAME"
-            | "BOWLINE_SECRET_STORE"
-            | "BOWLINE_ACCOUNT_SESSION_ID"
-            | "BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN"
-            | "BOWLINE_CONTROL_PLANE_TOKEN"
-            | "BOWLINE_WORKOS_ACCESS_TOKEN"
-            | "BOWLINE_WORKOS_CLIENT_ID"
-    )
-}
-
-#[cfg(test)]
-use bowline_local::notifications::dispatch_new_notifications;
 #[cfg(test)]
 use cli::{Command, parse_args};
 use control_plane::{hosted_control_plane, key_store, runtime_error, workspace_key_bytes};
-use protocol::{
-    current_timestamp, json_string, metrics_snapshot, request_shutdown, serve, status_snapshot,
-};
 use server_state::{DaemonServerState, ShutdownPhase, ShutdownReason, StatusSubscription};
+use socket_server::{
+    current_timestamp, metrics_snapshot, request_shutdown, serve, status_snapshot,
+};
 use status::{
     StatusPublishOutcome, StatusPublishPayload, StatusPublishRequest, StatusPublisher,
     hosted_status_publisher_with_context,

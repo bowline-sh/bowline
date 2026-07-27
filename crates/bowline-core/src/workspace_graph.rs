@@ -1,205 +1,8 @@
-use std::{
-    io::{self, Cursor, Read},
-    path::{Component, Path},
-};
+use std::io::{self, Cursor, Read};
 
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Serialize};
 
-use crate::{
-    ids::{ContentId, ManifestDigest, NamespacePageId, PackId, ProjectId, SnapshotId, WorkspaceId},
-    policy::{AccessFlag, MaterializationMode, PathClassification},
-};
-
-pub const SNAPSHOT_SCHEMA_VERSION: u16 = 5;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceRoot {
-    pub id: String,
-    pub workspace_id: WorkspaceId,
-    pub accepted_path: String,
-    pub state: RootState,
-    pub materialization_state: MaterializationState,
-    pub case_sensitivity: CaseSensitivity,
-    pub unicode_normalization: UnicodeNormalization,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RootState {
-    Accepted,
-    Missing,
-    PendingAcceptance,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum MaterializationState {
-    Ready,
-    Cold,
-    Degraded,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum CaseSensitivity {
-    Sensitive,
-    Insensitive,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum UnicodeNormalization {
-    Nfc,
-    Nfd,
-    Mixed,
-    Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Project {
-    pub id: ProjectId,
-    pub workspace_id: WorkspaceId,
-    pub root_id: String,
-    pub path: String,
-    pub hot_state: ProjectHotState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub latest_snapshot_id: Option<SnapshotId>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ProjectHotState {
-    Cold,
-    Warming,
-    Hot,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SnapshotManifest {
-    pub schema_version: u16,
-    pub snapshot_id: SnapshotId,
-    pub workspace_id: WorkspaceId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_id: Option<ProjectId>,
-    pub kind: SnapshotKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_snapshot_id: Option<SnapshotId>,
-    pub namespace_root_id: NamespacePageId,
-    pub semantic_manifest_digest: ManifestDigest,
-    pub entry_count: u64,
-    pub refs: Vec<WorkspaceRef>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SnapshotDraft {
-    pub schema_version: u16,
-    pub snapshot_id: SnapshotId,
-    pub workspace_id: WorkspaceId,
-    pub project_id: Option<ProjectId>,
-    pub kind: SnapshotKind,
-    pub base_snapshot_id: Option<SnapshotId>,
-    pub entries: Vec<NamespaceEntry>,
-    pub refs: Vec<WorkspaceRef>,
-}
-
-impl SnapshotDraft {
-    pub fn from_manifest(manifest: SnapshotManifest, entries: Vec<NamespaceEntry>) -> Self {
-        Self {
-            schema_version: manifest.schema_version,
-            snapshot_id: manifest.snapshot_id,
-            workspace_id: manifest.workspace_id,
-            project_id: manifest.project_id,
-            kind: manifest.kind,
-            base_snapshot_id: manifest.base_snapshot_id,
-            entries,
-            refs: manifest.refs,
-        }
-    }
-
-    pub fn into_manifest(
-        self,
-        namespace_root_id: NamespacePageId,
-        semantic_manifest_digest: ManifestDigest,
-    ) -> SnapshotManifest {
-        SnapshotManifest {
-            schema_version: self.schema_version,
-            snapshot_id: self.snapshot_id,
-            workspace_id: self.workspace_id,
-            project_id: self.project_id,
-            kind: self.kind,
-            base_snapshot_id: self.base_snapshot_id,
-            namespace_root_id,
-            semantic_manifest_digest,
-            entry_count: self.entries.len() as u64,
-            refs: self.refs,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SnapshotKind {
-    Base,
-    Machine,
-    WorkspaceHead,
-    AgentOverlay,
-    Conflict,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceRef {
-    pub name: String,
-    pub target_snapshot_id: SnapshotId,
-    pub kind: RefKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RefKind {
-    Workspace,
-    Machine,
-    Project,
-    Lease,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NamespaceEntry {
-    pub path: String,
-    pub kind: NamespaceEntryKind,
-    pub classification: PathClassification,
-    pub mode: MaterializationMode,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub access: Vec<AccessFlag>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_id: Option<ContentId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_layout: Option<ContentLayout>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub symlink_target: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub byte_len: Option<u64>,
-    #[serde(default)]
-    pub executability: FileExecutability,
-    pub hydration_state: HydrationState,
-}
-
-/// Exactly one POSIX mode bit syncs: executable. setuid/setgid/sticky and
-/// group/world-write bits are deliberately normalized away because syncing
-/// them would replicate privilege-escalation surface across machines.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum FileExecutability {
-    #[default]
-    Regular,
-    Executable,
-}
+use crate::ids::ContentId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -211,280 +14,15 @@ pub enum NamespaceEntryKind {
     Tombstone,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Exactly one POSIX mode bit syncs: executable. setuid/setgid/sticky and
+/// group/world-write bits are deliberately normalized away because syncing
+/// them would replicate privilege-escalation surface across machines.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum HydrationState {
-    Local,
-    Cold,
-    StructureOnly,
-    Missing,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContentLocator {
-    pub content_id: ContentId,
-    pub storage: ContentStorage,
-    pub raw_size: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pack_id: Option<PackId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub offset: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub length: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ContentLocatorWire {
-    content_id: ContentId,
-    storage: ContentStorage,
-    raw_size: u64,
-    #[serde(default)]
-    pack_id: Option<PackId>,
-    #[serde(default)]
-    offset: Option<u64>,
-    #[serde(default)]
-    length: Option<u64>,
-}
-
-impl<'de> Deserialize<'de> for ContentLocator {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wire = ContentLocatorWire::deserialize(deserializer)?;
-        let locator = Self {
-            content_id: wire.content_id,
-            storage: wire.storage,
-            raw_size: wire.raw_size,
-            pack_id: wire.pack_id,
-            offset: wire.offset,
-            length: wire.length,
-        };
-        match locator.storage {
-            ContentStorage::Packed => {
-                if locator.pack_id.is_some() && locator.offset.is_some() && locator.length.is_some()
-                {
-                    Ok(locator)
-                } else {
-                    Err(de::Error::custom(
-                        "packed locators require packId, offset, and length",
-                    ))
-                }
-            }
-            ContentStorage::Inline => {
-                if locator.pack_id.is_none() && locator.offset.is_none() && locator.length.is_none()
-                {
-                    Ok(locator)
-                } else {
-                    Err(de::Error::custom(
-                        "inline locators must not carry pack ranges",
-                    ))
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ContentStorage {
-    Inline,
-    Packed,
-}
-
-/// A physical content representation. This is deliberately separate from
-/// `NamespaceEntry::content_id`, which remains the keyed identity of the
-/// complete logical file regardless of how its bytes are stored.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase"
-)]
-pub enum ContentLayout {
-    SegmentedV1 {
-        logical_content_id: ContentId,
-        logical_length: u64,
-        segment_size: u64,
-        segments: Vec<SegmentLocator>,
-    },
-}
-
-impl ContentLayout {
-    pub fn single_segment(locator: ContentLocator) -> Result<Self, &'static str> {
-        if locator.storage != ContentStorage::Packed {
-            return Err("segmented content requires packed storage");
-        }
-        let pack_id = locator.pack_id.ok_or("segment packId is required")?;
-        let offset = locator.offset.ok_or("segment offset is required")?;
-        let length = locator.length.ok_or("segment length is required")?;
-        let logical_content_id = locator.content_id;
-        let logical_length = locator.raw_size;
-        let segment_id = SegmentId::new(logical_content_id.as_str());
-        let segments = if logical_length == 0 {
-            Vec::new()
-        } else {
-            vec![SegmentLocator {
-                ordinal: 0,
-                plaintext_length: logical_length,
-                segment_id,
-                pack_id,
-                offset,
-                length,
-                format_version: 1,
-            }]
-        };
-        Ok(Self::SegmentedV1 {
-            logical_content_id,
-            logical_length,
-            segment_size: logical_length.max(1),
-            segments,
-        })
-    }
-
-    pub fn logical_content_id(&self) -> &ContentId {
-        match self {
-            Self::SegmentedV1 {
-                logical_content_id, ..
-            } => logical_content_id,
-        }
-    }
-
-    pub fn logical_length(&self) -> u64 {
-        match self {
-            Self::SegmentedV1 { logical_length, .. } => *logical_length,
-        }
-    }
-
-    pub fn segments(&self) -> &[SegmentLocator] {
-        match self {
-            Self::SegmentedV1 { segments, .. } => segments,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SegmentId(String);
-
-impl SegmentId {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SegmentLocator {
-    pub ordinal: u32,
-    pub plaintext_length: u64,
-    pub segment_id: SegmentId,
-    pub pack_id: PackId,
-    pub offset: u64,
-    pub length: u64,
-    pub format_version: u16,
-}
-
-#[derive(Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-enum ContentLayoutWire {
-    SegmentedV1 {
-        logical_content_id: ContentId,
-        logical_length: u64,
-        segment_size: u64,
-        segments: Vec<SegmentLocator>,
-    },
-}
-
-impl<'de> Deserialize<'de> for ContentLayout {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        match ContentLayoutWire::deserialize(deserializer)? {
-            ContentLayoutWire::SegmentedV1 {
-                logical_content_id,
-                logical_length,
-                segment_size,
-                segments,
-            } => {
-                if logical_content_id.as_str().is_empty() {
-                    return Err(de::Error::custom(
-                        "segmented-v1 logicalContentId must not be empty",
-                    ));
-                }
-                validate_segmented_layout(logical_length, segment_size, &segments)
-                    .map_err(de::Error::custom)?;
-                Ok(Self::SegmentedV1 {
-                    logical_content_id,
-                    logical_length,
-                    segment_size,
-                    segments,
-                })
-            }
-        }
-    }
-}
-
-fn validate_segmented_layout(
-    logical_length: u64,
-    segment_size: u64,
-    segments: &[SegmentLocator],
-) -> Result<(), &'static str> {
-    if segment_size == 0 {
-        return Err("segmented-v1 segmentSize must be positive");
-    }
-    if logical_length == 0 {
-        return if segments.is_empty() {
-            Ok(())
-        } else {
-            Err("empty segmented-v1 content must not contain segments")
-        };
-    }
-    if segments.is_empty() {
-        return Err("non-empty segmented-v1 content requires segments");
-    }
-
-    let mut total = 0_u64;
-    for (index, segment) in segments.iter().enumerate() {
-        if segment.ordinal as usize != index {
-            return Err("segmented-v1 ordinals must be contiguous from zero");
-        }
-        if segment.plaintext_length == 0 || segment.plaintext_length > segment_size {
-            return Err("segmented-v1 plaintext lengths must be within segmentSize");
-        }
-        if index + 1 < segments.len() && segment.plaintext_length != segment_size {
-            return Err("only the final segmented-v1 segment may be short");
-        }
-        if segment.length == 0 || segment.format_version == 0 {
-            return Err("segment locator length and formatVersion must be positive");
-        }
-        if segment.segment_id.as_str().is_empty() || segment.pack_id.as_str().is_empty() {
-            return Err("segment locator segmentId and packId must not be empty");
-        }
-        segment
-            .offset
-            .checked_add(segment.length)
-            .ok_or("segment locator range overflow")?;
-        total = total
-            .checked_add(segment.plaintext_length)
-            .ok_or("segmented-v1 logical length overflow")?;
-    }
-    if total != logical_length {
-        return Err("segmented-v1 plaintext lengths must equal logicalLength");
-    }
-    Ok(())
+pub enum FileExecutability {
+    #[default]
+    Regular,
+    Executable,
 }
 
 pub fn workspace_content_id(workspace_content_key: [u8; 32], bytes: &[u8]) -> ContentId {
@@ -516,11 +54,19 @@ pub fn normalize_workspace_path(path: &str) -> String {
     while normalized.contains("//") {
         normalized = normalized.replace("//", "/");
     }
-    let normalized = normalized
-        .trim_start_matches("./")
-        .trim_start_matches('/')
-        .trim_end_matches('/')
-        .to_string();
+    // Stripping leading `./` can expose another `/` and vice versa (`/./x`), so
+    // trim to a fixpoint. Callers use `normalize(p) == p` as a canonicality
+    // guard; a single pass would let `./x` through that guard.
+    loop {
+        let trimmed = normalized
+            .trim_start_matches("./")
+            .trim_start_matches('/')
+            .trim_end_matches('/');
+        if trimmed.len() == normalized.len() {
+            break;
+        }
+        normalized = trimmed.to_string();
+    }
     if normalized == "." {
         String::new()
     } else {
@@ -572,13 +118,62 @@ impl<'de> serde::Deserialize<'de> for WorkspaceRelativePath {
     }
 }
 
-pub fn is_safe_workspace_symlink_target(target: &str) -> bool {
-    let normalized = normalize_workspace_path(target);
-    !normalized.is_empty()
-        && normalized == target
-        && Path::new(target)
-            .components()
-            .all(|component| matches!(component, Component::Normal(_)))
+/// The workspace-relative path a symlink stored at `link_path` with `target`
+/// names *lexically*, or `None` when the walk leaves the workspace root.
+///
+/// The kernel resolves a relative target against the directory holding the link,
+/// never against the workspace root, so the walk starts at the link's own parent:
+/// `docs/x -> ../README.md` lands on `README.md` and is inside, while
+/// `docs/x -> ../../etc/passwd` climbs out. Absolute and empty targets always
+/// escape.
+///
+/// This is the single lexical traversal policy for symlinks — the one owner of
+/// "where does this target point", so no caller re-derives it.
+pub fn resolve_symlink_target(link_path: &str, target: &str) -> Option<WorkspaceRelativePath> {
+    if target.is_empty() || target.starts_with('/') {
+        return None;
+    }
+    let link = normalize_workspace_path(link_path);
+    if link.is_empty() {
+        return None;
+    }
+    // Start at the directory holding the link. A root-level link starts empty, so
+    // a single `..` already leaves the workspace.
+    let mut resolved: Vec<&str> = link.split('/').collect();
+    resolved.pop();
+    for component in target.split('/') {
+        match component {
+            // A trailing or doubled separator contributes nothing, and `.` stays put.
+            "" | "." => {}
+            // Popping past the root escapes.
+            ".." => {
+                resolved.pop()?;
+            }
+            // Deliberately not path-normalized: on POSIX a backslash is an ordinary
+            // filename character, so `..\..\x` is one child name, not a traversal.
+            _ => resolved.push(component),
+        }
+    }
+    Some(WorkspaceRelativePath::new(resolved.join("/")))
+}
+
+/// Whether a symlink stored at `link_path` with `target` names a location inside
+/// the workspace root, judged lexically (see [`resolve_symlink_target`]).
+///
+/// This is the cheap FIRST gate, and the only gate push can apply: push decides
+/// whether to publish a link whose target need not exist anywhere yet. Apply runs
+/// it too, so a target that escapes on its face never reaches `symlink()`.
+///
+/// Being lexical, it cannot see through a component that is itself a symlink —
+/// and a symlink escaping the workspace CAN exist on disk: Bowline refuses to
+/// publish the user's own `~/Code/escape -> /etc`, but refusing to sync it does
+/// not remove it, so a peer entry `read -> escape/passwd` is lexically contained
+/// and physically outside. That is why containment is two gates: the on-disk
+/// resolution
+/// (`bowline_local::sync::manifest_engine::fs_guard::symlink_target_lands_in_workspace`)
+/// is the second, and it is the one that decides materialization.
+pub fn symlink_target_stays_in_workspace(link_path: &str, target: &str) -> bool {
+    resolve_symlink_target(link_path, target).is_some()
 }
 
 #[cfg(test)]
@@ -586,9 +181,8 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        ContentLayout, FileExecutability, NamespaceEntry, WorkspaceRelativePath,
-        is_safe_workspace_symlink_target, normalize_workspace_path, workspace_content_id,
-        workspace_content_id_reader,
+        WorkspaceRelativePath, normalize_workspace_path, resolve_symlink_target,
+        symlink_target_stays_in_workspace, workspace_content_id, workspace_content_id_reader,
     };
 
     #[test]
@@ -629,6 +223,21 @@ mod tests {
     }
 
     #[test]
+    fn path_normalization_reaches_a_fixpoint_in_one_call() {
+        // Interleaved `/` and `./` prefixes: a single trim pass leaves a second
+        // form behind, and callers guard on `normalize(p) == p`.
+        for path in ["/./acme", "././acme", "/././/acme/", "./../acme"] {
+            let once = normalize_workspace_path(path);
+            assert_eq!(
+                normalize_workspace_path(&once),
+                once,
+                "normalization is not idempotent for {path:?}"
+            );
+        }
+        assert_eq!(normalize_workspace_path("/./acme"), "acme");
+    }
+
+    #[test]
     fn workspace_relative_path_deserialization_preserves_canonical_invariants() {
         let path: WorkspaceRelativePath =
             serde_json::from_str(r#""./a//b/""#).expect("path deserializes");
@@ -653,123 +262,71 @@ mod tests {
     }
 
     #[test]
-    fn workspace_symlink_targets_reject_every_traversal_component() {
-        for target in [
-            "",
-            ".",
-            "..",
-            "../outside",
-            "dir/..",
-            "dir/../outside",
-            "/outside",
-            "./inside",
-            "inside//file",
-            "inside\\file",
+    fn symlink_targets_that_climb_out_of_the_workspace_are_refused() {
+        // Link path, escaping target.
+        for (link, target) in [
+            ("link", ""),
+            ("link", "/etc/passwd"),
+            ("link", ".."),
+            ("link", "../outside"),
+            ("docs/link", "../../outside"),
+            ("docs/link", "../../../.ssh/authorized_keys"),
+            // Climbs out mid-path, then comes back down under a different root.
+            ("a/b/link", "../../../etc/passwd"),
+            ("a/b/link", "sub/../../../../outside"),
         ] {
             assert!(
-                !is_safe_workspace_symlink_target(target),
-                "unsafe target accepted: {target:?}"
-            );
-        }
-        for target in ["inside", "inside/file", "inside..name/file"] {
-            assert!(
-                is_safe_workspace_symlink_target(target),
-                "safe target rejected: {target:?}"
+                !symlink_target_stays_in_workspace(link, target),
+                "escaping target accepted: {link:?} -> {target:?}"
             );
         }
     }
 
     #[test]
-    fn namespace_entry_without_executability_field_defaults_to_regular() {
-        let entry: NamespaceEntry = serde_json::from_str(
-            r#"{
-                "path": "scripts/dev.sh",
-                "kind": "file",
-                "classification": "workspace-sync",
-                "mode": "workspace-sync",
-                "access": ["human-readable"],
-                "contentId": "cid_script",
-                "byteLen": 12,
-                "hydrationState": "local"
-            }"#,
-        )
-        .expect("entry json");
-
-        assert_eq!(entry.executability, FileExecutability::Regular);
-    }
-
-    #[test]
-    fn content_layout_reads_segmented_files() {
-        let segmented: ContentLayout = serde_json::from_str(
-            r#"{
-                "kind": "segmented-v1",
-                "logicalContentId": "cid_whole_file",
-                "logicalLength": 10,
-                "segmentSize": 6,
-                "segments": [
-                    {
-                        "ordinal": 0,
-                        "plaintextLength": 6,
-                        "segmentId": "seg_first",
-                        "packId": "pack_segments",
-                        "offset": 0,
-                        "length": 22,
-                        "formatVersion": 1
-                    },
-                    {
-                        "ordinal": 1,
-                        "plaintextLength": 4,
-                        "segmentId": "seg_second",
-                        "packId": "pack_segments",
-                        "offset": 22,
-                        "length": 20,
-                        "formatVersion": 1
-                    }
-                ]
-            }"#,
-        )
-        .expect("segmented layout");
-        assert!(matches!(segmented, ContentLayout::SegmentedV1 { .. }));
-        assert_eq!(segmented.logical_content_id().as_str(), "cid_whole_file");
-        assert_eq!(segmented.logical_length(), 10);
-    }
-
-    #[test]
-    fn segmented_layout_rejects_gaps_and_wrong_logical_length() {
-        for invalid in [
-            r#"{
-                "kind": "segmented-v1",
-                "logicalContentId": "cid_whole_file",
-                "logicalLength": 6,
-                "segmentSize": 6,
-                "segments": [{
-                    "ordinal": 1,
-                    "plaintextLength": 6,
-                    "segmentId": "seg_first",
-                    "packId": "pack_segments",
-                    "offset": 0,
-                    "length": 22,
-                    "formatVersion": 1
-                }]
-            }"#,
-            r#"{
-                "kind": "segmented-v1",
-                "logicalContentId": "cid_whole_file",
-                "logicalLength": 7,
-                "segmentSize": 6,
-                "segments": [{
-                    "ordinal": 0,
-                    "plaintextLength": 6,
-                    "segmentId": "seg_first",
-                    "packId": "pack_segments",
-                    "offset": 0,
-                    "length": 22,
-                    "formatVersion": 1
-                }]
-            }"#,
+    fn symlink_targets_that_resolve_inside_the_workspace_are_kept() {
+        for (link, target) in [
+            ("link", "inside"),
+            ("link", "inside/file"),
+            ("docs/link", "../README.md"),
+            // The real shape in this repo: `.claude/skills/ads` points two levels
+            // up and back down into `.agents`, never leaving the root.
+            (".claude/skills/ads", "../../.agents/skills/ads"),
+            // Descends and climbs back to exactly the root.
+            ("a/b/link", "../../x"),
+            ("a/b/link", "sub/../sibling"),
+            // A backslash is an ordinary POSIX filename character, not a traversal.
+            ("link", "inside\\file"),
+            ("link", "inside..name/file"),
         ] {
-            serde_json::from_str::<ContentLayout>(invalid)
-                .expect_err("invalid segmented layout should fail");
+            assert!(
+                symlink_target_stays_in_workspace(link, target),
+                "contained target rejected: {link:?} -> {target:?}"
+            );
         }
+    }
+
+    #[test]
+    fn a_contained_target_resolves_to_the_workspace_path_it_names() {
+        // The filesystem-aware second gate walks this path component by component,
+        // so the lexical resolution must name the location the kernel would reach.
+        for (link, target, expected) in [
+            ("link", "inside/file", "inside/file"),
+            ("docs/link", "../README.md", "README.md"),
+            (
+                ".claude/skills/ads",
+                "../../.agents/skills/ads",
+                ".agents/skills/ads",
+            ),
+            ("a/b/link", "sub/../sibling", "a/b/sibling"),
+            // Resolving onto the workspace root itself is contained, not an escape.
+            ("docs/link", "..", ""),
+        ] {
+            assert_eq!(
+                resolve_symlink_target(link, target).map(|path| path.as_str().to_string()),
+                Some(expected.to_string()),
+                "wrong resolution for {link:?} -> {target:?}"
+            );
+        }
+        assert_eq!(resolve_symlink_target("link", "../outside"), None);
     }
 }

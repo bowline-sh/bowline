@@ -1,5 +1,4 @@
 use std::{
-    cell::RefCell,
     io::Cursor,
     sync::{
         Arc, Barrier,
@@ -48,89 +47,28 @@ impl Read for ReadErrorReader {
     }
 }
 
-#[derive(Default)]
-struct InheritedDefaultStore {
-    stored: RefCell<Option<Vec<u8>>>,
-}
-
-impl ByteStore for InheritedDefaultStore {
-    fn put_object(
-        &self,
-        key: ObjectKey,
-        kind: ObjectKind,
-        bytes: &[u8],
-        _created_by_device_id: Option<&DeviceId>,
-    ) -> Result<ObjectMetadata, ByteStoreError> {
-        self.stored.replace(Some(bytes.to_vec()));
-        Ok(ObjectMetadata {
-            key,
-            kind,
-            byte_len: bytes.len() as u64,
-            hash: stable_object_hash(bytes),
-            key_epoch: 1,
-            created_by_device_id: None,
-            created_at_unix_ms: 0,
-            retention_state: RetentionState::Pending,
-            retain_until_unix_ms: None,
-        })
-    }
-
-    fn get_object(&self, key: &ObjectKey) -> Result<Vec<u8>, ByteStoreError> {
-        self.stored
-            .borrow()
-            .clone()
-            .ok_or_else(|| ByteStoreError::MissingObject {
-                key: key.clone(),
-                component: "inherited default test store",
-            })
-    }
-
-    fn get_range(&self, _key: &ObjectKey, _range: ByteRange) -> Result<Vec<u8>, ByteStoreError> {
-        Err(ByteStoreError::UnsupportedOperation("test get_range"))
-    }
-
-    fn head_object(&self, _key: &ObjectKey) -> Result<ObjectMetadata, ByteStoreError> {
-        Err(ByteStoreError::UnsupportedOperation("test head_object"))
-    }
-
-    fn metrics(&self) -> ByteStoreMetrics {
-        ByteStoreMetrics::default()
-    }
-}
-
 fn reader_request<'a>(
     key: ObjectKey,
     source: &'a dyn ReopenableObjectSource,
-    expected: &[u8],
-) -> PutObjectReaderRequest<'a> {
-    PutObjectReaderRequest {
-        key,
-        kind: ObjectKind::WorkspaceFileV1,
-        content_id: ObjectContentId::new("cid_00112233445566ee"),
-        source,
-        byte_len: expected.len() as u64,
-        expected_hash: ObjectHash::from_stable_hash(stable_object_hash(expected)),
-        key_epoch: 1,
-        created_by_device_id: None,
+    expected: &'a [u8],
+) -> PutObjectRequest<'a> {
+    PutObjectRequest {
+        source: PutObjectSource::Reader(source),
+        ..bytes_request(key, expected)
     }
 }
 
-#[test]
-fn inherited_reader_default_rejects_claimed_identity_before_put() {
-    let expected = b"expected default bytes";
-    let mut mutated_bytes = expected.to_vec();
-    mutated_bytes[0] ^= 0xff;
-    let mutated = BytesSource(mutated_bytes);
-    let store = InheritedDefaultStore::default();
-    let key = ObjectKey::new("b_00112233445566e100112233445566e100112233445566e100112233445566e1")
-        .expect("key");
-
-    let error = store
-        .put_object_reader_with_content_id_at_epoch(reader_request(key.clone(), &mutated, expected))
-        .expect_err("same-length mutation must fail before inherited put");
-
-    assert!(matches!(error, ByteStoreError::CorruptObject { .. }));
-    assert!(store.stored.borrow().is_none());
+fn bytes_request(key: ObjectKey, bytes: &[u8]) -> PutObjectRequest<'_> {
+    PutObjectRequest {
+        key,
+        kind: ObjectKind::WorkspaceFileV1,
+        content_id: ObjectContentId::new("cid_00112233445566ee"),
+        source: PutObjectSource::Bytes(bytes),
+        byte_len: bytes.len() as u64,
+        expected_hash: ObjectHash::of_bytes(bytes),
+        key_epoch: 1,
+        created_by_device_id: None,
+    }
 }
 
 #[test]
@@ -146,7 +84,7 @@ fn local_reader_identity_failure_is_atomic_and_clean_retry_succeeds() {
         .expect("key");
 
     let error = store
-        .put_object_reader_with_content_id_at_epoch(reader_request(key.clone(), &mutated, expected))
+        .put(reader_request(key.clone(), &mutated, expected))
         .expect_err("same-length mutation must fail atomically");
     assert!(matches!(error, ByteStoreError::CorruptObject { .. }));
     assert!(matches!(
@@ -158,7 +96,7 @@ fn local_reader_identity_failure_is_atomic_and_clean_retry_succeeds() {
     assert_eq!(store.metrics().put_count, 0);
 
     let metadata = store
-        .put_object_reader_with_content_id_at_epoch(reader_request(key.clone(), &valid, expected))
+        .put(reader_request(key.clone(), &valid, expected))
         .expect("clean retry succeeds");
     assert_eq!(metadata.hash, stable_object_hash(expected));
     assert_eq!(store.get_object(&key).expect("stored object"), expected);
@@ -176,7 +114,7 @@ fn assert_local_reader_failure_is_atomic_then_retry_succeeds(
     let valid = BytesSource(expected.to_vec());
 
     store
-        .put_object_reader_with_content_id_at_epoch(reader_request(key.clone(), source, expected))
+        .put(reader_request(key.clone(), source, expected))
         .expect_err("faulty source must fail atomically");
     assert!(!store.stored_path(&key).exists());
     assert!(!store.metadata_path(&key).exists());
@@ -189,7 +127,7 @@ fn assert_local_reader_failure_is_atomic_then_retry_succeeds(
     assert_eq!(store.metrics().peak_object_bytes_in_flight, 0);
 
     store
-        .put_object_reader_with_content_id_at_epoch(reader_request(key.clone(), &valid, expected))
+        .put(reader_request(key.clone(), &valid, expected))
         .expect("clean retry succeeds");
     assert_eq!(store.get_object(&key).expect("stored object"), expected);
     assert_eq!(store.metrics().put_count, 1);
@@ -228,7 +166,7 @@ fn local_store_supports_full_range_head_and_metrics() {
     let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
         .expect("opaque key");
     let metadata = store
-        .put_object(key.clone(), ObjectKind::WorkspaceFileV1, b"abcdef", None)
+        .put(bytes_request(key.clone(), b"abcdef"))
         .expect("put object");
 
     assert_eq!(metadata.byte_len, 6);
@@ -266,7 +204,7 @@ fn local_store_deletes_only_verified_known_objects() {
     let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
         .expect("opaque key");
     store
-        .put_object(key.clone(), ObjectKind::WorkspaceFileV1, b"abcdef", None)
+        .put(bytes_request(key.clone(), b"abcdef"))
         .expect("put object");
 
     store.delete_object(&key).expect("delete object");
@@ -289,10 +227,10 @@ fn local_store_rejects_overwrite() {
         .expect("opaque key");
 
     store
-        .put_object(key.clone(), ObjectKind::WorkspaceFileV1, b"first", None)
+        .put(bytes_request(key.clone(), b"first"))
         .expect("first put");
     let error = store
-        .put_object(key.clone(), ObjectKind::WorkspaceFileV1, b"second", None)
+        .put(bytes_request(key.clone(), b"second"))
         .expect_err("overwrite rejected");
 
     assert!(matches!(error, ByteStoreError::ObjectAlreadyExists(existing) if existing == key));
@@ -308,12 +246,7 @@ fn local_store_adopts_matching_bytes_when_metadata_was_lost() {
     fs::write(store.stored_path(&key), b"orphaned object bytes").expect("seed orphan bytes");
 
     let metadata = store
-        .put_object(
-            key.clone(),
-            ObjectKind::WorkspaceFileV1,
-            b"orphaned object bytes",
-            None,
-        )
+        .put(bytes_request(key.clone(), b"orphaned object bytes"))
         .expect("matching orphan bytes are adopted");
 
     assert_eq!(metadata.key, key);
@@ -332,12 +265,7 @@ fn head_object_rejects_missing_or_corrupt_object_bytes() {
         ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
             .expect("opaque key");
     store
-        .put_object(
-            missing_key.clone(),
-            ObjectKind::WorkspaceFileV1,
-            b"present",
-            None,
-        )
+        .put(bytes_request(missing_key.clone(), b"present"))
         .expect("put object");
     fs::remove_file(store.stored_path(&missing_key)).expect("remove object bytes");
 
@@ -353,12 +281,7 @@ fn head_object_rejects_missing_or_corrupt_object_bytes() {
         ObjectKey::new("b_8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff")
             .expect("opaque key");
     store
-        .put_object(
-            corrupt_key.clone(),
-            ObjectKind::WorkspaceFileV1,
-            b"original",
-            None,
-        )
+        .put(bytes_request(corrupt_key.clone(), b"original"))
         .expect("put object");
     fs::write(store.stored_path(&corrupt_key), b"corrupt").expect("corrupt object bytes");
 
@@ -379,20 +302,10 @@ fn head_object_rejects_metadata_for_different_key() {
         ObjectKey::new("b_8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff")
             .expect("opaque key");
     store
-        .put_object(
-            first_key.clone(),
-            ObjectKind::WorkspaceFileV1,
-            b"first",
-            None,
-        )
+        .put(bytes_request(first_key.clone(), b"first"))
         .expect("first object");
     store
-        .put_object(
-            second_key.clone(),
-            ObjectKind::WorkspaceFileV1,
-            b"second",
-            None,
-        )
+        .put(bytes_request(second_key.clone(), b"second"))
         .expect("second object");
     fs::copy(
         store.metadata_path(&second_key),
@@ -414,12 +327,7 @@ fn object_reads_require_committed_matching_metadata() {
         ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
             .expect("opaque key");
     store
-        .put_object(
-            no_metadata_key.clone(),
-            ObjectKind::WorkspaceFileV1,
-            b"present",
-            None,
-        )
+        .put(bytes_request(no_metadata_key.clone(), b"present"))
         .expect("put object");
     fs::remove_file(store.metadata_path(&no_metadata_key)).expect("remove metadata");
 
@@ -442,12 +350,7 @@ fn object_reads_require_committed_matching_metadata() {
         ObjectKey::new("b_8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff")
             .expect("opaque key");
     store
-        .put_object(
-            corrupt_hash_key.clone(),
-            ObjectKind::WorkspaceFileV1,
-            b"original",
-            None,
-        )
+        .put(bytes_request(corrupt_hash_key.clone(), b"original"))
         .expect("put object");
     fs::write(store.stored_path(&corrupt_hash_key), b"corrupt!").expect("corrupt same length");
     assert!(matches!(
@@ -459,12 +362,7 @@ fn object_reads_require_committed_matching_metadata() {
         ObjectKey::new("b_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
             .expect("opaque key");
     store
-        .put_object(
-            corrupt_len_key.clone(),
-            ObjectKind::WorkspaceFileV1,
-            b"short",
-            None,
-        )
+        .put(bytes_request(corrupt_len_key.clone(), b"short"))
         .expect("put object");
     fs::write(store.stored_path(&corrupt_len_key), b"longer").expect("corrupt length");
     assert!(matches!(
@@ -476,12 +374,7 @@ fn object_reads_require_committed_matching_metadata() {
         ObjectKey::new("b_fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210")
             .expect("opaque key");
     store
-        .put_object(
-            missing_epoch_key.clone(),
-            ObjectKind::WorkspaceFileV1,
-            b"current-format",
-            None,
-        )
+        .put(bytes_request(missing_epoch_key.clone(), b"current-format"))
         .expect("put object");
     fs::write(
         store.metadata_path(&missing_epoch_key),
@@ -525,14 +418,9 @@ fn local_store_streams_puts_and_gets_with_matching_metadata() {
         .map(|index| (index % 251) as u8)
         .collect::<Vec<_>>();
 
+    let source = BytesSource(bytes.clone());
     let metadata = store
-        .put_object_reader(
-            key.clone(),
-            ObjectKind::WorkspaceFileV1,
-            &mut std::io::Cursor::new(&bytes),
-            Some(bytes.len() as u64),
-            None,
-        )
+        .put(reader_request(key.clone(), &source, &bytes))
         .expect("streaming put");
     let reader_store =
         LocalByteStore::open_deterministic(temp.path(), 200).expect("reader store opens");
@@ -554,14 +442,9 @@ fn streaming_get_rejects_corrupt_object_bytes() {
     let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
     let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
         .expect("opaque key");
+    let source = BytesSource(b"original bytes".to_vec());
     store
-        .put_object_reader(
-            key.clone(),
-            ObjectKind::WorkspaceFileV1,
-            &mut std::io::Cursor::new(b"original bytes"),
-            None,
-            None,
-        )
+        .put(reader_request(key.clone(), &source, b"original bytes"))
         .expect("streaming put");
     fs::write(store.stored_path(&key), b"corrupt bytes!").expect("corrupt bytes");
 
@@ -584,8 +467,8 @@ fn metadata_race_reuses_matching_commit_without_deleting_bytes() {
         key.clone(),
         ObjectKind::WorkspaceFileV1,
         bytes.len() as u64,
-        stable_object_hash(bytes),
-        CURRENT_WRITE_KEY_EPOCH,
+        ObjectHash::of_bytes(bytes),
+        1,
         None,
     );
 
@@ -617,7 +500,7 @@ fn concurrent_puts_keep_object_immutable() {
                 let store = LocalByteStore::open(root).expect("store opens");
                 barrier.wait();
                 store
-                    .put_object(key, ObjectKind::WorkspaceFileV1, value.as_bytes(), None)
+                    .put(bytes_request(key, value.as_bytes()))
                     .map(|_| value.as_bytes().to_vec())
             })
         })
@@ -759,4 +642,133 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
     }
+}
+
+#[test]
+fn delete_reclaims_an_orphan_blob_left_by_a_crash_between_removes() {
+    let temp = TempDir::new("byte-store-delete-orphan");
+    let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
+    let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+        .expect("opaque key");
+    store
+        .put(bytes_request(key.clone(), b"orphan me"))
+        .expect("put object");
+    fs::remove_file(store.metadata_path(&key)).expect("simulate crash after metadata removal");
+
+    store
+        .delete_object(&key)
+        .expect("an orphan blob is reclaimable, not a permanent failure");
+
+    assert!(!store.stored_path(&key).exists());
+    assert_eq!(store.list_object_keys().expect("list keys"), Vec::new());
+}
+
+#[test]
+fn delete_is_idempotent_for_an_object_that_is_already_gone() {
+    let temp = TempDir::new("byte-store-delete-idempotent");
+    let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
+    let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+        .expect("opaque key");
+    store
+        .put(bytes_request(key.clone(), b"delete twice"))
+        .expect("put object");
+
+    store.delete_object(&key).expect("first delete");
+    store.delete_object(&key).expect("second delete converges");
+
+    assert_eq!(store.metrics().delete_count, 1);
+}
+
+#[test]
+fn delete_reclaims_stray_metadata_whose_bytes_are_already_gone() {
+    let temp = TempDir::new("byte-store-delete-stray-metadata");
+    let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
+    let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+        .expect("opaque key");
+    store
+        .put(bytes_request(key.clone(), b"bytes vanish"))
+        .expect("put object");
+    fs::remove_file(store.stored_path(&key)).expect("remove object bytes out of band");
+
+    store
+        .delete_object(&key)
+        .expect("stray metadata is reclaimable, not a permanent failure");
+
+    assert!(!store.metadata_path(&key).exists());
+}
+
+#[test]
+fn put_rejects_bytes_that_do_not_match_the_requested_identity() {
+    let temp = TempDir::new("byte-store-put-identity");
+    let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
+    let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+        .expect("opaque key");
+
+    let error = store
+        .put(PutObjectRequest {
+            expected_hash: ObjectHash::of_bytes(b"a different object"),
+            ..bytes_request(key.clone(), b"claimed bytes")
+        })
+        .expect_err("a mismatched hash must not be stored");
+
+    assert!(matches!(error, ByteStoreError::CorruptObject { .. }));
+    assert!(!store.stored_path(&key).exists());
+    assert!(!store.metadata_path(&key).exists());
+}
+
+#[test]
+fn streaming_get_leaves_no_temp_copy_behind() {
+    let temp = TempDir::new("byte-store-stream-no-temp");
+    let store = LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
+    let key = ObjectKey::new("b_0011223344556677001122334455667700112233445566770011223344556677")
+        .expect("opaque key");
+    let bytes = (0..150_000)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    let source = BytesSource(bytes.clone());
+    store
+        .put(reader_request(key.clone(), &source, &bytes))
+        .expect("streaming put");
+
+    let mut streamed = Vec::new();
+    store
+        .get_object_to_writer(&key, &mut streamed)
+        .expect("streaming get");
+
+    assert_eq!(streamed, bytes);
+    assert_eq!(
+        fs::read_dir(temp.path().join("objects"))
+            .expect("objects dir")
+            .filter_map(Result::ok)
+            .filter(|entry| is_atomic_temp_sibling(&entry.file_name().to_string_lossy()))
+            .count(),
+        0,
+        "hydration must not write a second copy of the object"
+    );
+}
+
+#[test]
+fn opening_a_store_reclaims_crash_left_write_temps_but_keeps_fresh_ones() {
+    let temp = TempDir::new("byte-store-temp-sweep");
+    LocalByteStore::open_deterministic(temp.path(), 100).expect("store opens");
+    let objects = temp.path().join("objects");
+    let stale = objects.join(
+        ".b_0011223344556677001122334455667700112233445566770011223344556677.123.1.bowline-tmp",
+    );
+    let fresh = objects.join(
+        ".b_8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff8899aabbccddeeff.124.1.bowline-tmp",
+    );
+    fs::write(&stale, b"crash residue").expect("seed stale temp");
+    fs::write(&fresh, b"in flight").expect("seed fresh temp");
+    fs::File::options()
+        .write(true)
+        .open(&stale)
+        .expect("open stale temp")
+        .set_modified(SystemTime::now() - STALE_WRITE_TEMP_AGE - Duration::from_secs(60))
+        .expect("age the stale temp");
+
+    LocalByteStore::open_deterministic(temp.path(), 200).expect("store reopens");
+
+    assert!(!stale.exists(), "crash residue must be reclaimed");
+    assert!(fresh.exists(), "an in-flight write must not be disturbed");
 }

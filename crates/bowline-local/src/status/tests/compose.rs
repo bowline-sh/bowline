@@ -1,6 +1,8 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+use bowline_core::status::SetupReceiptState;
+
 fn revision_options(db_path: &std::path::Path) -> StatusOptions {
     StatusOptions {
         db_path: Some(db_path.to_path_buf()),
@@ -355,8 +357,8 @@ fn redacted_status_snapshot_maps_states_and_redacts_paths() {
 
     let snapshot = redacted_status_snapshot(&output, "device-daemon");
 
-    assert_eq!(snapshot.availability, "degraded");
-    assert_eq!(snapshot.attention, "none");
+    assert_eq!(snapshot.availability, StatusAvailability::Degraded);
+    assert_eq!(snapshot.attention, StatusAttention::None);
     assert_eq!(snapshot.primary_fact_id.as_deref(), Some("network-offline"));
     assert!(
         snapshot
@@ -365,13 +367,16 @@ fn redacted_status_snapshot_maps_states_and_redacts_paths() {
             .any(|fact| fact.kind.as_str() == "client.update_available"),
         "non-workspace facts remain available for hosted presentation"
     );
-    assert_eq!(snapshot.published_by_device_id, "device-daemon");
+    assert_eq!(
+        snapshot.published_by_device_id,
+        DeviceId::new("device-daemon")
+    );
     assert_eq!(snapshot.observed_at, "2026-06-29T12:00:00Z");
     assert_eq!(
         snapshot.attention_items.last().map(String::as_str),
         Some("Sensitive local path redacted.")
     );
-    assert!(snapshot.snapshot_id.starts_with("wss_"));
+    assert!(snapshot.snapshot_id.as_str().starts_with("wss_"));
     // Snapshot id is stable for a given (workspace, generatedAt).
     assert_eq!(
         snapshot.snapshot_id,
@@ -775,7 +780,7 @@ fn project_status_reports_runnable_for_matching_setup_receipt() {
                 workspace_id: &workspace_id,
                 project_id: &project_id,
                 cwd: "apps/web",
-                state: "completed",
+                state: SetupReceiptState::Completed,
                 recipe_hash: Some(recipe_hash.as_str()),
                 setup_identity_hash: &identity.hash,
                 readiness_state: "runnable",
@@ -860,7 +865,7 @@ fn project_status_downgrades_when_inferred_setup_outputs_disappear() {
             workspace_id: &workspace_id,
             project_id: &project_id,
             cwd: "apps/web",
-            state: "completed",
+            state: SetupReceiptState::Completed,
             recipe_hash: Some(recipe_hash.as_str()),
             setup_identity_hash: &identity.hash,
             readiness_state: "runnable",
@@ -946,7 +951,7 @@ fn recipe_status_requires_every_command_receipt_before_runnable() {
             workspace_id: &workspace_id,
             project_id: &project_id,
             cwd: "apps/web",
-            state: "completed",
+            state: SetupReceiptState::Completed,
             recipe_hash: Some(recipe.recipe_hash.as_str()),
             setup_identity_hash: &identity.hash,
             readiness_state: "runnable",
@@ -1018,7 +1023,7 @@ fn recipe_status_is_runnable_when_every_command_receipt_matches() {
                 workspace_id: &workspace_id,
                 project_id: &project_id,
                 cwd: "apps/web",
-                state: "completed",
+                state: SetupReceiptState::Completed,
                 recipe_hash: Some(recipe.recipe_hash.as_str()),
                 setup_identity_hash: &identity.hash,
                 readiness_state: "runnable",
@@ -1100,7 +1105,7 @@ fn project_status_reports_blocked_for_missing_setup_executable_receipt() {
             workspace_id: &workspace_id,
             project_id: &project_id,
             cwd: "apps/web",
-            state: "failed",
+            state: SetupReceiptState::Failed,
             recipe_hash: Some(recipe_hash.as_str()),
             setup_identity_hash: &identity.hash,
             readiness_state: "blocked",
@@ -1138,7 +1143,7 @@ struct SetupReceiptFixture<'a> {
     workspace_id: &'a WorkspaceId,
     project_id: &'a ProjectId,
     cwd: &'a str,
-    state: &'a str,
+    state: SetupReceiptState,
     recipe_hash: Option<&'a str>,
     setup_identity_hash: &'a str,
     readiness_state: &'a str,
@@ -1155,7 +1160,7 @@ fn setup_receipt_record(fixture: SetupReceiptFixture<'_>) -> SetupReceiptRecord 
         workspace_id: fixture.workspace_id.clone(),
         project_id: Some(fixture.project_id.clone()),
         command: "setup command".to_string(),
-        state: fixture.state.to_string(),
+        state: fixture.state,
         recipe_hash: fixture.recipe_hash.unwrap_or("inferred").to_string(),
         approval_state: "not-required".to_string(),
         trigger: "test".to_string(),

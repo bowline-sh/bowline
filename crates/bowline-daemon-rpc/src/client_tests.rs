@@ -46,7 +46,7 @@ fn serve_handshake(stream: &mut UnixStream, codec: FrameCodec) {
         },
     )
     .expect("negotiation succeeds");
-    codec.write(stream, &hello).expect("server hello");
+    codec.write(stream, &hello.hello).expect("server hello");
 }
 
 fn rejects_server_identity_before_opening_transport(
@@ -90,23 +90,55 @@ fn rejects_server_identity_before_opening_transport(
 }
 
 #[test]
-fn old_contract_is_rejected_before_transport_opens() {
+fn a_contract_below_the_window_is_rejected_before_transport_opens() {
     let error = rejects_server_identity_before_opening_transport(
         "old-contract",
-        MACHINE_CONTRACT_VERSION - 1,
+        crate::MACHINE_CONTRACT_WINDOW.minimum - 1,
         WIRE_SCHEMA_HASH,
     );
-    assert!(matches!(error, ClientError::ContractVersionMismatch { .. }));
+    assert!(matches!(
+        error,
+        ClientError::IncompatibleVersion {
+            dimension: crate::VersionDimension::MachineContract,
+            ..
+        }
+    ));
+    // Callers must be able to distinguish this from an absent daemon.
+    assert!(error.reachability().version_skew().is_some());
 }
 
 #[test]
-fn wrong_schema_hash_is_rejected_before_transport_opens() {
-    let error = rejects_server_identity_before_opening_transport(
-        "wrong-schema",
-        MACHINE_CONTRACT_VERSION,
-        "different-schema",
-    );
-    assert!(matches!(error, ClientError::SchemaHashMismatch { .. }));
+fn a_different_schema_hash_still_opens_a_transport() {
+    // The schema hash digests hosted-only documents too, so it cannot gate local
+    // RPC: an unrelated dashboard field edit must not brick a resident daemon.
+    let socket = TestSocket::new("different-schema");
+    let listener = UnixListener::bind(&socket.0).expect("listener binds");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("client connects");
+        let codec = FrameCodec::default();
+        codec.read_magic(&mut stream).expect("client magic");
+        let _: DaemonClientHello = codec.read(&mut stream).expect("client hello");
+        codec
+            .write(
+                &mut stream,
+                &DaemonServerHello {
+                    protocol_version: DAEMON_RPC_PROTOCOL_VERSION,
+                    contract_version: MACHINE_CONTRACT_VERSION,
+                    schema_hash: "a-hosted-only-document-changed".to_string(),
+                    daemon_version: "test-daemon".to_string(),
+                    capabilities: vec!["status.getSnapshot".to_string()],
+                    instance_id: "daemon-test".to_string(),
+                },
+            )
+            .expect("server hello writes");
+        let mut byte = [0_u8; 1];
+        let _closed = stream.read(&mut byte);
+    });
+    let client = DaemonClient::connect(&socket.0, ClientOptions::new("test", "1"))
+        .expect("a hosted-only contract edit does not break local RPC");
+    assert_eq!(client.server_hello().daemon_version, "test-daemon");
+    drop(client);
+    server.join().expect("server exits");
 }
 
 #[test]
@@ -238,7 +270,7 @@ fn slow_event_receiver_gets_newest_state_with_resync_marker() {
     let client =
         DaemonClient::connect(&socket.0, ClientOptions::new("test", "1")).expect("client connects");
     let events = client
-        .register_events("subscription-test", 1)
+        .register_latest_event("subscription-test")
         .expect("event receiver registers");
     let _: serde_json::Value = client
         .call("trigger", &json!({}), None)
@@ -312,7 +344,7 @@ fn event_arriving_before_registration_is_retained() {
         .call("barrier", &json!({}), None)
         .expect("reader barrier responds");
     let events = client
-        .register_events("subscription-early", 1)
+        .register_latest_event("subscription-early")
         .expect("event receiver registers");
 
     let event = events

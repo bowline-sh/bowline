@@ -1,14 +1,14 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
 use bowline_control_plane::{
-    ControlPlaneTimestamp, FakeControlPlaneClient, ObjectKind, WorkspaceRef,
-    WorkspaceRefStreamConnectionState, WorkspaceRefStreamEvent, workspace_ref_stream_shutdown_pair,
+    ControlPlaneError, ControlPlaneTimestamp, FakeControlPlaneClient, ObjectKind, RejectionCode,
+    WorkspaceRef, WorkspaceRefStreamConnectionState, WorkspaceRefStreamEvent,
+    workspace_ref_stream_shutdown_pair,
 };
 use bowline_core::ids::{ContentId, DeviceId, SnapshotId, WorkspaceId};
 use bowline_local::sync::manifest_engine::{
@@ -19,11 +19,17 @@ use bowline_storage::{
     ObjectKey, ObjectKind as StorageObjectKind, ObjectMetadata, RetentionState, stable_object_hash,
 };
 
-use super::{
-    CommittedMetadataExpectation, DrainOutcome, ManifestTransport, ReconnectDelay,
-    RefChangeSubscription, RefObserverFailureStage, RefObserverHealthHandle, RefObserverState,
-    StreamAttempt, StreamStarter, drain_stream, validate_committed_metadata,
+use super::object_uploader::{CommittedMetadataExpectation, validate_committed_metadata};
+use super::ref_observer::{
+    AttemptHistory, DrainOutcome, StreamAttempt, StreamStarter, drain_stream,
+    should_log_observer_failure,
 };
+use super::{
+    ManifestTransport, ReconnectAttempt, ReconnectDelay, RefChangeSubscription, RefObserverFailure,
+    RefObserverFailureStage, RefObserverHealthHandle, RefObserverReadiness, RefObserverState,
+    SignerTrustRefresh,
+};
+use crate::device_trust::TrustRefreshOutcome;
 
 const WORKSPACE: &str = "ws_manifest_transport";
 const DEVICE: &str = "device_manifest_transport";
@@ -65,6 +71,42 @@ fn sequenced_put_server(responses: &[(&str, &[u8])]) -> String {
     format!("http://{address}/object")
 }
 
+/// Like [`sequenced_put_server`] but handles overlapping connections. The upload
+/// pipeline PUTs several objects at once, so a server that only ever serves one
+/// connection at a time would measure the test harness rather than the code.
+///
+/// It serves until the listener is dropped rather than a fixed number of
+/// connections, because how many TCP connections a client opens for N requests
+/// is the client's own pooling decision and not something a test may pin. A
+/// fixed count left a reconnect with nothing listening, which surfaced under CI
+/// load as a flaky `error sending request` on the client and a `BrokenPipe` on
+/// the server — the harness, never the transport.
+fn concurrent_put_server(status: &str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test listener");
+    let address = listener.local_addr().expect("listener address");
+    let status = status.to_string();
+    thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            let status = status.clone();
+            thread::spawn(move || {
+                let mut request = [0; 4096];
+                let _ = stream.read(&mut request).expect("read request");
+                // `Connection: close` because that is what this handler does —
+                // it answers once and drops the stream. Without it the reply is
+                // HTTP/1.1 keep-alive by default, so the client pools a socket
+                // the server has already closed and the next request fails on a
+                // connection that was never reusable.
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .expect("write headers");
+            });
+        }
+    });
+    format!("http://{address}/object")
+}
+
 fn owned_signed_url_response(status: &str, body: Arc<Vec<u8>>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test listener");
     let address = listener.local_addr().expect("listener address");
@@ -96,15 +138,89 @@ fn content_id() -> ContentId {
 
 // ---- object upload / download ------------------------------------------------
 
+/// R6's cost-model assertion, stated as round trips rather than wall clock.
+///
+/// Under the old transport `put_blob` cost three serialized round trips —
+/// upload intent, PUT, metadata commit — before it returned, so a `git checkout`
+/// touching 5,000 files paid 15,000 of them in sequence. This asserts the new
+/// contract directly: `put_blob` contacts nothing, and the commits land in one
+/// parallel drain at the publishing barrier. It fails on any regression to
+/// inline per-object I/O.
 #[test]
-fn put_blob_commits_metadata_before_returning() {
+fn put_blob_defers_every_round_trip_to_the_publishing_barrier() {
     let control_plane = ready_workspace();
-    let sealed = b"sealed-blob-payload".to_vec();
+    let blobs: Vec<Vec<u8>> = (0..4_u8)
+        .map(|index| format!("sealed-blob-payload-{index}").into_bytes())
+        .collect();
+    let manifest = b"sealed-manifest-payload".to_vec();
+    let manifest_key = physical_manifest_key(&manifest);
+    control_plane.set_signed_url_override("upload", concurrent_put_server("200 OK"));
+
+    let content_id = content_id();
+    let transport = transport(&control_plane);
+    let blob_keys: Vec<_> = blobs
+        .iter()
+        .map(|sealed| physical_blob_key(sealed))
+        .collect();
+    for (sealed, key) in blobs.iter().zip(&blob_keys) {
+        transport
+            .put_blob(BlobUpload {
+                key,
+                content_id: &content_id,
+                key_epoch: KeyEpoch::new(1),
+                sealed,
+            })
+            .expect("put_blob succeeds");
+    }
+
+    assert!(
+        control_plane.object_pointers(WORKSPACE).is_empty(),
+        "put_blob must not contact the control plane inline"
+    );
+
+    transport
+        .put_manifest(ManifestUpload {
+            key: &manifest_key,
+            content_id: &content_id,
+            key_epoch: KeyEpoch::new(1),
+            sealed: &manifest,
+        })
+        .expect("put_manifest succeeds");
+
+    // Every blob's metadata row must exist by the time the manifest's does: the
+    // manifest is the only thing that can name a blob.
+    let pointers = control_plane.object_pointers(WORKSPACE);
+    for (sealed, key) in blobs.iter().zip(&blob_keys) {
+        let pointer = pointers
+            .iter()
+            .find(|pointer| pointer.object_key == key.as_str())
+            .expect("committed object pointer for the uploaded blob");
+        assert_eq!(pointer.byte_len, sealed.len() as u64);
+        assert_eq!(pointer.hash, stable_object_hash(sealed));
+        assert_eq!(pointer.key_epoch, 1);
+        assert_eq!(pointer.kind, ObjectKind::Blob);
+        assert_eq!(pointer.content_id, content_id);
+    }
+    assert!(
+        pointers
+            .iter()
+            .any(|pointer| pointer.object_key == manifest_key.as_str())
+    );
+}
+
+/// A queued blob must never survive a ref move: the ref is what makes a manifest
+/// — and through it every blob — reachable to another device.
+#[test]
+fn compare_and_swap_drains_queued_uploads_first() {
+    let control_plane = ready_workspace();
+    let sealed = b"sealed-blob-before-cas".to_vec();
     let key = physical_blob_key(&sealed);
+    let manifest_key = physical_manifest_key(b"sealed-manifest-before-cas");
     control_plane.set_signed_url_override("upload", sequenced_put_server(&[("200 OK", b"")]));
 
     let content_id = content_id();
-    transport(&control_plane)
+    let transport = transport(&control_plane);
+    transport
         .put_blob(BlobUpload {
             key: &key,
             content_id: &content_id,
@@ -113,17 +229,17 @@ fn put_blob_commits_metadata_before_returning() {
         })
         .expect("put_blob succeeds");
 
-    // Success means the hosted metadata commit landed and read back clean.
-    let pointers = control_plane.object_pointers(WORKSPACE);
-    let pointer = pointers
-        .iter()
-        .find(|pointer| pointer.object_key == key.as_str())
-        .expect("committed object pointer for the uploaded blob");
-    assert_eq!(pointer.byte_len, sealed.len() as u64);
-    assert_eq!(pointer.hash, stable_object_hash(&sealed));
-    assert_eq!(pointer.key_epoch, 1);
-    assert_eq!(pointer.kind, ObjectKind::Blob);
-    assert_eq!(pointer.content_id, content_id);
+    transport
+        .compare_and_swap(None, &manifest_key)
+        .expect("compare-and-swap succeeds");
+
+    assert!(
+        control_plane
+            .object_pointers(WORKSPACE)
+            .iter()
+            .any(|pointer| pointer.object_key == key.as_str()),
+        "the ref advanced with a blob still queued"
+    );
 }
 
 #[test]
@@ -213,6 +329,51 @@ fn put_blob_reader_streams_and_commits() {
     assert_eq!(pointer.byte_len, sealed.len() as u64);
     assert_eq!(pointer.hash, stable_object_hash(&sealed));
     assert_eq!(pointer.kind, ObjectKind::Blob);
+}
+
+/// Convergent sealing makes a re-upload of identical content routine, so the
+/// transport must treat "the server already has it" as done rather than as a
+/// failed PUT. The one-shot PUT server proves it: a second attempt that tried to
+/// transfer anything would hang or fail on a closed listener.
+#[test]
+fn put_blob_accepts_an_object_the_server_already_holds() {
+    let control_plane = ready_workspace();
+    let sealed = b"sealed-blob-already-committed".to_vec();
+    let key = physical_blob_key(&sealed);
+    let manifest_key = physical_manifest_key(b"sealed-manifest-already-committed");
+    control_plane.set_signed_url_override("upload", sequenced_put_server(&[("200 OK", b"")]));
+
+    let content_id = content_id();
+    let blob = || BlobUpload {
+        key: &key,
+        content_id: &content_id,
+        key_epoch: KeyEpoch::new(1),
+        sealed: &sealed,
+    };
+    let transport = transport(&control_plane);
+    transport.put_blob(blob()).expect("put_blob succeeds");
+    // Draining is what actually contacts the control plane, so publish once to
+    // commit the blob before re-presenting it.
+    transport
+        .compare_and_swap(None, &manifest_key)
+        .expect("compare-and-swap drains the first upload");
+
+    transport
+        .put_blob(blob())
+        .expect("re-presenting committed bytes queues");
+    transport
+        .compare_and_swap(None, &manifest_key)
+        .expect("an already-committed blob does not fail the drain");
+
+    let pointers = control_plane.object_pointers(WORKSPACE);
+    assert_eq!(
+        pointers
+            .iter()
+            .filter(|pointer| pointer.object_key == key.as_str())
+            .count(),
+        1,
+        "an already-committed blob must not be committed twice"
+    );
 }
 
 // ---- committed metadata fails closed ----------------------------------------
@@ -362,15 +523,22 @@ fn compare_and_swap_tolerates_a_headless_genesis_lost_ref() {
 }
 
 #[test]
-fn compare_and_swap_maps_transport_failure_to_ambiguous() {
+fn compare_and_swap_does_not_launder_a_decisive_rejection_into_ambiguous() {
+    // A swap that never left the client has a KNOWN outcome. Reporting it as
+    // ambiguous made the engine re-read the ref and retry forever on the normal
+    // backoff, so a revoked device or an expired session looked like a sync that
+    // was merely catching up.
     let control_plane = ready_workspace();
     control_plane.set_offline(true);
-    let manifest_key = physical_manifest_key(b"ambiguous-manifest");
+    let manifest_key = physical_manifest_key(b"rejected-manifest");
 
-    let outcome = transport(&control_plane)
+    let error = transport(&control_plane)
         .compare_and_swap(Some(0), &manifest_key)
-        .expect("a lost ack is a typed ambiguous outcome, not an error");
-    assert!(matches!(outcome, CasOutcome::Ambiguous));
+        .expect_err("a decisive rejection is an error, not an ambiguous outcome");
+    assert!(
+        error.to_string().contains("compare-and-swap"),
+        "got: {error}"
+    );
 }
 
 // ---- read_ref genesis mapping ------------------------------------------------
@@ -409,7 +577,12 @@ fn ref_subscription_emits_ref_changed_and_reconnects() {
     });
     let delay: ReconnectDelay = Arc::new(|_| Duration::from_millis(2));
 
-    let subscription = RefChangeSubscription::spawn_with_starter(starter, events_tx, delay);
+    let subscription = RefChangeSubscription::spawn_with_starter(
+        starter,
+        events_tx,
+        delay,
+        never_refreshed_trust(),
+    );
 
     for _ in 0..3 {
         assert!(matches!(
@@ -517,6 +690,392 @@ fn live_ref_observer_carries_a_verified_real_head_after_initial_authority() {
         worker.join().expect("drain worker"),
         DrainOutcome::DriverGone
     ));
+}
+
+/// The observer's own classification of what ended an attempt. A refused
+/// credential must not hide inside the transport stage: the reconnect schedule
+/// and the status projection both key off it, and a daemon that silently stops
+/// receiving remote heads is the failure this exists to prevent.
+#[test]
+fn a_refused_credential_is_classified_apart_from_a_transport_drop() {
+    let refusal = drain_one_stream_error(ControlPlaneError::Rejected {
+        code: RejectionCode::Unauthorized,
+        message: "account session expired".to_string(),
+    });
+    let drop = drain_one_stream_error(ControlPlaneError::Transport {
+        detail: "connection reset".to_string(),
+    });
+
+    assert_eq!(refusal.stage, RefObserverFailureStage::Authentication);
+    assert_eq!(drop.stage, RefObserverFailureStage::Stream);
+}
+
+/// The failure that ended an attempt outlives the wait before the next one, so
+/// the condition stays reported instead of flickering back to a neutral
+/// "connecting" on every backoff cycle.
+#[test]
+fn a_refused_credential_reports_unauthenticated_while_retrying() {
+    let health = RefObserverHealthHandle::new();
+    assert_eq!(health.readiness(), RefObserverReadiness::Retrying);
+
+    health.transition(
+        RefObserverState::Retrying,
+        1,
+        true,
+        Some(RefObserverFailure {
+            stage: RefObserverFailureStage::Authentication,
+            message: "control-plane rejected request".to_string(),
+        }),
+    );
+    assert_eq!(health.readiness(), RefObserverReadiness::Unauthenticated);
+
+    health.connecting(1);
+    assert_eq!(
+        health.readiness(),
+        RefObserverReadiness::Unauthenticated,
+        "reopening under the same dead credential is not recovery"
+    );
+
+    health.transition(RefObserverState::Live, 0, false, None);
+    assert_eq!(health.readiness(), RefObserverReadiness::Live);
+}
+
+/// A dropped websocket keeps the ordinary retrying condition; only a refusal
+/// escalates. Otherwise every network blip would claim the daemon needs a login.
+#[test]
+fn a_transport_drop_stays_ordinary_retrying() {
+    let health = RefObserverHealthHandle::new();
+
+    health.transition(
+        RefObserverState::Retrying,
+        1,
+        true,
+        Some(RefObserverFailure {
+            stage: RefObserverFailureStage::Stream,
+            message: "workspace-ref subscription ended".to_string(),
+        }),
+    );
+
+    assert_eq!(health.readiness(), RefObserverReadiness::Retrying);
+}
+
+/// The bridge keeps reconnecting after a refusal — a later login can still fix
+/// it — but the schedule it asks for carries the authentication stage, which is
+/// what keeps it off the fast transport ceiling.
+#[test]
+fn a_refused_subscription_backs_off_on_the_authentication_schedule() {
+    let (events_tx, _events_rx) = mpsc::channel();
+    let requested = Arc::new(Mutex::new(Vec::<ReconnectAttempt>::new()));
+    let recorded = Arc::clone(&requested);
+    let starter: StreamStarter = Box::new(move |stream_tx| {
+        let (shutdown, _cancellation) = workspace_ref_stream_shutdown_pair();
+        let worker = thread::Builder::new()
+            .name("test-refused-ref-stream".to_string())
+            .spawn(move || {
+                let _receiver_gone = stream_tx.send(WorkspaceRefStreamEvent::Ref(Err(
+                    ControlPlaneError::Rejected {
+                        code: RejectionCode::Unauthorized,
+                        message: "account session expired".to_string(),
+                    },
+                )));
+            })
+            .expect("test stream thread");
+        Ok(StreamAttempt { shutdown, worker })
+    });
+    let delay: ReconnectDelay = Arc::new(move |attempt| {
+        recorded.lock().expect("schedule requests").push(attempt);
+        Duration::from_millis(2)
+    });
+
+    let subscription = RefChangeSubscription::spawn_with_starter(
+        starter,
+        events_tx,
+        delay,
+        never_refreshed_trust(),
+    );
+    let health = subscription.health_handle();
+    for _ in 0..500 {
+        if requested.lock().expect("schedule requests").len() >= 2 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    let readiness = health.readiness();
+    let attempts = requested.lock().expect("schedule requests").clone();
+    drop(subscription);
+
+    assert!(
+        attempts.len() >= 2,
+        "the bridge keeps retrying a refused credential: {attempts:?}"
+    );
+    assert!(
+        attempts
+            .iter()
+            .all(|attempt| attempt.stage == RefObserverFailureStage::Authentication),
+        "every refused attempt asks for the authentication schedule: {attempts:?}"
+    );
+    assert!(
+        attempts
+            .windows(2)
+            .all(|pair| pair[0].consecutive_failures < pair[1].consecutive_failures),
+        "a refusal never resets the failure count: {attempts:?}"
+    );
+    assert_eq!(readiness, RefObserverReadiness::Unauthenticated);
+}
+
+/// A bridge whose signer trust never changes, for the tests that are not about
+/// device trust.
+fn never_refreshed_trust() -> SignerTrustRefresh {
+    Arc::new(|_device_id| TrustRefreshOutcome::RateLimited)
+}
+
+fn unknown_signer_error(device_id: &str) -> ControlPlaneError {
+    ControlPlaneError::UnknownSigningDevice {
+        workspace_id: WorkspaceId::new(WORKSPACE),
+        device_id: DeviceId::new(device_id),
+    }
+}
+
+/// A stream that refuses its first attempt because the head was signed by a
+/// device this host does not know, and serves values from the attempt after the
+/// one that learned it.
+fn stream_learning_after_first_attempt(
+    signer: &'static str,
+    attempts: Arc<AtomicUsize>,
+) -> StreamStarter {
+    Box::new(move |stream_tx| {
+        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+        let (shutdown, _cancellation) = workspace_ref_stream_shutdown_pair();
+        let worker = thread::Builder::new()
+            .name("test-unknown-signer-stream".to_string())
+            .spawn(move || {
+                let event = if attempt == 0 {
+                    WorkspaceRefStreamEvent::Ref(Err(unknown_signer_error(signer)))
+                } else {
+                    WorkspaceRefStreamEvent::Ref(Ok(None))
+                };
+                let _receiver_gone = stream_tx.send(event);
+            })
+            .expect("test stream thread");
+        Ok(StreamAttempt { shutdown, worker })
+    })
+}
+
+/// The release blocker this path exists for: trusting a second device while
+/// this daemon runs publishes heads signed by a device its client has never
+/// heard of. The observer must learn that device and carry on — no restart, no
+/// user action.
+#[test]
+fn a_device_trusted_after_startup_is_learned_without_a_restart() {
+    let (events_tx, events_rx) = mpsc::channel();
+    let refreshed = Arc::new(Mutex::new(Vec::<DeviceId>::new()));
+    let recorded_refresh = Arc::clone(&refreshed);
+    let trust_refresh: SignerTrustRefresh = Arc::new(move |device_id| {
+        recorded_refresh
+            .lock()
+            .expect("refresh log")
+            .push(device_id.clone());
+        TrustRefreshOutcome::Learned
+    });
+    let requested = Arc::new(Mutex::new(Vec::<ReconnectAttempt>::new()));
+    let recorded_delay = Arc::clone(&requested);
+    let delay: ReconnectDelay = Arc::new(move |attempt| {
+        recorded_delay
+            .lock()
+            .expect("schedule requests")
+            .push(attempt);
+        Duration::from_millis(2)
+    });
+
+    let subscription = RefChangeSubscription::spawn_with_starter(
+        stream_learning_after_first_attempt("device_second", Arc::new(AtomicUsize::new(0))),
+        events_tx,
+        delay,
+        trust_refresh,
+    );
+
+    assert!(
+        matches!(
+            events_rx.recv_timeout(Duration::from_secs(5)),
+            Ok(EngineEvent::RefChanged)
+        ),
+        "the engine must be woken once the new device's head can be verified"
+    );
+    let attempts = requested.lock().expect("schedule requests").clone();
+    drop(subscription);
+
+    assert_eq!(
+        refreshed.lock().expect("refresh log").as_slice(),
+        &[DeviceId::new("device_second")],
+        "the observer refreshes trust for exactly the device that signed the head"
+    );
+    assert!(
+        !attempts.iter().any(|attempt| matches!(
+            attempt.stage,
+            RefObserverFailureStage::UnknownSigner(_) | RefObserverFailureStage::UntrustedSigner(_)
+        )),
+        "learning the signer is progress, not something to back off from: {attempts:?}"
+    );
+}
+
+/// A signer this host is not allowed to verify is a different fact from one it
+/// has not learned yet, and it must not read like a transport blip: status says
+/// unavailable rather than retrying, and the schedule stops treating reopening
+/// as the fix.
+#[test]
+fn a_signer_the_control_plane_disowns_is_reported_apart_from_a_retry() {
+    let (events_tx, _events_rx) = mpsc::channel();
+    let refreshes = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&refreshes);
+    let trust_refresh: SignerTrustRefresh = Arc::new(move |_device_id| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        TrustRefreshOutcome::NotAuthorized
+    });
+    let requested = Arc::new(Mutex::new(Vec::<ReconnectAttempt>::new()));
+    let recorded = Arc::clone(&requested);
+    let delay: ReconnectDelay = Arc::new(move |attempt| {
+        recorded.lock().expect("schedule requests").push(attempt);
+        Duration::from_millis(2)
+    });
+    let starter: StreamStarter = Box::new(move |stream_tx| {
+        let (shutdown, _cancellation) = workspace_ref_stream_shutdown_pair();
+        let worker = thread::Builder::new()
+            .name("test-untrusted-signer-stream".to_string())
+            .spawn(move || {
+                let _receiver_gone = stream_tx.send(WorkspaceRefStreamEvent::Ref(Err(
+                    unknown_signer_error("device_stranger"),
+                )));
+            })
+            .expect("test stream thread");
+        Ok(StreamAttempt { shutdown, worker })
+    });
+
+    let subscription =
+        RefChangeSubscription::spawn_with_starter(starter, events_tx, delay, trust_refresh);
+    let health = subscription.health_handle();
+    for _ in 0..500 {
+        if requested.lock().expect("schedule requests").len() >= 2 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    let readiness = health.readiness();
+    let attempts = requested.lock().expect("schedule requests").clone();
+    drop(subscription);
+
+    assert!(
+        attempts.len() >= 2,
+        "the observer keeps watching: {attempts:?}"
+    );
+    assert!(
+        attempts.iter().all(|attempt| attempt.stage
+            == RefObserverFailureStage::UntrustedSigner(DeviceId::new("device_stranger"))),
+        "every refused attempt names the signer it cannot trust: {attempts:?}"
+    );
+    assert_eq!(readiness, RefObserverReadiness::UntrustedSigner);
+    assert!(
+        refreshes.load(Ordering::SeqCst) >= 1,
+        "the observer asks; the trust handle is what bounds how often it costs a call"
+    );
+}
+
+/// Learning a signer skips the backoff because it is progress. If the head stays
+/// unverifiable anyway — a disagreement between the resolver and the trust
+/// handle, which nothing else would catch — the bridge must stop calling it
+/// progress rather than reopening the subscription in a tight loop.
+#[test]
+fn learning_a_signer_that_never_helps_falls_back_to_the_backoff() {
+    let (events_tx, _events_rx) = mpsc::channel();
+    let trust_refresh: SignerTrustRefresh = Arc::new(|_device_id| TrustRefreshOutcome::Learned);
+    let requested = Arc::new(Mutex::new(Vec::<ReconnectAttempt>::new()));
+    let recorded = Arc::clone(&requested);
+    let delay: ReconnectDelay = Arc::new(move |attempt| {
+        recorded.lock().expect("schedule requests").push(attempt);
+        Duration::from_millis(2)
+    });
+    let starter: StreamStarter = Box::new(move |stream_tx| {
+        let (shutdown, _cancellation) = workspace_ref_stream_shutdown_pair();
+        let worker = thread::Builder::new()
+            .name("test-unhelpful-trust-stream".to_string())
+            .spawn(move || {
+                let _receiver_gone = stream_tx.send(WorkspaceRefStreamEvent::Ref(Err(
+                    unknown_signer_error("device_second"),
+                )));
+            })
+            .expect("test stream thread");
+        Ok(StreamAttempt { shutdown, worker })
+    });
+
+    let subscription =
+        RefChangeSubscription::spawn_with_starter(starter, events_tx, delay, trust_refresh);
+    for _ in 0..500 {
+        if !requested.lock().expect("schedule requests").is_empty() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    let attempts = requested.lock().expect("schedule requests").clone();
+    drop(subscription);
+
+    assert!(
+        !attempts.is_empty(),
+        "an immediate retry that never delivers a value must fall back to the backoff"
+    );
+}
+
+/// The observed failure mode was 1,853 identical log lines. A condition that
+/// cannot clear must stay visible without writing one line per reconnect.
+#[test]
+fn a_repeating_failure_is_logged_on_a_thinning_schedule() {
+    let failure = RefObserverFailure {
+        stage: RefObserverFailureStage::UntrustedSigner(DeviceId::new("device_stranger")),
+        message: "workspace head is signed by a device this host cannot verify".to_string(),
+    };
+    let mut history = AttemptHistory::default();
+    let mut logged = 0_u32;
+
+    for _ in 0..1853 {
+        history.failures = history.failures.saturating_add(1);
+        if should_log_observer_failure(&failure, &history) {
+            logged += 1;
+            history.last_logged = Some(failure.clone());
+        }
+    }
+
+    assert_eq!(
+        logged, 11,
+        "1,853 repeats of one condition must not be 1,853 log lines"
+    );
+
+    // A condition that changes is always reported at once: the thinning must
+    // never hide something new.
+    let different = RefObserverFailure {
+        stage: RefObserverFailureStage::Stream,
+        message: "workspace-ref subscription ended".to_string(),
+    };
+    assert!(should_log_observer_failure(&different, &history));
+}
+
+fn drain_one_stream_error(error: ControlPlaneError) -> RefObserverFailure {
+    let (stream_tx, stream_rx) = mpsc::channel();
+    let (events_tx, _events_rx) = mpsc::channel();
+    let shutdown = AtomicBool::new(false);
+    let health = RefObserverHealthHandle::new();
+    stream_tx
+        .send(WorkspaceRefStreamEvent::Ref(Err(error)))
+        .expect("stream error is queued");
+    drop(stream_tx);
+
+    match drain_stream(
+        &stream_rx,
+        &events_tx,
+        &shutdown,
+        &health,
+        Duration::from_secs(1),
+    ) {
+        DrainOutcome::Reconnect { failure, .. } => failure,
+        DrainOutcome::DriverGone => panic!("a stream error must ask for a reconnect"),
+    }
 }
 
 #[test]

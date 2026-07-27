@@ -7,9 +7,10 @@ use bowline_core::ids::ContentId;
 use serde::{Deserialize, Serialize};
 
 use super::apply::{RecoveryObservation, preimage_matches};
+use super::delta::{LocalRead, read_local_content};
 use super::{FsOp, FsOpKind, PullError};
 use super::{entry_mode, record_for_entry};
-use crate::sync::manifest_engine::fs_guard::{FileRead, Observed, read_file_bounded};
+use crate::sync::manifest_engine::fs_guard::Observed;
 use crate::sync::manifest_engine::manifest::{
     BlobKey, EntryKind, FileMode, KeyEpoch, ManifestEntry, WorkspacePath,
 };
@@ -30,6 +31,8 @@ pub(crate) struct PreimagePayload {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub(crate) content_id: Option<ContentId>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub(crate) key_epoch: Option<KeyEpoch>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub(crate) symlink_target: Option<String>,
 }
 
@@ -40,6 +43,7 @@ impl PreimagePayload {
             kind: None,
             mode: None,
             content_id: None,
+            key_epoch: None,
             symlink_target: None,
         }
     }
@@ -50,6 +54,7 @@ impl PreimagePayload {
             kind: Some(record.kind),
             mode: Some(record.mode),
             content_id: record.content_id.clone(),
+            key_epoch: record.key_epoch,
             symlink_target: record.symlink_target.clone(),
         }
     }
@@ -60,6 +65,7 @@ impl PreimagePayload {
             kind: Some(observed.kind),
             mode: Some(observed.mode),
             content_id,
+            key_epoch: None,
             symlink_target: observed.symlink_target.clone(),
         }
     }
@@ -107,7 +113,10 @@ impl TargetRecordPayload {
                 mode: self.mode.unwrap_or(FileMode::new(0o755)),
             }),
             Some(EntryKind::Symlink) => Ok(ManifestEntry::Symlink {
-                mode: self.mode.unwrap_or(FileMode::new(0o777)),
+                // A journalled link mode is replayed as the canonical one: it is
+                // the only value the engine records, and a replay must rebuild the
+                // entry the plan would build today (see [`FileMode::symlink`]).
+                mode: FileMode::symlink(),
                 target: self
                     .symlink_target
                     .clone()
@@ -240,19 +249,22 @@ pub(crate) fn target_matches(
                 return Ok(false);
             }
             // Read no-follow against the observed fingerprint; a leaf raced into a
-            // symlink diverges and cannot match the recovery target record.
-            match read_file_bounded(
-                &ctx.workspace_root,
-                path,
-                ctx.config.max_seal_bytes,
-                &observed.expected_file(),
-            )
-            .map_err(PullError::Push)?
-            {
-                FileRead::Bytes(bytes) => {
-                    Ok(Some(ctx.crypto.content_id(&bytes)) == target.content_id)
+            // symlink diverges and cannot match the recovery target record. Goes
+            // through the shared classified read, so an unreadable leaf answers
+            // "not a match" instead of failing recovery — which, from a durable
+            // intent, would fail every restart.
+            match read_local_content(ctx, path, &observed.expected_file())? {
+                LocalRead::Bytes(bytes) => {
+                    let matches_target = target.key_epoch.and_then(|key_epoch| {
+                        ctx.crypto
+                            .content_id_at(key_epoch, &bytes)
+                            .map(|content_id| Some(&content_id) == target.content_id.as_ref())
+                    });
+                    // A recovery target with an unknown historical key cannot be
+                    // proven complete, so recovery keeps treating it as unfinished.
+                    Ok(matches_target == Some(true))
                 }
-                FileRead::Diverged => Ok(false),
+                LocalRead::Unverifiable => Ok(false),
             }
         }
         Some(EntryKind::Symlink) => {

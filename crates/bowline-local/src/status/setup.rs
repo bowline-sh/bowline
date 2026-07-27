@@ -307,7 +307,7 @@ fn recipe_setup_readiness(
             ),
             remedy: None,
             identity_hash: Some(identity.hash),
-            latest_receipt_state: latest_receipt_state(&latest_receipt),
+            latest_receipt_state: Some(latest_receipt_state(&latest_receipt)),
             latest_receipt_id: Some(latest_receipt.id),
             updated_at: Some(latest_receipt.updated_at),
         },
@@ -420,7 +420,7 @@ fn inferred_setup_readiness(
                         "Run setup for this hot project on the current machine.".to_string(),
                     ),
                     identity_hash: Some(identity.hash),
-                    latest_receipt_state: latest_receipt_state(&receipt),
+                    latest_receipt_state: Some(latest_receipt_state(&receipt)),
                     latest_receipt_id: Some(receipt.id),
                     updated_at: Some(receipt.updated_at),
                 },
@@ -482,7 +482,7 @@ fn readiness_from_receipt(
                 Some(receipt.readiness_remedy.clone())
             },
             identity_hash,
-            latest_receipt_state: latest_receipt_state(&receipt),
+            latest_receipt_state: Some(latest_receipt_state(&receipt)),
             latest_receipt_id: Some(receipt.id),
             updated_at: Some(receipt.updated_at),
         },
@@ -506,21 +506,17 @@ fn readiness_state_from_receipt(
 fn receipt_lifecycle_readiness(
     receipt: &crate::metadata::SetupReceiptRecord,
 ) -> ProjectSetupReadinessState {
-    match SetupReceiptState::from_wire(&receipt.state) {
-        Some(SetupReceiptState::Completed) => ProjectSetupReadinessState::Runnable,
-        Some(SetupReceiptState::Approved | SetupReceiptState::ApprovalRequired) => {
+    match receipt.state {
+        SetupReceiptState::Completed => ProjectSetupReadinessState::Runnable,
+        SetupReceiptState::Approved | SetupReceiptState::ApprovalRequired => {
             ProjectSetupReadinessState::NeedsSetup
         }
-        Some(SetupReceiptState::Failed) => ProjectSetupReadinessState::Blocked,
-        None if receipt.state == "blocked" => ProjectSetupReadinessState::Blocked,
-        None => ProjectSetupReadinessState::Unknown,
+        SetupReceiptState::Failed => ProjectSetupReadinessState::Blocked,
     }
 }
 
-fn latest_receipt_state(
-    receipt: &crate::metadata::SetupReceiptRecord,
-) -> Option<SetupReceiptState> {
-    SetupReceiptState::from_wire(&receipt.state)
+fn latest_receipt_state(receipt: &crate::metadata::SetupReceiptRecord) -> SetupReceiptState {
+    receipt.state
 }
 
 fn readiness_unknown(reason: &str) -> ProjectSetupReadiness {

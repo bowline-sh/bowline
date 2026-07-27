@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 
+mod canonical_framing;
 mod envelope;
 mod gc;
 mod recovery_preimage;
@@ -10,8 +11,8 @@ pub use envelope::{
     EnvelopeContext, EnvelopeError, SealedEnvelope, StorageKey, open, seal, workspace_id_hash,
 };
 pub use gc::{
-    StorageGcDeleteFailure, StorageGcExecutionReport, StorageGcPlan, StorageObjectRef,
-    execute_gc_plan, plan_gc,
+    StorageGcDeleteFailure, StorageGcExecutionReport, StorageGcFailureKind, StorageGcPlan,
+    StorageObjectRef, execute_gc_plan, plan_gc,
 };
 pub use recovery_preimage::{
     LocalRecoveryEpochIdentity, LocalRecoveryExpectedPreimageIdentity, LocalRecoveryKeyEpoch,
@@ -22,7 +23,7 @@ pub use recovery_preimage::{
 };
 pub use store::{
     ByteRange, ByteStore, ByteStoreError, ByteStoreMetrics, IntentFailureKind, LocalByteStore,
-    ObjectContentId, ObjectHash, ObjectKey, ObjectKind, ObjectMetadata, PutObjectReaderRequest,
-    ReopenableObjectSource, RetentionState, TransferOperation, stable_object_hash,
+    ObjectContentId, ObjectHash, ObjectKey, ObjectKind, ObjectMetadata, PutObjectRequest,
+    PutObjectSource, ReopenableObjectSource, RetentionState, TransferOperation, stable_object_hash,
     stable_object_hash_reader,
 };

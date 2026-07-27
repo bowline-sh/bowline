@@ -1,4 +1,4 @@
-use std::{io, path::Path};
+use std::{io, path::Path, time::Duration};
 
 use bowline_core::ids::{ProjectId, WorkspaceId};
 
@@ -8,6 +8,11 @@ use super::{
 };
 
 pub use bowline_core::status::ProjectSetupReadinessState as SetupReadinessState;
+
+/// Wall-clock budget for one setup command. Cold-cache `cargo fetch` and
+/// `pnpm install` on a large monorepo legitimately take minutes; a stalled or
+/// prompting command must still not hang setup forever.
+pub const SETUP_COMMAND_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetupIdentity {
@@ -102,13 +107,19 @@ pub fn classify_setup_command_result(
     command_text: &str,
     exit_code: Option<i32>,
     redacted_output: &str,
-    output_limit_exceeded: bool,
+    timed_out: bool,
 ) -> SetupReadinessClassification {
-    if output_limit_exceeded {
+    if timed_out {
         return SetupReadinessClassification {
             state: SetupReadinessState::Blocked,
-            reason: "Setup output exceeded the local capture limit.".to_string(),
-            remedy: Some("Rerun setup locally after reducing command output.".to_string()),
+            reason: format!(
+                "Setup command did not finish within {} minutes and was stopped.",
+                SETUP_COMMAND_TIMEOUT.as_secs() / 60
+            ),
+            remedy: Some(
+                "Run the setup command manually to see where it stalls, then rerun setup."
+                    .to_string(),
+            ),
         };
     }
 

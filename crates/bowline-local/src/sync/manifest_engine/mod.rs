@@ -8,23 +8,44 @@
 //! a single in-memory dirty set + one `scan_required` bit (never a durable
 //! queue), debounce with a max-latency cap, and a jittered-backoff failure loop
 //! that keeps the committed ancestor sacred through every network fault.
+//!
+//! Two guards sit in front of everything a cycle does, because the engine's
+//! failure modes are asymmetric: a missed change costs a delay, while a wrongly
+//! published deletion costs the user's files on every device. `workspace_root`
+//! proves the directory about to be scanned is still this workspace, and the
+//! push-side deletion breaker refuses a removal batch no plausible edit
+//! produces. `unsyncable` is the third: a path the engine cannot read is that
+//! path's problem, recorded and surfaced, never the engine's death.
 
 pub mod aux_index;
 pub mod counters;
+pub mod endpoint;
 pub mod fs_guard;
 pub mod manifest;
 pub mod pull_apply;
 pub mod push;
 pub mod stat_walk;
 pub mod store;
+pub mod tree_transport;
+pub mod unsyncable;
 pub mod work_view;
 pub mod work_view_cli;
+pub mod workspace_root;
 
+mod cycle_outcome;
+mod entry_record;
+mod events;
+mod publish_cycle;
 mod ref_observation;
+mod scan_cycle;
 mod state;
 
 #[cfg(test)]
+mod engine_test_remotes;
+#[cfg(test)]
 mod engine_test_support;
+#[cfg(test)]
+mod generative;
 #[cfg(test)]
 #[path = "invariant_tests.rs"]
 mod invariant_tests;
@@ -32,47 +53,74 @@ mod invariant_tests;
 #[path = "kill_matrix/tests.rs"]
 mod kill_matrix;
 #[cfg(test)]
+#[path = "normalization_tests.rs"]
+mod normalization_tests;
+#[cfg(test)]
+#[path = "safety_tests.rs"]
+mod safety_tests;
+#[cfg(test)]
 #[path = "scale_fixture.rs"]
 mod scale_fixture;
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
 
-use std::collections::BTreeSet;
-use std::error::Error;
-use std::fmt;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 pub use counters::{CountersSnapshot, EngineCounters};
 
-pub use fs_guard::{
-    Observed, ParentChain, ParentChainMode, observe, prepare_parent_chain, read_file_bounded,
+pub use cycle_outcome::EngineError;
+use cycle_outcome::{pull_cycle_error, push_cycle_error};
+pub use endpoint::{
+    CaseForm, EndpointInstant, NameFolding, NormalizationForm, StatTrust, TimestampGranularity,
+    nfc_path, probe_name_folding, probe_timestamp_granularity, sample_endpoint_clock,
 };
+pub use events::{DeletionConfirmation, EngineEvent, FullScanReason, SyncBarrierId};
+pub use fs_guard::{
+    ObserveOutcome, Observed, ParentChain, ParentChainMode, observe_classified,
+    prepare_parent_chain, read_file_bounded,
+};
+pub use manifest::directory_tree::{ChildSpec, DirPath, DirectoryTree, SubtreeHash};
+pub use manifest::tree::{TREE_FORMAT_VERSION, TreeEntry, TreeEntryPayload, TreeNode};
 pub use manifest::{
     BlobKey, DecodeLimits, DecodedManifest, EntryKind, EnvelopePurpose, FileMode, KeyEpoch,
-    MANIFEST_FORMAT_VERSION, Manifest, ManifestEntry, ManifestError, ManifestKey, PathCollision,
-    WorkspaceCrypto, WorkspacePath, content_id, decode_manifest_plaintext, manifest_content_id,
-    open_file, open_manifest, physical_blob_key, physical_manifest_key, seal_file, seal_manifest,
+    MAX_WORKSPACE_PATH_DEPTH, MAX_WORKSPACE_PATH_LEN, Manifest, ManifestEntry, ManifestError,
+    ManifestKey, PathCollision, PathRejection, WorkspaceCrypto, WorkspacePath, content_id,
+    open_file, open_tree_node, physical_blob_key, physical_manifest_key,
+    publishable_workspace_path, seal_file, seal_tree_node, tree_node_content_id,
+    validate_manifest_path,
 };
+pub use pull_apply::naming::{CONFLICT_ASIDE_MARKER, conflict_aside_origin, is_conflict_aside};
 pub use pull_apply::{
-    PullDeps, PullError, PullOutcome, RecoveryAction, RecoveryBoundary, RecoveryObservation,
-    git_apply_rank, git_lock_active, pull, recover_intents, recovery_action, recovery_boundary,
+    PullDeps, PullError, PullOutcome, PullScope, RecoveryAction, RecoveryBoundary,
+    RecoveryObservation, git_apply_rank, git_lock_active, pull, recover_intents, recovery_action,
+    recovery_boundary,
 };
 pub use push::{
-    BlobReaderUpload, BlobUpload, CasOutcome, ENGINE_STATE_DIR, EngineConfig, EngineContext,
-    ManifestUpload, PushDeps, PushError, PushOutcome, RefObservation, RemoteObjects, RemoteRef,
-    TransportError, push,
+    BlobReaderUpload, BlobUpload, CasOutcome, DeletionPolicy, ENGINE_STATE_DIR, EngineConfig,
+    EngineContext, ManifestUpload, PushDeps, PushError, PushOutcome, RefObservation, RemoteObjects,
+    RemoteRef, TransportError, WatcherEvidence, mass_deletion_threshold, push,
 };
+use ref_observation::LocalObservation;
 pub use stat_walk::{
     StatWalk, project_view_verification_paths, stat_walk, stat_walk_project_view,
     stat_walk_subtrees,
 };
+use state::StateSig;
+pub use state::{Degradation, EnginePhase, EngineSnapshot};
 pub use store::{
     AncestorCommit, EngineState, FileRecord, Intent, IntentOperationKind, ManifestStore,
     ManifestStoreError, StatFingerprint,
 };
+pub use tree_transport::{
+    FetchTreeRequest, FetchedTree, PruneBasis, PublishTreeRequest, StoreNodeLedger, TreeError,
+    TreeNodeLedger, TreeNodeLookup, UnledgeredNodes, fetch_tree, publish_tree,
+};
+pub use unsyncable::{UnsyncablePath, UnsyncableReason, UnsyncableRecord};
+pub use workspace_root::{RootFault, RootState, verify_root};
 
 // ---- driver timing constants ------------------------------------------------
 
@@ -89,6 +137,19 @@ const BACKOFF_CAP_MS: u64 = 5_000;
 /// One pull-then-push retry inside a cycle before a lost CAS is rescheduled.
 /// More than this is pull-and-reschedule, never an attention state.
 const MAX_PUSH_ATTEMPTS: u8 = 2;
+
+/// The periodic audit floor and ceiling. Watchers silently drop events — every
+/// platform's does, under load, on network mounts, and across sleep — so a purely
+/// reactive engine converges only by luck. One cheap stat-only pass on this
+/// interval is what makes "Everything Syncs" a property rather than a hope. The
+/// spread is Syncthing's 75–125% jitter, so a fleet does not audit in lockstep.
+const AUDIT_INTERVAL_MIN_MS: u64 = 30 * 60 * 1_000;
+const AUDIT_INTERVAL_MAX_MS: u64 = 60 * 60 * 1_000;
+
+/// How often a stalled engine re-probes the condition that stalled it. An
+/// unmounted volume comes back, a hosted fork is resolved by another device: both
+/// must self-heal without the user discovering a dead engine hours later.
+const STALL_REPROBE_MS: u64 = 30_000;
 
 // ---- clock seam -------------------------------------------------------------
 
@@ -118,105 +179,6 @@ impl Clock for SystemClock {
     }
 }
 
-// ---- events + snapshot ------------------------------------------------------
-
-/// Why a full stat walk was demanded. A lost watcher event, an overflow, a
-/// disconnect, or a root replacement all reduce to the same cheap recovery: one
-/// stat-only pass. The variant is carried so the snapshot can explain the state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FullScanReason {
-    WatcherOverflow,
-    WatcherDisconnected,
-    RootReplaced,
-    PeriodicAudit,
-    /// An explicit caller boundary: re-observe disk and the hosted ref before
-    /// acknowledging that sync is caught up.
-    SyncBarrier,
-}
-
-/// Opaque identity for one caller-requested convergence barrier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SyncBarrierId(pub u64);
-
-/// The events the daemon (Plan 111) feeds the engine. No event carries durable
-/// authority: paths are re-derived from disk, while a verified ref observation
-/// is only a freshness-checked hint for a scheduled pull.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EngineEvent {
-    /// Watcher-reported paths to re-observe (re-observed even on a stat match).
-    Paths(BTreeSet<WorkspacePath>),
-    /// Watcher-reported directory roots whose current descendants must be
-    /// discovered after the normal burst debounce.
-    RecursivePaths(BTreeSet<WorkspacePath>),
-    /// The watcher lost fidelity; fall back to a full stat walk immediately.
-    FullScanRequired(FullScanReason),
-    /// The ref subscription fired: pull and reconcile.
-    RefChanged,
-    /// The ref subscription delivered a signature-verified real head. The
-    /// engine may consume this hint instead of repeating the same hosted query.
-    RefObserved(RefObservation),
-    /// The network came back; retry any pending work now, preempting backoff.
-    ConnectivityRestored,
-    /// Re-observe both authorities and acknowledge this exact request only after
-    /// the resulting work has settled.
-    SyncBarrier(SyncBarrierId),
-    /// Stop the run loop.
-    Shutdown,
-}
-
-/// Coarse engine phase for the snapshot. Momentary; the durable facts are the
-/// ref/manifest/intents fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnginePhase {
-    Starting,
-    Idle,
-    Syncing,
-    BackingOff,
-    Stalled,
-    Stopped,
-}
-
-/// The engine's health, distinct from its phase. Nominal is healthy; the rest
-/// are non-fatal and self-clearing (a lost CAS is never here — it is normal).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Degradation {
-    Nominal,
-    FullScanRequired(FullScanReason),
-    OfflineRetrying { attempt: u32 },
-    IntegrityStalled,
-}
-
-/// A read-only snapshot of engine state: in-memory facts only, no JSON method,
-/// no queue fiction. `revision` bumps ONLY on a state transition, so a status
-/// consumer that polls an idle engine sees a stable revision (Plan 109 Step 7 /
-/// review Change 14).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EngineSnapshot {
-    pub revision: u64,
-    pub phase: EnginePhase,
-    pub observed_ref: Option<RefObservation>,
-    pub applied_manifest: Option<ManifestKey>,
-    pub pending_intents: usize,
-    /// Dirty paths queued for the next push. Exposed so the daemon status
-    /// projection can report a truthful outbound queue count (Plan 111 Step 1c)
-    /// without a second `dirty_paths()` round-trip.
-    pub dirty: usize,
-    /// Attributed work retained for project-scoped status. The workspace-wide
-    /// counters above remain the canonical global projection.
-    pub dirty_paths: Arc<BTreeSet<WorkspacePath>>,
-    pub dirty_subtree_paths: Arc<BTreeSet<WorkspacePath>>,
-    pub pending_intent_paths: Arc<BTreeSet<WorkspacePath>>,
-    /// A pending full scan makes every project scope conservatively
-    /// non-ready because the attributed sets may still be incomplete.
-    pub scan_required: bool,
-    /// A remote wake has scheduled a pull whose paths are not known yet, or a
-    /// cycle is currently able to discover such paths.
-    pub unattributed_pull_pending: bool,
-    pub cycle_active: bool,
-    pub last_success_at: Option<u64>,
-    pub degradation: Degradation,
-}
-
 // ---- driver dependencies ----------------------------------------------------
 
 /// Everything one driver cycle needs beyond the engine's own store and context:
@@ -229,11 +191,23 @@ pub struct EngineIo<'a, O: RemoteObjects, R: RemoteRef, C: Clock> {
 }
 
 /// How a cycle failed, so the driver reacts correctly: a transport fault backs
-/// off; an integrity fault stalls non-destructively until the next ref event; a
-/// genuine bug propagates.
+/// off; an integrity fault stalls non-destructively and re-probes; an unavailable
+/// root or a refused mass deletion publishes nothing and says why; a per-path
+/// condition retries; a genuine invariant violation propagates.
 enum CycleError {
     Transport,
     Integrity,
+    RootUnavailable(RootFault),
+    MassDeletionBlocked {
+        removals: BTreeSet<WorkspacePath>,
+        entries: usize,
+    },
+    /// A condition scoped to ONE workspace path reached the driver. Apply and
+    /// crash recovery both settle these where they are raised (keep-local, path
+    /// recorded unsyncable, intent retired), so this arm is defence in depth —
+    /// and it exists precisely so that "a path-scoped condition reached somewhere
+    /// unexpected" cannot mean "kill the engine".
+    PathScoped,
     Fatal(EngineError),
 }
 
@@ -263,6 +237,14 @@ pub struct ManifestEngine {
     max_latency_deadline: Option<u64>,
     backoff_deadline: Option<u64>,
     backoff_attempt: u32,
+    /// The next periodic safety-net scan (invariant C5), and the counter that
+    /// makes its jitter differ between consecutive audits on one device.
+    audit_deadline: Option<u64>,
+    audit_round: u32,
+    /// The re-probe of a stalled condition (missing root, hosted fork).
+    stall_deadline: Option<u64>,
+    /// One-shot permission to publish a removal batch above the safety threshold.
+    deletions_confirmed: bool,
 
     revision: u64,
     phase: EnginePhase,
@@ -275,27 +257,13 @@ pub struct ManifestEngine {
     pending_intent_paths: Arc<BTreeSet<WorkspacePath>>,
     last_success_at: Option<u64>,
     degradation: Degradation,
+    unsyncable: Arc<BTreeMap<WorkspacePath, UnsyncableRecord>>,
+    /// The removals the deletion breaker refused. Written only by
+    /// `block_mass_deletion` and cleared only by `set_degradation`.
+    pub(super) refused_removals: Arc<BTreeSet<WorkspacePath>>,
     last_sig: Option<StateSig>,
     pending_barriers: BTreeSet<SyncBarrierId>,
     completed_barriers: BTreeSet<SyncBarrierId>,
-}
-
-/// The transition signature: the fields whose change is a state transition (and
-/// so bumps `revision`). Deliberately excludes wall-clock time and scheduling
-/// deadlines, so an idle poll never advances the revision.
-#[derive(Clone, PartialEq, Eq)]
-struct StateSig {
-    phase: EnginePhase,
-    degradation: Degradation,
-    applied_manifest: Option<ManifestKey>,
-    observed_version: Option<u64>,
-    pending_intents: usize,
-    pending_intent_paths: Arc<BTreeSet<WorkspacePath>>,
-    dirty_paths: Arc<BTreeSet<WorkspacePath>>,
-    dirty_subtree_paths: Arc<BTreeSet<WorkspacePath>>,
-    scan_required: bool,
-    unattributed_pull_pending: bool,
-    cycle_active: bool,
 }
 
 impl ManifestEngine {
@@ -319,6 +287,10 @@ impl ManifestEngine {
             max_latency_deadline: None,
             backoff_deadline: None,
             backoff_attempt: 0,
+            audit_deadline: None,
+            audit_round: 0,
+            stall_deadline: None,
+            deletions_confirmed: false,
             revision: 0,
             phase: EnginePhase::Starting,
             head_ref: None,
@@ -327,6 +299,8 @@ impl ManifestEngine {
             pending_intent_paths: Arc::new(BTreeSet::new()),
             last_success_at: None,
             degradation: Degradation::Nominal,
+            unsyncable: Arc::new(BTreeMap::new()),
+            refused_removals: Arc::new(BTreeSet::new()),
             last_sig: None,
             pending_barriers: BTreeSet::new(),
             completed_barriers: BTreeSet::new(),
@@ -350,7 +324,31 @@ impl ManifestEngine {
             cycle_active: self.cycle_active,
             last_success_at: self.last_success_at,
             degradation: self.degradation,
+            unsyncable: Arc::clone(&self.unsyncable),
+            refused_removals: Arc::clone(&self.refused_removals),
         }
+    }
+
+    /// Allow ONE push to publish a removal batch above the safety threshold.
+    ///
+    /// The operator surface for [`Degradation::MassDeletionBlocked`]: the user has
+    /// seen the paths, agrees the deletions are real, and is telling the engine to
+    /// proceed. Re-arms the schedule so the confirmed push runs immediately.
+    ///
+    /// Authorises nothing unless a batch is actually blocked right now. An
+    /// unconditional arm would let a confirmation issued against yesterday's
+    /// refusal wave through tomorrow's unrelated one, which is the guard's whole
+    /// blast radius handed away by a race.
+    pub fn confirm_mass_deletion<C: Clock>(&mut self, clock: &C) -> DeletionConfirmation {
+        let Degradation::MassDeletionBlocked { removals, entries } = self.degradation else {
+            return DeletionConfirmation::NotBlocked;
+        };
+        self.deletions_confirmed = true;
+        self.set_degradation(Degradation::Nominal);
+        self.debounce_deadline = Some(clock.now_millis());
+        self.preempt_backoff();
+        self.bump_revision_if_changed();
+        DeletionConfirmation::Authorized { removals, entries }
     }
 
     /// Test/introspection accessor: the paths currently queued for the next push.
@@ -383,10 +381,25 @@ impl ManifestEngine {
             self.debounce_deadline,
             self.max_latency_deadline,
             self.backoff_deadline,
+            self.audit_deadline,
+            self.stall_deadline,
         ]
         .into_iter()
         .flatten()
         .min()
+    }
+
+    /// Schedule the next periodic audit at a jittered 75–125% of the nominal
+    /// interval. The jitter is deterministic (device id + audit round) so tests
+    /// are stable and a fleet's audits stay spread out.
+    fn arm_audit(&mut self, now: u64) {
+        self.audit_round = self.audit_round.wrapping_add(1);
+        let span = AUDIT_INTERVAL_MAX_MS - AUDIT_INTERVAL_MIN_MS;
+        let mut seed = u64::from(self.audit_round);
+        for byte in self.ctx.device_id.as_str().bytes() {
+            seed = seed.wrapping_mul(31).wrapping_add(u64::from(byte));
+        }
+        self.audit_deadline = Some(now + AUDIT_INTERVAL_MIN_MS + seed % (span + 1));
     }
 
     // ---- startup rule -------------------------------------------------------
@@ -400,34 +413,38 @@ impl ManifestEngine {
     ) -> Result<(), EngineError> {
         self.phase = EnginePhase::Starting;
         self.unattributed_pull_pending = true;
+        self.arm_audit(io.clock.now_millis());
+        // The root sentinel gates startup too: recovery rematerializes files, and
+        // rematerializing into a wrong or unmounted root is exactly the damage the
+        // sentinel exists to prevent.
+        if let Err(error) = self.guard_root() {
+            let now = io.clock.now_millis();
+            let absorbed = self.absorb_cycle_error(error, now);
+            self.refresh_and_bump(io);
+            return absorbed;
+        }
         // Recover in-flight intents FIRST so the seeding stat walk observes the
         // post-recovery tree, not a half-applied one.
         let deps = PullDeps {
             ctx: &self.ctx,
             objects: io.objects,
             refs: io.refs,
+            // Recovery replays journalled intents by path; it never classifies a
+            // merge, so the scope it carries is inert here.
+            scope: pull_apply::PullScope::ChangedAndDirty(&self.dirty),
         };
         if let Err(error) = recover_intents(&mut self.store, &deps) {
             // A transport fault at startup is not fatal: back off and retry (the
             // next pull re-runs recovery). An integrity fault stalls
             // non-destructively. Only a genuine bug propagates.
             let now = io.clock.now_millis();
-            match classify_pull_error(&error) {
-                CycleError::Transport => {
-                    self.pull_needed = true;
-                    self.enter_backoff(now);
-                }
-                CycleError::Integrity => {
-                    self.degradation = Degradation::IntegrityStalled;
-                    self.phase = EnginePhase::Stalled;
-                }
-                CycleError::Fatal(_) => {
-                    self.refresh_and_bump(io);
-                    return Err(EngineError::Pull(error));
-                }
+            let classified = pull_cycle_error(error);
+            if matches!(classified, CycleError::Transport) {
+                self.pull_needed = true;
             }
+            let absorbed = self.absorb_cycle_error(classified, now);
             self.refresh_and_bump(io);
-            return Ok(());
+            return absorbed;
         }
         // Seed the dirty set from one stat walk, then pull-first before any push.
         // Schedule the startup cycle immediately so `run_due_work` runs it now
@@ -446,18 +463,19 @@ impl ManifestEngine {
         let now = clock.now_millis();
         match event {
             EngineEvent::Paths(paths) => {
-                Arc::make_mut(&mut self.dirty).extend(paths);
+                self.absorb_dirty(paths);
                 self.arm_debounce(now);
                 self.preempt_backoff();
             }
             EngineEvent::RecursivePaths(paths) => {
-                Arc::make_mut(&mut self.dirty_subtrees).extend(paths);
+                let folded = self.canonical_paths(paths);
+                Arc::make_mut(&mut self.dirty_subtrees).extend(folded);
                 self.arm_debounce(now);
                 self.preempt_backoff();
             }
             EngineEvent::FullScanRequired(reason) => {
                 self.scan_required = true;
-                self.degradation = Degradation::FullScanRequired(reason);
+                self.set_degradation(Degradation::FullScanRequired(reason));
                 // Overflow/disconnect/root-replacement recover immediately.
                 self.debounce_deadline = Some(now);
                 self.preempt_backoff();
@@ -503,9 +521,15 @@ impl ManifestEngine {
                 self.scan_required = true;
                 self.pull_needed = true;
                 self.unattributed_pull_pending = true;
-                self.degradation = Degradation::FullScanRequired(FullScanReason::SyncBarrier);
+                self.set_degradation(Degradation::FullScanRequired(FullScanReason::SyncBarrier));
                 self.debounce_deadline = Some(now);
                 self.preempt_backoff();
+            }
+            EngineEvent::ConfirmMassDeletion => {
+                // `confirm_mass_deletion` owns the whole transition (arm, clear,
+                // reschedule) and bumps the revision itself; folding it here would
+                // duplicate that decision in a second place.
+                let _authorized = self.confirm_mass_deletion(clock);
             }
             EngineEvent::Shutdown => {
                 self.phase = EnginePhase::Stopped;
@@ -590,6 +614,15 @@ impl ManifestEngine {
         // only on success.
         self.debounce_deadline = None;
         self.max_latency_deadline = None;
+        self.stall_deadline = None;
+        if self.audit_deadline.is_some_and(|due| due <= now) {
+            self.arm_audit(now);
+            self.scan_required = true;
+            self.pull_needed = true;
+            if self.degradation == Degradation::Nominal {
+                self.set_degradation(Degradation::FullScanRequired(FullScanReason::PeriodicAudit));
+            }
+        }
 
         self.phase = EnginePhase::Syncing;
         self.cycle_active = true;
@@ -602,7 +635,7 @@ impl ManifestEngine {
                 self.backoff_attempt = 0;
                 self.last_success_at = Some(now);
                 if self.degradation_is_transient() {
-                    self.degradation = Degradation::Nominal;
+                    self.set_degradation(Degradation::Nominal);
                 }
                 self.phase = if self.idle() {
                     EnginePhase::Idle
@@ -613,17 +646,66 @@ impl ManifestEngine {
                     self.completed_barriers.append(&mut self.pending_barriers);
                 }
             }
-            Err(CycleError::Transport) => self.enter_backoff(now),
-            Err(CycleError::Integrity) => {
-                self.degradation = Degradation::IntegrityStalled;
-                self.phase = EnginePhase::Stalled;
-            }
-            Err(CycleError::Fatal(error)) => {
-                self.refresh_and_bump(io);
-                return Err(error);
+            Err(error) => {
+                if let Err(fatal) = self.absorb_cycle_error(error, now) {
+                    self.refresh_and_bump(io);
+                    return Err(fatal);
+                }
             }
         }
         self.refresh_and_bump(io);
+        Ok(())
+    }
+
+    /// Turn a failed cycle into engine state. `Err` is returned ONLY for a
+    /// genuine invariant violation; every other classification is a state the
+    /// engine recovers from without losing the workspace.
+    fn absorb_cycle_error(&mut self, error: CycleError, now: u64) -> Result<(), EngineError> {
+        match error {
+            CycleError::Transport => self.enter_backoff(now),
+            CycleError::Integrity => {
+                self.set_degradation(Degradation::IntegrityStalled);
+                self.phase = EnginePhase::Stalled;
+                // A fork clears when some other device advances the hosted ref.
+                // A stalled device provokes no ref event of its own, so without
+                // this re-probe it waits forever for a wake that cannot come.
+                self.pull_needed = true;
+                self.force_ref_read = true;
+                self.stall_deadline = Some(now + STALL_REPROBE_MS);
+            }
+            CycleError::RootUnavailable(fault) => {
+                self.set_degradation(Degradation::RootUnavailable(fault));
+                self.phase = EnginePhase::Stalled;
+                // Whatever comes back may differ arbitrarily from what this device
+                // last saw, so recovery is a full re-observation, not a replay.
+                self.scan_required = true;
+                self.pull_needed = true;
+                self.stall_deadline = Some(now + STALL_REPROBE_MS);
+            }
+            CycleError::MassDeletionBlocked { removals, entries } => {
+                self.block_mass_deletion(removals, entries);
+                self.phase = EnginePhase::Stalled;
+                // Deliberately NO deadline: a cycle with nothing new to observe
+                // would refuse the same batch again forever. What DOES change the
+                // answer is the remote, so the next cycle — whenever a ref event,
+                // an edit, or the audit brings one — pulls before it pushes. A
+                // device parked here must never be a device that stopped
+                // receiving; that is the trap this arm used to set.
+                self.pull_needed = true;
+            }
+            CycleError::PathScoped => {
+                // Nothing about the workspace is broken and nothing was
+                // published; re-observe both authorities on the stall interval so
+                // the condition (a raced object kind, a full volume) is retried
+                // once it clears. The path itself is already durable in the
+                // unsyncable ledger, which status surfaces.
+                self.scan_required = true;
+                self.pull_needed = true;
+                self.force_ref_read = true;
+                self.stall_deadline = Some(now + STALL_REPROBE_MS);
+            }
+            CycleError::Fatal(error) => return Err(error),
+        }
         Ok(())
     }
 
@@ -632,9 +714,9 @@ impl ManifestEngine {
         self.backoff_attempt = self.backoff_attempt.saturating_add(1);
         let delay = self.backoff_delay(self.backoff_attempt);
         self.backoff_deadline = Some(now + delay);
-        self.degradation = Degradation::OfflineRetrying {
+        self.set_degradation(Degradation::OfflineRetrying {
             attempt: self.backoff_attempt,
-        };
+        });
         self.phase = EnginePhase::BackingOff;
     }
 
@@ -664,71 +746,30 @@ impl ManifestEngine {
         &mut self,
         io: &EngineIo<'_, O, R, C>,
     ) -> Result<(), CycleError> {
+        // NOTHING in a cycle may touch the workspace before the root is proven.
+        self.guard_root()?;
+        let mut observation = LocalObservation::Reactive;
         if self.scan_required {
             self.full_scan(io)?;
             self.scan_required = false;
             Arc::make_mut(&mut self.dirty_subtrees).clear();
+            observation = LocalObservation::FreshlyWalked;
         }
         if !self.dirty_subtrees.is_empty() {
             self.scan_dirty_subtrees(io)?;
         }
+        let mut pulled = false;
         if self.pull_needed {
             // Clear BEFORE pulling: do_pull re-arms pull_needed (and a debounce
             // deadline) when paths were deferred by an active Git lock, and a
             // post-call reset would clobber that internally scheduled retry,
             // leaving deferred paths unmaterialized until an external ref event.
             self.pull_needed = false;
-            self.do_pull(io)?;
+            self.do_pull(io, observation)?;
+            pulled = true;
         }
 
-        let mut attempts = 0u8;
-        while !self.dirty.is_empty() && attempts < MAX_PUSH_ATTEMPTS {
-            attempts += 1;
-            // A second pass through this loop is a real retry after a lost CAS.
-            if attempts > 1 {
-                self.counters.record_retry();
-            }
-            let deps = PushDeps {
-                ctx: &self.ctx,
-                objects: io.objects,
-                refs: io.refs,
-            };
-            // `EngineEvent::Paths` is native evidence that a write may have
-            // happened even when a coarse filesystem reports the same stat
-            // fingerprint. Verify queued file bytes before declaring them
-            // unchanged; idle still performs no work because this runs only for
-            // an actual dirty batch.
-            let outcome = push::push_verifying_dirty_files(&mut self.store, &deps, &self.dirty)
-                .map_err(push_cycle_error)?;
-            match outcome {
-                PushOutcome::Advanced {
-                    manifest_key,
-                    ref_version,
-                    skipped,
-                } => {
-                    self.head_ref = Some(RefObservation {
-                        version: ref_version,
-                        manifest_key: manifest_key.clone(),
-                    });
-                    self.applied_manifest = Some(manifest_key);
-                    // Retain exactly the paths the scan could not settle (actively
-                    // being written); everything published leaves the dirty set.
-                    self.retain_skipped(skipped);
-                    break;
-                }
-                PushOutcome::NoChange { skipped } => {
-                    // No delta this cycle. Keep only the churning paths, if any.
-                    self.retain_skipped(skipped);
-                    break;
-                }
-                PushOutcome::RefLost { current } => {
-                    // The ancestor and the local edit are untouched. Pull the
-                    // winner against that unchanged base, then retry once.
-                    self.head_ref = current;
-                    self.do_pull(io)?;
-                }
-            }
-        }
+        self.publish_dirty(io, observation, pulled)?;
 
         if !self.dirty.is_empty() {
             // Two ways to land here, both a reschedule and never an attention
@@ -745,130 +786,18 @@ impl ManifestEngine {
         Ok(())
     }
 
-    /// Replace the dirty set with exactly the paths a push could not settle. On a
-    /// successful/no-change push, every other dirty path is done, so retaining the
-    /// skipped set both clears the completed work and re-arms the churning paths.
-    /// The `break` at each call site is deliberate: a skip is NOT a lost CAS, so
-    /// it must not consume a `MAX_PUSH_ATTEMPTS` retry by re-running push against a
-    /// still-changing file in the same cycle — the later rescheduled cycle handles
-    /// it instead.
-    fn retain_skipped(&mut self, skipped: BTreeSet<WorkspacePath>) {
-        if !skipped.is_empty() {
-            self.counters.record_push_skip(skipped.len() as u64);
-        }
-        self.dirty = Arc::new(skipped);
+    /// Put watcher- and walk-reported paths into the spelling the engine's own
+    /// path space uses, so a macOS NFD event and the NFC entry a peer published
+    /// name one dirty path rather than two (see [`endpoint::NameFolding`]).
+    pub(super) fn absorb_dirty(&mut self, paths: BTreeSet<WorkspacePath>) {
+        let folded = self.canonical_paths(paths);
+        Arc::make_mut(&mut self.dirty).extend(folded);
     }
 
-    fn full_scan<O: RemoteObjects, R: RemoteRef, C: Clock>(
-        &mut self,
-        _io: &EngineIo<'_, O, R, C>,
-    ) -> Result<(), CycleError> {
-        let policy = crate::policy::UserPolicy::load(&self.ctx.workspace_root)
-            .map_err(|error| CycleError::Fatal(EngineError::Io(error)))?;
-        let ancestor = self
-            .store
-            .all_files()
-            .map_err(|error| CycleError::Fatal(EngineError::Store(error)))?;
-        let walk = stat_walk(&self.ctx.workspace_root, &policy, &ancestor)
-            .map_err(|error| CycleError::Fatal(EngineError::Io(error)))?;
-        self.counters.record_stat_walk(walk.scanned, walk.hashes);
-        Arc::make_mut(&mut self.dirty).extend(walk.dirty);
-        Ok(())
-    }
-
-    fn scan_dirty_subtrees<O: RemoteObjects, R: RemoteRef, C: Clock>(
-        &mut self,
-        _io: &EngineIo<'_, O, R, C>,
-    ) -> Result<(), CycleError> {
-        let scoped_roots = self
-            .dirty_subtrees
-            .iter()
-            .map(|path| path.as_str().to_string())
-            .collect::<BTreeSet<_>>();
-        let policy =
-            crate::policy::UserPolicy::load_scoped(&self.ctx.workspace_root, &scoped_roots)
-                .map_err(|error| CycleError::Fatal(EngineError::Io(error)))?;
-        let ancestor = self
-            .store
-            .all_files()
-            .map_err(|error| CycleError::Fatal(EngineError::Store(error)))?;
-        let walk = stat_walk_subtrees(
-            &self.ctx.workspace_root,
-            &policy,
-            &ancestor,
-            &self.dirty_subtrees,
-        )
-        .map_err(|error| CycleError::Fatal(EngineError::Io(error)))?;
-        self.counters.record_stat_walk(walk.scanned, walk.hashes);
-        Arc::make_mut(&mut self.dirty).extend(walk.dirty);
-        Arc::make_mut(&mut self.dirty_subtrees).clear();
-        Ok(())
-    }
-}
-
-fn push_cycle_error(error: PushError) -> CycleError {
-    match error {
-        PushError::Transport(_) => CycleError::Transport,
-        other => CycleError::Fatal(EngineError::Push(other)),
-    }
-}
-
-fn pull_cycle_error(error: PullError) -> CycleError {
-    classify_pull_error(&error).map_fatal(|| EngineError::Pull(error))
-}
-
-fn classify_pull_error(error: &PullError) -> CycleError {
-    match error {
-        PullError::Transport(_) => CycleError::Transport,
-        PullError::RefRegressed { .. } | PullError::RefForked { .. } => CycleError::Integrity,
-        _ => CycleError::Fatal(EngineError::Internal),
-    }
-}
-
-impl CycleError {
-    /// Replace a placeholder `Fatal` with the caller's real error, so the error
-    /// value is built once at the call site that owns it.
-    fn map_fatal(self, build: impl FnOnce() -> EngineError) -> Self {
-        match self {
-            CycleError::Fatal(_) => CycleError::Fatal(build()),
-            other => other,
-        }
-    }
-}
-
-// ---- errors -----------------------------------------------------------------
-
-/// A driver-level failure that is neither a retryable transport fault nor a
-/// non-destructive integrity stall — i.e. a genuine bug the daemon must surface.
-#[derive(Debug)]
-pub enum EngineError {
-    Io(std::io::Error),
-    Store(ManifestStoreError),
-    Push(PushError),
-    Pull(PullError),
-    Internal,
-}
-
-impl fmt::Display for EngineError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(error) => write!(formatter, "engine io failed: {error}"),
-            Self::Store(error) => write!(formatter, "engine store failed: {error}"),
-            Self::Push(error) => write!(formatter, "engine push failed: {error}"),
-            Self::Pull(error) => write!(formatter, "engine pull failed: {error}"),
-            Self::Internal => formatter.write_str("engine internal invariant violated"),
-        }
-    }
-}
-
-impl Error for EngineError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            Self::Store(error) => Some(error),
-            Self::Push(error) => Some(error),
-            Self::Pull(error) => Some(error),
-            Self::Internal => None,
-        }
+    fn canonical_paths(&self, paths: BTreeSet<WorkspacePath>) -> BTreeSet<WorkspacePath> {
+        paths
+            .into_iter()
+            .map(|path| self.ctx.names.canonical_spelling(&path))
+            .collect()
     }
 }

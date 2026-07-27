@@ -116,13 +116,20 @@ impl MetadataStore {
             "INSERT INTO projects
              (id, workspace_id, root_id, path, hot_state, latest_snapshot_id,
               git_observer_state, created_at)
-             VALUES (?1, ?2, ?3, ?4, 'cold', NULL, 'ok', ?5)
+             VALUES (?1, ?2, ?3, ?4, ?6, NULL, 'ok', ?5)
 	             ON CONFLICT(id) DO UPDATE SET
 	               workspace_id = excluded.workspace_id,
 	               root_id = excluded.root_id,
 	               path = excluded.path,
 	               latest_snapshot_id = excluded.latest_snapshot_id",
-            params![id.as_str(), workspace_id.as_str(), root_id, path, now],
+            params![
+                id.as_str(),
+                workspace_id.as_str(),
+                root_id,
+                path,
+                now,
+                ProjectHotState::Cold.as_str()
+            ],
         )?;
         Ok(())
     }
@@ -203,7 +210,7 @@ impl MetadataStore {
             "INSERT INTO projects
              (id, workspace_id, root_id, path, hot_state, latest_snapshot_id,
               git_observer_state, created_at)
-             VALUES (?1, ?2, ?3, ?4, 'cold', NULL, ?5, ?6)
+             VALUES (?1, ?2, ?3, ?4, ?7, NULL, ?5, ?6)
 	             ON CONFLICT(id) DO UPDATE SET
 	               workspace_id = excluded.workspace_id,
 	               root_id = excluded.root_id,
@@ -217,7 +224,8 @@ impl MetadataStore {
                 root_id,
                 project.path,
                 project.git_observer_state.wire_str(),
-                now
+                now,
+                ProjectHotState::Cold.as_str()
             ])?;
         }
         drop(statement);
@@ -538,13 +546,17 @@ impl MetadataStore {
         &self,
         workspace_id: &WorkspaceId,
         project_id: &ProjectId,
-        hot_state: &str,
+        hot_state: ProjectHotState,
     ) -> Result<(), MetadataError> {
         self.connection.execute(
             "UPDATE projects
              SET hot_state = ?3
              WHERE workspace_id = ?1 AND id = ?2",
-            params![workspace_id.as_str(), project_id.as_str(), hot_state],
+            params![
+                workspace_id.as_str(),
+                project_id.as_str(),
+                hot_state.as_str()
+            ],
         )?;
         Ok(())
     }
@@ -553,13 +565,13 @@ impl MetadataStore {
         &self,
         workspace_id: &WorkspaceId,
         project_id: &ProjectId,
-    ) -> Result<Option<String>, MetadataError> {
+    ) -> Result<Option<ProjectHotState>, MetadataError> {
         self.connection
             .query_row(
                 "SELECT hot_state FROM projects
                  WHERE workspace_id = ?1 AND id = ?2",
                 params![workspace_id.as_str(), project_id.as_str()],
-                |row| row.get::<_, String>(0),
+                |row| parse_project_hot_state(row.get::<_, String>(0)?),
             )
             .optional()
             .map_err(Into::into)

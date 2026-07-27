@@ -287,6 +287,12 @@ fn remote_bootstrap_secrets_require_durable_account_session() {
     let without_any_durable_auth = remote_bootstrap_secret_env_from(None, None);
     assert!(remote_bootstrap_auth_error(&without_any_durable_auth));
 
+    // The operator token authenticates the deployment, not the account, so it
+    // cannot make a remote host provisionable on its own.
+    let control_token_only =
+        remote_bootstrap_secret_env_from(None, Some("durable-control".to_string()));
+    assert!(remote_bootstrap_auth_error(&control_token_only));
+
     let with_session = remote_bootstrap_secret_env_from(
         Some(runtime::AccountSessionRevocation {
             session_id: "bowline-session".to_string(),
@@ -395,4 +401,18 @@ fn remote_device_trust_requires_exact_authorized_device() {
         verify_remote_device_trust(&control_plane, &request).expect("remote device trusted");
     assert_eq!(verified.id.as_str(), "remote-device");
     assert_eq!(verified.trust_state, DeviceTrustState::Trusted);
+}
+
+/// The approve step is irreversible: the encrypted grant is already in the
+/// control plane when accept runs. A blocked accept therefore has to hand back
+/// both ways to finish, or the operator is left with a half-joined host and a
+/// "user-action" verdict that names no action.
+#[test]
+fn a_blocked_accept_names_both_ways_to_finish_the_join() {
+    let hint = accept_recovery_hint("vivobook-ts", "~/Code", "req_fixture");
+
+    assert!(hint.contains("bowline connect vivobook-ts"), "{hint}");
+    assert!(hint.contains("ssh vivobook-ts"), "{hint}");
+    assert!(hint.contains("device accept"), "{hint}");
+    assert!(hint.contains("req_fixture"), "{hint}");
 }

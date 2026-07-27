@@ -12,10 +12,11 @@
 //! the remote dependency traits ([`RemoteObjects`], [`RemoteRef`]) and the
 //! [`EngineContext`]. They live here because push is Step 4 (it lands first) and
 //! pull builds on them. The no-follow filesystem trust boundary that push's read
-//! side and apply's write side share ([`observe`], [`read_file_bounded`],
-//! [`prepare_parent_chain`]) has earned its own seam in [`super::fs_guard`].
+//! side and apply's write side share has its own seam in [`super::fs_guard`];
+//! deriving the candidate delta — and the refusals that decide what may never
+//! reach a manifest — lives in the sibling `candidate` module.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -26,13 +27,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bowline_core::ids::{ContentId, DeviceId};
 
-use super::fs_guard::{FileRead, Observed, observe, read_file_bounded, write_private_file};
+use super::endpoint::{NameFolding, StatTrust, TimestampGranularity};
+use super::fs_guard::write_private_file;
 use super::manifest::{
     BlobKey, EntryKind, KeyEpoch, Manifest, ManifestEntry, ManifestError, ManifestKey,
-    WorkspaceCrypto, WorkspacePath, physical_blob_key, physical_manifest_key, seal_file,
-    seal_manifest,
+    WorkspaceCrypto, WorkspacePath, physical_blob_key, seal_file,
 };
-use super::store::{AncestorCommit, FileRecord, ManifestStore, ManifestStoreError};
+use super::store::{FileRecord, ManifestStore, ManifestStoreError};
+use super::tree_transport::{PublishTreeRequest, StoreNodeLedger, TreeError, publish_tree};
+
+#[path = "push/candidate.rs"]
+mod candidate;
+
+use candidate::{Candidate, build_candidate, guard_mass_deletion, record_unsyncable_outcome};
 
 /// Private engine subtree under the workspace root. Temp writes, the sealed
 /// large-file spool, and quarantined preimages all live here so a crash never
@@ -153,6 +160,20 @@ pub struct EngineContext {
     /// Work views are rooted at a project, where names reserved at the
     /// workspace root are ordinary project content.
     pub project_view: bool,
+    /// Which spellings of a name this endpoint filesystem folds together,
+    /// probed once when the workspace is accepted rather than per cycle: it is a
+    /// property of the mounted volume, and every push, pull, and manifest decode
+    /// must answer "same file?" the same way within one cycle. Build it with
+    /// [`super::endpoint::probe_name_folding`].
+    pub names: NameFolding,
+    /// How coarsely this endpoint volume records modification times, probed
+    /// alongside `names` and for the same reason: it is a property of the
+    /// mounted volume, and every cycle must answer "could this endpoint have
+    /// recorded those two timestamps as one?" the same way. Build it with
+    /// [`super::endpoint::probe_timestamp_granularity`]. The engine stays
+    /// correct whatever the probe answers — see [`super::endpoint`] — so a wrong
+    /// answer costs syscalls, never a write.
+    pub timestamps: TimestampGranularity,
     /// Shared cost meters (Plan 111 Step 5). The same `Arc` the driver holds, so
     /// push/pull/apply increment the very counters the daemon surfaces. Cloned
     /// cheaply into every `EngineContext`.
@@ -207,6 +228,33 @@ pub enum PushOutcome {
 
 // ---- push -------------------------------------------------------------------
 
+/// Whether this push may publish an unusually large number of removals.
+///
+/// The engine enforces by default. `Confirmed` is reserved for an explicit
+/// user-driven operation (a work-view accept, or an operator confirming the
+/// blocked push) — never for an autonomous cycle, because the blast radius of a
+/// wrong mass deletion is every trusted device's copy of the workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeletionPolicy {
+    Enforce,
+    Confirmed,
+}
+
+/// Removals below this count are always allowed, however small the workspace.
+/// Deleting a scratch directory must not need a confirmation.
+const MIN_DELETION_ALLOWANCE: usize = 64;
+
+/// Above `entries / DELETION_FRACTION_DENOMINATOR` removals in ONE push, a
+/// deletion batch stops looking like editing and starts looking like a vanished
+/// root, a bad rename, or a wrong-folder mount. Model: `rsync --max-delete`.
+const DELETION_FRACTION_DENOMINATOR: usize = 4;
+
+/// The largest removal batch one push may publish against an ancestor of
+/// `entries` rows.
+pub fn mass_deletion_threshold(entries: usize) -> usize {
+    MIN_DELETION_ALLOWANCE.max(entries / DELETION_FRACTION_DENOMINATOR)
+}
+
 /// One push attempt over `dirty_paths`. See the module contract: the ancestor is
 /// never mutated except on CAS success.
 pub fn push<O: RemoteObjects, R: RemoteRef>(
@@ -214,32 +262,66 @@ pub fn push<O: RemoteObjects, R: RemoteRef>(
     deps: &PushDeps<'_, O, R>,
     dirty_paths: &BTreeSet<WorkspacePath>,
 ) -> Result<PushOutcome, PushError> {
-    push_with_content_verification(store, deps, dirty_paths, false)
+    push_dirty_paths(
+        store,
+        deps,
+        dirty_paths,
+        DeletionPolicy::Enforce,
+        WatcherEvidence::Continuous,
+    )
 }
 
-/// Push paths whose bytes must be verified even when their stat fingerprint is
-/// unchanged. Work views use this for explicit review/accept operations because
-/// they do not have a continuously running native watcher: a same-size rewrite
-/// can otherwise be invisible on filesystems whose timestamp clock has not
-/// advanced since materialization.
-pub(super) fn push_verifying_dirty_files<O: RemoteObjects, R: RemoteRef>(
+/// Push a dirty batch under an explicit statement of how much the engine may
+/// trust a matching stat fingerprint (see [`super::endpoint`]) and whether the
+/// removal breaker applies.
+pub(super) fn push_dirty_paths<O: RemoteObjects, R: RemoteRef>(
     store: &mut ManifestStore,
     deps: &PushDeps<'_, O, R>,
     dirty_paths: &BTreeSet<WorkspacePath>,
+    deletions: DeletionPolicy,
+    evidence: WatcherEvidence,
 ) -> Result<PushOutcome, PushError> {
-    push_with_content_verification(store, deps, dirty_paths, true)
+    let trust = match evidence {
+        WatcherEvidence::Continuous => StatTrust::OutsideRacyWindow(deps.ctx.timestamps),
+        WatcherEvidence::Gapped => StatTrust::Never,
+    };
+    push_scanned(store, deps, dirty_paths, trust, deletions)
 }
 
-fn push_with_content_verification<O: RemoteObjects, R: RemoteRef>(
+/// How the dirty batch was discovered, and therefore whether a stat fingerprint
+/// can be trusted at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatcherEvidence {
+    /// A watcher has been attached since the ancestor rows were written, so the
+    /// only window a stat cannot see through is the racy one.
+    Continuous,
+    /// The batch came from a stat walk covering an unbounded unobserved gap (a
+    /// restart seed, a watcher-overflow recovery) or from a surface that owns no
+    /// watcher at all (a work-view capture). Verify every file's bytes.
+    Gapped,
+}
+
+fn push_scanned<O: RemoteObjects, R: RemoteRef>(
     store: &mut ManifestStore,
     deps: &PushDeps<'_, O, R>,
     dirty_paths: &BTreeSet<WorkspacePath>,
-    verify_file_content: bool,
+    trust: StatTrust,
+    deletions: DeletionPolicy,
 ) -> Result<PushOutcome, PushError> {
     let ancestor = store.all_files()?;
     let state = store.engine_state()?;
 
-    let candidate = build_candidate(deps, &ancestor, dirty_paths, verify_file_content)?;
+    let mut ledger = BlobLedger::new(store, deps.ctx.key_epoch());
+    let candidate = build_candidate(deps, &ancestor, dirty_paths, trust, &mut ledger)?;
+    // Every row here names an object whose PUT returned, so it is durable
+    // regardless of how the CAS below resolves: a lost CAS does not un-upload a
+    // blob, and the retry must not re-seal it.
+    let sealed = ledger.into_sealed();
+    if !sealed.is_empty() {
+        store.record_sealed_blobs(&sealed)?;
+        deps.ctx.counters.record_sqlite_mutation();
+    }
+    record_unsyncable_outcome(store, &candidate)?;
     if candidate.is_empty() {
         if !candidate.local_refreshes.is_empty() {
             store.refresh_local_file_records(&candidate.local_refreshes)?;
@@ -251,9 +333,10 @@ fn push_with_content_verification<O: RemoteObjects, R: RemoteRef>(
             skipped: candidate.skipped,
         });
     }
+    guard_mass_deletion(&ancestor, &candidate, deletions)?;
 
     let manifest = build_manifest(&ancestor, &candidate, deps.ctx.key_epoch())?;
-    let manifest_key = upload_manifest(deps, &manifest)?;
+    let manifest_key = upload_manifest(store, deps, &manifest)?;
 
     let expected = state.last_ref_version;
     deps.ctx.counters.record_cas_attempt();
@@ -319,342 +402,69 @@ fn commit_advance(
     })
 }
 
-// ---- candidate map (immutable in-memory delta) ------------------------------
-
-/// The immutable delta a scan produced. Never touches the store until CAS
-/// success turns it into an [`AncestorCommit`].
-#[derive(Default)]
-struct Candidate {
-    upserts: BTreeMap<WorkspacePath, (FileRecord, ManifestEntry)>,
-    removals: BTreeSet<WorkspacePath>,
-    local_refreshes: BTreeMap<WorkspacePath, FileRecord>,
-    /// Dirty paths a scan could not settle this cycle (twice-diverged: actively
-    /// being written). NOT part of the published delta — carried alongside so the
-    /// driver retains them in its dirty set and reschedules a rescan. `is_empty`
-    /// deliberately ignores this: a batch of only-skipped paths is `NoChange`, no
-    /// upload and no CAS, yet the paths are still handed back to the driver.
-    skipped: BTreeSet<WorkspacePath>,
-}
-
-impl Candidate {
-    fn is_empty(&self) -> bool {
-        self.upserts.is_empty() && self.removals.is_empty()
-    }
-
-    fn ancestor_commit(&self) -> AncestorCommit {
-        let mut upserts = self.local_refreshes.clone();
-        upserts.extend(
-            self.upserts
-                .iter()
-                .map(|(path, (record, _))| (path.clone(), record.clone())),
-        );
-        AncestorCommit {
-            upserts,
-            removals: self.removals.clone(),
-        }
-    }
-}
-
-fn build_candidate<O: RemoteObjects, R: RemoteRef>(
-    deps: &PushDeps<'_, O, R>,
-    ancestor: &BTreeMap<WorkspacePath, FileRecord>,
-    dirty_paths: &BTreeSet<WorkspacePath>,
-    verify_file_content: bool,
-) -> Result<Candidate, PushError> {
-    let mut candidate = Candidate::default();
-    // Dedup identical content within one batch so two paths sharing bytes upload
-    // one blob (the create-only PUT would otherwise re-seal to a fresh key).
-    let mut uploaded: HashMap<ContentId, BlobKey> = HashMap::new();
-
-    for path in dirty_paths {
-        match scan_path(deps, ancestor, path, &mut uploaded, verify_file_content)? {
-            PathScan::Upsert(entry) => {
-                candidate.upserts.insert(path.clone(), *entry);
-            }
-            PathScan::Remove => {
-                if ancestor.contains_key(path) {
-                    candidate.removals.insert(path.clone());
-                }
-            }
-            PathScan::LocalRefresh(record) => {
-                candidate.local_refreshes.insert(path.clone(), *record);
-            }
-            // Fingerprint-clean / nothing to publish: drop from the dirty set.
-            PathScan::Settled => {}
-            // Twice-diverged (actively being written): retain so the driver
-            // rescans it in a later cycle rather than losing the change.
-            PathScan::Retry => {
-                candidate.skipped.insert(path.clone());
-            }
-        }
-    }
-    Ok(candidate)
-}
-
-/// What one dirty path contributes to the candidate delta. The upsert payload is
-/// boxed because a [`FileRecord`] dwarfs the unit variants. `Settled` and `Retry`
-/// are distinct no-delta outcomes: `Settled` means nothing changed and the path
-/// leaves the dirty set; `Retry` means the path is churning under us and MUST be
-/// rescanned later — conflating them would either lose a real change (dropping a
-/// churning path) or spin forever (retaining a clean one).
-enum PathScan {
-    Upsert(Box<(FileRecord, ManifestEntry)>),
-    Remove,
-    LocalRefresh(Box<FileRecord>),
-    Settled,
-    Retry,
-}
-
-/// The outcome of scanning one observation. `Diverged` means the observed
-/// regular file was not the object we opened (symlink swap, replaced inode,
-/// symlinked parent), so the caller must re-observe. The entry payload is boxed
-/// for the same size reason as [`PathScan`].
-enum ScanResult {
-    Entry(Box<(FileRecord, ManifestEntry)>),
-    LocalRefresh(Box<FileRecord>),
-    Unchanged,
-    Diverged,
-}
-
-/// Observe a dirty path and derive its candidate contribution, re-observing when
-/// a content read finds the leaf is no longer the regular file we stat'd. A
-/// content read that diverges (leaf swapped to a symlink, replaced inode, or a
-/// parent turned into a symlink) re-observes and re-derives: a fresh symlink is
-/// recorded AS a symlink, a vanished file becomes a removal, a settled edit seals
-/// its real bytes. A SECOND divergence means the path is churning under us —
-/// skip it this round and let the next scan settle it. Bytes reached through a
-/// symlink are NEVER sealed.
-fn scan_path<O: RemoteObjects, R: RemoteRef>(
-    deps: &PushDeps<'_, O, R>,
-    ancestor: &BTreeMap<WorkspacePath, FileRecord>,
-    path: &WorkspacePath,
-    uploaded: &mut HashMap<ContentId, BlobKey>,
-    verify_file_content: bool,
-) -> Result<PathScan, PushError> {
-    for _ in 0..2 {
-        let Some(observed) = observe(&deps.ctx.workspace_root, path).map_err(PushError::Io)? else {
-            return Ok(PathScan::Remove);
-        };
-        let ancestor_row = ancestor.get(path);
-        match scan_observed(
-            deps,
-            path,
-            &observed,
-            ancestor_row,
-            uploaded,
-            verify_file_content,
-        )? {
-            ScanResult::Entry(entry) => return Ok(PathScan::Upsert(entry)),
-            ScanResult::LocalRefresh(record) => return Ok(PathScan::LocalRefresh(record)),
-            ScanResult::Unchanged => return Ok(PathScan::Settled),
-            ScanResult::Diverged => continue,
-        }
-    }
-    // Two consecutive divergences: the path is being actively written. Ask the
-    // driver to retain and rescan it — this is NOT a settled no-op.
-    Ok(PathScan::Retry)
-}
-
-/// Turn one observed path into a candidate entry, uploading its blob if the
-/// content is new. `Unchanged` is the invariant-C1 "unchanged files are never
-/// opened" path; `Diverged` asks the caller to re-observe.
-fn scan_observed<O: RemoteObjects, R: RemoteRef>(
-    deps: &PushDeps<'_, O, R>,
-    path: &WorkspacePath,
-    observed: &Observed,
-    ancestor_row: Option<&FileRecord>,
-    uploaded: &mut HashMap<ContentId, BlobKey>,
-    verify_file_content: bool,
-) -> Result<ScanResult, PushError> {
-    match observed.kind {
-        EntryKind::Directory => Ok(directory_scan(observed, ancestor_row)),
-        EntryKind::Symlink => Ok(symlink_scan(observed, ancestor_row)),
-        EntryKind::File => file_candidate(
-            deps,
-            path,
-            observed,
-            ancestor_row,
-            uploaded,
-            verify_file_content,
-        ),
-    }
-}
-
-/// A directory observation is unchanged when the ancestor already records a
-/// directory with the same mode. Watchers routinely re-report a parent dir while
-/// a child is edited, and applying a remote dir generates a local event — so
-/// without this the echo builds and seals a fresh manifest and advances the ref
-/// even though canonical state is identical (violating invariants C1/C2). Mirror
-/// [`file_candidate`]'s ancestor-comparison discipline.
-fn directory_scan(observed: &Observed, ancestor_row: Option<&FileRecord>) -> ScanResult {
-    if let Some(row) = ancestor_row
-        && row.kind == EntryKind::Directory
-        && row.mode == observed.mode
-    {
-        return ScanResult::Unchanged;
-    }
-    ScanResult::Entry(Box::new(directory_candidate(observed)))
-}
-
-/// A symlink observation is unchanged when the ancestor records a symlink with
-/// the same mode AND target; a retargeted or chmod'ed link still pushes. The
-/// target is normalized the way [`symlink_candidate`] stores it (a missing target
-/// round-trips to the empty string) so an echoed link never re-seals a manifest.
-fn symlink_scan(observed: &Observed, ancestor_row: Option<&FileRecord>) -> ScanResult {
-    let observed_target = observed.symlink_target.clone().unwrap_or_default();
-    if let Some(row) = ancestor_row
-        && row.kind == EntryKind::Symlink
-        && row.mode == observed.mode
-        && row.symlink_target.as_deref() == Some(observed_target.as_str())
-    {
-        return ScanResult::Unchanged;
-    }
-    ScanResult::Entry(Box::new(symlink_candidate(observed)))
-}
-
-fn directory_candidate(observed: &Observed) -> (FileRecord, ManifestEntry) {
-    (
-        FileRecord {
-            kind: EntryKind::Directory,
-            size: 0,
-            mode: observed.mode,
-            symlink_target: None,
-            content_id: None,
-            blob_key: None,
-            key_epoch: None,
-            fingerprint: observed.fingerprint,
-            hashed_at: None,
-            verified_at: Some(now_unix_ns()),
-        },
-        ManifestEntry::Directory {
-            mode: observed.mode,
-        },
-    )
-}
-
-fn symlink_candidate(observed: &Observed) -> (FileRecord, ManifestEntry) {
-    let target = observed.symlink_target.clone().unwrap_or_default();
-    (
-        FileRecord {
-            kind: EntryKind::Symlink,
-            size: 0,
-            mode: observed.mode,
-            symlink_target: Some(target.clone()),
-            content_id: None,
-            blob_key: None,
-            key_epoch: None,
-            fingerprint: observed.fingerprint,
-            hashed_at: None,
-            verified_at: Some(now_unix_ns()),
-        },
-        ManifestEntry::Symlink {
-            mode: observed.mode,
-            target,
-        },
-    )
-}
-
-fn file_candidate<O: RemoteObjects, R: RemoteRef>(
-    deps: &PushDeps<'_, O, R>,
-    path: &WorkspacePath,
-    observed: &Observed,
-    ancestor_row: Option<&FileRecord>,
-    uploaded: &mut HashMap<ContentId, BlobKey>,
-    verify_file_content: bool,
-) -> Result<ScanResult, PushError> {
-    // Fingerprint-clean and same kind: nothing changed. Never open the file.
-    if !verify_file_content
-        && let Some(row) = ancestor_row
-        && row.kind == EntryKind::File
-        && row.fingerprint == observed.fingerprint
-        && row.size == observed.size
-        && row.mode == observed.mode
-    {
-        return Ok(ScanResult::Unchanged);
-    }
-
-    let plaintext = match read_file_bounded(
-        &deps.ctx.workspace_root,
-        path,
-        deps.ctx.config.max_seal_bytes,
-        &observed.expected_file(),
-    )? {
-        FileRead::Bytes(plaintext) => plaintext,
-        // The leaf was not the regular file we observed (symlink swap, replaced
-        // inode, symlinked parent): re-observe rather than seal foreign bytes.
-        FileRead::Diverged => return Ok(ScanResult::Diverged),
-    };
-    // One real content open + hash of a changed file (invariant C2: an edit
-    // costs the edit; an unchanged file never reaches here).
-    deps.ctx
-        .counters
-        .record_content_open(plaintext.len() as u64);
-    let content_id = deps.ctx.crypto.content_id(&plaintext);
-    deps.ctx.counters.record_content_hash();
-
-    if let Some(row) = ancestor_row
-        && row.kind == EntryKind::File
-        && row.content_id.as_ref() == Some(&content_id)
-        && row.mode == observed.mode
-        && row.key_epoch == Some(deps.ctx.key_epoch())
-    {
-        let mut refreshed = row.clone();
-        refreshed.size = observed.size;
-        refreshed.fingerprint = observed.fingerprint;
-        refreshed.hashed_at = Some(now_unix_ns());
-        refreshed.verified_at = Some(now_unix_ns());
-        return Ok(ScanResult::LocalRefresh(Box::new(refreshed)));
-    }
-
-    let blob_key = match ancestor_row {
-        // Content unchanged (mode-only edit): reference the ancestor blob, no
-        // upload or content re-seal moves (matrix row 11 on the push side).
-        Some(row)
-            if row.content_id.as_ref() == Some(&content_id)
-                && row.key_epoch == Some(deps.ctx.key_epoch()) =>
-        {
-            row.blob_key
-                .clone()
-                .ok_or(PushError::AncestorRowMissing { field: "blob_key" })?
-        }
-        _ => upload_file_blob(deps, &content_id, &plaintext, uploaded)?,
-    };
-
-    let size = plaintext.len() as u64;
-    let key_epoch = deps.ctx.key_epoch();
-    Ok(ScanResult::Entry(Box::new((
-        FileRecord {
-            kind: EntryKind::File,
-            size,
-            mode: observed.mode,
-            symlink_target: None,
-            content_id: Some(content_id.clone()),
-            blob_key: Some(blob_key.clone()),
-            key_epoch: Some(key_epoch),
-            fingerprint: observed.fingerprint,
-            hashed_at: Some(now_unix_ns()),
-            verified_at: Some(now_unix_ns()),
-        },
-        ManifestEntry::File {
-            size,
-            mode: observed.mode,
-            content_id,
-            blob_key,
-            key_epoch,
-        },
-    ))))
-}
-
 // ---- upload ---------------------------------------------------------------
 
-fn upload_file_blob<O: RemoteObjects, R: RemoteRef>(
+/// The device's memory of content it has already sealed and uploaded.
+///
+/// Reads are primary-key lookups against the durable `blobs` table plus the
+/// in-flight map for content this same push sealed, so the dedup check is
+/// O(log rows) per changed file rather than a scan. Writes are accumulated and
+/// committed once by the caller: a row may only be recorded for content whose
+/// PUT actually returned, so a failed upload never leaves a claim that the
+/// object exists.
+pub(super) struct BlobLedger<'a> {
+    store: &'a ManifestStore,
+    key_epoch: KeyEpoch,
+    fresh: BTreeMap<ContentId, super::store::SealedBlob>,
+}
+
+impl<'a> BlobLedger<'a> {
+    pub(super) fn new(store: &'a ManifestStore, key_epoch: KeyEpoch) -> Self {
+        Self {
+            store,
+            key_epoch,
+            fresh: BTreeMap::new(),
+        }
+    }
+
+    fn known(&self, content_id: &ContentId) -> Result<Option<BlobKey>, PushError> {
+        if let Some(blob) = self.fresh.get(content_id) {
+            return Ok(Some(blob.blob_key.clone()));
+        }
+        Ok(self
+            .store
+            .sealed_blob(content_id, self.key_epoch)?
+            .map(|blob| blob.blob_key))
+    }
+
+    fn record(&mut self, content_id: &ContentId, blob_key: &BlobKey, byte_len: u64) {
+        self.fresh.insert(
+            content_id.clone(),
+            super::store::SealedBlob {
+                blob_key: blob_key.clone(),
+                key_epoch: self.key_epoch,
+                byte_len,
+            },
+        );
+    }
+
+    /// The rows this push earned the right to persist.
+    pub(super) fn into_sealed(self) -> BTreeMap<ContentId, super::store::SealedBlob> {
+        self.fresh
+    }
+}
+
+pub(super) fn upload_file_blob<O: RemoteObjects, R: RemoteRef>(
     deps: &PushDeps<'_, O, R>,
     content_id: &ContentId,
     plaintext: &[u8],
-    uploaded: &mut HashMap<ContentId, BlobKey>,
+    ledger: &mut BlobLedger<'_>,
 ) -> Result<BlobKey, PushError> {
-    if let Some(existing) = uploaded.get(content_id) {
-        return Ok(existing.clone());
+    // Content this device has ever sealed under this epoch is already in the
+    // object store under a key that is a function of the plaintext, so both the
+    // seal (zstd + AEAD over every byte) and the create-only PUT are pure waste.
+    if let Some(existing) = ledger.known(content_id)? {
+        return Ok(existing);
     }
     let sealed = seal_file(&deps.ctx.crypto, content_id, plaintext).map_err(PushError::Manifest)?;
     let key = physical_blob_key(sealed.as_bytes());
@@ -674,7 +484,7 @@ fn upload_file_blob<O: RemoteObjects, R: RemoteRef>(
     }
     // A real blob PUT happened (the dedup short-circuit above returned early).
     deps.ctx.counters.record_blob_upload();
-    uploaded.insert(content_id.clone(), key.clone());
+    ledger.record(content_id, &key, plaintext.len() as u64);
     Ok(key)
 }
 
@@ -713,23 +523,34 @@ fn write_private_spool(
     Ok(spool)
 }
 
+/// Publish the candidate manifest as a Merkle tree and return its ROOT node key
+/// — the value the CAS below swaps onto the ref.
+///
+/// Only the nodes on the path from a changed entry to the root are sealed and
+/// PUT; every subtree whose content this device has published before is reused
+/// by key. The rows the publish earned are committed BEFORE the CAS, because a
+/// node's existence in the object store is durable regardless of how the CAS
+/// resolves: a lost CAS does not un-upload a node, and the retry must not reseal
+/// it.
 fn upload_manifest<O: RemoteObjects, R: RemoteRef>(
+    store: &mut ManifestStore,
     deps: &PushDeps<'_, O, R>,
     manifest: &Manifest,
 ) -> Result<ManifestKey, PushError> {
-    let plaintext = manifest.to_canonical_bytes().map_err(PushError::Manifest)?;
-    let content_id = deps.ctx.crypto.manifest_content_id(&plaintext);
-    let sealed = seal_manifest(&deps.ctx.crypto, &plaintext).map_err(PushError::Manifest)?;
-    let key = physical_manifest_key(sealed.as_bytes());
-    deps.objects
-        .put_manifest(ManifestUpload {
-            key: &key,
-            content_id: &content_id,
-            key_epoch: deps.ctx.key_epoch(),
-            sealed: sealed.as_bytes(),
-        })
-        .map_err(PushError::Transport)?;
-    deps.ctx.counters.record_manifest_upload();
+    let key_epoch = deps.ctx.key_epoch();
+    let mut ledger = StoreNodeLedger::new(store, key_epoch);
+    let key = publish_tree(PublishTreeRequest {
+        objects: deps.objects,
+        crypto: &deps.ctx.crypto,
+        counters: &deps.ctx.counters,
+        manifest,
+        ledger: &mut ledger,
+    })?;
+    let recorded = ledger.into_recorded();
+    if !recorded.is_empty() {
+        store.record_tree_nodes(&recorded, key_epoch)?;
+        deps.ctx.counters.record_sqlite_mutation();
+    }
     Ok(key)
 }
 
@@ -791,8 +612,11 @@ pub(super) fn file_record_to_entry(record: &FileRecord) -> Result<ManifestEntry,
 
 // ---- timestamps -------------------------------------------------------------
 
-/// Unix nanoseconds since the epoch, for the `hashed_at`/`verified_at` audit
-/// columns. Never orders conflicts (Plan 108: no clock ordering).
+/// Unix nanoseconds since the epoch, for the `hashed_at` audit column and the
+/// unsyncable ledger. Never orders conflicts (Plan 108: no clock ordering), and
+/// never `verified_at`: that column is a reading of the ENDPOINT volume's clock,
+/// which runs behind this one by up to one of its ticks (see
+/// [`super::endpoint`]).
 pub fn now_unix_ns() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -834,8 +658,21 @@ pub enum PushError {
     Store(ManifestStoreError),
     Manifest(ManifestError),
     Transport(TransportError),
-    AncestorRowMissing { field: &'static str },
-    StreamSealUnsupported { byte_len: u64, ceiling: u64 },
+    AncestorRowMissing {
+        field: &'static str,
+    },
+    StreamSealUnsupported {
+        byte_len: u64,
+        ceiling: u64,
+    },
+    /// The circuit breaker: this push would remove more of the workspace than any
+    /// plausible edit does. Carries the refused paths themselves, not just their
+    /// count: a confirmation the user cannot inspect first is not a decision.
+    MassDeletionRefused {
+        removals: BTreeSet<WorkspacePath>,
+        entries: usize,
+        threshold: usize,
+    },
 }
 
 impl fmt::Display for PushError {
@@ -852,6 +689,16 @@ impl fmt::Display for PushError {
                 formatter,
                 "push cannot seal a {byte_len}-byte file: envelope has no streaming seal and the \
                  {ceiling}-byte ceiling would be exceeded"
+            ),
+            Self::MassDeletionRefused {
+                removals,
+                entries,
+                threshold,
+            } => write!(
+                formatter,
+                "push refused: it would remove {} of {entries} synced entries, above the \
+                 {threshold} allowed without confirmation",
+                removals.len()
             ),
         }
     }
@@ -872,6 +719,19 @@ impl Error for PushError {
 impl From<ManifestStoreError> for PushError {
     fn from(error: ManifestStoreError) -> Self {
         Self::Store(error)
+    }
+}
+
+impl From<TreeError> for PushError {
+    fn from(error: TreeError) -> Self {
+        match error {
+            TreeError::Manifest(error) => Self::Manifest(error),
+            TreeError::Store(error) => Self::Store(error),
+            TreeError::Transport(error) => Self::Transport(error),
+            TreeError::NodeKeyMismatch => Self::Manifest(ManifestError::Internal {
+                reason: "published tree node does not match its key",
+            }),
+        }
     }
 }
 

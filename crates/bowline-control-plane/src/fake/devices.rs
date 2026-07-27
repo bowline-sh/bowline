@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
-    DeviceControlPlaneClient, device_request_proof_subject, device_revocation_proof_subject,
+    DeviceControlPlaneClient, EncryptedGrantRequest, device_request_proof_subject,
+    device_revocation_proof_subject,
 };
 
 impl DeviceControlPlaneClient for FakeControlPlaneClient {
@@ -76,6 +77,7 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             device_name: input.device_name,
             platform: input.platform,
             device_public_key: input.device_public_key,
+            device_public_key_proof: input.device_public_key_proof,
             device_fingerprint: input.device_fingerprint,
             device_authorization_proof_verifier: input.device_authorization_proof_verifier.clone(),
             matching_code: input.matching_code,
@@ -108,7 +110,7 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             .push(self.build_event(
                 &request.workspace_id,
                 CompactEventKind::DeviceApprovalRequested,
-                &request.request_id,
+                request.request_id.as_str(),
             ));
 
         Ok(request)
@@ -166,6 +168,14 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
         state
             .device_authorization_proof_verifiers
             .insert(key, input.device_authorization_proof_verifier);
+        Self::record_device_key_material(
+            &mut state,
+            &input.workspace_id,
+            &input.device_id,
+            input.device_public_key,
+            input.device_public_key_proof,
+            1,
+        );
         state
             .events
             .entry(input.workspace_id.clone())
@@ -173,7 +183,7 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             .push(self.build_event(
                 &input.workspace_id,
                 CompactEventKind::DeviceApproved,
-                &device.device_id,
+                device.device_id.as_str(),
             ));
         Ok(device)
     }
@@ -340,7 +350,7 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             .push(self.build_event(
                 &denial.workspace_id,
                 CompactEventKind::DeviceDenied,
-                &denial.request_id,
+                denial.request_id.as_str(),
             ));
         Ok(denial)
     }
@@ -382,6 +392,10 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
         state
             .device_authorization_proof_verifiers
             .remove(&(input.workspace_id.clone(), input.device_id.clone()));
+        Self::forget_device_key_material(&mut state, &input.workspace_id, &input.device_id);
+        // Revocation is only a security boundary if the revoked device stops
+        // being able to read future objects, so it always demands a new epoch.
+        Self::rotate_workspace_key_epoch(&mut state, &input.workspace_id);
         state
             .events
             .entry(input.workspace_id.clone())
@@ -389,21 +403,29 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             .push(self.build_event(
                 &input.workspace_id,
                 CompactEventKind::DeviceRevoked,
-                &input.device_id,
+                input.device_id.as_str(),
             ));
         Ok(revoked)
     }
 
     fn get_encrypted_device_grant(
         &self,
-        request_id: &DeviceApprovalRequestId,
-        device_id: &DeviceId,
+        request: EncryptedGrantRequest,
     ) -> ControlPlaneResult<Option<DeviceApproval>> {
         let state = self.state.lock().expect("fake control plane poisoned");
-        let Some(grant) = state.grants.get(request_id) else {
+        // Same authority as the hosted control plane: the requester is not a
+        // trusted device yet, so it is checked against the verifier it
+        // published with the request rather than the authorized-device table.
+        Self::ensure_pending_request_proof(
+            &state,
+            &request.request_id,
+            &request.device_id,
+            &request.requested_by_device_proof,
+        )?;
+        let Some(grant) = state.grants.get(&request.request_id) else {
             return Ok(None);
         };
-        if &grant.device_id != device_id {
+        if grant.device_id != request.device_id {
             return Ok(None);
         }
         if grant.expires_at <= self.clock.peek() {
@@ -491,6 +513,17 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
                 (request.workspace_id.clone(), request.device_id.clone()),
                 pending_verifier,
             );
+            // A grant sealed just before a rotation enrolls the device at the
+            // older epoch; recording what it actually holds is what opens the
+            // re-grant obligation for the current one.
+            Self::record_device_key_material(
+                &mut state,
+                &request.workspace_id,
+                &request.device_id,
+                request.device_public_key.clone(),
+                request.device_public_key_proof.clone(),
+                grant.key_epoch,
+            );
             state
                 .events
                 .entry(grant.workspace_id.clone())
@@ -498,7 +531,7 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
                 .push(self.build_event(
                     &grant.workspace_id,
                     CompactEventKind::DeviceApproved,
-                    &grant.device_id,
+                    grant.device_id.as_str(),
                 ));
         } else if state
             .revoked_devices

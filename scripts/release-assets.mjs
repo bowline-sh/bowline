@@ -480,14 +480,39 @@ function orderedRootAssets(releaseAssets) {
   ];
 }
 
+// The bucket root is a real publish channel, not an edge rewrite: install.sh
+// and `curl $RELEASE_HOST/release-manifest.json` read these exact keys.
+const rootChannelAssets = new Set([
+  "install.sh",
+  "release-manifest.json",
+  "release-manifest.json.sig",
+]);
+
+const releaseChannels = new Map([
+  [
+    "versioned",
+    { prefix: (version) => `releases/v${version}`, includes: () => true },
+  ],
+  ["latest", { prefix: () => "releases/latest", includes: () => true }],
+  [
+    "root",
+    { prefix: () => "", includes: (name) => rootChannelAssets.has(name) },
+  ],
+]);
+
 function releaseUploadPlan(version, releaseAssets, channel) {
-  const prefix =
-    channel === "latest" ? "releases/latest" : `releases/v${version}`;
-  return orderedRootAssets(releaseAssets).map((asset) => ({
-    asset,
-    key: `${prefix}/${asset.name}`,
-  }));
+  const spec = releaseChannels.get(channel);
+  if (!spec) throw new Error(`unknown release channel: ${channel}`);
+  const prefix = spec.prefix(version);
+  return orderedRootAssets(releaseAssets)
+    .filter((asset) => spec.includes(asset.name))
+    .map((asset) => ({
+      asset,
+      key: prefix ? `${prefix}/${asset.name}` : asset.name,
+    }));
 }
+
+export const releaseChannelNames = [...releaseChannels.keys()];
 
 function uploadReleasePlan(bucket, version, releaseAssets, channel, publish) {
   for (const item of releaseUploadPlan(version, releaseAssets, channel)) {
@@ -602,6 +627,13 @@ async function main() {
     args.version,
     releaseAssets,
     "latest",
+    args.publish,
+  );
+  uploadReleasePlan(
+    args.bucket,
+    args.version,
+    releaseAssets,
+    "root",
     args.publish,
   );
 

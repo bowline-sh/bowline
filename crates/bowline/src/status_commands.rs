@@ -141,7 +141,9 @@ pub(super) fn compose_status_for_cli(
     if let DeviceTrustFetch::Fetched(snapshot) = &trust {
         apply_device_status(&mut output, snapshot);
     }
-    attach_update_status_if_available(&mut output, true);
+    // Status is the hottest command in the product: it reads the cached release
+    // manifest and never spawns a network fetch of its own.
+    attach_update_status_if_available(&mut output, UpdateCheckNetwork::CacheOnly);
     attach_machine_introspection(&mut output, &trust, socket, project_scope.as_deref());
     abbreviate_status_requested_path(&mut output);
     Ok(output)
@@ -162,14 +164,44 @@ fn attach_machine_introspection(
     let state = authentication_state(&output.workspace_id, trust, account_authenticated());
     output.authentication =
         Some(bowline_core::introspection::AuthenticationIntrospection { state });
-    let daemon = match project_scope {
-        Some(path) => crate::wire::daemon_status_snapshot_for_project(socket, path),
-        None => crate::wire::daemon_status_snapshot(socket),
-    };
-    if let Some(daemon) = daemon {
-        overlay_daemon_sync_facts(output, &daemon);
+    // One daemon connection per status: the snapshot it returns is also the
+    // fallback source for the compact sync view.
+    match crate::wire::daemon_status_snapshot_scoped(socket, project_scope) {
+        Ok(daemon) => {
+            overlay_daemon_sync_facts(output, &daemon);
+            output.sync = sync_introspection_from(output, Some(&daemon));
+        }
+        Err(error) => {
+            if let Some(skew) = error.version_skew() {
+                attach_daemon_version_skew(output, &skew);
+            }
+            output.sync = sync_introspection_from(output, None);
+        }
     }
-    output.sync = sync_introspection_for(output, socket);
+}
+
+/// Surface a daemon this build cannot speak to. Without this the daemon is
+/// invisible on the one command a user runs to find out what is wrong: the sync
+/// component is genuinely unavailable to this CLI until the daemon is replaced.
+fn attach_daemon_version_skew(
+    output: &mut StatusCommandOutput,
+    skew: &bowline_daemon_rpc::VersionSkew,
+) {
+    let workspace_id = output.workspace_id.as_str().to_string();
+    append_status_fact(
+        output,
+        "sync.component_unavailable",
+        "daemon-version-skew".to_string(),
+        "daemon-version-skew",
+        StatusFactScope::Workspace,
+        Some(&workspace_id),
+        None,
+    );
+    output.status.attention_items.push(format!("{skew}."));
+    output.next_actions.push(RepairCommand::mutating(
+        "Replace the mismatched daemon".to_string(),
+        Some("bowline daemon restart".to_string()),
+    ));
 }
 
 /// Overlay the daemon-owned convergence facts when its active workspace matches
@@ -259,11 +291,10 @@ pub(super) fn authentication_state(
         // on error; a successful fetch then resolves the true state.
         return AuthenticationState::ApprovalPending;
     };
-    // Resolve the local device id only now: `daemon_device_id` reaches the
-    // control plane and materializes local metadata, so deferring it until a
-    // trust snapshot must actually be reduced keeps the read-only `status` path
-    // free of side effects (no metadata database is created just to report).
-    let local_device_id = runtime::daemon_device_id(workspace_id);
+    // Reduce the snapshot already in hand. Resolving the id through
+    // `daemon_device_id` would fetch this same snapshot from the control plane a
+    // second time, and it is only reachable here once a fetch has succeeded.
+    let local_device_id = runtime::daemon_device_id_for_trust(workspace_id, trust);
     reduce_device_trust(trust, &local_device_id)
 }
 
@@ -279,21 +310,21 @@ fn reduce_device_trust(
     if trust
         .revoked_devices
         .iter()
-        .any(|device| device.device_id == local_id)
+        .any(|device| device.device_id == DeviceId::new(local_id))
     {
         return AuthenticationState::Unauthenticated;
     }
     if trust
         .authorized_devices
         .iter()
-        .any(|device| device.device_id == local_id)
+        .any(|device| device.device_id == DeviceId::new(local_id))
     {
         return AuthenticationState::Authenticated;
     }
     if trust
         .pending_requests
         .iter()
-        .any(|request| request.device_id == local_id)
+        .any(|request| request.device_id == DeviceId::new(local_id))
         || !trust.authorized_devices.is_empty()
     {
         // Either this device has an open request, or other devices are approved
@@ -364,15 +395,13 @@ impl RefreshCadence {
 /// is derived fresh from each frame's own queue so live changes are never masked.
 #[derive(Debug)]
 struct WatchIntrospection {
-    socket: PathBuf,
     service: Option<bowline_core::introspection::ServiceIntrospection>,
     service_refresh: RefreshCadence,
 }
 
 impl WatchIntrospection {
-    fn new(socket: PathBuf, now: Instant) -> Self {
+    fn new(now: Instant) -> Self {
         Self {
-            socket,
             service: None,
             service_refresh: RefreshCadence::new(now, SERVICE_REFRESH_INTERVAL),
         }
@@ -387,7 +416,9 @@ impl WatchIntrospection {
         output.authentication = Some(bowline_core::introspection::AuthenticationIntrospection {
             state: authentication_state(&output.workspace_id, trust, account_authenticated()),
         });
-        output.sync = sync_introspection_for(output, &self.socket);
+        // Watch frames already carry the daemon's own queue, so the compact view
+        // never needs a second daemon connection.
+        output.sync = sync_introspection_from(output, None);
     }
 }
 
@@ -406,18 +437,18 @@ fn device_trust_fetch_from_cache(
 }
 
 /// Resolve the compact sync view: prefer the locally composed queue, and fall
-/// back to the daemon's live snapshot over the resolved socket so `sync` is
-/// present whenever a daemon is running, not only when the local metadata path
-/// happens to carry a queue.
-fn sync_introspection_for(
+/// back to the daemon snapshot the caller already fetched so `sync` is present
+/// whenever a daemon is running, not only when the local metadata path happens
+/// to carry a queue. The daemon is never re-queried for this.
+fn sync_introspection_from(
     output: &StatusCommandOutput,
-    socket: &Path,
+    daemon: Option<&StatusCommandOutput>,
 ) -> Option<bowline_core::introspection::SyncIntrospection> {
     output
         .sync_queue
         .as_ref()
+        .or_else(|| daemon.and_then(|daemon| daemon.sync_queue.as_ref()))
         .map(bowline_core::introspection::SyncIntrospection::from_queue)
-        .or_else(|| crate::wire::daemon_sync_introspection(socket))
 }
 
 fn update_cached_device_trust(
@@ -481,7 +512,7 @@ pub(super) fn print_status_watch(
     {
         return exit_code;
     }
-    let mut state = StatusWatchState::new(socket.to_path_buf());
+    let mut state = StatusWatchState::new();
 
     loop {
         match next_status_watch_tick(&mut state, &options) {
@@ -533,7 +564,7 @@ fn print_daemon_status_watch(
     // frame with the same service/authentication/sync block as one-shot
     // `status --json`. The enricher caches the service probe and device trust on a
     // slow cadence so an event-driven stream never pays them per frame.
-    let mut enricher = DaemonWatchEnricher::new(socket.to_path_buf());
+    let mut enricher = DaemonWatchEnricher::new();
     let mut initial = status_command_from_wire(subscription.snapshot).map_err(|_| ())?;
     enricher.enrich(&mut initial);
     let frame = status_watch_frame(initial, subscription.sequence);
@@ -541,7 +572,7 @@ fn print_daemon_status_watch(
         return Ok(exit_code);
     }
     let events = client
-        .register_events(subscription.subscription_id, 1)
+        .register_latest_event(subscription.subscription_id)
         .map_err(|_| ())?;
     loop {
         let event = events.recv().map_err(|_| ())?;
@@ -594,10 +625,10 @@ struct DaemonWatchEnricher {
 }
 
 impl DaemonWatchEnricher {
-    fn new(socket: PathBuf) -> Self {
+    fn new() -> Self {
         let now = Instant::now();
         Self {
-            introspection: WatchIntrospection::new(socket, now),
+            introspection: WatchIntrospection::new(now),
             trust: None,
             trust_refresh: RefreshCadence::new(now, TRUST_REFRESH_INTERVAL),
         }
@@ -662,7 +693,7 @@ struct StatusWatchState {
 }
 
 impl StatusWatchState {
-    fn new(socket: PathBuf) -> Self {
+    fn new() -> Self {
         let now = Instant::now();
         Self {
             sequence: 1,
@@ -672,7 +703,7 @@ impl StatusWatchState {
             trust_refresh: RefreshCadence::new(now, TRUST_REFRESH_INTERVAL),
             composer: None,
             update_revision: None,
-            introspection: WatchIntrospection::new(socket, now),
+            introspection: WatchIntrospection::new(now),
         }
     }
 }
@@ -770,7 +801,7 @@ fn compose_status_watch_output(
         // disappear.
         apply_device_status(&mut output, trust);
     }
-    attach_update_status_if_available(&mut output, false);
+    attach_update_status_if_available(&mut output, UpdateCheckNetwork::CacheOnly);
     // Carry the same service/authentication/sync introspection as one-shot
     // `status --json`. Trust is already refreshed above (reused, not re-fetched);
     // the enricher caches the service probe on its own cadence, so this runs only
@@ -857,4 +888,4 @@ fn status_watch_error_frame(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

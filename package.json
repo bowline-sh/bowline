@@ -1,6 +1,6 @@
 {
   "name": "bowline",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -13,7 +13,7 @@
     "lint": "pnpm --filter @bowline/docs generate && eslint --max-warnings=0 .",
     "test": "turbo test",
     "typecheck": "turbo typecheck",
-    "verify": "node scripts/check-toolchain-declarations.mjs && pnpm --filter @bowline/config test && pnpm --filter @bowline/contracts test && pnpm --filter @bowline/contracts build && pnpm --filter @bowline/control-plane typecheck && CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-dev-target} CARGO_INCREMENTAL=0 cargo fmt --check && CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-dev-target} CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets --all-features -- -D warnings && CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-dev-target} CARGO_INCREMENTAL=0 cargo test --workspace && node scripts/check-examples.mjs && node scripts/check-generated-artifacts.mjs && node scripts/check-architecture-imports.mjs && node scripts/check-rust-boundaries.mjs && node scripts/check-file-lengths.mjs && node scripts/check-public-export.mjs && node scripts/check-whitespace.mjs && pnpm lint && pnpm typecheck"
+    "verify": "node scripts/check-toolchain-declarations.mjs && pnpm --filter @bowline/config test && pnpm --filter @bowline/contracts test && pnpm --filter @bowline/contracts build && pnpm --filter @bowline/control-plane typecheck && CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-public-target} CARGO_INCREMENTAL=0 cargo fmt --check && CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-public-target} CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets --all-features -- -D warnings && CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-public-target} CARGO_INCREMENTAL=0 cargo test --workspace && node scripts/check-generated-artifacts.mjs && node scripts/check-architecture-imports.mjs && node scripts/check-rust-boundaries.mjs && node scripts/check-file-lengths.mjs && node scripts/check-public-export.mjs && node scripts/check-whitespace.mjs && pnpm lint && pnpm typecheck"
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.1070.0",

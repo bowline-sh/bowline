@@ -138,6 +138,12 @@ export type WorkLifecycleCommandOutput = CommandOutputBase<
   // base: the deletion did not land (the newer local edit stays canonical), so
   // accept surfaces them here instead of reporting them as accepted paths.
   readonly discardedDeletions?: readonly string[];
+  // Paths where the view's version could not be kept beside the workspace's,
+  // because no conflict-aside may be written there: `.git/**` state, which an
+  // extra sibling corrupts, or an origin whose aside name would exceed the
+  // workspace path budget. The local file stays canonical and the view's version
+  // is dropped, so accept reports them instead of counting them as accepted.
+  readonly asideRefusedPaths?: readonly string[];
   readonly partial?: boolean;
   readonly workView: WorkView;
   readonly status: WorkspaceStatus;

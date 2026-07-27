@@ -279,3 +279,68 @@ fn intent(path: &str, operation_kind: IntentOperationKind) -> Intent {
         created_at: 1,
     }
 }
+
+#[test]
+fn opening_the_store_raises_the_ratchet_floor_to_the_applied_head() {
+    let (_workspace, path) = store_path("store-ratchet-floor");
+    let applied = ManifestKey::new("m_applied");
+    {
+        let store = ManifestStore::open(&path).expect("open");
+        // The shape a lost `synchronous=NORMAL` transaction can leave behind: the
+        // applied head is above the ratchet, so a hosted rollback to a version
+        // this device already applied would pass `enforce_freshness`.
+        store
+            .in_transaction(|connection| set_applied(connection, &applied, 7))
+            .expect("seed applied head");
+        let state = store.engine_state().expect("state");
+        assert_eq!(state.highest_verified_ref_version, None);
+    }
+
+    let store = ManifestStore::open(&path).expect("reopen");
+    let state = store.engine_state().expect("state");
+    assert_eq!(state.highest_verified_ref_version, Some(7));
+    assert_eq!(state.highest_verified_manifest_key, Some(applied));
+}
+
+#[test]
+fn opening_the_store_never_lowers_the_ratchet() {
+    let (_workspace, path) = store_path("store-ratchet-no-lower");
+    let high = ManifestKey::new("m_high");
+    {
+        let mut store = ManifestStore::open(&path).expect("open");
+        store.record_highest_verified(9, &high).expect("ratchet");
+        store
+            .in_transaction(|connection| set_applied(connection, &ManifestKey::new("m_low"), 4))
+            .expect("seed a lower applied head");
+    }
+
+    let store = ManifestStore::open(&path).expect("reopen");
+    let state = store.engine_state().expect("state");
+    assert_eq!(state.highest_verified_ref_version, Some(9));
+    assert_eq!(state.highest_verified_manifest_key, Some(high));
+}
+
+#[test]
+fn the_blob_ledger_is_scoped_to_the_current_key_epoch() {
+    let (_workspace, path) = store_path("store-blob-ledger");
+    let mut store = ManifestStore::open(&path).expect("open");
+    let content = ContentId::new("cid_ledger");
+    let blob = SealedBlob {
+        blob_key: BlobKey::new("b_ledger"),
+        key_epoch: KeyEpoch::new(1),
+        byte_len: 12,
+    };
+    store
+        .record_sealed_blobs(&BTreeMap::from([(content.clone(), blob.clone())]))
+        .expect("record");
+
+    assert_eq!(
+        store.sealed_blob(&content, KeyEpoch::new(1)).expect("read"),
+        Some(blob)
+    );
+    assert_eq!(
+        store.sealed_blob(&content, KeyEpoch::new(2)).expect("read"),
+        None,
+        "a rotated key must re-seal rather than reuse an object from the old epoch"
+    );
+}

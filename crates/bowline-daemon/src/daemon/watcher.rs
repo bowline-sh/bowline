@@ -1,10 +1,22 @@
-use super::sync::{drain_policy, invalidate_policy_cache_for_path};
-use super::*;
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
+
 use bowline_core::git_paths::{is_git_derivable_volatile_path, is_git_directory_path};
+use bowline_core::policy::{MaterializationMode, PathClassification};
+use bowline_core::workspace_graph::normalize_workspace_path;
 use bowline_local::policy::{
-    is_private_workspace_state_path, is_work_view_namespace_path, policy_should_recurse,
+    PathFacts, UserPolicy, classify_path, is_private_workspace_state_path,
+    is_work_view_namespace_path, policy_should_recurse,
 };
-use notify::event::{AccessKind, AccessMode};
+use notify::event::{AccessKind, AccessMode, EventKind, ModifyKind, RemoveKind};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+
+use super::sync::{drain_policy, invalidate_policy_cache_for_path};
+use crate::daemon::WATCHER_DRAIN_BUDGET;
 
 /// A watcher-kernel signal. The overflow lane is installed once ahead of native
 /// events, then retained by the bridge as out-of-band recovery state.

@@ -3,13 +3,59 @@ use bowline_core::{
     status::RepairCommand,
 };
 use bowline_local::device_keys::DeviceKeyStore;
+use serde::Serialize;
 use std::process::ExitCode;
 
 use crate::{
-    EXIT_RUNTIME, generated_at, print_json, print_runtime_error, render_logout_human, runtime,
+    EXIT_RUNTIME, generated_at, print_runtime_error, render_logout_human, runtime, write_json_line,
 };
 
-pub fn run(generated_at: String) -> Result<LogoutCommandOutput, String> {
+/// Where a revocable account session was found. Logout reports the source in its
+/// failure message, so it is an enum rather than a bare label string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionSource {
+    Stored,
+    EnvironmentProvided,
+    Persisted,
+}
+
+impl SessionSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Stored => "stored",
+            Self::EnvironmentProvided => "environment-provided",
+            Self::Persisted => "persisted",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogoutRunOutput {
+    pub output: LogoutCommandOutput,
+    /// The remote session bowline could not revoke, if any. Local credentials are
+    /// gone either way — a machine must always be able to sign itself out — so
+    /// this is reported, never a reason to keep the tokens on disk.
+    pub unrevoked_remote_session: Option<String>,
+}
+
+impl LogoutRunOutput {
+    fn json_payload(&self) -> LogoutJsonPayload<'_> {
+        LogoutJsonPayload {
+            output: &self.output,
+            remote_session_still_active: self.unrevoked_remote_session.is_some(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogoutJsonPayload<'a> {
+    #[serde(flatten)]
+    output: &'a LogoutCommandOutput,
+    remote_session_still_active: bool,
+}
+
+pub fn run(generated_at: String) -> Result<LogoutRunOutput, String> {
     let key_store = runtime::key_store()?;
     let stored_account_session = runtime::stored_account_session_revocation(&*key_store)?;
     let environment_account_session = runtime::environment_account_session_revocation()?;
@@ -33,41 +79,76 @@ fn run_with<F, C>(
     persisted_account_session: Option<runtime::AccountSessionRevocation>,
     mut revoke_account_session: F,
     clear_persisted_account_session: C,
-) -> Result<LogoutCommandOutput, String>
+) -> Result<LogoutRunOutput, String>
 where
     F: FnMut(&str, &str) -> Result<(), String>,
     C: FnOnce() -> Result<bool, String>,
 {
     let sessions = [
-        ("stored", stored_account_session.as_ref()),
-        ("environment-provided", environment_account_session.as_ref()),
-        ("persisted", persisted_account_session.as_ref()),
+        (SessionSource::Stored, stored_account_session.as_ref()),
+        (
+            SessionSource::EnvironmentProvided,
+            environment_account_session.as_ref(),
+        ),
+        (SessionSource::Persisted, persisted_account_session.as_ref()),
     ];
-    let revoked_remote_session = revoke_sessions(&sessions, &mut revoke_account_session)?;
+    // Remote revocation is best effort. A machine that cannot reach the control
+    // plane must still be able to remove its own credentials, so a failure here
+    // is reported rather than allowed to strand the tokens on disk.
+    let revocation = revoke_sessions(&sessions, &mut revoke_account_session);
     let cleared_persisted_session = clear_persisted_account_session()?;
     let cleared_local_login = key_store
         .clear_account_tokens()
         .map_err(|error| error.to_string())?;
-    Ok(LogoutCommandOutput {
-        contract_version: CONTRACT_VERSION,
-        command: CommandName::Logout,
-        generated_at,
-        signed_out: revoked_remote_session || cleared_persisted_session || cleared_local_login,
-        next_actions: vec![RepairCommand::inspect(
-            "Sign in again".to_string(),
-            Some("bowline login".to_string()),
-        )],
+    let mut next_actions = Vec::new();
+    if let Some(failure) = &revocation.failure {
+        next_actions.push(RepairCommand::inspect(
+            format!(
+                "Revoke the {} account session from another signed-in device",
+                failure.source.label()
+            ),
+            Some("bowline device list --json".to_string()),
+        ));
+    }
+    next_actions.push(RepairCommand::inspect(
+        "Sign in again".to_string(),
+        Some("bowline login".to_string()),
+    ));
+    Ok(LogoutRunOutput {
+        output: LogoutCommandOutput {
+            contract_version: CONTRACT_VERSION,
+            command: CommandName::Logout,
+            generated_at,
+            signed_out: revocation.revoked_remote_session
+                || cleared_persisted_session
+                || cleared_local_login,
+            next_actions,
+        },
+        unrevoked_remote_session: revocation.failure.map(|failure| failure.message),
     })
 }
 
+#[derive(Debug)]
+struct RevocationFailure {
+    source: SessionSource,
+    message: String,
+}
+
+#[derive(Debug)]
+struct RevocationOutcome {
+    revoked_remote_session: bool,
+    failure: Option<RevocationFailure>,
+}
+
 fn revoke_sessions<F>(
-    sessions: &[(&str, Option<&runtime::AccountSessionRevocation>)],
+    sessions: &[(SessionSource, Option<&runtime::AccountSessionRevocation>)],
     revoke_account_session: &mut F,
-) -> Result<bool, String>
+) -> RevocationOutcome
 where
     F: FnMut(&str, &str) -> Result<(), String>,
 {
     let mut revoked_session_ids = Vec::new();
+    let mut failure = None;
     for (source, session) in sessions {
         let Some(session) = session else {
             continue;
@@ -93,32 +174,40 @@ where
                 Err(error) => last_error = Some(error),
             }
         }
-        if let Some(error) = last_error {
-            let message = if *source == "stored" {
-                format!(
-                    "could not revoke the remote account session; local login was kept: {error}"
-                )
-            } else {
-                format!(
-                    "could not revoke the {source} account session; local login was kept: {error}"
-                )
-            };
-            return Err(message);
+        match last_error {
+            Some(error) => {
+                failure.get_or_insert(RevocationFailure {
+                    source: *source,
+                    message: format!(
+                        "could not revoke the {} account session: {error}",
+                        source.label()
+                    ),
+                });
+            }
+            None => revoked_session_ids.push(session.session_id.clone()),
         }
-        revoked_session_ids.push(session.session_id.clone());
     }
-    Ok(!revoked_session_ids.is_empty())
+    RevocationOutcome {
+        revoked_remote_session: !revoked_session_ids.is_empty(),
+        failure,
+    }
 }
 
 pub(super) fn print_logout(json: bool) -> ExitCode {
     let generated_at = generated_at();
     match run(generated_at.clone()) {
         Ok(output) if json => {
-            print_json(&output);
+            if let Err(error) = write_json_line(&output.json_payload()) {
+                print_runtime_error(CommandName::Logout, generated_at, &error.to_string(), true);
+                return ExitCode::from(EXIT_RUNTIME);
+            }
             ExitCode::SUCCESS
         }
         Ok(output) => {
-            print!("{}", render_logout_human(&output));
+            print!("{}", render_logout_human(&output.output));
+            if let Some(message) = &output.unrevoked_remote_session {
+                eprintln!("Signed out on this machine, but {message}");
+            }
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -137,14 +226,16 @@ mod tests {
         fakes::FakeKeychain,
     };
 
+    /// Offline, or during a control-plane outage, sign-out must still remove the
+    /// credentials from this machine; the unrevoked remote session is reported.
     #[test]
-    fn failed_remote_revocation_keeps_the_local_login() {
+    fn failed_remote_revocation_still_clears_the_local_login() {
         let store = FakeKeychain::default();
         store
             .store_account_tokens(account_tokens())
             .expect("store account tokens");
 
-        let error = run_with(
+        let output = run_with(
             "2026-07-15T12:00:00Z".to_string(),
             &store,
             Some(session(
@@ -156,15 +247,47 @@ mod tests {
             |_, _| Err("control plane unavailable".to_string()),
             || Ok(false),
         )
-        .expect_err("logout must fail closed");
+        .expect("logout removes local credentials even when the remote call fails");
 
-        assert!(error.contains("control plane unavailable"));
+        let message = output
+            .unrevoked_remote_session
+            .as_deref()
+            .expect("the unrevoked session is reported");
+        assert!(message.contains("control plane unavailable"));
+        assert!(message.contains("stored"));
+        assert!(output.output.signed_out);
         assert!(
             store
                 .load_account_tokens()
                 .expect("load account tokens")
-                .is_some()
+                .is_none()
         );
+        let json = serde_json::to_value(output.json_payload()).expect("payload serializes");
+        assert_eq!(json["remoteSessionStillActive"], true);
+        assert_eq!(json["signedOut"], true);
+    }
+
+    #[test]
+    fn successful_logout_reports_no_active_remote_session() {
+        let store = FakeKeychain::default();
+
+        let output = run_with(
+            "2026-07-15T12:00:00Z".to_string(),
+            &store,
+            Some(session(
+                "bowline_session_existing",
+                "bowline_revoke_existing",
+            )),
+            None,
+            None,
+            |_, _| Ok(()),
+            || Ok(false),
+        )
+        .expect("logout succeeds");
+
+        assert!(output.unrevoked_remote_session.is_none());
+        let json = serde_json::to_value(output.json_payload()).expect("payload serializes");
+        assert_eq!(json["remoteSessionStillActive"], false);
     }
 
     #[test]
@@ -192,7 +315,7 @@ mod tests {
         )
         .expect("logout succeeds");
 
-        assert!(output.signed_out);
+        assert!(output.output.signed_out);
         assert!(
             store
                 .load_account_tokens()
@@ -242,7 +365,7 @@ mod tests {
                 ),
             ]
         );
-        assert!(output.signed_out);
+        assert!(output.output.signed_out);
         assert!(
             store
                 .load_account_tokens()
@@ -280,7 +403,7 @@ mod tests {
                 "bowline_revoke_environment".to_string(),
             )]
         );
-        assert!(output.signed_out);
+        assert!(output.output.signed_out);
     }
 
     #[test]
@@ -315,7 +438,7 @@ mod tests {
             )]
         );
         assert!(cleared);
-        assert!(output.signed_out);
+        assert!(output.output.signed_out);
     }
 
     #[test]
@@ -354,7 +477,7 @@ mod tests {
                 ),
             ]
         );
-        assert!(output.signed_out);
+        assert!(output.output.signed_out);
     }
 
     fn account_tokens() -> AccountTokens {

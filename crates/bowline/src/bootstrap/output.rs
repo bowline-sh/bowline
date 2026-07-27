@@ -50,6 +50,11 @@ pub(super) fn bootstrap_output(
         BootstrapSyncState::Blocked
     } else if remote_sync_is_ready(&remote_status) {
         BootstrapSyncState::Ready
+    } else if sync_step_is_pending(&base.steps) {
+        // A first sync of a real `~/Code` does not finish inside a bootstrap
+        // run. A remote daemon that is running and converging means the pipeline
+        // succeeded and bytes are moving, so the run is prepared, not blocked.
+        BootstrapSyncState::Prepared
     } else {
         BootstrapSyncState::Blocked
     };
@@ -80,6 +85,12 @@ pub(super) fn bootstrap_output(
     }
 }
 
+fn sync_step_is_pending(steps: &[BootstrapStep]) -> bool {
+    steps.iter().any(|step| {
+        step.name == BootstrapStepName::Sync && step.state == BootstrapStepState::Pending
+    })
+}
+
 // Bootstrap no longer launches or supervises the remote agent — the trusted host
 // materializes the workspace on arrival. This surface is now purely trust/repair
 // guidance: inspect / retry / verify-trust remedies for blocked bootstrap steps.
@@ -104,10 +115,15 @@ pub(super) fn bootstrap_repair_actions(
     match sync {
         // Ready: the workspace materializes on the trusted host; no repair needed.
         BootstrapSyncState::Ready => {}
+        // Prepared: sync is running. Hand over a way to watch it finish rather
+        // than a repair for a failure that did not happen.
         BootstrapSyncState::Prepared => {
-            actions.push(RepairCommand::mutating(
-                "Install the remote daemon service",
-                Some(ssh_command(&base.host, "bowline daemon install --json")),
+            actions.push(RepairCommand::inspect(
+                "Watch the remote sync finish",
+                Some(ssh_command(
+                    &base.host,
+                    &format!("bowline status --root {root} --watch --json"),
+                )),
             ));
         }
         BootstrapSyncState::Blocked => {

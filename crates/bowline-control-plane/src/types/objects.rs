@@ -90,6 +90,22 @@ pub struct UploadIntent {
     pub signed_url: SignedUrlIntent,
 }
 
+/// What an upload intent found. Sealing is convergent — the nonce is derived
+/// from the workspace key and the content id — so an object key is a pure
+/// function of the plaintext and re-presenting identical content is routine: a
+/// reinstall, a restored machine, or a second device pushing what the first
+/// already uploaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UploadIntentOutcome {
+    /// The key is reserved for this caller; PUT the sealed bytes to the signed
+    /// URL and then commit the metadata.
+    Reserved(UploadIntent),
+    /// The key already carries committed metadata. Because the key is the hash
+    /// of the sealed bytes, that is proof the exact bytes are stored: there is
+    /// nothing to upload and nothing to commit.
+    AlreadyCommitted(bowline_storage::ObjectMetadata),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadVerificationIntentRequest {
     pub workspace_id: WorkspaceId,

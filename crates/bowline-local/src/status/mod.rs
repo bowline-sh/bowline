@@ -23,10 +23,9 @@ use bowline_core::{
         EventWatermarks, FreshnessVerdict, GitObserverState, LimitedCapability,
         ObservedWorkspaceSummary, ProjectAttentionSummary, ProjectSetupReadiness,
         ProjectSetupReadinessState, RepairCommand, SetupReceiptState, StaleBaseStatus,
-        StatusAttention, StatusAvailability, StatusFact, StatusFactAvailabilityImpact,
-        StatusFactScope, StatusItem, StatusItemKind, StatusLevel, StatusScope,
-        StatusSnapshotFreshness, StatusSubject, StatusSubjectKind, WorkspaceStatus,
-        WorkspaceSummary, reduce_status_facts, status_fact_policy,
+        StatusAttention, StatusFact, StatusFactAvailabilityImpact, StatusFactScope, StatusItem,
+        StatusItemKind, StatusLevel, StatusScope, StatusSubject, StatusSubjectKind,
+        WorkspaceStatus, WorkspaceSummary, reduce_status_facts, status_fact_policy,
     },
     work_views::{WorkViewLifecycle, WorkViewSyncState},
 };
@@ -34,9 +33,9 @@ use bowline_core::{
 use crate::{
     events::EventQuery,
     metadata::{
-        DatabaseState, MetadataError, MetadataStore, ObservedLocalPath, ProjectLifecycleState,
-        ProjectLocalMaterializationState, ProjectRecord, WorkViewRecord, WorkspaceRecord,
-        default_database_path,
+        DatabaseState, MetadataError, MetadataStore, ObservedLocalPath, ProjectHotState,
+        ProjectLifecycleState, ProjectLocalMaterializationState, ProjectRecord, WorkViewRecord,
+        WorkspaceRecord, default_database_path,
     },
 };
 
@@ -272,6 +271,7 @@ mod accumulator;
 mod collector;
 mod common;
 mod compose;
+mod conflicts;
 mod scope;
 mod setup;
 mod signals;
@@ -283,6 +283,7 @@ use accumulator::StatusAccumulator;
 
 use common::*;
 use compose::*;
+use conflicts::*;
 use scope::*;
 use signals::*;
 #[cfg(test)]

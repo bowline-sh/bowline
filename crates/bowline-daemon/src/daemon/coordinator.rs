@@ -67,6 +67,11 @@ pub(super) enum CoordinatorDeadlineKind {
     HostedRefresh,
     StatusRefresh,
     NotificationPoll,
+    /// The watcher→engine bridge is due for a liveness check. Only the
+    /// coordinator can tell a live bridge worker from one that exited holding
+    /// the watcher's signal receiver, so it checks on a bounded interval rather
+    /// than the watcher host claiming it is perpetually due for repair.
+    WatcherSupervision,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

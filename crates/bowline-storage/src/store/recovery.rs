@@ -1,6 +1,6 @@
 use std::{fs, io, thread, time::Duration};
 
-use super::{ByteStoreError, LocalByteStore, ObjectKey, ObjectMetadata, stable_object_hash};
+use super::{ByteStoreError, LocalByteStore, ObjectHash, ObjectKey, ObjectMetadata};
 
 impl LocalByteStore {
     pub(super) fn record_put_metrics(&self, byte_len: u64) {
@@ -14,7 +14,7 @@ impl LocalByteStore {
         &self,
         metadata: &ObjectMetadata,
         expected_byte_len: u64,
-        expected_hash: &str,
+        expected_hash: &ObjectHash,
     ) -> Result<Option<ObjectMetadata>, ByteStoreError> {
         self.wait_for_metadata_after_object_conflict(&metadata.key)?;
         let path = self.stored_path(&metadata.key);
@@ -23,7 +23,8 @@ impl LocalByteStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(ByteStoreError::Io(error)),
         };
-        if bytes.len() as u64 != expected_byte_len || stable_object_hash(&bytes) != expected_hash {
+        if bytes.len() as u64 != expected_byte_len || ObjectHash::of_bytes(&bytes) != *expected_hash
+        {
             return Ok(None);
         }
         match self.write_metadata(metadata) {

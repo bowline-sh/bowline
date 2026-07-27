@@ -1,4 +1,5 @@
 use super::*;
+use std::fmt;
 use std::process::Stdio;
 
 mod install;
@@ -74,44 +75,36 @@ pub(super) fn print_daemon_service_uninstall(json: bool) -> ExitCode {
     }
 }
 
+pub(super) const UNSUPPORTED_PLATFORM_ERROR: &str =
+    "daemon service commands are available only on Linux and macOS";
+
+static SYSTEM_RUNNER: SystemProcessRunner = SystemProcessRunner;
+
+/// The host's supervisor, bound to the real process runner. Every daemon
+/// service command goes through here, so nothing above this line knows whether
+/// launchd or systemd answered.
+pub(super) fn platform_supervisor() -> Result<Box<dyn ServiceSupervisor + 'static>, String> {
+    PlatformService::current()
+        .ok_or_else(|| UNSUPPORTED_PLATFORM_ERROR.to_string())?
+        .supervisor(&SYSTEM_RUNNER)
+        .map_err(|error| error.to_string())
+}
+
+fn run_supervisor_command(
+    operation: impl FnOnce(&dyn ServiceSupervisor) -> Result<ServiceOutcome, ServiceError>,
+) -> Result<DaemonServiceOutcome, String> {
+    let supervisor = platform_supervisor()?;
+    operation(supervisor.as_ref())
+        .map(DaemonServiceOutcome::from)
+        .map_err(|error| error.to_string())
+}
+
 pub(super) fn daemon_service_restart() -> Result<DaemonServiceOutcome, String> {
-    if linux_service::current_platform_supported() {
-        return daemon_linux_unit_dir().and_then(|unit_dir| {
-            linux_service::restart_service(&SystemProcessRunner, &unit_dir)
-                .map(DaemonServiceOutcome::from)
-                .map_err(|error| error.to_string())
-        });
-    }
-    if macos_service::current_platform_supported() {
-        return daemon_macos_service_location().and_then(|(launch_agents_dir, launch_domain)| {
-            macos_service::restart_service(&SystemProcessRunner, &launch_agents_dir, &launch_domain)
-                .map(DaemonServiceOutcome::from)
-                .map_err(|error| error.to_string())
-        });
-    }
-    Err("daemon service commands are available only on Linux and macOS".to_string())
+    run_supervisor_command(|supervisor| supervisor.restart())
 }
 
 pub(super) fn daemon_service_uninstall() -> Result<DaemonServiceOutcome, String> {
-    if linux_service::current_platform_supported() {
-        return daemon_linux_unit_dir().and_then(|unit_dir| {
-            linux_service::uninstall_service(&SystemProcessRunner, &unit_dir)
-                .map(DaemonServiceOutcome::from)
-                .map_err(|error| error.to_string())
-        });
-    }
-    if macos_service::current_platform_supported() {
-        return daemon_macos_service_location().and_then(|(launch_agents_dir, launch_domain)| {
-            macos_service::uninstall_service(
-                &SystemProcessRunner,
-                &launch_agents_dir,
-                &launch_domain,
-            )
-            .map(DaemonServiceOutcome::from)
-            .map_err(|error| error.to_string())
-        });
-    }
-    Err("daemon service commands are available only on Linux and macOS".to_string())
+    run_supervisor_command(|supervisor| supervisor.uninstall())
 }
 
 pub(super) fn print_service_outcome(
@@ -170,22 +163,59 @@ pub(super) fn print_service_error(
     eprintln!("bowline {command_label} unavailable: {message}");
 }
 
-impl From<linux_service::LinuxServiceOutcome> for DaemonServiceOutcome {
-    fn from(outcome: linux_service::LinuxServiceOutcome) -> Self {
-        Self {
-            service_name: outcome.service_name,
-            unit_path: outcome.unit_path,
-            state: outcome.state.to_string(),
+/// The daemon's state under whichever OS supervisor owns it, normalized across
+/// launchd and systemd. Supervisor states cross module boundaries as this enum
+/// and are serialized only at the JSON edge, so no consumer re-parses a label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ServiceSupervisorState {
+    Active,
+    Inactive,
+    Installed,
+    Restarted,
+    Uninstalled,
+    /// A supervisor owns the daemon but could not be queried; the reason travels
+    /// alongside in `DaemonServiceStatus::unavailable_because`.
+    Unavailable,
+    /// No supported supervisor exists on this host.
+    Unsupported,
+    /// A supervisor label this build does not model, preserved verbatim.
+    Unrecognized(String),
+}
+
+impl fmt::Display for ServiceSupervisorState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Active => "active",
+            Self::Inactive => "inactive",
+            Self::Installed => "installed",
+            Self::Restarted => "restarted",
+            Self::Uninstalled => "uninstalled",
+            Self::Unavailable => "unavailable",
+            Self::Unsupported => "unsupported",
+            Self::Unrecognized(label) => label,
+        })
+    }
+}
+
+impl From<ServiceState> for ServiceSupervisorState {
+    fn from(state: ServiceState) -> Self {
+        match state {
+            ServiceState::Active => Self::Active,
+            ServiceState::Inactive => Self::Inactive,
+            ServiceState::Installed => Self::Installed,
+            ServiceState::Restarted => Self::Restarted,
+            ServiceState::Uninstalled => Self::Uninstalled,
+            ServiceState::Unknown(label) => Self::Unrecognized(label),
         }
     }
 }
 
-impl From<macos_service::MacosServiceOutcome> for DaemonServiceOutcome {
-    fn from(outcome: macos_service::MacosServiceOutcome) -> Self {
+impl From<ServiceOutcome> for DaemonServiceOutcome {
+    fn from(outcome: ServiceOutcome) -> Self {
         Self {
             service_name: outcome.service_name,
             unit_path: outcome.unit_path,
-            state: outcome.state.to_string(),
+            state: outcome.state.into(),
         }
     }
 }
@@ -240,7 +270,7 @@ pub(super) struct DaemonLaunchConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DaemonServiceStatus {
-    pub(super) state: String,
+    pub(super) state: ServiceSupervisorState,
     pub(super) unit_path: PathBuf,
     pub(super) unavailable_because: Option<String>,
 }
@@ -249,7 +279,7 @@ pub(super) struct DaemonServiceStatus {
 pub(super) struct DaemonServiceOutcome {
     pub(super) service_name: String,
     pub(super) unit_path: PathBuf,
-    pub(super) state: String,
+    pub(super) state: ServiceSupervisorState,
 }
 
 pub(super) fn daemon_launch_config(socket: &Path) -> Result<DaemonLaunchConfig, String> {
@@ -279,8 +309,8 @@ pub(super) fn daemon_launch_config(socket: &Path) -> Result<DaemonLaunchConfig, 
     })
 }
 
-pub(super) fn daemon_linux_service_options(socket: &Path) -> Result<LinuxServiceOptions, String> {
-    ensure_linux_service_supported()?;
+/// What the host's supervisor should run, prepared once for every platform.
+pub(super) fn daemon_service_config(socket: &Path) -> Result<ServiceConfig, String> {
     let launch = daemon_service_launch_config(socket)?;
     std::fs::create_dir_all(&launch.root).map_err(|error| {
         format!(
@@ -288,17 +318,13 @@ pub(super) fn daemon_linux_service_options(socket: &Path) -> Result<LinuxService
             launch.root.display()
         )
     })?;
-    let unit_dir = daemon_linux_unit_dir()?;
-    Ok(LinuxServiceOptions {
-        unit_dir,
-        config: LinuxServiceConfig {
-            daemon: launch.daemon,
-            root: launch.root,
-            state_root: launch.state_root,
-            socket: launch.socket,
-            workspace_id: launch.workspace_id.as_str().to_string(),
-            device_id: launch.device_id.as_str().to_string(),
-        },
+    Ok(ServiceConfig {
+        daemon: launch.daemon,
+        root: launch.root,
+        state_root: launch.state_root,
+        socket: launch.socket,
+        workspace_id: launch.workspace_id.as_str().to_string(),
+        device_id: launch.device_id.as_str().to_string(),
     })
 }
 
@@ -344,70 +370,10 @@ pub(super) fn daemon_service_launch_config_for_store(
     })
 }
 
-pub(super) fn daemon_linux_unit_dir() -> Result<PathBuf, String> {
-    ensure_linux_service_supported()?;
-    linux_service::default_user_unit_dir().map_err(|error| error.to_string())
-}
-
-pub(super) fn daemon_macos_service_options(socket: &Path) -> Result<MacosServiceOptions, String> {
-    ensure_macos_service_supported()?;
-    let launch = daemon_service_launch_config(socket)?;
-    std::fs::create_dir_all(&launch.root).map_err(|error| {
-        format!(
-            "failed to prepare daemon root {}: {error}",
-            launch.root.display()
-        )
-    })?;
-    let (launch_agents_dir, launch_domain) = daemon_macos_service_location()?;
-    Ok(MacosServiceOptions {
-        launch_agents_dir,
-        launch_domain,
-        config: MacosServiceConfig {
-            daemon: launch.daemon,
-            root: launch.root,
-            state_root: launch.state_root,
-            socket: launch.socket,
-            workspace_id: launch.workspace_id.as_str().to_string(),
-            device_id: launch.device_id.as_str().to_string(),
-        },
-    })
-}
-
-pub(super) fn daemon_macos_service_location() -> Result<(PathBuf, String), String> {
-    ensure_macos_service_supported()?;
-    let launch_agents_dir =
-        macos_service::default_launch_agents_dir().map_err(|error| error.to_string())?;
-    let launch_domain =
-        macos_service::default_launch_domain().map_err(|error| error.to_string())?;
-    Ok((launch_agents_dir, launch_domain))
-}
-
-pub(super) fn ensure_linux_service_supported() -> Result<(), String> {
-    if linux_service::current_platform_supported() {
-        Ok(())
-    } else {
-        Err("Linux user service commands are available only on Linux".to_string())
-    }
-}
-
-pub(super) fn ensure_macos_service_supported() -> Result<(), String> {
-    if macos_service::current_platform_supported() {
-        Ok(())
-    } else {
-        Err("macOS daemon service commands are available only on macOS".to_string())
-    }
-}
-
-pub(super) fn persisted_daemon_env(state_root: &Path) -> Vec<(String, String)> {
-    let Ok(contents) = std::fs::read_to_string(state_root.join("daemon.env")) else {
-        return Vec::new();
-    };
-    contents
-        .lines()
-        .filter_map(|line| line.split_once('='))
-        .filter(|(key, value)| valid_persisted_daemon_env_key(key) && !value.is_empty())
-        .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect()
+pub(super) fn persisted_daemon_env(
+    state_root: &Path,
+) -> std::collections::BTreeMap<String, String> {
+    bowline_local::daemon_env::read(state_root)
 }
 
 pub(super) fn daemon_device_id_for_launch(
@@ -424,29 +390,6 @@ pub(super) fn persisted_daemon_device_id_for_workspace(
     workspace_id: &bowline_core::ids::WorkspaceId,
 ) -> Option<String> {
     runtime::persisted_daemon_device_id_for_workspace(state_root, workspace_id)
-}
-
-#[cfg(test)]
-pub(super) fn persisted_daemon_env_value(state_root: &Path, name: &str) -> Option<String> {
-    persisted_daemon_env(state_root)
-        .into_iter()
-        .find_map(|(key, value)| (key == name).then_some(value))
-}
-
-pub(super) fn valid_persisted_daemon_env_key(key: &str) -> bool {
-    matches!(
-        key,
-        "CONVEX_URL"
-            | "BOWLINE_WORKSPACE_ID"
-            | "BOWLINE_DEVICE_ID"
-            | "BOWLINE_DEVICE_NAME"
-            | "BOWLINE_SECRET_STORE"
-            | "BOWLINE_ACCOUNT_SESSION_ID"
-            | "BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN"
-            | "BOWLINE_CONTROL_PLANE_TOKEN"
-            | "BOWLINE_WORKOS_ACCESS_TOKEN"
-            | "BOWLINE_WORKOS_CLIENT_ID"
-    )
 }
 
 pub(super) fn daemon_workspace_id_for_start() -> Result<bowline_core::ids::WorkspaceId, String> {
@@ -568,13 +511,14 @@ pub(super) fn print_daemon_status(socket: &Path, json: bool) {
             if json {
                 println!(
                     "{}",
-                    daemon_status_json(
+                    daemon_status_json(DaemonStatusReport {
                         socket,
-                        DaemonProcessState::Running,
-                        Some(&handshake.daemon_version),
-                        Some(&handshake.status_json),
-                        service.as_ref()
-                    )
+                        state: DaemonProcessState::Running,
+                        daemon_version: Some(&handshake.daemon_version),
+                        sync: Some(&handshake.status),
+                        unavailable_because: None,
+                        service: service.as_ref(),
+                    })
                 );
             } else {
                 println!(
@@ -584,40 +528,64 @@ pub(super) fn print_daemon_status(socket: &Path, json: bool) {
                 print_daemon_service_status_human(service.as_ref());
             }
         }
-        Err(_) => {
+        // Reporting `stopped` for every failed connection is what made version
+        // skew invisible: a skewed or unresponsive daemon is running and owns
+        // the socket. Report what the shared classification actually says.
+        Err(error) => {
+            let reachability = error.reachability();
+            let state = DaemonProcessState::from_reachability(&reachability);
             if json {
                 println!(
                     "{}",
-                    daemon_status_json(
+                    daemon_status_json(DaemonStatusReport {
                         socket,
-                        DaemonProcessState::Stopped,
-                        None,
-                        None,
-                        service.as_ref()
-                    )
+                        state,
+                        daemon_version: None,
+                        sync: None,
+                        unavailable_because: (state != DaemonProcessState::Stopped)
+                            .then(|| reachability.to_string()),
+                        service: service.as_ref(),
+                    })
                 );
             } else {
-                println!("bowline daemon: stopped");
+                println!("bowline daemon: {}", state.as_str());
+                if state != DaemonProcessState::Stopped {
+                    println!("  {reachability}");
+                    println!("Next: {}", reachability.remediation());
+                }
                 print_daemon_service_status_human(service.as_ref());
             }
         }
     }
 }
 
-pub(super) fn daemon_status_json(
-    socket: &Path,
-    state: DaemonProcessState,
-    daemon_version: Option<&str>,
-    status_json: Option<&str>,
-    service: Option<&DaemonServiceStatus>,
-) -> String {
+pub(super) struct DaemonStatusReport<'a> {
+    pub(super) socket: &'a Path,
+    pub(super) state: DaemonProcessState,
+    pub(super) daemon_version: Option<&'a str>,
+    pub(super) sync: Option<&'a StatusCommandOutput>,
+    pub(super) unavailable_because: Option<String>,
+    pub(super) service: Option<&'a DaemonServiceStatus>,
+}
+
+pub(super) fn daemon_status_json(report: DaemonStatusReport<'_>) -> String {
+    let mut daemon = daemon_process_output(
+        report.socket,
+        report.state,
+        report.daemon_version,
+        None,
+        true,
+    );
+    daemon.unavailable_because = report.unavailable_because;
     serde_json::to_string(&DaemonStatusOutput {
         contract_version: CONTRACT_VERSION,
         command: CommandName::DaemonStatus,
         generated_at: generated_at(),
-        daemon: daemon_process_output(socket, state, daemon_version, None, true),
-        sync: status_json.and_then(|status| serde_json::from_str(status).ok()),
-        service: service.map(daemon_service_state_from_status),
+        daemon,
+        sync: report
+            .sync
+            .and_then(|status| crate::wire::status_snapshot_wire_value(status).ok()),
+        service: report.service.map(daemon_service_state_from_status),
     })
     .expect("daemon status output should serialize")
 }
@@ -625,93 +593,69 @@ pub(super) fn daemon_status_json(
 /// Which OS service supervisor owns the daemon on this host. Platform support is
 /// the single source of truth for the manager label.
 pub(super) fn daemon_service_manager() -> bowline_core::introspection::ServiceManager {
-    use bowline_core::introspection::ServiceManager;
-    if linux_service::current_platform_supported() {
-        ServiceManager::Systemd
-    } else if macos_service::current_platform_supported() {
-        ServiceManager::Launchd
-    } else {
-        ServiceManager::None
-    }
+    PlatformService::current().map_or(
+        bowline_core::introspection::ServiceManager::None,
+        PlatformService::manager,
+    )
 }
 
 /// Compact service view for `bowline status --json`. Always returns a value: an
 /// unsupported host reports `manager: none` with an honest `unsupported` state.
 pub(super) fn daemon_service_introspection() -> bowline_core::introspection::ServiceIntrospection {
-    let manager = daemon_service_manager();
-    let state = daemon_service_status(&SystemProcessRunner)
-        .map(|status| status.state)
-        .unwrap_or_else(|| "unsupported".to_string());
-    bowline_core::introspection::ServiceIntrospection { state, manager }
+    daemon_service_introspection_from(daemon_service_status(&SystemProcessRunner))
+}
+
+fn daemon_service_introspection_from(
+    status: Option<DaemonServiceStatus>,
+) -> bowline_core::introspection::ServiceIntrospection {
+    bowline_core::introspection::ServiceIntrospection {
+        state: status
+            .map_or(ServiceSupervisorState::Unsupported, |status| status.state)
+            .to_string(),
+        manager: daemon_service_manager(),
+    }
+}
+
+/// Whether an OS supervisor currently owns a running daemon. This is the only
+/// lever the CLI has over a daemon it cannot speak to over the control socket.
+pub(super) fn daemon_service_is_active() -> bool {
+    daemon_service_status(&SystemProcessRunner)
+        .is_some_and(|status| status.state == ServiceSupervisorState::Active)
+}
+
+pub(super) fn daemon_service_stop() -> Result<DaemonServiceOutcome, String> {
+    run_supervisor_command(|supervisor| supervisor.stop())
 }
 
 pub(super) fn daemon_service_status<R>(runner: &R) -> Option<DaemonServiceStatus>
 where
     R: ProcessRunner,
 {
-    if linux_service::current_platform_supported() {
-        return daemon_linux_service_status(runner);
-    }
-    if macos_service::current_platform_supported() {
-        return daemon_macos_service_status(runner);
-    }
-    None
-}
-
-pub(super) fn daemon_linux_service_status<R>(runner: &R) -> Option<DaemonServiceStatus>
-where
-    R: ProcessRunner,
-{
-    let unit_dir = match linux_service::default_user_unit_dir() {
-        Ok(unit_dir) => unit_dir,
+    let platform = PlatformService::current()?;
+    let supervisor = match platform.supervisor(runner) {
+        Ok(supervisor) => supervisor,
+        // The supervisor exists but its session does not, so there is no
+        // definition path to report — only the name it would have had.
         Err(error) => {
             return Some(DaemonServiceStatus {
-                state: "unavailable".to_string(),
-                unit_path: PathBuf::from(linux_service::SERVICE_NAME),
+                state: ServiceSupervisorState::Unavailable,
+                unit_path: PathBuf::from(platform.service_name()),
                 unavailable_because: Some(error.to_string()),
             });
         }
     };
-    match linux_service::service_status(runner, &unit_dir) {
-        Ok(outcome) => Some(DaemonServiceStatus {
-            state: outcome.state.to_string(),
+    Some(match supervisor.status() {
+        Ok(outcome) => DaemonServiceStatus {
+            state: outcome.state.into(),
             unit_path: outcome.unit_path,
             unavailable_because: None,
-        }),
-        Err(error) => Some(DaemonServiceStatus {
-            state: "unavailable".to_string(),
-            unit_path: linux_service::unit_path(&unit_dir),
+        },
+        Err(error) => DaemonServiceStatus {
+            state: ServiceSupervisorState::Unavailable,
+            unit_path: supervisor.definition_path(),
             unavailable_because: Some(error.to_string()),
-        }),
-    }
-}
-
-pub(super) fn daemon_macos_service_status<R>(runner: &R) -> Option<DaemonServiceStatus>
-where
-    R: ProcessRunner,
-{
-    let (launch_agents_dir, launch_domain) = match daemon_macos_service_location() {
-        Ok(location) => location,
-        Err(error) => {
-            return Some(DaemonServiceStatus {
-                state: "unavailable".to_string(),
-                unit_path: PathBuf::from(macos_service::PLIST_NAME),
-                unavailable_because: Some(error),
-            });
-        }
-    };
-    match macos_service::service_status(runner, &launch_agents_dir, &launch_domain) {
-        Ok(outcome) => Some(DaemonServiceStatus {
-            state: outcome.state.to_string(),
-            unit_path: outcome.unit_path,
-            unavailable_because: None,
-        }),
-        Err(error) => Some(DaemonServiceStatus {
-            state: "unavailable".to_string(),
-            unit_path: macos_service::plist_path(&launch_agents_dir),
-            unavailable_because: Some(error.to_string()),
-        }),
-    }
+        },
+    })
 }
 
 #[cfg(test)]

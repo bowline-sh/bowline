@@ -356,6 +356,7 @@ pub fn seal_aux_index(
 /// (defense in depth atop the AEAD binding, via [`open_file`]).
 pub fn open_aux_index(
     crypto: &WorkspaceCrypto,
+    key_epoch: KeyEpoch,
     expected_content_id: &ContentId,
     sealed: &[u8],
     limits: &AuxDecodeLimits,
@@ -365,7 +366,8 @@ pub fn open_aux_index(
             bound: "sealed-size",
         });
     }
-    let plaintext = open_file(crypto, expected_content_id, sealed).map_err(AuxIndexError::Seal)?;
+    let plaintext =
+        open_file(crypto, key_epoch, expected_content_id, sealed).map_err(AuxIndexError::Seal)?;
     decode_aux_index_plaintext(&plaintext, limits)
 }
 
@@ -376,15 +378,16 @@ pub fn open_aux_index(
 /// spelling of entry access for the deleted old-engine authority.)
 pub fn aux_index_pointer(
     snapshot: &Manifest,
-) -> Result<Option<(ContentId, BlobKey)>, AuxIndexError> {
+) -> Result<Option<(ContentId, BlobKey, KeyEpoch)>, AuxIndexError> {
     let path = WorkspacePath::new(AUX_INDEX_PATH);
     match snapshot.entries.get(&path) {
         None => Ok(None),
         Some(ManifestEntry::File {
             content_id,
             blob_key,
+            key_epoch,
             ..
-        }) => Ok(Some((content_id.clone(), blob_key.clone()))),
+        }) => Ok(Some((content_id.clone(), blob_key.clone(), *key_epoch))),
         Some(other) => Err(AuxIndexError::WrongEntryKind {
             found: other.kind(),
         }),
@@ -421,7 +424,7 @@ pub fn load_aux_index<O: RemoteObjects>(
     snapshot: &Manifest,
     limits: &AuxDecodeLimits,
 ) -> Result<Option<AuxIndex>, AuxIndexError> {
-    let Some((content_id, blob_key)) = aux_index_pointer(snapshot)? else {
+    let Some((content_id, blob_key, key_epoch)) = aux_index_pointer(snapshot)? else {
         return Ok(None);
     };
     let sealed = objects
@@ -430,7 +433,7 @@ pub fn load_aux_index<O: RemoteObjects>(
     if physical_blob_key(&sealed) != blob_key {
         return Err(AuxIndexError::BlobKeyMismatch);
     }
-    let aux = open_aux_index(crypto, &content_id, &sealed, limits)?;
+    let aux = open_aux_index(crypto, key_epoch, &content_id, &sealed, limits)?;
     Ok(Some(aux))
 }
 

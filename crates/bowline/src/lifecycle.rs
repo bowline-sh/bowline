@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 
 use bowline_core::commands::{
-    CommandName, NamespaceLifecycleCommandOutput, NamespaceLifecyclePreview,
+    CommandName, NamespaceLifecycleCommandOutput, NamespaceLifecyclePreview, StatusCommandOutput,
 };
+use bowline_core::status::{ConvergenceReadinessState, SyncQueueStatus};
 use bowline_local::lifecycle::{
-    NamespaceLifecycleError, NamespaceLifecycleOptions, archive, forget_local, purge,
+    ConvergenceUnproven, NamespaceLifecycleError, NamespaceLifecycleOptions, SyncConvergence,
+    archive, forget_local, purge,
 };
 
 use crate::surface::style::{self, Presentation, Role};
@@ -34,14 +36,17 @@ pub fn run_forget_local(
     db_path: Option<PathBuf>,
     generated_at: String,
 ) -> Result<NamespaceLifecycleCommandOutput, NamespaceLifecycleError> {
+    let convergence = sync_convergence();
     forget_local(NamespaceLifecycleOptions {
         db_path,
         project_path: args.project_path,
         generated_at,
         yes: args.yes,
+        dry_run: false,
         restore: false,
         cancel: false,
         grace_days: None,
+        convergence,
     })
 }
 
@@ -50,14 +55,17 @@ pub fn run_archive(
     db_path: Option<PathBuf>,
     generated_at: String,
 ) -> Result<NamespaceLifecycleCommandOutput, NamespaceLifecycleError> {
+    let convergence = sync_convergence();
     archive(NamespaceLifecycleOptions {
         db_path,
         project_path: args.project_path,
         generated_at,
         yes: true,
+        dry_run: false,
         restore: args.restore,
         cancel: false,
         grace_days: None,
+        convergence,
     })
 }
 
@@ -66,14 +74,17 @@ pub fn run_purge(
     db_path: Option<PathBuf>,
     generated_at: String,
 ) -> Result<NamespaceLifecycleCommandOutput, NamespaceLifecycleError> {
+    let convergence = sync_convergence();
     purge(NamespaceLifecycleOptions {
         db_path,
         project_path: args.project_path,
         generated_at,
         yes: true,
+        dry_run: false,
         restore: false,
         cancel: args.cancel,
         grace_days: args.grace_days,
+        convergence,
     })
 }
 
@@ -153,10 +164,65 @@ fn print_result(
     }
 }
 
+/// Ask the daemon whether this workspace's local work is already pushed.
+/// Lifecycle mutations delete real bytes, so the daemon is the only authority
+/// here: an unreachable or unready daemon yields `Unproven`, never an
+/// optimistic `Converged`.
+fn sync_convergence() -> SyncConvergence {
+    let Ok(socket) = crate::wire::control_socket_path() else {
+        return SyncConvergence::Unproven(ConvergenceUnproven::ProbeFailed);
+    };
+    match crate::wire::daemon_status_snapshot_scoped(&socket, None) {
+        Ok(status) => convergence_from_status(&status),
+        Err(error) if error.daemon_is_absent() => {
+            SyncConvergence::Unproven(ConvergenceUnproven::DaemonUnreachable)
+        }
+        Err(_) => SyncConvergence::Unproven(ConvergenceUnproven::ProbeFailed),
+    }
+}
+
+fn convergence_from_status(status: &StatusCommandOutput) -> SyncConvergence {
+    let Some(convergence) = status.convergence.as_ref() else {
+        return SyncConvergence::Unproven(ConvergenceUnproven::DaemonNotReady);
+    };
+    match convergence.state {
+        ConvergenceReadinessState::Ready => {}
+        ConvergenceReadinessState::Converging
+        | ConvergenceReadinessState::Recovering
+        | ConvergenceReadinessState::Limited => {
+            return SyncConvergence::Unproven(ConvergenceUnproven::DaemonNotReady);
+        }
+    }
+    if status
+        .sync_queue
+        .as_ref()
+        .is_some_and(SyncQueueStatus::has_pending_work)
+    {
+        return SyncConvergence::PendingWork {
+            paths: outstanding_paths(status),
+        };
+    }
+    SyncConvergence::Converged
+}
+
+/// The paths the daemon is still carrying, sorted and deduped so the refusal
+/// message names the same work in the same order on every device.
+fn outstanding_paths(status: &StatusCommandOutput) -> Vec<String> {
+    let mut paths = status
+        .items
+        .iter()
+        .filter_map(|item| item.path.clone())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LifecycleErrorKind {
     ConfirmationRequired,
     UnsyncedWork,
+    ConvergenceUnproven,
     InvalidState,
     ProjectMissing,
     AuditAppendFailed,
@@ -168,6 +234,7 @@ impl LifecycleErrorKind {
         match error {
             NamespaceLifecycleError::ConfirmationRequired => Self::ConfirmationRequired,
             NamespaceLifecycleError::UnsyncedWork { .. } => Self::UnsyncedWork,
+            NamespaceLifecycleError::ConvergenceUnproven(_) => Self::ConvergenceUnproven,
             NamespaceLifecycleError::InvalidState(_) => Self::InvalidState,
             NamespaceLifecycleError::ProjectMissing(_) => Self::ProjectMissing,
             NamespaceLifecycleError::EventAppend(_) => Self::AuditAppendFailed,
@@ -181,6 +248,7 @@ impl LifecycleErrorKind {
         match self {
             Self::ConfirmationRequired => "confirmation_required",
             Self::UnsyncedWork => "unsynced_local_work",
+            Self::ConvergenceUnproven => "sync_convergence_unproven",
             Self::InvalidState => "invalid_lifecycle_state",
             Self::ProjectMissing => "project_not_found",
             Self::AuditAppendFailed => "audit_append_failed",
@@ -194,7 +262,10 @@ impl LifecycleErrorKind {
             | Self::UnsyncedWork
             | Self::InvalidState
             | Self::ProjectMissing => CommandRecoverability::UserAction,
-            Self::AuditAppendFailed | Self::RuntimeFailure => CommandRecoverability::Retry,
+            // The daemon may simply not be up yet; retrying is the fix.
+            Self::ConvergenceUnproven | Self::AuditAppendFailed | Self::RuntimeFailure => {
+                CommandRecoverability::Retry
+            }
         }
     }
 
@@ -202,6 +273,9 @@ impl LifecycleErrorKind {
         match self {
             Self::ConfirmationRequired => "Review the preview, then retry with --yes.",
             Self::UnsyncedWork => "Resolve or sync the listed local work, then retry.",
+            Self::ConvergenceUnproven => {
+                "Start the daemon with `bowline daemon start`, then retry once sync has converged."
+            }
             Self::InvalidState => "Move the project into the required lifecycle state, then retry.",
             Self::ProjectMissing => "Inspect tracked projects and retry with a valid project path.",
             Self::AuditAppendFailed => "Retry after local metadata and event storage recover.",

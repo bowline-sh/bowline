@@ -1,9 +1,7 @@
 use std::{fmt, path::Path};
 
+use crate::{canonical_framing::CanonicalFrame, envelope::workspace_id_hash};
 use bowline_core::ids::WorkspaceId;
-use serde::Serialize;
-
-use crate::envelope::workspace_id_hash;
 
 use super::LocalRecoveryPreimageError;
 
@@ -34,8 +32,8 @@ impl LocalRecoveryPreimageLocator {
         filesystem_epoch_identity: &LocalRecoveryEpochIdentity,
         workspace_path_identity: &LocalRecoveryWorkspacePath,
     ) -> Self {
-        let epoch_hash = domain_hash(b"epoch", filesystem_epoch_identity.as_str().as_bytes());
-        let path_hash = domain_hash(b"path", workspace_path_identity.as_str().as_bytes());
+        let epoch_hash = domain_hash("epoch", filesystem_epoch_identity.as_str());
+        let path_hash = domain_hash("path", workspace_path_identity.as_str());
         Self::new(format!(
             "{LOCAL_RECOVERY_PREIMAGE_ROOT}/{epoch_hash}/{path_hash}.bowline-envelope"
         ))
@@ -51,8 +49,8 @@ impl LocalRecoveryPlaintextLocator {
         filesystem_epoch_identity: &LocalRecoveryEpochIdentity,
         workspace_path_identity: &LocalRecoveryWorkspacePath,
     ) -> Self {
-        let epoch_hash = domain_hash(b"epoch", filesystem_epoch_identity.as_str().as_bytes());
-        let path_hash = domain_hash(b"path", workspace_path_identity.as_str().as_bytes());
+        let epoch_hash = domain_hash("epoch", filesystem_epoch_identity.as_str());
+        let path_hash = domain_hash("path", workspace_path_identity.as_str());
         Self(format!(
             "{LOCAL_RECOVERY_PLAINTEXT_ROOT}/{epoch_hash}/{path_hash}.bowline-plaintext"
         ))
@@ -187,6 +185,13 @@ impl LocalRecoveryPreimageContext {
         &self.sealed_locator
     }
 
+    /// Canonical AEAD associated data guarding one sealed recovery preimage.
+    ///
+    /// These bytes protect `.env` contents whose plaintext is deliberately
+    /// unlinked once the envelope is published, so the field order and labels
+    /// below are permanent: change either and the user's quarantined secrets
+    /// become unopenable. `recovery_preimage_associated_data_bytes_are_pinned`
+    /// fails loudly if this encoding moves.
     pub(super) fn associated_data(
         &self,
         locator: &LocalRecoveryPreimageLocator,
@@ -194,31 +199,19 @@ impl LocalRecoveryPreimageContext {
         if locator != &self.sealed_locator {
             return Err(LocalRecoveryPreimageError::ContextLocatorMismatch);
         }
-        serde_json::to_vec(&LocalRecoveryPreimageAssociatedData {
-            domain: LOCAL_RECOVERY_PREIMAGE_DOMAIN,
-            workspace_id_hash: &self.workspace_id_hash,
-            filesystem_epoch_identity: &self.filesystem_epoch_identity,
-            workspace_path_identity: &self.workspace_path_identity,
-            expected_preimage_identity: &self.expected_preimage_identity,
-            locator: locator.as_str(),
-            key_epoch: self.key_epoch.value(),
-            format_version: LOCAL_RECOVERY_PREIMAGE_FORMAT_VERSION,
-        })
-        .map_err(|source| LocalRecoveryPreimageError::ContextSerialization { source })
+        Ok(CanonicalFrame::new(LOCAL_RECOVERY_PREIMAGE_DOMAIN)
+            .str_field("workspace-id-hash", &self.workspace_id_hash)
+            .str_field("filesystem-epoch-identity", &self.filesystem_epoch_identity)
+            .str_field("workspace-path-identity", &self.workspace_path_identity)
+            .str_field(
+                "expected-preimage-identity",
+                &self.expected_preimage_identity,
+            )
+            .str_field("locator", locator.as_str())
+            .u32_field("key-epoch", self.key_epoch.value())
+            .u16_field("format-version", LOCAL_RECOVERY_PREIMAGE_FORMAT_VERSION)
+            .into_bytes())
     }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LocalRecoveryPreimageAssociatedData<'a> {
-    domain: &'static str,
-    workspace_id_hash: &'a str,
-    filesystem_epoch_identity: &'a str,
-    workspace_path_identity: &'a str,
-    expected_preimage_identity: &'a str,
-    locator: &'a str,
-    key_epoch: u32,
-    format_version: u16,
 }
 
 fn validate_identity(value: &str, field: &'static str) -> Result<(), LocalRecoveryPreimageError> {
@@ -299,12 +292,8 @@ fn validate_sealed_locator(value: &str) -> Result<(), LocalRecoveryPreimageError
     Ok(())
 }
 
-fn domain_hash(label: &[u8], value: &[u8]) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(LOCAL_RECOVERY_PREIMAGE_DOMAIN.as_bytes());
-    hasher.update(&(label.len() as u64).to_be_bytes());
-    hasher.update(label);
-    hasher.update(&(value.len() as u64).to_be_bytes());
-    hasher.update(value);
-    hasher.finalize().to_hex().to_string()
+fn domain_hash(label: &str, value: &str) -> String {
+    CanonicalFrame::new(LOCAL_RECOVERY_PREIMAGE_DOMAIN)
+        .str_field(label, value)
+        .digest_hex()
 }

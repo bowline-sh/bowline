@@ -1,4 +1,38 @@
-use super::*;
+use std::io;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use bowline_control_plane::DeviceApprovalRequestList;
+use bowline_core::devices::display_matching_code;
+use bowline_core::ids::DeviceId;
+use bowline_core::status::{
+    StatusFact, StatusFactScope, StatusItem, StatusItemKind, StatusSubject, StatusSubjectKind,
+    status_fact_policy,
+};
+use bowline_core::wire::generated::DeviceApprovalAffordance;
+use bowline_local::metadata::DEFAULT_DATABASE_FILE;
+
+use bowline_daemon::manifest_transport::RefObserverReadiness;
+use bowline_daemon::status_projection::EngineStatusCollector;
+use bowline_daemon::status_projection::StatusProjectionService;
+use bowline_daemon::status_projection::{
+    DaemonInstanceId, DaemonStatusProjection, ProjectionServiceConfig, SafetyRefreshInterval,
+    StatusInputEvent, StatusSource,
+};
+use bowline_daemon::status_projection::{
+    DeviceTrustStatusFacts, LocalStatusProjectionCollector, SharedStatusSourceCollector,
+    SharedStatusSourceHandle, StatusSourceCollector, StatusSourceFacts, StatusSourceState,
+    StatusSourceStateFacts,
+};
+
+use crate::daemon::server_state::CachedDaemonStatus;
+use crate::daemon::sync::{
+    NotificationPollCompletion, PreparedStatusPublish, StatusPublishCompletion,
+};
+use crate::daemon::{
+    DaemonRuntime, DaemonServerState, STATUS_PUBLISH_INTERVAL, current_timestamp, finder_status,
+};
 
 pub(super) struct ProjectionSourceHandles {
     pub(super) sync_runtime: SharedStatusSourceHandle,
@@ -230,7 +264,7 @@ impl DaemonServerState {
             .as_ref()
             .map(|args| vec![args.root.clone()])
             .unwrap_or_default();
-        match super::finder_status::write_snapshot(destination, &roots, projection, delivered_at) {
+        match finder_status::write_snapshot(destination, &roots, projection, delivered_at) {
             Ok(()) => self.projection_input.record_finder_snapshot(true),
             Err(error) => {
                 self.projection_input.record_finder_snapshot(false);
@@ -249,7 +283,7 @@ pub(super) fn start_projection(
         Some(args) => LocalStatusProjectionCollector::new_for_workspace(
             args.state_root.join(DEFAULT_DATABASE_FILE),
             args.root.display().to_string(),
-            WorkspaceId::new(args.workspace_id.clone()),
+            args.workspace_id.clone(),
         ),
         None => LocalStatusProjectionCollector::new(None, None, false),
     }
@@ -339,18 +373,40 @@ pub(super) fn runtime_adapter_facts(runtime: &DaemonRuntime) -> RuntimeAdapterFa
     // a running driver thread. The watcher kernel is armed while it holds its
     // notify watch (the engine recovers any lost fidelity with a full stat walk).
     RuntimeAdapterFacts {
-        observer: adapter_source_state(sync.manifest_observer_is_live()),
-        watcher: adapter_source_state(sync.watcher.is_some()),
+        observer: adapter_source_state(observer_source_state(sync.manifest_observer_readiness())),
+        watcher: adapter_source_state(armed_source_state(sync.watcher.is_armed())),
     }
 }
 
-fn adapter_source_state(healthy: bool) -> StatusSourceStateFacts {
+/// A reconnect clears an ordinary observer failure on its own, so retrying is
+/// merely degraded. A refused account session does not clear until this device
+/// signs in again: without reporting it unavailable the daemon would sit
+/// silently, never learning that another device moved the workspace head.
+pub(super) fn observer_source_state(readiness: RefObserverReadiness) -> StatusSourceState {
+    match readiness {
+        RefObserverReadiness::Live => StatusSourceState::Ready,
+        RefObserverReadiness::Retrying => StatusSourceState::Degraded,
+        // The credentials are fine and the subscription is alive; what this host
+        // cannot do is trust the device that moved the head. Reported
+        // unavailable for the same reason a refused session is: no amount of
+        // waiting makes those heads readable.
+        RefObserverReadiness::UntrustedSigner | RefObserverReadiness::Unauthenticated => {
+            StatusSourceState::Unavailable
+        }
+    }
+}
+
+fn armed_source_state(armed: bool) -> StatusSourceState {
+    if armed {
+        StatusSourceState::Ready
+    } else {
+        StatusSourceState::Degraded
+    }
+}
+
+fn adapter_source_state(state: StatusSourceState) -> StatusSourceStateFacts {
     StatusSourceStateFacts {
-        state: if healthy {
-            StatusSourceState::Ready
-        } else {
-            StatusSourceState::Degraded
-        },
+        state,
         // The engine snapshot is the sole queue authority. Runtime adapter
         // health must never overlay a second queued-work count.
         pending_count: 0,

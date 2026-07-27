@@ -83,7 +83,7 @@ fn seal_local_recovery_preimage_with(
     let associated_data = request.context.associated_data(sealed_locator)?;
     let sealed = seal_with_associated_data(
         plaintext.as_slice(),
-        request.key,
+        &request.key,
         request.context.key_epoch().value(),
         &associated_data,
     )?;
@@ -111,7 +111,7 @@ fn seal_local_recovery_preimage_with(
     authenticate_existing_preimage(
         &sealed_path,
         plaintext.as_slice(),
-        request.key,
+        &request.key,
         request.context,
         sealed_locator,
     )?;
@@ -167,7 +167,7 @@ fn resume_authenticated_seal(
     let associated_data = request.context.associated_data(sealed_locator)?;
     let _authenticated_plaintext = Zeroizing::new(open_with_associated_data(
         &envelope,
-        request.key,
+        &request.key,
         request.context.key_epoch().value(),
         &associated_data,
     )?);
@@ -200,7 +200,7 @@ pub fn open_local_recovery_preimage(
     let associated_data = request.context.associated_data(request.sealed_locator)?;
     open_with_associated_data(
         &envelope,
-        request.key,
+        &request.key,
         request.context.key_epoch().value(),
         &associated_data,
     )
@@ -448,7 +448,7 @@ fn remove_encrypted_after_plaintext_failure(path: &Path) -> Option<io::Error> {
 fn authenticate_existing_preimage(
     sealed_path: &Path,
     expected_plaintext: &[u8],
-    key: StorageKey,
+    key: &StorageKey,
     context: &LocalRecoveryPreimageContext,
     locator: &LocalRecoveryPreimageLocator,
 ) -> Result<(), LocalRecoveryPreimageError> {
@@ -487,9 +487,6 @@ pub enum LocalRecoveryPreimageError {
     },
     NotRegularFile {
         operation: &'static str,
-    },
-    ContextSerialization {
-        source: serde_json::Error,
     },
     Envelope(EnvelopeError),
     Io {
@@ -538,9 +535,6 @@ impl fmt::Display for LocalRecoveryPreimageError {
                     "local recovery {operation} requires a regular file"
                 )
             }
-            Self::ContextSerialization { .. } => {
-                formatter.write_str("local recovery encryption context serialization failed")
-            }
             Self::Envelope(source) => {
                 write!(formatter, "local recovery encryption failed: {source}")
             }
@@ -572,7 +566,6 @@ impl fmt::Display for LocalRecoveryPreimageError {
 impl Error for LocalRecoveryPreimageError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::ContextSerialization { source } => Some(source),
             Self::Envelope(source) => Some(source),
             Self::Io { source, .. } | Self::PlaintextCleanup { source, .. } => Some(source),
             Self::PlaintextRevalidation { source, .. } => Some(source.as_ref()),

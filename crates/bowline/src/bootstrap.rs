@@ -4,8 +4,8 @@ use bowline_control_plane::{BootstrapSessionInput, ControlPlaneClient};
 use bowline_core::{
     commands::{
         BootstrapSecretStore, BootstrapSshCommandOutput, BootstrapStep, BootstrapStepName,
-        BootstrapStepState, BootstrapSyncState, CONTRACT_VERSION, DevicesCommandOutput,
-        StatusCommandOutput,
+        BootstrapStepState, BootstrapSyncState, CONTRACT_VERSION, DeviceKeyStatusCommandOutput,
+        DevicesCommandOutput, StatusCommandOutput, WorkspaceKeyCustody,
     },
     devices::{DeviceApprovalRequest, DeviceFingerprint, DeviceRecord, DeviceTrustState},
     ids::DeviceId,

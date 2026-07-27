@@ -156,6 +156,79 @@ fn trust_commands_fail_without_control_plane_config_instead_of_using_ephemeral_f
     assert!(!message.contains("fake control plane"));
 }
 
+/// Bootstrap probes an agent host with this command and grants the workspace
+/// key when it answers `absent`, so the two answers have to be distinguishable
+/// from the JSON alone, with no control plane and no workspace root in play.
+#[test]
+fn device_key_status_reports_custody_from_the_configured_secret_store() {
+    use bowline_local::device_keys::{
+        DeviceKeyStore, ServerLocalSecretStore, WorkspaceKeyMaterial,
+    };
+
+    let temp = TempWorkspace::new("device-key-status").expect("temp workspace");
+    let secret_path = temp.root().join("secrets.v1");
+    let workspace_id = WorkspaceId::new("ws_code");
+
+    let absent = bowline()
+        .args(["device", "key-status", "--workspace", "ws_code", "--json"])
+        .env("BOWLINE_SECRET_STORE_PATH", &secret_path)
+        .env_remove("CONVEX_URL")
+        .env_remove("BOWLINE_CONTROL_PLANE_TOKEN")
+        .env_remove("BOWLINE_USE_FAKE_CONTROL_PLANE")
+        .output()
+        .expect("bowline should run");
+
+    assert!(absent.status.success(), "{absent:?}");
+    let json = parse_stdout_json(absent);
+    assert_eq!(json["command"], "device key-status");
+    assert_eq!(json["workspaceId"], "ws_code");
+    assert_eq!(json["workspaceKey"], "absent");
+    assert!(json["keyEpoch"].is_null());
+
+    ServerLocalSecretStore::new(&secret_path)
+        .store_workspace_key(WorkspaceKeyMaterial {
+            workspace_id: workspace_id.clone(),
+            key_epoch: 3,
+            key_bytes: vec![7_u8; 32],
+        })
+        .expect("workspace key stores");
+
+    let held = bowline()
+        .args(["device", "key-status", "--workspace", "ws_code", "--json"])
+        .env("BOWLINE_SECRET_STORE_PATH", &secret_path)
+        .env_remove("CONVEX_URL")
+        .env_remove("BOWLINE_CONTROL_PLANE_TOKEN")
+        .env_remove("BOWLINE_USE_FAKE_CONTROL_PLANE")
+        .output()
+        .expect("bowline should run");
+
+    assert!(held.status.success(), "{held:?}");
+    let json = parse_stdout_json(held);
+    assert_eq!(json["workspaceKey"], "held");
+    assert_eq!(json["keyEpoch"], 3);
+    // A held key is the terminal state for this probe: nothing is left to do.
+    assert_eq!(json["nextActions"].as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+fn device_key_status_requires_a_workspace_id() {
+    let output = bowline()
+        .args(["device", "key-status", "--json"])
+        .output()
+        .expect("bowline should run");
+
+    assert_eq!(output.status.code(), Some(2));
+    let json = parse_stdout_json(output);
+    assert_eq!(json["command"], "device key-status");
+    assert_eq!(json["error"]["code"], "missing_required_option");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("--workspace")),
+        "the error must name the option, got {json}"
+    );
+}
+
 #[test]
 fn devices_and_trust_commands_infer_unambiguous_local_root() {
     let temp = TempWorkspace::new("trust-infer-root").expect("temp workspace");
@@ -297,8 +370,16 @@ fn approve_without_yes_in_human_mode_does_not_mutate_from_noninteractive_shell()
         .output()
         .expect("bowline should run");
 
-    assert_eq!(output.status.code(), Some(0));
-    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+    // Trust approval is the one security decision the product asks a human to
+    // make, so a non-interactive shell is refused and told what to do rather
+    // than having silence treated as consent.
+    assert_eq!(output.status.code(), Some(4));
+    let rendered = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(rendered.contains("bowline"), "{rendered}");
 }
 
 #[test]

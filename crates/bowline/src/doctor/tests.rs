@@ -103,6 +103,7 @@ fn output_of(ctx: &DoctorContext) -> DoctorCommandOutput {
         engine: DoctorEngine::Manifest,
         workspace_id: ctx.workspace_id.clone(),
         summary: DoctorSummary::tally(&checks),
+        next_actions: DoctorCommandOutput::repair_actions(&checks),
         checks,
     }
 }
@@ -273,4 +274,23 @@ fn missing_engine_database_is_unavailable_not_failed() {
     let integrity = check(&output, DoctorCheckId::EngineSqliteIntegrity);
     assert_eq!(integrity.status, DoctorCheckStatus::Unavailable);
     assert_eq!(integrity.reason, DoctorReason::EngineDatabaseMissing);
+}
+
+#[test]
+fn a_failing_run_always_names_an_action() {
+    let (root, ctx) = seeded_context("next-actions");
+    let output = output_of(&ctx);
+    let _ = std::fs::remove_dir_all(&root);
+
+    // `bowline doctor` exits UserActionRequired when anything failed, so the
+    // output must name the action; an exit code alone is not an answer.
+    if output.summary.failed > 0 {
+        assert!(
+            !output.next_actions.is_empty(),
+            "a failed doctor run produced no next actions"
+        );
+    }
+    for action in &output.next_actions {
+        assert!(!action.label.is_empty(), "a next action has no label");
+    }
 }

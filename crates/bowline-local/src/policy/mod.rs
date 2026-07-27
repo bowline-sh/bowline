@@ -4,20 +4,21 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use bowline_core::{
-    git_paths::is_git_derivable_volatile_path,
-    git_worktree_link::worktree_link_file,
-    policy::{AccessFlag, MaterializationMode, PathClassification},
-    workspace_graph::NamespaceEntryKind,
-};
+use bowline_core::policy::{AccessFlag, MaterializationMode, PathClassification};
 
 use crate::glob::glob_matches;
 
+mod builtin_classification;
 mod project_view;
 mod state_paths;
 mod traversal;
 mod types;
 
+pub(crate) use builtin_classification::is_project_env_name;
+use builtin_classification::{
+    NameHeuristics, classify_builtin, is_dependency_name, is_generated_name,
+    preserves_safety_classification,
+};
 pub(crate) use project_view::classify_project_view_path;
 pub use project_view::is_work_view_namespace_path;
 pub use state_paths::{is_private_workspace_state_path, is_secret_bearing_path};
@@ -34,13 +35,14 @@ pub struct UserPolicy {
 struct IgnoreRule {
     base: String,
     pattern: String,
-    directory_only: bool,
     anchored_to_base: bool,
     include: bool,
     source: String,
+    /// Glob variants this rule matches against, expanded once at parse time.
+    /// `classify_path` runs per entry of every scan, so the variants must not be
+    /// rebuilt with `format!` on each call.
+    candidates: Vec<String>,
 }
-
-const LARGE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// The workspace-root policy marker whose contents govern deep include/exclude
 /// classification for the whole tree. The single source of truth for the marker
@@ -69,7 +71,7 @@ impl UserPolicy {
 
     pub fn load(root: &Path) -> io::Result<Self> {
         let mut rules = Vec::new();
-        collect_ignore_rules(root, root, &mut rules, &|_| true)?;
+        collect_ignore_rules(root, root, &mut rules, &|_| true);
         Ok(Self { rules })
     }
 
@@ -81,13 +83,13 @@ impl UserPolicy {
     /// full [`Self::load`].
     pub fn load_root_only(root: &Path) -> io::Result<Self> {
         let mut rules = Vec::new();
-        read_ignore_rules(root, root, &mut rules)?;
+        read_ignore_rules(root, root, &mut rules);
         Ok(Self { rules })
     }
 
     pub fn load_for_path(root: &Path, relative_path: &str) -> io::Result<Self> {
         let mut rules = Vec::new();
-        read_ignore_rules(root, root, &mut rules)?;
+        read_ignore_rules(root, root, &mut rules);
 
         let Some(parent) = Path::new(relative_path).parent() else {
             return Ok(Self { rules });
@@ -99,7 +101,7 @@ impl UserPolicy {
             };
             directory.push(part);
             if directory.is_dir() {
-                read_ignore_rules(root, &directory, &mut rules)?;
+                read_ignore_rules(root, &directory, &mut rules);
             }
         }
 
@@ -124,7 +126,7 @@ impl UserPolicy {
         let mut rules = Vec::new();
         collect_ignore_rules(root, root, &mut rules, &|relative| {
             dir_leads_to_or_under_dirty(relative, dirty_roots)
-        })?;
+        });
         Ok(Self { rules })
     }
 
@@ -157,14 +159,20 @@ impl UserPolicy {
 
 pub fn classify_path(facts: &PathFacts, policy: &UserPolicy) -> PathPolicyDecision {
     let path = normalize_relative_path(&facts.relative_path);
-    let base = classify_builtin(&path, facts.is_dir, facts.byte_len);
+    let base = classify_builtin(&path, facts.is_dir, facts.byte_len, NameHeuristics::Applied);
 
     let Some(rule) = policy.match_rule(&path) else {
         return base;
     };
 
+    // A `!`-negation is the only escape hatch from the built-in name lists,
+    // which match `dist`/`build`/`out`/`target` in *any* path component and
+    // would otherwise permanently drop real source such as `docs/build/guide.md`
+    // with no way to say otherwise. Only the dependency/generated ancestry is
+    // waived: env, secret, git-state and large-file handling still apply, so an
+    // include can restore a path without also downgrading how it is treated.
     if rule.include {
-        return base;
+        return classify_builtin(&path, facts.is_dir, facts.byte_len, NameHeuristics::Waived);
     }
 
     if preserves_safety_classification(base.classification) {
@@ -194,115 +202,29 @@ pub(crate) fn classify_path_with_builtin_policy(path: impl Into<String>) -> Path
     )
 }
 
-fn classify_builtin(path: &str, is_dir: bool, byte_len: Option<u64>) -> PathPolicyDecision {
-    let parts = path
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    let name = parts.last().copied().unwrap_or("");
-
-    if is_materialization_temp_path(&parts) {
-        return decision(
-            PathClassification::LocalOnly,
-            MaterializationMode::LocalOnly,
-            vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
-        );
-    }
-
-    if is_work_view_namespace_path(path) {
-        return decision(
-            PathClassification::LocalOnly,
-            MaterializationMode::LocalOnly,
-            vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
-        );
-    }
-
-    if is_portable_git_worktree_link_policy_path(path, is_dir) {
-        return git_opaque_state_decision();
-    }
-
-    if is_git_transient_path(&parts) {
-        return decision(
-            PathClassification::LocalOnly,
-            MaterializationMode::LocalOnly,
-            vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
-        );
-    }
-
-    if parts.contains(&".git") {
-        return git_opaque_state_decision();
-    }
-
-    if is_dependency_path(&parts) {
-        return decision(
-            PathClassification::Dependency,
-            MaterializationMode::LocalRegenerate,
-            vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
-        );
-    }
-
-    if is_generated_path(&parts) {
-        return decision(
-            generated_classification(&parts),
-            generated_mode(&parts),
-            vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
-        );
-    }
-
-    if is_project_env_name(name) {
-        return decision(
-            PathClassification::ProjectEnv,
-            MaterializationMode::ProjectEnv,
-            vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
-        );
-    }
-
-    if is_secret_name(name) {
-        return decision(
-            PathClassification::SecretLooking,
-            MaterializationMode::EncryptedSync,
-            vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
-        );
-    }
-
-    if byte_len.is_some_and(|len| len >= LARGE_FILE_BYTES) {
-        return decision(
-            PathClassification::LargeFile,
-            MaterializationMode::Lazy,
-            vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
-        );
-    }
-
-    decision(
-        PathClassification::WorkspaceSync,
-        MaterializationMode::WorkspaceSync,
-        vec![AccessFlag::HumanReadable, AccessFlag::AgentReadable],
-    )
-}
-
-fn decision(
-    classification: PathClassification,
-    mode: MaterializationMode,
-    access: Vec<AccessFlag>,
-) -> PathPolicyDecision {
-    PathPolicyDecision {
-        classification,
-        mode,
-        access,
-    }
-}
-
 fn collect_ignore_rules(
     root: &Path,
     directory: &Path,
     rules: &mut Vec<IgnoreRule>,
     should_descend: &dyn Fn(&str) -> bool,
-) -> io::Result<()> {
-    read_ignore_rules(root, directory, rules)?;
+) {
+    read_ignore_rules(root, directory, rules);
 
-    for entry in crate::fs_access::read_dir(directory)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
+    // A directory whose listing the filesystem refuses contributes no policy and
+    // is not descended. It must NOT fail the load: policy discovery runs inside
+    // the engine's full scan, so propagating one unreadable directory reached
+    // `CycleError::Fatal` and — because every startup stat-walks — failed every
+    // start until the user found and fixed the permission. The same directory is
+    // recorded unsyncable by the stat walk, so nothing under it is published on
+    // the strength of the rules this skipped.
+    let Ok(entries) = crate::fs_access::read_dir(directory) else {
+        return;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         if !file_type.is_dir() {
             continue;
         }
@@ -317,11 +239,9 @@ fn collect_ignore_rules(
         // `match_rule` relies on (last match wins); gating recursion — never
         // reordering — preserves that invariant for the pruned subset.
         if should_descend(&relative_to_root(root, &child)) {
-            collect_ignore_rules(root, &child, rules, should_descend)?;
+            collect_ignore_rules(root, &child, rules, should_descend);
         }
     }
-
-    Ok(())
 }
 
 /// Whether a scoped policy load should descend into `relative`: true when it is
@@ -336,12 +256,15 @@ fn dir_leads_to_or_under_dirty(relative: &str, dirty_roots: &BTreeSet<String>) -
     })
 }
 
-fn read_ignore_rules(root: &Path, directory: &Path, rules: &mut Vec<IgnoreRule>) -> io::Result<()> {
+fn read_ignore_rules(root: &Path, directory: &Path, rules: &mut Vec<IgnoreRule>) {
     let ignore_path = directory.join(POLICY_MARKER_FILENAME);
     let contents = match fs::read_to_string(&ignore_path) {
         Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
+        // Absent, unreadable, or not valid UTF-8: this directory contributes no
+        // rules. Same reasoning as the listing failure in `collect_ignore_rules`
+        // — a policy load that fails stops the engine's whole scan, and it stops
+        // it again on every restart.
+        Err(_) => return,
     };
 
     let base = relative_to_root(root, directory);
@@ -364,18 +287,21 @@ fn read_ignore_rules(root: &Path, directory: &Path, rules: &mut Vec<IgnoreRule>)
             let leading_slash = pattern.starts_with('/');
             let normalized_pattern = normalize_relative_path(pattern);
             let anchored_to_base = leading_slash || normalized_pattern.contains('/');
+            let candidates = matching_patterns(
+                normalized_pattern.trim_matches('/'),
+                directory_only,
+                anchored_to_base,
+            );
             rules.push(IgnoreRule {
                 base: base.clone(),
                 pattern: normalized_pattern,
-                directory_only,
                 anchored_to_base,
                 include,
                 source: source.clone(),
+                candidates,
             });
         }
     }
-
-    Ok(())
 }
 
 fn relative_to_root(root: &Path, path: &Path) -> String {
@@ -395,14 +321,19 @@ fn path_to_slash_string(path: impl AsRef<Path>) -> String {
 
 fn rule_matches(rule: &IgnoreRule, relative_path: &str) -> bool {
     let target = if rule.base.is_empty() {
-        relative_path.to_string()
+        relative_path
     } else {
-        let Some(rest) = relative_path.strip_prefix(&format!("{}/", rule.base)) else {
-            return false;
-        };
-        rest.to_string()
+        match relative_path
+            .strip_prefix(rule.base.as_str())
+            .and_then(|rest| rest.strip_prefix('/'))
+        {
+            Some(rest) => rest,
+            None => return false,
+        }
     };
-    pattern_matches(rule, &target)
+    rule.candidates
+        .iter()
+        .any(|candidate| glob_matches(candidate, target))
 }
 
 fn full_rule_pattern(rule: &IgnoreRule) -> String {
@@ -417,18 +348,10 @@ fn full_rule_pattern(rule: &IgnoreRule) -> String {
     }
 }
 
-fn pattern_matches(rule: &IgnoreRule, target: &str) -> bool {
-    let pattern = rule.pattern.trim_matches('/');
-    if pattern.is_empty() {
-        return false;
-    }
-
-    matching_patterns(pattern, rule.directory_only, rule.anchored_to_base)
-        .iter()
-        .any(|candidate| glob_matches(candidate, target))
-}
-
 fn matching_patterns(pattern: &str, directory_only: bool, anchored_to_base: bool) -> Vec<String> {
+    if pattern.is_empty() {
+        return Vec::new();
+    }
     if anchored_to_base {
         if directory_only {
             return vec![pattern.to_string(), format!("{pattern}/**")];
@@ -457,112 +380,6 @@ fn normalize_relative_path(path: &str) -> String {
         normalized = normalized.replace("//", "/");
     }
     normalized.trim_matches('/').to_string()
-}
-
-fn preserves_safety_classification(classification: PathClassification) -> bool {
-    matches!(
-        classification,
-        PathClassification::ProjectEnv
-            | PathClassification::SecretLooking
-            | PathClassification::Blocked
-            | PathClassification::Dependency
-            | PathClassification::Generated
-            | PathClassification::Cache
-    )
-}
-
-fn is_git_transient_path(parts: &[&str]) -> bool {
-    is_git_derivable_volatile_path(&parts.join("/"))
-}
-
-fn is_portable_git_worktree_link_policy_path(path: &str, is_dir: bool) -> bool {
-    !is_dir && worktree_link_file(path, NamespaceEntryKind::File).is_some()
-}
-
-fn git_opaque_state_decision() -> PathPolicyDecision {
-    decision(
-        PathClassification::WorkspaceSync,
-        MaterializationMode::EncryptedSync,
-        vec![AccessFlag::HumanReadable, AccessFlag::AgentHidden],
-    )
-}
-
-fn is_materialization_temp_path(parts: &[&str]) -> bool {
-    parts
-        .iter()
-        .any(|part| part.starts_with(".bowline-materialize-") && part.ends_with(".tmp"))
-}
-
-pub(crate) fn is_project_env_name(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower == ".env" || lower.starts_with(".env.") || lower.ends_with(".env")
-}
-
-fn is_secret_name(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower == "id_rsa"
-        || lower == "id_dsa"
-        || lower == "id_ed25519"
-        || lower.contains("private_key")
-        || lower.ends_with(".pem")
-        || lower.ends_with(".key")
-        || lower.ends_with(".p12")
-        || lower.ends_with(".pfx")
-}
-
-fn is_dependency_path(parts: &[&str]) -> bool {
-    parts.iter().any(|part| is_dependency_name(part))
-}
-
-fn is_generated_path(parts: &[&str]) -> bool {
-    parts.iter().any(|part| is_generated_name(part))
-}
-
-fn is_dependency_name(name: &str) -> bool {
-    matches!(
-        name,
-        "node_modules" | ".pnpm-store" | ".yarn" | ".venv" | "venv"
-    )
-}
-
-fn is_generated_name(name: &str) -> bool {
-    matches!(
-        name,
-        ".next"
-            | ".nuxt"
-            | ".svelte-kit"
-            | "dist"
-            | "build"
-            | "target"
-            | "__pycache__"
-            | ".pytest_cache"
-            | ".turbo"
-            | ".cache"
-            | "coverage"
-            | "out"
-    )
-}
-
-fn generated_classification(parts: &[&str]) -> PathClassification {
-    if parts
-        .iter()
-        .any(|part| matches!(*part, ".cache" | ".pytest_cache"))
-    {
-        PathClassification::Cache
-    } else {
-        PathClassification::Generated
-    }
-}
-
-fn generated_mode(parts: &[&str]) -> MaterializationMode {
-    if parts
-        .iter()
-        .any(|part| matches!(*part, ".cache" | ".pytest_cache"))
-    {
-        MaterializationMode::LocalCache
-    } else {
-        MaterializationMode::LocalRegenerate
-    }
 }
 
 #[cfg(test)]
@@ -632,16 +449,21 @@ mod tests {
     }
 
     #[test]
-    fn local_regenerate_paths_cannot_be_restored_by_user_policy() {
+    fn an_explicit_include_overrides_the_built_in_name_heuristics() {
         let temp = crate::workspace::TempWorkspace::new("policy-include").expect("temp workspace");
         temp.write_file(
             ".bowlineignore",
-            b"node_modules\n!node_modules/kept.js\ndist\n!dist/asset.js\n.cache\n!.cache/index.json\n",
+            b"!node_modules/kept.js\n!dist/asset.js\n!.cache/index.json\n!docs/build/guide.md\n",
         )
         .expect("ignore file");
         let policy = UserPolicy::load(temp.root()).expect("policy loads");
 
-        for path in ["node_modules/kept.js", "dist/asset.js", ".cache/index.json"] {
+        for path in [
+            "node_modules/kept.js",
+            "dist/asset.js",
+            ".cache/index.json",
+            "docs/build/guide.md",
+        ] {
             let decision = classify_path(
                 &PathFacts {
                     relative_path: path.to_string(),
@@ -653,23 +475,30 @@ mod tests {
 
             assert_eq!(
                 serde_json::to_value(decision.classification).unwrap(),
-                if path.starts_with("node_modules") {
-                    "dependency"
-                } else if path.starts_with(".cache") {
-                    "cache"
-                } else {
-                    "generated"
-                }
+                "workspace-sync",
+                "{path}"
             );
             assert_eq!(
                 serde_json::to_value(decision.mode).unwrap(),
-                if path.starts_with(".cache") {
-                    "local-cache"
-                } else {
-                    "local-regenerate"
-                }
+                "workspace-sync",
+                "{path}"
             );
         }
+    }
+
+    #[test]
+    fn an_explicit_include_does_not_downgrade_env_or_secret_handling() {
+        let temp =
+            crate::workspace::TempWorkspace::new("policy-include-safety").expect("temp workspace");
+        temp.write_file(".bowlineignore", b"!dist/.env\n!dist/server.pem\n")
+            .expect("ignore file");
+        let policy = UserPolicy::load(temp.root()).expect("policy loads");
+
+        // Waiving the ancestry heuristic still lands on the name-based safety
+        // classification rather than plain workspace-sync.
+        assert_eq!(classification("dist/.env", &policy), "project-env");
+        assert_eq!(classification("dist/server.pem", &policy), "secret-looking");
+        assert_eq!(classification("dist/asset.js", &policy), "generated");
     }
 
     #[test]

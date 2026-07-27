@@ -15,6 +15,7 @@ function run(command, args) {
 run("sh", ["-n", "scripts/install.sh"]);
 run("sh", ["-n", "scripts/package-release-binary.sh"]);
 run("sh", ["-n", "scripts/smoke-install-headless.sh"]);
+run("sh", ["-n", "scripts/smoke-install-upgrade.sh"]);
 run("bash", ["-n", "scripts/macos/build-release.sh"]);
 run("env", [
   "PATH=/usr/bin:/bin",
@@ -84,9 +85,23 @@ if (
     "install.sh must leave daemon service installation to authenticated setup",
   );
 }
-if (!installScript.includes('echo "Next: bowline setup --root ~/Code"')) {
+if (!installScript.includes('"$INSTALL_DIR/bowline" daemon restart')) {
+  throw new Error("install.sh must restart the daemon binary it just replaced");
+}
+if (!installScript.includes("quit_macos_app")) {
   throw new Error(
-    "install.sh must direct fresh installs through authenticated setup",
+    "install.sh must quit the running app bundle before replacing it",
+  );
+}
+if (
+  !installScript.includes('NEXT_COMMAND="bowline setup --root ~/Code"') ||
+  !installScript.includes(
+    'NEXT_COMMAND="$INSTALL_DIR/bowline setup --root ~/Code"',
+  ) ||
+  !installScript.includes('echo "Next: $NEXT_COMMAND"')
+) {
+  throw new Error(
+    "install.sh must direct fresh installs through authenticated setup with a command the user can actually run",
   );
 }
 if (macosBuildScript.includes('"$BOWLINE" daemon install')) {
@@ -149,4 +164,8 @@ if (headlessSmoke.includes('"$TMPDIR/bin/bowline" --version')) {
   throw new Error("headless smoke must not use the unsupported --version flag");
 }
 
-run("shellcheck", ["scripts/install.sh", "scripts/smoke-install-headless.sh"]);
+run("shellcheck", [
+  "scripts/install.sh",
+  "scripts/smoke-install-headless.sh",
+  "scripts/smoke-install-upgrade.sh",
+]);

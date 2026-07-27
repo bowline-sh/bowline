@@ -1,18 +1,16 @@
-use std::collections::BTreeSet;
-
-use bowline_core::ids::{
-    DeviceApprovalRequestId, DeviceId, RecoveryEnvelopeId, SnapshotId, WorkspaceId,
-};
+use bowline_core::ids::{DeviceId, RecoveryEnvelopeId, SnapshotId, WorkspaceId};
 
 use crate::{
-    AuthorizedDeviceRecord, BootstrapSession, BootstrapSessionInput, Capability, CompactEvent,
+    AuthorizedDeviceRecord, BootstrapSession, BootstrapSessionInput, CompactEvent,
     CompareAndSwapError, ControlPlaneError, DeleteIntent, DeviceApproval, DeviceApprovalInput,
     DeviceApprovalRequestList, DeviceDenial, DeviceDenialInput, DeviceRequest, DeviceRequestInput,
-    DeviceRevocationInput, DownloadIntent, DownloadIntentRequest, FirstAuthorizedDeviceInput,
-    GrantAcceptanceInput, ObjectMetadataCommit, ObjectRetentionStateUpdate,
-    RecoveryDeviceAuthorizationInput, RecoveryEnvelopeInput, RecoveryEnvelopeRecord,
-    RevokedDeviceRecord, UploadIntent, UploadIntentRequest, UploadVerificationIntentRequest,
-    WorkspaceRef, WorkspaceRefHistoryRecord, WorkspaceStatusSnapshot,
+    DeviceRevocationInput, DownloadIntent, DownloadIntentRequest, EncryptedGrantRequest,
+    FirstAuthorizedDeviceInput, GrantAcceptanceInput, ObjectMetadataCommit,
+    ObjectRetentionStateUpdate, RecoveryDeviceAuthorizationInput, RecoveryEnvelopeInput,
+    RecoveryEnvelopeRecord, RevokedDeviceRecord, UploadIntentOutcome, UploadIntentRequest,
+    UploadVerificationIntentRequest, WorkspaceKeyAcceptanceInput, WorkspaceKeyPublicationInput,
+    WorkspaceKeyRegrantWork, WorkspaceKeyRegrantWorkRequest, WorkspaceRef,
+    WorkspaceRefHistoryRecord, WorkspaceStatusSnapshot,
 };
 
 pub type ControlPlaneResult<T> = Result<T, ControlPlaneError>;
@@ -64,14 +62,9 @@ pub trait WorkspaceControlPlaneClient {
 
     fn list_workspace_ref_history(
         &self,
-        _workspace_id: &WorkspaceId,
-        _limit: u32,
-    ) -> ControlPlaneResult<Vec<WorkspaceRefHistoryRecord>> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::WorkspaceRefHistory,
-            reason: "workspace ref history requires a hosted control-plane implementation.",
-        })
-    }
+        workspace_id: &WorkspaceId,
+        limit: u32,
+    ) -> ControlPlaneResult<Vec<WorkspaceRefHistoryRecord>>;
 
     /// Publish a redacted live status snapshot for the workspace. In-memory and
     /// offline control planes treat this as a no-op; the hosted client forwards
@@ -88,7 +81,7 @@ pub trait ObjectControlPlaneClient {
     fn create_upload_intent(
         &self,
         request: UploadIntentRequest,
-    ) -> ControlPlaneResult<UploadIntent>;
+    ) -> ControlPlaneResult<UploadIntentOutcome>;
 
     fn create_download_intent(
         &self,
@@ -107,14 +100,9 @@ pub trait ObjectControlPlaneClient {
 
     fn create_storage_gc_delete_intent(
         &self,
-        _workspace_id: &WorkspaceId,
-        _object_key: &str,
-    ) -> ControlPlaneResult<DeleteIntent> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::StorageGc,
-            reason: "storage GC byte deletion requires a hosted control-plane implementation.",
-        })
-    }
+        workspace_id: &WorkspaceId,
+        object_key: &str,
+    ) -> ControlPlaneResult<DeleteIntent>;
 
     fn head_object_metadata(
         &self,
@@ -124,34 +112,19 @@ pub trait ObjectControlPlaneClient {
 
     fn list_storage_gc_objects(
         &self,
-        _workspace_id: &WorkspaceId,
-    ) -> ControlPlaneResult<Vec<bowline_storage::StorageObjectRef>> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::StorageGc,
-            reason: "storage GC requires a hosted control-plane implementation.",
-        })
-    }
+        workspace_id: &WorkspaceId,
+    ) -> ControlPlaneResult<Vec<bowline_storage::StorageObjectRef>>;
 
     fn delete_object_metadata_after_gc(
         &self,
-        _workspace_id: &WorkspaceId,
-        _object_key: &str,
-    ) -> ControlPlaneResult<bool> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::StorageGc,
-            reason: "storage GC metadata finalization requires a hosted control-plane implementation.",
-        })
-    }
+        workspace_id: &WorkspaceId,
+        object_key: &str,
+    ) -> ControlPlaneResult<bool>;
 
     fn commit_uploaded_object_metadata(
         &self,
-        _commit: ObjectMetadataCommit,
-    ) -> ControlPlaneResult<bowline_storage::ObjectMetadata> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::ObjectMetadata,
-            reason: "committing uploaded object metadata requires a hosted control-plane implementation.",
-        })
-    }
+        commit: ObjectMetadataCommit,
+    ) -> ControlPlaneResult<bowline_storage::ObjectMetadata>;
 }
 
 pub trait DeviceControlPlaneClient {
@@ -160,166 +133,117 @@ pub trait DeviceControlPlaneClient {
 
     fn create_bootstrap_session(
         &self,
-        _input: BootstrapSessionInput,
-    ) -> ControlPlaneResult<BootstrapSession> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::DeviceBootstrap,
-            reason: "remote bootstrap sessions require a hosted control-plane implementation.",
-        })
-    }
+        input: BootstrapSessionInput,
+    ) -> ControlPlaneResult<BootstrapSession>;
 
     fn create_first_authorized_device(
         &self,
-        _input: FirstAuthorizedDeviceInput,
-    ) -> ControlPlaneResult<AuthorizedDeviceRecord> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::DeviceTrust,
-            reason: "first-device trust roots require a hosted control-plane implementation.",
-        })
-    }
+        input: FirstAuthorizedDeviceInput,
+    ) -> ControlPlaneResult<AuthorizedDeviceRecord>;
 
     fn list_device_trust(
         &self,
-        _workspace_id: &WorkspaceId,
-    ) -> ControlPlaneResult<DeviceApprovalRequestList> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::DeviceTrust,
-            reason: "device trust listing requires a hosted control-plane implementation.",
-        })
-    }
+        workspace_id: &WorkspaceId,
+    ) -> ControlPlaneResult<DeviceApprovalRequestList>;
 
     fn approve_device_request(
         &self,
-        _input: DeviceApprovalInput,
-    ) -> ControlPlaneResult<DeviceApproval> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::DeviceTrust,
-            reason: "device approval requires a hosted control-plane implementation.",
-        })
-    }
+        input: DeviceApprovalInput,
+    ) -> ControlPlaneResult<DeviceApproval>;
 
-    fn deny_device_request(&self, _input: DeviceDenialInput) -> ControlPlaneResult<DeviceDenial> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::DeviceTrust,
-            reason: "device denial requires a hosted control-plane implementation.",
-        })
-    }
+    fn deny_device_request(&self, input: DeviceDenialInput) -> ControlPlaneResult<DeviceDenial>;
 
     fn revoke_device(
         &self,
-        _input: DeviceRevocationInput,
-    ) -> ControlPlaneResult<RevokedDeviceRecord> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::DeviceTrust,
-            reason: "device revocation requires a hosted control-plane implementation.",
-        })
-    }
+        input: DeviceRevocationInput,
+    ) -> ControlPlaneResult<RevokedDeviceRecord>;
 
     fn get_encrypted_device_grant(
         &self,
-        _request_id: &DeviceApprovalRequestId,
-        _device_id: &DeviceId,
-    ) -> ControlPlaneResult<Option<DeviceApproval>> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::DeviceTrust,
-            reason: "grant fetching requires a hosted control-plane implementation.",
-        })
-    }
+        request: EncryptedGrantRequest,
+    ) -> ControlPlaneResult<Option<DeviceApproval>>;
 
     fn confirm_device_grant_accepted(
         &self,
-        _input: GrantAcceptanceInput,
-    ) -> ControlPlaneResult<DeviceApproval> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::DeviceTrust,
-            reason: "grant acceptance requires a hosted control-plane implementation.",
-        })
-    }
+        input: GrantAcceptanceInput,
+    ) -> ControlPlaneResult<DeviceApproval>;
+}
+
+/// Distribution of workspace key epochs to devices that are already trusted.
+///
+/// Separate from `DeviceControlPlaneClient` because the trust question is
+/// different: enrollment asks "should this device be admitted", while these
+/// calls ask "which epoch does an admitted device hold, and who can seal the
+/// next one for it". Every call is authenticated by a device proof, so a
+/// revoked device — whose authorization row and proof verifier are gone — is
+/// refused by the same check that guards every other device endpoint.
+pub trait WorkspaceKeyControlPlaneClient {
+    fn get_workspace_key_regrant_work(
+        &self,
+        request: WorkspaceKeyRegrantWorkRequest,
+    ) -> ControlPlaneResult<WorkspaceKeyRegrantWork>;
+
+    fn seed_workspace_key_epoch(
+        &self,
+        input: WorkspaceKeyPublicationInput,
+    ) -> ControlPlaneResult<WorkspaceKeyRegrantWork>;
+
+    fn offer_workspace_key_regrants(
+        &self,
+        input: WorkspaceKeyPublicationInput,
+    ) -> ControlPlaneResult<WorkspaceKeyRegrantWork>;
+
+    fn accept_workspace_key_regrant(
+        &self,
+        input: WorkspaceKeyAcceptanceInput,
+    ) -> ControlPlaneResult<WorkspaceKeyRegrantWork>;
 }
 
 pub trait RecoveryControlPlaneClient {
     fn create_recovery_envelope(
         &self,
-        _input: RecoveryEnvelopeInput,
-    ) -> ControlPlaneResult<RecoveryEnvelopeRecord> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::RecoveryKey,
-            reason: "recovery envelopes require a hosted control-plane implementation.",
-        })
-    }
+        input: RecoveryEnvelopeInput,
+    ) -> ControlPlaneResult<RecoveryEnvelopeRecord>;
 
     fn verify_recovery_envelope(
         &self,
-        _workspace_id: &WorkspaceId,
-        _envelope_id: &RecoveryEnvelopeId,
-        _verified_by_device_id: &DeviceId,
-        _verified_by_device_proof: &str,
-        _recovery_proof: &str,
-    ) -> ControlPlaneResult<RecoveryEnvelopeRecord> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::RecoveryKey,
-            reason: "recovery verification requires a hosted control-plane implementation.",
-        })
-    }
+        workspace_id: &WorkspaceId,
+        envelope_id: &RecoveryEnvelopeId,
+        verified_by_device_id: &DeviceId,
+        verified_by_device_proof: &str,
+        recovery_proof: &str,
+    ) -> ControlPlaneResult<RecoveryEnvelopeRecord>;
 
     fn rotate_recovery_envelope(
         &self,
-        _input: RecoveryEnvelopeInput,
-    ) -> ControlPlaneResult<RecoveryEnvelopeRecord> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::RecoveryKey,
-            reason: "recovery rotation requires a hosted control-plane implementation.",
-        })
-    }
+        input: RecoveryEnvelopeInput,
+    ) -> ControlPlaneResult<RecoveryEnvelopeRecord>;
 
     fn revoke_recovery_envelope(
         &self,
-        _workspace_id: &WorkspaceId,
-        _envelope_id: &RecoveryEnvelopeId,
-        _revoked_by_device_id: &DeviceId,
-        _revoked_by_device_proof: &str,
-    ) -> ControlPlaneResult<RecoveryEnvelopeRecord> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::RecoveryKey,
-            reason: "recovery revocation requires a hosted control-plane implementation.",
-        })
-    }
+        workspace_id: &WorkspaceId,
+        envelope_id: &RecoveryEnvelopeId,
+        revoked_by_device_id: &DeviceId,
+        revoked_by_device_proof: &str,
+    ) -> ControlPlaneResult<RecoveryEnvelopeRecord>;
 
     fn list_recovery_envelopes(
         &self,
-        _workspace_id: &WorkspaceId,
-    ) -> ControlPlaneResult<Vec<RecoveryEnvelopeRecord>> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::RecoveryKey,
-            reason: "recovery listing requires a hosted control-plane implementation.",
-        })
-    }
+        workspace_id: &WorkspaceId,
+    ) -> ControlPlaneResult<Vec<RecoveryEnvelopeRecord>>;
 
     fn authorize_device_with_recovery(
         &self,
-        _input: RecoveryDeviceAuthorizationInput,
-    ) -> ControlPlaneResult<DeviceApproval> {
-        Err(ControlPlaneError::Limited {
-            capability: Capability::RecoveryKey,
-            reason: "recovery device authorization requires a hosted control-plane implementation.",
-        })
-    }
-}
-
-pub trait CapabilityReporting {
-    fn capabilities(&self) -> BTreeSet<Capability>;
-
-    fn supports_capability(&self, capability: Capability) -> bool {
-        self.capabilities().contains(&capability)
-    }
+        input: RecoveryDeviceAuthorizationInput,
+    ) -> ControlPlaneResult<DeviceApproval>;
 }
 
 pub trait ControlPlaneClient:
     WorkspaceControlPlaneClient
     + ObjectControlPlaneClient
     + DeviceControlPlaneClient
+    + WorkspaceKeyControlPlaneClient
     + RecoveryControlPlaneClient
-    + CapabilityReporting
 {
 }
 
@@ -327,7 +251,7 @@ impl<T> ControlPlaneClient for T where
     T: WorkspaceControlPlaneClient
         + ObjectControlPlaneClient
         + DeviceControlPlaneClient
+        + WorkspaceKeyControlPlaneClient
         + RecoveryControlPlaneClient
-        + CapabilityReporting
 {
 }

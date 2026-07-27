@@ -60,6 +60,7 @@ pub(super) fn run_doctor(args: DoctorArgs, json: bool, socket: &Path) -> ExitCod
         engine,
         workspace_id: ctx.workspace_id.clone(),
         summary,
+        next_actions: DoctorCommandOutput::repair_actions(&checks),
         checks,
     };
     if json {
@@ -175,8 +176,31 @@ fn print_human(output: &DoctorCommandOutput) {
             serde_plain(&check.status),
             serde_plain(&check.reason),
         );
+        // Doctor is the break-glass command: a raw reason token is not an answer,
+        // so every non-ok rung says in words what it means.
+        if check.status != bowline_core::commands::DoctorCheckStatus::Ok {
+            println!("    {}", check.reason.explanation());
+        }
+    }
+    if output.next_actions.is_empty() {
+        return;
+    }
+    let pres = surface::style::Presentation::detect(JSON_MODE);
+    println!("\n{}", surface::style::section("Next", &pres));
+    for action in &output.next_actions {
+        match &action.command {
+            Some(command) => println!(
+                "{}",
+                surface::style::next_action(command, &action.label, &pres)
+            ),
+            None => println!("  {}", action.label),
+        }
     }
 }
+
+/// The style layer is told whether JSON mode is active; `print_human` only ever
+/// runs on the human branch, so it never is.
+const JSON_MODE: bool = false;
 
 /// Renders a serde enum to its wire token for human output without hand-writing a
 /// parallel label table (house rule: never maintain a twin of a derivable map).

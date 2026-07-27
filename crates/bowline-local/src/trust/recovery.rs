@@ -10,9 +10,7 @@ use bowline_core::{
     devices::{
         EncryptedDeviceGrant, EncryptedDeviceGrantState, RecoveryKeyLifecycle, RecoveryKeyState,
     },
-    ids::{
-        DeviceApprovalRequestId, DeviceId, EncryptedDeviceGrantId, RecoveryEnvelopeId, WorkspaceId,
-    },
+    ids::{DeviceApprovalRequestId, DeviceId, RecoveryEnvelopeId, WorkspaceId},
     status::RepairCommand,
 };
 
@@ -104,7 +102,7 @@ where
     })?;
     let state = RecoveryKeyState {
         lifecycle: RecoveryKeyLifecycle::GeneratedUnverified,
-        envelope_id: Some(RecoveryEnvelopeId::new(envelope.envelope_id)),
+        envelope_id: Some(envelope.envelope_id),
         fingerprint: Some(recovery_key.fingerprint.clone()),
         created_at: Some(generated_at.clone()),
         verified_at: None,
@@ -152,7 +150,7 @@ where
     let envelope = control_plane
         .list_recovery_envelopes(&workspace_id)?
         .into_iter()
-        .find(|envelope| envelope.envelope_id == envelope_id.as_str())
+        .find(|envelope| envelope.envelope_id == envelope_id)
         .ok_or_else(|| RecoveryError::MissingRecoveryEnvelope(envelope_id.clone()))?;
     if !matches!(
         envelope.state,
@@ -175,7 +173,7 @@ where
         &workspace_id,
         &verified_by_device_id,
         "verify-recovery-envelope",
-        &grants::recovery_envelope_proof_subject(envelope_id.as_str()),
+        &grants::recovery_envelope_proof_subject(&envelope_id),
     )?;
     let envelope = control_plane.verify_recovery_envelope(
         &workspace_id,
@@ -300,7 +298,9 @@ where
     let envelope = control_plane
         .list_recovery_envelopes(&options.workspace_id)?
         .into_iter()
-        .find(|envelope| envelope.envelope_id == options.envelope_id.as_str())
+        .find(|envelope| {
+            envelope.envelope_id == RecoveryEnvelopeId::new(options.envelope_id.as_str())
+        })
         .ok_or_else(|| RecoveryError::MissingRecoveryEnvelope(options.envelope_id.clone()))?;
     if envelope.state != RecoveryEnvelopeState::Active {
         return Err(RecoveryError::MissingRecoveryEnvelope(options.envelope_id));
@@ -335,16 +335,22 @@ where
         .list_device_trust(&options.workspace_id)?
         .pending_requests
         .into_iter()
-        .find(|pending| pending.request_id == request_id.as_str())
+        .find(|pending| pending.request_id == DeviceApprovalRequestId::new(request_id.as_str()))
         .ok_or_else(|| TrustError::MissingPendingRequest(request_id.as_str().to_string()))?;
-    let grant_authorizer = recovery_device_proof_verifiers.first().cloned();
-    let ciphertext = grants::encrypt_workspace_key_for_request(
-        &workspace_key,
+    let ciphertext = grants::encrypt_workspace_keys_for_request(
+        std::slice::from_ref(&workspace_key),
         &control_plane_request,
-        grant_authorizer,
+        grants::GrantSealSource::RecoveryEnvelope {
+            device_proof_verifiers: recovery_device_proof_verifiers.clone(),
+        },
     )?;
-    let grant_acceptance_proof =
-        grants::grant_acceptance_proof(&workspace_key, &request_id, &options.device_id);
+    let grant_acceptance_proof = grants::grant_acceptance_proof(
+        std::slice::from_ref(&workspace_key),
+        &grants::GrantScope::DeviceEnrollment {
+            request_id: request_id.clone(),
+        },
+        &options.device_id,
+    );
     let grant_acceptance_proof_verifier =
         grants::grant_acceptance_proof_verifier(&grant_acceptance_proof);
     // Persist the workspace key before server-side authorization. A local write
@@ -370,8 +376,13 @@ where
         ),
         expires_in_ticks: 600,
     })?;
-    let grant_acceptance_proof =
-        grants::grant_acceptance_proof(&workspace_key, &request_id, &options.device_id);
+    let grant_acceptance_proof = grants::grant_acceptance_proof(
+        std::slice::from_ref(&workspace_key),
+        &grants::GrantScope::DeviceEnrollment {
+            request_id: request_id.clone(),
+        },
+        &options.device_id,
+    );
     let accepted = control_plane.confirm_device_grant_accepted(GrantAcceptanceInput {
         request_id: request_id.clone(),
         device_id: options.device_id.clone(),
@@ -387,14 +398,14 @@ where
         recovery_key: recovery_state_from_envelope(&envelope, RecoveryKeyLifecycle::Active),
         device_request: Some(request),
         encrypted_grant: Some(EncryptedDeviceGrant {
-            grant_id: EncryptedDeviceGrantId::new(accepted.grant_id),
-            request_id: DeviceApprovalRequestId::new(grant.request_id),
+            grant_id: accepted.grant_id,
+            request_id: grant.request_id,
             workspace_id: options.workspace_id,
-            requester_device_id: DeviceId::new(accepted.device_id),
+            requester_device_id: accepted.device_id,
             requester_device_fingerprint: bowline_core::devices::DeviceFingerprint::new(
                 accepted.device_fingerprint,
             ),
-            approver_device_id: DeviceId::new(accepted.approved_by_device_id),
+            approver_device_id: accepted.approved_by_device_id,
             key_epoch: accepted.key_epoch,
             ciphertext: accepted.encrypted_grant_ciphertext,
             created_at: accepted.granted_at.to_string(),
@@ -440,7 +451,7 @@ fn recovery_state_from_envelope(
 ) -> RecoveryKeyState {
     RecoveryKeyState {
         lifecycle,
-        envelope_id: Some(RecoveryEnvelopeId::new(envelope.envelope_id.clone())),
+        envelope_id: Some(envelope.envelope_id.clone()),
         fingerprint: Some(envelope.fingerprint.clone()),
         created_at: Some(envelope.created_at.to_string()),
         verified_at: envelope.verified_at.map(|timestamp| timestamp.to_string()),
@@ -591,7 +602,7 @@ mod tests {
             .expect("envelopes");
         let envelope = envelopes
             .iter()
-            .find(|envelope| envelope.envelope_id == envelope_id.as_str())
+            .find(|envelope| envelope.envelope_id == envelope_id)
             .expect("created envelope");
         assert_eq!(envelope.state, RecoveryEnvelopeState::GeneratedUnverified);
     }
@@ -690,7 +701,7 @@ mod tests {
             trust
                 .authorized_devices
                 .iter()
-                .any(|device| device.device_id == "fresh-linux")
+                .any(|device| device.device_id == DeviceId::new("fresh-linux"))
         );
     }
 }

@@ -1,13 +1,9 @@
 use std::{
-    collections::BTreeMap,
     env,
     path::{Path, PathBuf},
 };
 
-use bowline_control_plane::{
-    AuthorizedDeviceRecord, ControlPlaneClient, ControlPlaneError, FakeControlPlaneClient,
-    HostedControlPlaneClient,
-};
+use bowline_control_plane::{AuthorizedDeviceRecord, device_authorization_message};
 use bowline_core::{
     devices::DevicePlatform,
     hosted::{DEFAULT_CONVEX_URL, DEFAULT_WORKOS_CLIENT_ID},
@@ -17,18 +13,20 @@ use bowline_local::{
     account::workos,
     device_keys::{AccountTokens, DeviceIdentity, DeviceKeyStore, default_device_key_store},
     metadata::{MetadataStore, default_database_path},
-    trust::grants,
 };
+use sha2::{Digest, Sha256};
 
 mod account_session;
 #[cfg(test)]
 mod account_session_tests;
+mod hosted_client;
 pub use account_session::{
     AccountSessionRevocation, account_session_id, clear_persisted_account_session,
     ensure_durable_account_session, environment_account_session_revocation,
     persisted_account_session_revocation, revoke_account_session,
     stored_account_session_revocation,
 };
+pub use hosted_client::control_plane;
 
 #[cfg(test)]
 fn tempfile_dir(name: &str) -> PathBuf {
@@ -36,149 +34,6 @@ fn tempfile_dir(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).expect("temp dir");
     path
-}
-
-pub fn control_plane() -> Result<Box<dyn ControlPlaneClient>, String> {
-    let bootstrap_token = env::var("BOWLINE_BOOTSTRAP_TOKEN")
-        .ok()
-        .filter(|value| !value.is_empty());
-    control_plane_with_bootstrap_token(bootstrap_token)
-}
-
-pub fn control_plane_with_bootstrap_token(
-    bootstrap_token: Option<String>,
-) -> Result<Box<dyn ControlPlaneClient>, String> {
-    let convex_url = hosted_convex_url();
-    if let Some(convex_url) = convex_url {
-        if let Some(bootstrap_token) = bootstrap_token {
-            return Ok(Box::new(
-                HostedControlPlaneClient::try_new_with_bootstrap_token(convex_url, bootstrap_token)
-                    .map_err(|error| error.to_string())?
-                    .with_device_id(device_id().as_str()),
-            ));
-        }
-
-        let store = key_store()?;
-        let control_plane_token = env::var("BOWLINE_CONTROL_PLANE_TOKEN")
-            .ok()
-            .filter(|value| !value.is_empty());
-        let account_session_id = account_session_id(&*store).or_else(|| {
-            ensure_durable_account_session(&*store, Some(&active_workspace_id()))
-                .ok()
-                .flatten()
-        });
-        let workos_access_token = if account_session_id.is_some() {
-            None
-        } else {
-            workos_access_token(&*store)
-        };
-        let has_control_plane_token = control_plane_token.is_some();
-        let has_stored_account = store.load_account_tokens().ok().flatten().is_some();
-        if has_control_plane_token
-            || account_session_id.is_some()
-            || workos_access_token.is_some()
-            || has_stored_account
-            || explicit_workspace_id_configured()
-            || local_accepted_workspace_id().is_some()
-        {
-            let mut client = hosted_client_with_device_proof(
-                convex_url,
-                control_plane_token.unwrap_or_default(),
-                &*store,
-            )?;
-            if let Some(access_token) = workos_access_token {
-                client = client.with_workos_access_token(access_token);
-            }
-            if let Some(session_id) = account_session_id {
-                client = client.with_account_session_id(session_id);
-            }
-            return Ok(Box::new(client));
-        }
-    }
-
-    if fake_control_plane_enabled() {
-        return Ok(Box::new(FakeControlPlaneClient::default()));
-    }
-
-    Err(
-        "control-plane configuration is missing; run `bowline setup --root <path>` or set CONVEX_URL and BOWLINE_CONTROL_PLANE_TOKEN"
-            .to_string(),
-    )
-}
-
-fn hosted_client_with_device_proof(
-    convex_url: String,
-    control_plane_token: String,
-    store: &dyn DeviceKeyStore,
-) -> Result<HostedControlPlaneClient, String> {
-    let device_id = device_id();
-    let identity = store
-        .load_or_create_device_identity()
-        .map_err(|error| error.to_string())?;
-    let signer_device_id = device_id.clone();
-    let verifier_device_id = device_id.clone();
-    let verifier_identity = identity.clone();
-    let mut verifier_cache = store
-        .load_device_proof_verifiers()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .map(|verifier| {
-            (
-                (
-                    verifier.workspace_id.as_str().to_string(),
-                    verifier.device_id.as_str().to_string(),
-                ),
-                verifier.proof_verifier,
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    verifier_cache.insert(
-        (String::new(), verifier_device_id.as_str().to_string()),
-        grants::device_authorization_proof_verifier(&verifier_identity)
-            .map_err(|error| error.to_string())?,
-    );
-    HostedControlPlaneClient::try_new_with_token(convex_url, control_plane_token)
-        .map_err(|error| error.to_string())
-        .map(|client| {
-            client
-                .with_device_id(device_id.as_str())
-                .with_device_proof_signer(move |workspace_id, proof_device_id, action, subject| {
-                    if proof_device_id != signer_device_id.as_str() {
-                        return Err(ControlPlaneError::Storage(
-                            "hosted client refused to sign for a different device id".to_string(),
-                        ));
-                    }
-                    grants::device_authorization_proof(
-                        &identity,
-                        &WorkspaceId::new(workspace_id.to_string()),
-                        &signer_device_id,
-                        action,
-                        subject,
-                    )
-                    .map_err(|error| ControlPlaneError::Storage(error.to_string()))
-                })
-                .with_device_proof_verifier_resolver(move |_workspace_id, proof_device_id| {
-                    Ok(verifier_cache
-                        .get(&(_workspace_id.to_string(), proof_device_id.to_string()))
-                        .or_else(|| {
-                            verifier_cache.get(&(String::new(), proof_device_id.to_string()))
-                        })
-                        .cloned())
-                })
-        })
-}
-
-fn fake_control_plane_enabled() -> bool {
-    matches!(
-        env::var("BOWLINE_USE_FAKE_CONTROL_PLANE").as_deref(),
-        Ok("1") | Ok("true") | Ok("yes")
-    )
-}
-
-fn explicit_workspace_id_configured() -> bool {
-    env::var("BOWLINE_WORKSPACE_ID")
-        .ok()
-        .is_some_and(|workspace_id| !workspace_id.is_empty())
 }
 
 pub fn key_store() -> Result<Box<dyn DeviceKeyStore>, String> {
@@ -444,10 +299,17 @@ fn hosted_control_plane_configured() -> bool {
     hosted_convex_url().is_some()
 }
 
+/// The default `~/Code` workspace id, derived so a device knows where to enrol
+/// before it has ever talked to the control plane. The control plane derives it
+/// from the authenticated principal and refuses any other claim in this shape,
+/// so the digest is a contract with `convex/lib/defaultWorkspace.ts`.
 fn account_scoped_workspace_id(account_id: &str) -> String {
-    let seed = format!("bowline:default-code-workspace:{account_id}");
-    let suffix = blake3::hash(seed.as_bytes()).to_hex()[..16].to_string();
-    format!("ws_code_{suffix}")
+    let digest = Sha256::digest(device_authorization_message(&[
+        "bowline:default-code-workspace:v2",
+        account_id,
+    ]));
+    let suffix: Vec<String> = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+    format!("ws_code_{}", suffix.concat())
 }
 
 pub fn device_id() -> DeviceId {
@@ -456,19 +318,67 @@ pub fn device_id() -> DeviceId {
         .unwrap_or_else(cryptographic_device_id)
 }
 
+/// Resolve this device's id for `workspace_id`, fetching the device-trust
+/// snapshot from the control plane to do it.
+///
+/// Callers that already hold a snapshot must use [`daemon_device_id_for_trust`]
+/// instead. Every fetch here is a network round trip, and a read-only command
+/// that resolves the same id more than once pays for it every time.
 pub fn daemon_device_id(workspace_id: &WorkspaceId) -> DeviceId {
-    if let Ok(device_id) = env::var("BOWLINE_DEVICE_ID")
-        && !device_id.trim().is_empty()
-    {
-        return DeviceId::new(device_id);
+    if let Some(device_id) = overridden_device_id() {
+        return device_id;
     }
+    let trusted_device_id = fetched_device_trust(workspace_id)
+        .and_then(|trust| authorized_device_id_for_local_identity(&trust));
+    resolve_daemon_device_id(workspace_id, trusted_device_id)
+}
 
-    let persisted_device_id = selected_metadata_database_path()
-        .as_deref()
-        .and_then(metadata_state_root)
-        .and_then(|state_root| persisted_daemon_device_id_for_workspace(&state_root, workspace_id));
-    trusted_device_id_for_local_identity(workspace_id)
-        .or(persisted_device_id)
+/// Resolve this device's id against a device-trust snapshot the caller already
+/// holds.
+///
+/// This exists because the answer is a pure reduction of that snapshot: it
+/// selects the authorized record matching the local key fingerprint. Fetching
+/// the snapshot again to answer it is the same question asked twice over the
+/// network — `status` composes one snapshot and then reduces it from both the
+/// device-facts and the authentication-ladder path, which cost it two extra
+/// control-plane round trips per invocation.
+pub fn daemon_device_id_for_trust(
+    workspace_id: &WorkspaceId,
+    trust: &bowline_control_plane::DeviceApprovalRequestList,
+) -> DeviceId {
+    if let Some(device_id) = overridden_device_id() {
+        return device_id;
+    }
+    resolve_daemon_device_id(workspace_id, authorized_device_id_for_local_identity(trust))
+}
+
+/// The explicit environment override, which outranks both trust and local
+/// state: a daemon launched with a device id must report that id. Whitespace
+/// alone is not a device id, so it falls through to the resolved sources rather
+/// than becoming one.
+fn overridden_device_id() -> Option<DeviceId> {
+    env::var("BOWLINE_DEVICE_ID")
+        .ok()
+        .filter(|device_id| !device_id.trim().is_empty())
+        .map(DeviceId::new)
+}
+
+/// The shared tail of both entry points, so the precedence — control-plane
+/// trust, then the id this workspace's daemon was launched with, then the
+/// device's own cryptographic identity — is stated once.
+fn resolve_daemon_device_id(
+    workspace_id: &WorkspaceId,
+    trusted_device_id: Option<String>,
+) -> DeviceId {
+    trusted_device_id
+        .or_else(|| {
+            selected_metadata_database_path()
+                .as_deref()
+                .and_then(metadata_state_root)
+                .and_then(|state_root| {
+                    persisted_daemon_device_id_for_workspace(&state_root, workspace_id)
+                })
+        })
         .map(DeviceId::new)
         .unwrap_or_else(cryptographic_device_id)
 }
@@ -552,10 +462,19 @@ fn persisted_daemon_env_value(state_root: &Path, name: &str) -> Option<String> {
     })
 }
 
-fn trusted_device_id_for_local_identity(workspace_id: &WorkspaceId) -> Option<String> {
+/// The one control-plane round trip behind [`daemon_device_id`]. Split out from
+/// the reduction below so a caller holding a snapshot can skip it entirely.
+fn fetched_device_trust(
+    workspace_id: &WorkspaceId,
+) -> Option<bowline_control_plane::DeviceApprovalRequestList> {
+    control_plane().ok()?.list_device_trust(workspace_id).ok()
+}
+
+fn authorized_device_id_for_local_identity(
+    trust: &bowline_control_plane::DeviceApprovalRequestList,
+) -> Option<String> {
     let store = key_store().ok()?;
     let identity = store.load_or_create_device_identity().ok()?;
-    let trust = control_plane().ok()?.list_device_trust(workspace_id).ok()?;
     select_authorized_device_for_identity(
         &trust.authorized_devices,
         identity.fingerprint.as_str(),
@@ -602,9 +521,9 @@ mod tests {
         WorkspaceIdSources, account_scoped_workspace_id, configured_device_id_from,
         device_id_for_identity, keychain_secret_store_allowed_from, nonempty_env_value,
         passive_secret_store_probe_allowed, persisted_daemon_device_id_for_workspace,
-        persisted_daemon_env_value, select_authorized_device_for_identity, tempfile_dir,
-        workos_account_id_from_access_token, workos_token_is_not_expired,
-        workspace_id_from_sources,
+        persisted_daemon_env_value, resolve_daemon_device_id,
+        select_authorized_device_for_identity, tempfile_dir, workos_account_id_from_access_token,
+        workos_token_is_not_expired, workspace_id_from_sources,
     };
 
     #[test]
@@ -653,6 +572,16 @@ mod tests {
         assert!(second.starts_with("ws_code_"));
         assert_ne!(first, second);
         assert_eq!(first.len(), "ws_code_".len() + 16);
+    }
+
+    /// Pinned against convex/lib/defaultWorkspace.ts: a client that derives
+    /// differently can no longer claim its own default workspace at all.
+    #[test]
+    fn account_scoped_workspace_id_matches_the_control_plane_derivation() {
+        assert_eq!(
+            account_scoped_workspace_id("user_abc123"),
+            "ws_code_e2cf683ab392a3af"
+        );
     }
 
     #[test]
@@ -835,6 +764,22 @@ mod tests {
         assert_eq!(
             select_authorized_device_for_identity(&devices, "fp_missing", "macos"),
             None
+        );
+    }
+
+    /// Control-plane trust outranks every local source. This is what lets
+    /// `daemon_device_id_for_trust` answer from a snapshot the caller already
+    /// holds: when trust names this device, nothing else is consulted, so
+    /// re-fetching the snapshot could not change the answer — it could only
+    /// cost another round trip.
+    #[test]
+    fn a_trusted_device_id_settles_the_answer_without_consulting_local_state() {
+        assert_eq!(
+            resolve_daemon_device_id(
+                &WorkspaceId::new("ws_code"),
+                Some("device_trusted".to_string()),
+            ),
+            DeviceId::new("device_trusted")
         );
     }
 

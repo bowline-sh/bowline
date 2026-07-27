@@ -65,11 +65,6 @@
       "import": "./dist/resolve.js",
       "default": "./dist/resolve.js"
     },
-    "./snapshot": {
-      "types": "./dist/snapshot.d.ts",
-      "import": "./dist/snapshot.js",
-      "default": "./dist/snapshot.js"
-    },
     "./status": {
       "types": "./dist/status.d.ts",
       "import": "./dist/status.js",

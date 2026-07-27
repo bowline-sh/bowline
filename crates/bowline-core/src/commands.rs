@@ -25,8 +25,23 @@ pub use crate::work_views::{
 pub const CONTRACT_VERSION: u16 = crate::wire::MACHINE_CONTRACT_VERSION;
 
 mod agent;
+mod side_effects;
+
 pub use agent::BootstrapStepName;
 pub use agent::*;
+pub use side_effects::SideEffectLevel;
+
+mod conflicts;
+pub use conflicts::{
+    ConflictAction, ConflictAsideSummary, ConflictsCommandOutput, DiffUnavailable,
+    ResolveCommandOutput,
+};
+
+mod deletions;
+pub use deletions::{
+    BlockedDeletionBatch, BlockedDeletionsReport, DeletionsCommandOutput, DeletionsConfirmation,
+    DeletionsConfirmationReport, DeletionsState,
+};
 
 mod doctor;
 pub use doctor::{
@@ -82,7 +97,7 @@ pub struct CliCommandDescriptor {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub examples: Vec<CliCommandExample>,
     pub json_output_type: String,
-    pub side_effect_level: String,
+    pub side_effect_level: SideEffectLevel,
     pub supports_json: bool,
     pub supports_dry_run: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,7 +112,7 @@ pub struct CliCommandSummary {
     pub name: String,
     pub group: String,
     pub summary: String,
-    pub side_effect_level: String,
+    pub side_effect_level: SideEffectLevel,
     pub supports_json: bool,
     pub supports_dry_run: bool,
 }
@@ -300,7 +315,7 @@ pub struct DryRunCommandOutput {
     pub generated_at: String,
     pub status: DryRunStatus,
     pub allowed: bool,
-    pub risk: String,
+    pub risk: SideEffectLevel,
     pub target: String,
     pub would_change: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -520,6 +535,32 @@ pub struct DevicesCommandOutput {
     pub revoked_device: Option<RevokedDevice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_key: Option<RecoveryKeyState>,
+    pub next_actions: Vec<RepairCommand>,
+}
+
+/// Whether this device's secret store holds workspace key material, answered by
+/// the store abstraction rather than by inspecting whatever file a particular
+/// custody backend happens to use. Bootstrap reads this to decide whether an
+/// agent host still needs an encrypted grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkspaceKeyCustody {
+    Held,
+    Absent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceKeyStatusCommandOutput {
+    pub contract_version: u16,
+    pub command: CommandName,
+    pub generated_at: String,
+    pub workspace_id: WorkspaceId,
+    pub workspace_key: WorkspaceKeyCustody,
+    /// The epoch new writes would be sealed under. Absent custody has no epoch,
+    /// so this is `None` rather than a zero that reads like a real epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_epoch: Option<u32>,
     pub next_actions: Vec<RepairCommand>,
 }
 

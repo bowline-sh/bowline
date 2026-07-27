@@ -5,6 +5,7 @@ use super::{
 };
 
 use bowline_core::commands::CommandName;
+use bowline_core::ids::RecoveryEnvelopeId;
 
 #[test]
 fn parses_command_scoped_json_after_the_command_path() {
@@ -246,7 +247,14 @@ fn parses_repeatable_work_view_path_selectors() {
 fn review_requires_selector_even_with_path_filter() {
     let cli = parse_args(["work", "review", "--path", "src/a.ts"]);
 
-    assert!(matches!(cli.command, Err(ParseError::Usage { .. })));
+    // A missing selector is a classified command usage error carrying repair
+    // actions, not a bare usage string.
+    let Err(ParseError::Command(error)) = cli.command else {
+        panic!("expected a classified usage error for a missing selector");
+    };
+    assert_eq!(error.command, CommandName::Review);
+    assert_eq!(error.code, "missing_argument");
+    assert!(!error.next_actions.is_empty());
 }
 
 #[test]
@@ -350,7 +358,7 @@ fn parses_recovery_words_from_stdin_shape_only() {
     assert_eq!(
         cli.command.expect("parsed command"),
         Command::Recovery(RecoveryArgs::Verify {
-            envelope_id: "rk_123".to_string(),
+            envelope_id: RecoveryEnvelopeId::new("rk_123".to_string()),
         })
     );
 }

@@ -7,17 +7,22 @@ use bowline_core::{
     ids::{DeviceApprovalRequestId, DeviceId, WorkspaceId},
 };
 
+use super::device_approval::{matching_code, reject_substituted_request_echo};
 use super::{
     ApproveDeviceOptions, DeviceRequestOptions, accept_device_grant, approve_device_request,
-    create_device_request, ensure_first_device_trust_root, grants, matching_code,
+    create_device_request, ensure_first_device_trust_root, grants,
 };
-use crate::{device_keys::DeviceKeyStore, fakes::FakeKeychain, trust::TrustError};
+use crate::{
+    device_keys::{DeviceKeyStore, WorkspaceKeyMaterial},
+    fakes::FakeKeychain,
+    trust::TrustError,
+};
 
 #[test]
 fn matching_code_uses_full_public_key_digest_and_binds_verifier() {
     let code = matching_code(
-        "workspace-1",
-        "device-1",
+        &WorkspaceId::new("workspace-1"),
+        &DeviceId::new("device-1"),
         "age1examplepublickey",
         "dapv_example_verifier",
     );
@@ -27,8 +32,8 @@ fn matching_code_uses_full_public_key_digest_and_binds_verifier() {
     assert_ne!(
         code,
         matching_code(
-            "workspace-1",
-            "device-1",
+            &WorkspaceId::new("workspace-1"),
+            &DeviceId::new("device-1"),
             "age1examplepublickey",
             "dapv_attacker_verifier",
         )
@@ -152,11 +157,12 @@ fn approve_rejects_requester_verifier_not_bound_to_matching_code() {
             device_id: DeviceId::new("fresh-linux"),
             device_name: "Fresh Linux".to_string(),
             device_public_key: requester_identity.public_key.as_str().to_string(),
+            device_public_key_proof: "dapp_p256_v1_test".to_string(),
             device_fingerprint: requester_identity.fingerprint.as_str().to_string(),
             device_authorization_proof_verifier: "dapv_attacker".to_string(),
             matching_code: matching_code(
-                workspace_id.as_str(),
-                "fresh-linux",
+                &workspace_id,
+                &DeviceId::new("fresh-linux"),
                 requester_identity.public_key.as_str(),
                 &genuine_verifier,
             ),
@@ -168,7 +174,7 @@ fn approve_rejects_requester_verifier_not_bound_to_matching_code() {
         &trusted_keychain,
         ApproveDeviceOptions {
             workspace_id,
-            request_id: DeviceApprovalRequestId::new(request.request_id),
+            request_id: request.request_id,
             approver_device_id: DeviceId::new("trusted-device"),
             generated_at: "t000000000003".to_string(),
         },
@@ -219,19 +225,29 @@ fn grant_acceptance_rejects_authorizer_verifier_under_wrong_device_id() {
         .expect("trust list")
         .pending_requests
         .into_iter()
-        .find(|pending| pending.request_id == request.request_id.as_str())
+        .find(|pending| {
+            pending.request_id == DeviceApprovalRequestId::new(request.request_id.as_str())
+        })
         .expect("pending request");
-    let ciphertext = grants::encrypt_workspace_key_for_request(
-        &workspace_key,
+    let spoofed_keychain = FakeKeychain::default();
+    let ciphertext = grants::encrypt_workspace_keys_for_request(
+        std::slice::from_ref(&workspace_key),
         &pending_request,
-        Some(grants::DeviceGrantAuthorizer {
+        grants::GrantSealSource::Approver {
+            identity: &spoofed_keychain
+                .load_or_create_device_identity()
+                .expect("spoofed identity"),
             device_id: DeviceId::new("spoofed-device"),
-            device_authorization_proof_verifier: "dapv_spoofed".to_string(),
-        }),
+        },
     )
     .expect("grant ciphertext");
-    let grant_acceptance_proof =
-        grants::grant_acceptance_proof(&workspace_key, &request.request_id, &requester_device_id);
+    let grant_acceptance_proof = grants::grant_acceptance_proof(
+        std::slice::from_ref(&workspace_key),
+        &grants::GrantScope::DeviceEnrollment {
+            request_id: request.request_id.clone(),
+        },
+        &requester_device_id,
+    );
     control_plane
         .approve_device_request_for_harness(DeviceApprovalInput {
             request_id: request.request_id.clone(),
@@ -265,12 +281,167 @@ fn grant_acceptance_rejects_authorizer_verifier_under_wrong_device_id() {
             .expect("requester workspace key readable")
             .is_none()
     );
-    assert!(!has_cached_verifier(
+    assert!(
+        !requester_keychain
+            .load_device_proof_verifiers()
+            .expect("cache readable")
+            .iter()
+            .any(|verifier| verifier.device_id.as_str() == "spoofed-device")
+    );
+}
+
+#[test]
+fn grant_acceptance_rejects_key_material_the_approver_never_signed() {
+    let control_plane = FakeControlPlaneClient::new(
+        DeterministicClock::new(1),
+        DeterministicIdGenerator::new("grant-seal-forgery-test"),
+    );
+    let workspace_id = WorkspaceId::new("workspace-grant-seal-forgery");
+    control_plane.create_workspace(workspace_id.as_str());
+    let trusted_keychain = trusted_keychain_for(&control_plane, &workspace_id);
+    let requester_keychain = FakeKeychain::default();
+    let requester_device_id = DeviceId::new("fresh-linux");
+    let request = create_device_request(
+        &control_plane,
+        &requester_keychain,
+        DeviceRequestOptions {
+            workspace_id: workspace_id.clone(),
+            device_id: requester_device_id.clone(),
+            device_name: "Fresh Linux".to_string(),
+            platform: DevicePlatform::Linux,
+            host: None,
+            root: None,
+            runtime: None,
+            generated_at: "t000000000002".to_string(),
+        },
+    )
+    .expect("fresh device request");
+    let pending_request = control_plane
+        .list_device_trust(&workspace_id)
+        .expect("trust list")
+        .pending_requests
+        .into_iter()
+        .find(|pending| {
+            pending.request_id == DeviceApprovalRequestId::new(request.request_id.as_str())
+        })
+        .expect("pending request");
+    // A control plane that mints its own key material must present it under the
+    // approver's identity; it cannot sign for a key it does not hold.
+    let server_chosen_key = WorkspaceKeyMaterial {
+        workspace_id: workspace_id.clone(),
+        key_epoch: 1,
+        key_bytes: vec![4; 32],
+    };
+    let server_keychain = FakeKeychain::default();
+    let ciphertext = grants::encrypt_workspace_keys_for_request(
+        std::slice::from_ref(&server_chosen_key),
+        &pending_request,
+        grants::GrantSealSource::Approver {
+            identity: &server_keychain
+                .load_or_create_device_identity()
+                .expect("server identity"),
+            device_id: DeviceId::new("trusted-device"),
+        },
+    )
+    .expect("grant ciphertext");
+    let grant_acceptance_proof = grants::grant_acceptance_proof(
+        std::slice::from_ref(&server_chosen_key),
+        &grants::GrantScope::DeviceEnrollment {
+            request_id: request.request_id.clone(),
+        },
+        &requester_device_id,
+    );
+    control_plane
+        .approve_device_request_for_harness(DeviceApprovalInput {
+            request_id: request.request_id.clone(),
+            approved_by_device_id: DeviceId::new("trusted-device"),
+            approved_by_device_proof: String::new(),
+            encrypted_grant_ciphertext: ciphertext,
+            grant_acceptance_proof_verifier: grants::grant_acceptance_proof_verifier(
+                &grant_acceptance_proof,
+            ),
+            key_epoch: server_chosen_key.key_epoch,
+            expires_in_ticks: 600,
+        })
+        .expect("harness approval");
+
+    let error = accept_device_grant(
+        &control_plane,
         &requester_keychain,
         &workspace_id,
-        "spoofed-device",
-        "dapv_spoofed",
+        &request.request_id,
+        &requester_device_id,
+    )
+    .expect_err("a grant sealed under an unpublished key is rejected");
+
+    assert!(matches!(
+        error,
+        TrustError::Grant(grants::GrantError::AuthorizerMismatch)
     ));
+    assert!(
+        requester_keychain
+            .load_workspace_key(&workspace_id)
+            .expect("requester workspace key readable")
+            .is_none()
+    );
+    let _ = &trusted_keychain;
+}
+
+#[test]
+fn request_echo_check_rejects_substituted_key_verifier_and_code() {
+    let control_plane = FakeControlPlaneClient::new(
+        DeterministicClock::new(1),
+        DeterministicIdGenerator::new("request-echo-substitution-test"),
+    );
+    let workspace_id = WorkspaceId::new("workspace-request-echo-substitution");
+    control_plane.create_workspace(workspace_id.as_str());
+    let requester_keychain = FakeKeychain::default();
+    let request = create_device_request(
+        &control_plane,
+        &requester_keychain,
+        DeviceRequestOptions {
+            workspace_id: workspace_id.clone(),
+            device_id: DeviceId::new("fresh-linux"),
+            device_name: "Fresh Linux".to_string(),
+            platform: DevicePlatform::Linux,
+            host: None,
+            root: None,
+            runtime: None,
+            generated_at: "t000000000002".to_string(),
+        },
+    )
+    .expect("fresh device request");
+    let identity = requester_keychain
+        .load_or_create_device_identity()
+        .expect("requester identity");
+    let local_code = matching_code(
+        &workspace_id,
+        &DeviceId::new("fresh-linux"),
+        identity.public_key.as_str(),
+        &grants::device_authorization_proof_verifier(&identity).expect("verifier"),
+    );
+
+    assert_eq!(request.matching_code, local_code);
+    assert!(reject_substituted_request_echo(&request, &identity, &local_code).is_ok());
+
+    let attacker_identity = FakeKeychain::default()
+        .load_or_create_device_identity()
+        .expect("attacker identity");
+    let mut substituted_key = request.clone();
+    substituted_key.device_public_key = attacker_identity.public_key.clone();
+    let mut substituted_code = request.clone();
+    substituted_code.matching_code = "bowline-server-chosen".to_string();
+
+    for tampered in [substituted_key, substituted_code] {
+        assert!(matches!(
+            reject_substituted_request_echo(&tampered, &identity, &local_code)
+                .expect_err("substituted echo is rejected"),
+            TrustError::ControlPlane(ControlPlaneError::Conflict {
+                resource: "device-request",
+                ..
+            })
+        ));
+    }
 }
 
 fn trusted_keychain_for(

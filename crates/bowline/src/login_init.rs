@@ -35,8 +35,11 @@ pub(super) fn print_polling_login(generated_at: String, socket: &Path) -> ExitCo
     let _ = io::stdout().flush();
 
     match login::finish(authorization, generated_at.clone()) {
+        // No literal root here: `setup_requested_root` falls through to the root
+        // this machine already accepted, and only defaults to ~/Code when there
+        // is none. A hardcoded Some() re-initialized ~/Code over ~/Projects.
         Ok(_) => print_machine_setup_output(
-            Some("~/Code".to_string()),
+            None,
             generated_at,
             MachineSetupPrintOptions {
                 format: OutputFormat::Human,
@@ -99,8 +102,9 @@ fn print_project_setup(
             Ok(outcome)
                 if !json && !approve_setup && outcome.state == ProjectSetupState::SetupBlocked =>
             {
-                println!("Setup needs approval: {}", outcome.redacted_summary);
-                if !confirm_return("Approve setup?") {
+                print!("{}", render_project_setup_human(&outcome));
+                if !confirm_return("Run these setup steps?") {
+                    println!("Setup not run.");
                     return ExitCode::SUCCESS;
                 }
                 approve_setup = true;
@@ -114,7 +118,7 @@ fn print_project_setup(
                 return ExitCode::SUCCESS;
             }
             Ok(outcome) => {
-                println!("Setup {:?}: {}", outcome.state, outcome.redacted_summary);
+                print!("{}", render_project_setup_human(&outcome));
                 return ExitCode::SUCCESS;
             }
             Err(error) => {
@@ -123,6 +127,27 @@ fn print_project_setup(
             }
         }
     }
+}
+
+/// `ProjectSetupState` is engine vocabulary ("Hot"); users get a sentence and
+/// the redacted summary, rendered through the same surface as every other
+/// human output.
+fn render_project_setup_human(outcome: &bowline_local::setup::ProjectSetupOutcome) -> String {
+    let pres = surface::style::Presentation::detect(false);
+    let (headline, role) = match outcome.state {
+        ProjectSetupState::Hot => ("Project is ready to run.", surface::style::Role::Ready),
+        ProjectSetupState::NoSetupNeeded => ("Nothing to set up.", surface::style::Role::Ready),
+        ProjectSetupState::SetupBlocked => (
+            "Setup needs your approval.",
+            surface::style::Role::Attention,
+        ),
+    };
+    format!(
+        "{}\n{}  {}\n\n",
+        surface::style::paint(headline, role, &pres),
+        surface::style::section("Steps", &pres),
+        outcome.redacted_summary,
+    )
 }
 
 fn setup_project_output(
@@ -237,11 +262,12 @@ fn print_machine_setup_output(
         }
         Ok(outcome) => {
             let workspace_id = outcome.output.workspace_id.clone();
+            let root = outcome.output.root.clone();
             print!("{}", render_setup_human(&outcome.output));
             if print_options.login_poll == LoginPollMode::Poll
-                && let Some(request_id) = outcome.device_trust_attachment.pending_request_id()
+                && let Some(approval) = outcome.device_trust_attachment.pending_approval()
             {
-                if let Err(error) = wait_for_device_grant(workspace_id, request_id) {
+                if let Err(error) = wait_for_device_grant(workspace_id, approval, &root) {
                     print_runtime_error(CommandName::Setup, generated_at, &error, false);
                     return ExitCode::from(EXIT_RUNTIME);
                 }
@@ -601,7 +627,7 @@ fn setup_requested_root(root: Option<String>) -> Option<String> {
 
 fn map_setup_root_error(error: LocalInitError) -> MachineSetupError {
     match error {
-        LocalInitError::AmbiguousDefaultRoot(candidates) => {
+        LocalInitError::MultipleCandidateRoots(candidates) => {
             MachineSetupError::AmbiguousRoot(candidates)
         }
         error => MachineSetupError::Runtime(error.to_string()),

@@ -27,7 +27,7 @@ fn metadata_dto() -> HostedObjectMetadata {
     HostedObjectMetadata {
         byte_length: 256,
         content_id: Some("cid_metadata".to_string()),
-        created_at: "2026-06-23T12:00:00Z".to_string(),
+        created_at: wire_timestamp("2026-06-23T12:00:00Z"),
         hash: "blake3:metadata".to_string(),
         key_epoch: 9,
         kind: HostedObjectKind::Blob,
@@ -149,9 +149,13 @@ fn object_metadata_dto_maps_values_and_rejects_bad_key_and_timestamp() {
         Err(ControlPlaneError::InvalidObjectKey { .. })
     ));
 
-    let mut bad_time = metadata_dto();
-    bad_time.created_at = "nope".to_string();
-    assert_parse_error_field(object_metadata_from_dto(bad_time), "createdAt");
+    let error = decode_dto_with_field::<_, HostedObjectMetadata>(
+        &metadata_dto(),
+        "createdAt",
+        serde_json::json!("nope"),
+    )
+    .expect_err("malformed timestamp must reject");
+    assert!(error.contains("RFC 3339"), "{error}");
 }
 
 #[test]

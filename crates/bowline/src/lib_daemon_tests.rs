@@ -10,58 +10,55 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn daemon_start_reuses_only_usable_workspace_daemon() {
-    let idle = super::Handshake {
-        daemon_version: "test".to_string(),
-        status_json:
-            r#"{"workspaceId":"ws_code","status":{"level":"healthy","attentionItems":[]}}"#
-                .to_string(),
-    };
-    let limited = super::Handshake {
-        daemon_version: "test".to_string(),
-        status_json: r#"{"workspaceId":"ws_code","status":{"level":"limited","attentionItems":["missing token"]}}"#.to_string(),
-    };
-    let degraded = super::Handshake {
-        daemon_version: "test".to_string(),
-        status_json:
-            r#"{"workspaceId":"ws_code","status":{"level":"attention","attentionItems":[]}}"#
-                .to_string(),
-    };
+    use bowline_core::commands::DaemonSyncState;
+    use bowline_core::status::StatusLevel;
+    let workspace = bowline_core::ids::WorkspaceId::new("ws_code");
+    let idle = handshake_with(&workspace, StatusLevel::Healthy, &[]);
+    let limited = handshake_with(&workspace, StatusLevel::Limited, &["missing token"]);
+    let degraded = handshake_with(&workspace, StatusLevel::Attention, &[]);
 
     assert_eq!(
-        super::handshake_start_status(&idle, "ws_code"),
+        super::handshake_start_status(&idle, &workspace),
         super::DaemonStartHandshakeStatus::Ready
     );
     assert_eq!(
-        super::handshake_start_status(&idle, "ws_other"),
+        super::handshake_start_status(&idle, &bowline_core::ids::WorkspaceId::new("ws_other")),
         super::DaemonStartHandshakeStatus::WorkspaceMismatch
     );
     assert_eq!(
-        super::handshake_start_status(&limited, "ws_code"),
+        super::handshake_start_status(&limited, &workspace),
         super::DaemonStartHandshakeStatus::Degraded {
-            state: bowline_core::commands::DaemonSyncState::Limited,
+            state: DaemonSyncState::Limited,
             reason: "missing token".to_string()
         }
     );
     assert_eq!(
-        super::handshake_start_status(&degraded, "ws_code"),
+        super::handshake_start_status(&degraded, &workspace),
         super::DaemonStartHandshakeStatus::Degraded {
-            state: bowline_core::commands::DaemonSyncState::Degraded,
+            state: DaemonSyncState::Degraded,
             reason: "sync state is degraded".to_string()
         }
     );
-    assert_eq!(
-        super::handshake_start_status(
-            &super::Handshake {
-                daemon_version: "test".to_string(),
-                status_json: "{}".to_string(),
-            },
-            "ws_code"
-        ),
-        super::DaemonStartHandshakeStatus::Degraded {
-            state: bowline_core::commands::DaemonSyncState::Unclassified,
-            reason: "workspace status is unavailable".to_string()
-        }
-    );
+}
+
+fn handshake_with(
+    workspace_id: &bowline_core::ids::WorkspaceId,
+    level: bowline_core::status::StatusLevel,
+    attention_items: &[&str],
+) -> super::Handshake {
+    let mut status = crate::status_commands::tests::status_output();
+    status.workspace_id = workspace_id.clone();
+    status.status = bowline_core::status::WorkspaceStatus {
+        level,
+        attention_items: attention_items
+            .iter()
+            .map(|item| item.to_string())
+            .collect(),
+    };
+    super::Handshake {
+        daemon_version: "test".to_string(),
+        status,
+    }
 }
 
 fn assert_daemon_start_does_not_shutdown_degraded_daemon() {
@@ -214,13 +211,13 @@ fn daemon_start_removes_socket_only_after_connection_refused() {
     assert!(socket.exists());
     super::remove_stale_daemon_socket_after_connect_error(
         &socket,
-        &std::io::Error::from(std::io::ErrorKind::TimedOut),
+        &transport_error(std::io::ErrorKind::TimedOut),
     )
     .expect("non-refused errors do not mutate the socket");
     assert!(socket.exists());
     super::remove_stale_daemon_socket_after_connect_error(
         &socket,
-        &std::io::Error::from(std::io::ErrorKind::ConnectionRefused),
+        &transport_error(std::io::ErrorKind::ConnectionRefused),
     )
     .expect("refused stale socket is removable");
     assert!(!socket.exists());
@@ -358,7 +355,7 @@ fn managed_service_reinstall_restores_active_service_after_stop_failure() {
 #[test]
 fn managed_service_install_refuses_uncertain_supervisor_state() {
     let status = super::DaemonServiceStatus {
-        state: "unavailable".to_string(),
+        state: super::ServiceSupervisorState::Unavailable,
         unit_path: PathBuf::from("bowline.service"),
         unavailable_because: Some("systemd user manager is unavailable".to_string()),
     };
@@ -527,294 +524,9 @@ fn diagnostics_bundle_includes_requested_workspace_selection() {
 }
 
 #[test]
-fn daemon_service_launch_config_refuses_before_setup_without_mutating_metadata() {
-    let temp = tempfile_dir("bowline-daemon-service-default");
-    let db_path = temp.join("state").join("local.sqlite3");
-    let store = bowline_local::metadata::MetadataStore::open(&db_path).expect("metadata store");
-    let daemon = temp.join("bowline-daemon");
-
-    let error = match super::daemon_service_launch_config_for_store(
-        Path::new("/tmp/bowline.sock"),
-        &db_path,
-        &store,
-        daemon.clone(),
-    ) {
-        Ok(_) => panic!("service launch config should require authenticated setup"),
-        Err(error) => error,
-    };
-
-    assert!(error.contains("run `bowline setup --root <path>` first"));
-    assert!(
-        store
-            .current_workspace()
-            .expect("current workspace")
-            .is_none()
-    );
-    let _ = std::fs::remove_dir_all(temp);
-}
-
-#[test]
-fn daemon_service_launch_config_uses_authenticated_accepted_root() {
-    let temp = tempfile_dir("bowline-daemon-service-authenticated");
-    let state = temp.join("state");
-    let db_path = state.join("local.sqlite3");
-    let store = bowline_local::metadata::MetadataStore::open(&db_path).expect("metadata store");
-    let workspace_id = bowline_core::ids::WorkspaceId::new("ws_code_account");
-    store
-        .insert_workspace(&workspace_id, "Code", "2026-07-15T12:00:00Z")
-        .expect("workspace");
-    store
-        .insert_root(
-            "root_account",
-            &workspace_id,
-            "~/Projects/Bowline",
-            "2026-07-15T12:00:00Z",
-        )
-        .expect("root");
-    std::fs::write(
-        state.join("daemon.env"),
-        "BOWLINE_WORKSPACE_ID=ws_code_account\nBOWLINE_DEVICE_ID=device_fixture\n",
-    )
-    .expect("persisted daemon identity");
-    let daemon = temp.join("bowline-daemon");
-
-    let launch = super::daemon_service_launch_config_for_store(
-        Path::new("/tmp/bowline.sock"),
-        &db_path,
-        &store,
-        daemon.clone(),
-    )
-    .expect("authenticated service launch config");
-
-    assert_eq!(launch.workspace_id, workspace_id);
-    assert_eq!(launch.root, super::expand_home_path("~/Projects/Bowline"));
-    assert_eq!(launch.daemon, daemon);
-    assert_eq!(
-        launch.state_root,
-        std::fs::canonicalize(state).expect("canonical state root")
-    );
-    assert_eq!(launch.device_id.as_str(), "device_fixture");
-    let _ = std::fs::remove_dir_all(temp);
-}
-
-#[cfg(unix)]
-#[test]
-fn daemon_service_launch_config_follows_the_workspace_database_symlink() {
-    use std::os::unix::fs::symlink;
-
-    let temp = tempfile_dir("bowline-daemon-service-symlink");
-    let default_state = temp.join("default");
-    let workspace_state = temp.join("workspace");
-    std::fs::create_dir_all(&default_state).expect("default state");
-    std::fs::create_dir_all(&workspace_state).expect("workspace state");
-    let workspace_db = workspace_state.join("local.sqlite3");
-    let store =
-        bowline_local::metadata::MetadataStore::open(&workspace_db).expect("metadata store");
-    let workspace_id = bowline_core::ids::WorkspaceId::new("ws_code_account");
-    store
-        .insert_workspace(&workspace_id, "Code", "2026-07-15T12:00:00Z")
-        .expect("workspace");
-    store
-        .insert_root(
-            "root_account",
-            &workspace_id,
-            "~/Code",
-            "2026-07-15T12:00:00Z",
-        )
-        .expect("root");
-    std::fs::write(
-        workspace_state.join("daemon.env"),
-        "BOWLINE_WORKSPACE_ID=ws_code_account\nBOWLINE_DEVICE_ID=device_remote\nBOWLINE_ACCOUNT_SESSION_ID=session_remote\n",
-    )
-    .expect("daemon env");
-    let default_db = default_state.join("local.sqlite3");
-    symlink(&workspace_db, &default_db).expect("default database symlink");
-
-    let launch = super::daemon_service_launch_config_for_store(
-        Path::new("/tmp/bowline.sock"),
-        &default_db,
-        &store,
-        temp.join("bowline-daemon"),
-    )
-    .expect("service launch config");
-
-    assert_eq!(
-        launch.state_root,
-        std::fs::canonicalize(&workspace_state).expect("canonical workspace state")
-    );
-    assert_eq!(launch.device_id.as_str(), "device_remote");
-    let _ = std::fs::remove_dir_all(temp);
-}
-
-#[test]
-fn daemon_launch_uses_persisted_device_id() {
-    let temp = tempfile_dir("bowline-daemon-persisted-device");
-    let state = temp.join("state");
-    let db_path = state.join("local.sqlite3");
-    std::fs::create_dir_all(&state).expect("state dir");
-    let workspace_id = bowline_core::ids::WorkspaceId::new("ws_code_account");
-    std::fs::write(
-            state.join("daemon.env"),
-            format!(
-                "BOWLINE_WORKSPACE_ID={}\nBOWLINE_DEVICE_ID=device_remote_box\nBOWLINE_WORKOS_REFRESH_TOKEN=stale-refresh\n",
-                workspace_id.as_str()
-            ),
-        )
-        .expect("daemon env");
-    let store = bowline_local::metadata::MetadataStore::open(&db_path).expect("metadata store");
-    store
-        .insert_workspace(&workspace_id, "Code", "2026-07-15T12:00:00Z")
-        .expect("workspace");
-    store
-        .insert_root(
-            "root_account",
-            &workspace_id,
-            "~/Code",
-            "2026-07-15T12:00:00Z",
-        )
-        .expect("root");
-    let daemon = temp.join("bowline-daemon");
-
-    let launch = super::daemon_service_launch_config_for_store(
-        Path::new("/tmp/bowline.sock"),
-        &db_path,
-        &store,
-        daemon,
-    )
-    .expect("service launch config");
-
-    assert_eq!(launch.device_id.as_str(), "device_remote_box");
-    assert_eq!(
-        super::persisted_daemon_env_value(&state, "BOWLINE_WORKOS_REFRESH_TOKEN"),
-        None
-    );
-    let _ = std::fs::remove_dir_all(temp);
-}
-
-#[test]
-fn persisted_daemon_device_id_is_workspace_bound() {
-    let temp = tempfile_dir("bowline-daemon-persisted-device-workspace");
-    let state = temp.join("state");
-    std::fs::create_dir_all(&state).expect("state dir");
-    std::fs::write(
-        state.join("daemon.env"),
-        "BOWLINE_WORKSPACE_ID=ws_a\nBOWLINE_DEVICE_ID=device_a\n",
-    )
-    .expect("daemon env");
-
-    assert_eq!(
-        super::persisted_daemon_device_id_for_workspace(
-            &state,
-            &bowline_core::ids::WorkspaceId::new("ws_a")
-        )
-        .as_deref(),
-        Some("device_a")
-    );
-    assert_eq!(
-        super::persisted_daemon_device_id_for_workspace(
-            &state,
-            &bowline_core::ids::WorkspaceId::new("ws_b")
-        ),
-        None
-    );
-    let _ = std::fs::remove_dir_all(temp);
-}
-
-#[test]
-fn persisted_daemon_env_excludes_refresh_tokens() {
-    let temp = tempfile_dir("bowline-daemon-env-sanitized");
-    std::fs::write(
-            temp.join("daemon.env"),
-            "BOWLINE_ACCOUNT_SESSION_ID=session\nBOWLINE_WORKOS_ACCESS_TOKEN=access\nBOWLINE_WORKOS_REFRESH_TOKEN=refresh\nBOWLINE_DEVICE_ID=device_remote\n",
-        )
-        .expect("daemon env");
-
-    let env = super::persisted_daemon_env(&temp);
-
-    assert!(env.contains(&(
-        "BOWLINE_ACCOUNT_SESSION_ID".to_string(),
-        "session".to_string()
-    )));
-    assert!(env.contains(&(
-        "BOWLINE_WORKOS_ACCESS_TOKEN".to_string(),
-        "access".to_string()
-    )));
-    assert!(env.contains(&("BOWLINE_DEVICE_ID".to_string(), "device_remote".to_string())));
-    assert!(
-        !env.iter()
-            .any(|(key, _)| key == "BOWLINE_WORKOS_REFRESH_TOKEN")
-    );
-    let _ = std::fs::remove_dir_all(temp);
-}
-
-#[test]
-fn daemon_binary_path_requires_sibling_daemon() {
-    let temp = tempfile_dir("bowline-daemon-missing");
-    let error = super::daemon_binary_path_next_to(&temp.join("bowline"))
-        .expect_err("missing daemon binary");
-
-    assert!(error.contains("bowline-daemon binary is unavailable"));
-    let _ = std::fs::remove_dir_all(temp);
-}
-
-#[test]
-fn daemon_binary_path_accepts_executable_sibling() {
-    let temp = tempfile_dir("bowline-daemon-present");
-    let daemon = temp.join(if cfg!(windows) {
-        "bowline-daemon.exe"
-    } else {
-        "bowline-daemon"
-    });
-    std::fs::write(&daemon, b"daemon").expect("daemon file");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = std::fs::metadata(&daemon)
-            .expect("daemon metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&daemon, permissions).expect("daemon permissions");
-    }
-
-    assert_eq!(
-        super::daemon_binary_path_next_to(&temp.join("bowline")).expect("daemon path"),
-        daemon
-    );
-    let _ = std::fs::remove_dir_all(temp);
-}
-
-#[test]
-fn daemon_binary_path_accepts_target_debug_fallback() {
-    let temp = tempfile_dir("bowline-daemon-target-debug");
-    let deps = temp.join("target").join("debug").join("deps");
-    std::fs::create_dir_all(&deps).expect("debug deps dir");
-    let daemon = temp.join("target").join("debug").join(if cfg!(windows) {
-        "bowline-daemon.exe"
-    } else {
-        "bowline-daemon"
-    });
-    std::fs::write(&daemon, b"daemon").expect("daemon file");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = std::fs::metadata(&daemon)
-            .expect("daemon metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&daemon, permissions).expect("daemon permissions");
-    }
-
-    assert_eq!(
-        super::daemon_binary_path_next_to(&deps.join("bowline")).expect("daemon path"),
-        daemon
-    );
-    let _ = std::fs::remove_dir_all(temp);
-}
-
-#[test]
 fn daemon_service_status_json_includes_unavailable_reason() {
     let status = super::DaemonServiceStatus {
-        state: "unavailable".to_string(),
+        state: super::ServiceSupervisorState::Unavailable,
         unit_path: PathBuf::from("/tmp/bowline.service"),
         unavailable_because: Some("systemd user manager is unavailable".to_string()),
     };
@@ -828,34 +540,75 @@ fn daemon_service_status_json_includes_unavailable_reason() {
 #[test]
 fn daemon_status_json_keeps_service_top_level() {
     let service = super::DaemonServiceStatus {
-        state: "failed".to_string(),
+        state: super::ServiceSupervisorState::Unrecognized("failed".to_string()),
         unit_path: PathBuf::from("/tmp/bowline.service"),
         unavailable_because: None,
     };
+    let snapshot = crate::status_commands::tests::status_output();
 
-    let running: serde_json::Value = serde_json::from_str(&super::daemon_status_json(
-        Path::new("/tmp/bowline.sock"),
-        super::DaemonProcessState::Running,
-        Some("daemon-test"),
-        Some("{\"state\":\"ready\"}"),
-        Some(&service),
-    ))
-    .expect("running status json");
-    let stopped: serde_json::Value = serde_json::from_str(&super::daemon_status_json(
-        Path::new("/tmp/bowline.sock"),
-        super::DaemonProcessState::Stopped,
-        None,
-        None,
-        Some(&service),
-    ))
-    .expect("stopped status json");
+    let running: serde_json::Value =
+        serde_json::from_str(&super::daemon_status_json(super::DaemonStatusReport {
+            socket: Path::new("/tmp/bowline.sock"),
+            state: super::DaemonProcessState::Running,
+            daemon_version: Some("daemon-test"),
+            sync: Some(&snapshot),
+            unavailable_because: None,
+            service: Some(&service),
+        }))
+        .expect("running status json");
+    let stopped: serde_json::Value =
+        serde_json::from_str(&super::daemon_status_json(super::DaemonStatusReport {
+            socket: Path::new("/tmp/bowline.sock"),
+            state: super::DaemonProcessState::Stopped,
+            daemon_version: None,
+            sync: None,
+            unavailable_because: None,
+            service: Some(&service),
+        }))
+        .expect("stopped status json");
 
     assert_eq!(running["daemon"]["state"], "running");
+    // Read the id from the shared fixture rather than restating it, so the
+    // assertion cannot drift when the fixture changes.
+    assert_eq!(
+        running["sync"]["workspaceId"],
+        snapshot.workspace_id.as_str()
+    );
     assert_eq!(running["service"]["state"], "failed");
     assert!(running["daemon"]["service"].is_null());
     assert_eq!(stopped["daemon"]["state"], "stopped");
+    assert!(stopped["sync"].is_null());
     assert_eq!(stopped["service"]["state"], "failed");
     assert!(stopped["daemon"]["service"].is_null());
+}
+
+/// A version-skewed daemon owns the control socket. `daemon status` must report
+/// it as running with the mismatch, never as stopped.
+#[test]
+fn daemon_status_json_reports_a_skewed_daemon_as_running() {
+    let report: serde_json::Value =
+        serde_json::from_str(&super::daemon_status_json(super::DaemonStatusReport {
+            socket: Path::new("/tmp/bowline.sock"),
+            state: super::DaemonProcessState::Running,
+            daemon_version: None,
+            sync: None,
+            unavailable_because: Some("machine contract version 6".to_string()),
+            service: None,
+        }))
+        .expect("skewed status json");
+
+    assert_eq!(report["daemon"]["state"], "running");
+    assert_eq!(
+        report["daemon"]["unavailableBecause"],
+        "machine contract version 6"
+    );
+}
+
+fn transport_error(kind: std::io::ErrorKind) -> crate::wire::DaemonRpcError {
+    crate::wire::DaemonRpcError::from(bowline_daemon_rpc::ClientError::Io {
+        operation: "connect",
+        source: std::io::Error::from(kind),
+    })
 }
 
 fn tempfile_dir(name: &str) -> PathBuf {
@@ -864,3 +617,5 @@ fn tempfile_dir(name: &str) -> PathBuf {
     std::fs::create_dir_all(&path).expect("temp dir");
     path
 }
+
+mod launch_config_tests;

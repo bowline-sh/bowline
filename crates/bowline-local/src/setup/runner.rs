@@ -7,10 +7,10 @@ use std::{
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bowline_core::{
@@ -22,14 +22,15 @@ use serde::Serialize;
 use crate::{
     env::{EnvLineKind, parse_env_text},
     events::LocalEventError,
-    metadata::{MetadataStore, SetupReceiptRecord, default_database_path},
+    metadata::{MetadataStore, ProjectHotState, SetupReceiptRecord, default_database_path},
 };
 
 use super::{
-    PackageManagerIdentity, SetupCommandPlan, SetupInferenceError, SetupReadinessClassification,
-    SetupReadinessState, classify_setup_command_result, collect_setup_identity, infer_setup_plan,
-    inferred_receipt_key, inferred_recipe_hash, load_setup_recipe, recipe_receipt_key,
-    redact_setup_text, redact_setup_text_with_values, setup_receipt_id,
+    PackageManagerIdentity, SETUP_COMMAND_TIMEOUT, SetupCommandPlan, SetupInferenceError,
+    SetupReadinessClassification, SetupReadinessState, classify_setup_command_result,
+    collect_setup_identity, infer_setup_plan, inferred_receipt_key, inferred_recipe_hash,
+    load_setup_recipe, recipe_receipt_key, redact_setup_text, redact_setup_text_with_values,
+    setup_receipt_id,
 };
 
 mod command;
@@ -127,7 +128,7 @@ pub fn run_project_setup(
         .ok_or_else(|| SetupRunError::MissingProject(options.project_path.clone()))?;
     let project_root = validate_project_root(&workspace_root, &project.path)?;
 
-    store.set_project_hot_state(&workspace.id, &project.id, "warming")?;
+    store.set_project_hot_state(&workspace.id, &project.id, ProjectHotState::Warming)?;
     let outcome = run_project_setup_root(
         &store,
         &workspace.id,
@@ -140,14 +141,21 @@ pub fn run_project_setup(
     match outcome {
         Ok(outcome) => {
             let hot_state = match outcome.state {
-                ProjectSetupState::Hot | ProjectSetupState::NoSetupNeeded => "hot",
-                ProjectSetupState::SetupBlocked => "setup.blocked",
+                ProjectSetupState::Hot | ProjectSetupState::NoSetupNeeded => ProjectHotState::Hot,
+                ProjectSetupState::SetupBlocked => ProjectHotState::SetupBlocked,
             };
             store.set_project_hot_state(&workspace.id, &project.id, hot_state)?;
             Ok(outcome)
         }
         Err(error) => {
-            let _ = store.set_project_hot_state(&workspace.id, &project.id, "setup.blocked");
+            // A dropped terminal transition would leave the project stuck in
+            // `Warming`, which suppresses the very receipt this failure just
+            // wrote. Report the write failure instead of hiding it.
+            store.set_project_hot_state(
+                &workspace.id,
+                &project.id,
+                ProjectHotState::SetupBlocked,
+            )?;
             Err(error)
         }
     }
@@ -235,9 +243,9 @@ fn run_project_setup_root(
             let receipt_key = recipe_receipt_key(&command, &recipe.recipe_hash)?;
             let expected_receipt_id =
                 setup_receipt_id(workspace_id, project_id, &recipe.recipe_hash, &receipt_key);
-            if setup_receipt_state(store, workspace_id, &expected_receipt_id)?.is_some_and(
-                |state| SetupReceiptState::from_wire(&state) == Some(SetupReceiptState::Completed),
-            ) {
+            if setup_receipt_state(store, workspace_id, &expected_receipt_id)?
+                == Some(SetupReceiptState::Completed)
+            {
                 receipt_ids.push(expected_receipt_id);
                 continue;
             }
@@ -255,9 +263,7 @@ fn run_project_setup_root(
             receipt_ids.push(receipt_id.clone());
             if store
                 .setup_receipt_by_id(workspace_id, &receipt_id)?
-                .is_some_and(|receipt| {
-                    SetupReceiptState::from_wire(&receipt.state) == Some(SetupReceiptState::Failed)
-                })
+                .is_some_and(|receipt| receipt.state == SetupReceiptState::Failed)
             {
                 return Ok(ProjectSetupOutcome {
                     workspace_id: workspace_id.clone(),
@@ -447,7 +453,7 @@ fn record_approval_required_receipt(
             workspace_id: request.context.workspace_id.clone(),
             project_id: Some(request.context.project_id.clone()),
             command: request.command.to_string(),
-            state: SetupReceiptState::ApprovalRequired.as_str().to_string(),
+            state: SetupReceiptState::ApprovalRequired,
             recipe_hash: request.recipe_hash.to_string(),
             approval_state: SetupApprovalState::Required.as_str().to_string(),
             trigger: request.context.trigger.to_string(),
@@ -511,9 +517,9 @@ fn run_inferred_plan(
         let receipt_key = inferred_receipt_key(&command, &command_text)?;
         let expected_receipt_id =
             setup_receipt_id(workspace_id, project_id, &recipe_hash, &receipt_key);
-        if setup_receipt_state(store, workspace_id, &expected_receipt_id)?.is_some_and(|state| {
-            SetupReceiptState::from_wire(&state) == Some(SetupReceiptState::Completed)
-        }) {
+        if setup_receipt_state(store, workspace_id, &expected_receipt_id)?
+            == Some(SetupReceiptState::Completed)
+        {
             receipt_ids.push(expected_receipt_id);
             continue;
         }
@@ -535,9 +541,7 @@ fn run_inferred_plan(
         receipt_ids.push(receipt_id.clone());
         if store
             .setup_receipt_by_id(workspace_id, &receipt_id)?
-            .is_some_and(|receipt| {
-                SetupReceiptState::from_wire(&receipt.state) == Some(SetupReceiptState::Failed)
-            })
+            .is_some_and(|receipt| receipt.state == SetupReceiptState::Failed)
         {
             return Ok(ProjectSetupOutcome {
                 workspace_id: workspace_id.clone(),
@@ -573,9 +577,9 @@ fn inferred_commands_completed(
         let recipe_hash = inferred_recipe_hash(command);
         let receipt_key = inferred_receipt_key(command, &command_text)?;
         let receipt_id = setup_receipt_id(workspace_id, project_id, &recipe_hash, &receipt_key);
-        if setup_receipt_state(store, workspace_id, &receipt_id)?.is_none_or(|state| {
-            SetupReceiptState::from_wire(&state) != Some(SetupReceiptState::Completed)
-        }) {
+        if setup_receipt_state(store, workspace_id, &receipt_id)?
+            != Some(SetupReceiptState::Completed)
+        {
             return Ok(false);
         }
     }
@@ -795,7 +799,7 @@ fn setup_receipt_state(
     store: &MetadataStore,
     workspace_id: &WorkspaceId,
     receipt_id: &str,
-) -> Result<Option<String>, SetupRunError> {
+) -> Result<Option<SetupReceiptState>, SetupRunError> {
     Ok(store
         .setup_receipt_by_id(workspace_id, receipt_id)?
         .map(|receipt| receipt.state))

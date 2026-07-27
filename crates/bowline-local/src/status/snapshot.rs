@@ -139,14 +139,14 @@ pub fn redacted_status_snapshot(
             &output.generated_at,
         )),
         workspace_id: WorkspaceId::new(output.workspace_id.as_str()),
-        availability: status_availability_label(hosted_summary.availability).to_string(),
-        attention: status_attention_label(hosted_summary.attention).to_string(),
+        availability: hosted_summary.availability,
+        attention: hosted_summary.attention,
         primary_fact_id: hosted_summary
             .primary_fact_id
             .as_ref()
             .map(|id| id.as_str().to_string()),
         facts: hosted_facts,
-        freshness: status_snapshot_freshness_label(hosted_summary.freshness).to_string(),
+        freshness: hosted_summary.freshness,
         schema_hash: bowline_core::wire::WIRE_SCHEMA_HASH.to_string(),
         snapshot_version: hosted_summary.snapshot_version,
         producer_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -163,30 +163,6 @@ pub fn redacted_status_snapshot(
         items,
         limits,
         published_by_device_id: DeviceId::new(device_id),
-    }
-}
-
-fn status_availability_label(value: StatusAvailability) -> &'static str {
-    match value {
-        StatusAvailability::Ready => "ready",
-        StatusAvailability::Degraded => "degraded",
-        StatusAvailability::Unavailable => "unavailable",
-    }
-}
-
-fn status_attention_label(value: StatusAttention) -> &'static str {
-    match value {
-        StatusAttention::None => "none",
-        StatusAttention::Recommended => "recommended",
-        StatusAttention::Required => "required",
-    }
-}
-
-fn status_snapshot_freshness_label(value: StatusSnapshotFreshness) -> &'static str {
-    match value {
-        StatusSnapshotFreshness::Fresh => "fresh",
-        StatusSnapshotFreshness::Stale => "stale",
-        StatusSnapshotFreshness::Unknown => "unknown",
     }
 }
 

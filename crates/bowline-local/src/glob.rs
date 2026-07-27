@@ -7,36 +7,46 @@ pub(crate) fn glob_matches(pattern: &str, text: &str) -> bool {
 }
 
 fn glob_matches_bytes(pattern: &[u8], text: &[u8]) -> bool {
-    let mut table = vec![vec![false; text.len() + 1]; pattern.len() + 1];
-    table[pattern.len()][text.len()] = true;
+    // The bound is enforced here rather than at each call site so no caller can
+    // hand the matcher an unbounded DP table by writing a long `.bowlineignore`
+    // line. An over-long pattern never matches instead of allocating.
+    if pattern.len() > MAX_GLOB_MATCH_BYTES || text.len() > MAX_GLOB_MATCH_BYTES {
+        return false;
+    }
+    let stride = text.len() + 1;
+    // One flat allocation instead of `pattern.len() + 1` separate row vectors:
+    // `classify_path` runs this per candidate per rule per path in the scan hot
+    // loop.
+    let mut table = vec![false; stride * (pattern.len() + 1)];
+    table[pattern.len() * stride + text.len()] = true;
     for pattern_index in (0..pattern.len()).rev() {
+        let row = pattern_index * stride;
+        let next_row = row + stride;
         if pattern[pattern_index] == b'*'
             && pattern.get(pattern_index + 1) == Some(&b'*')
             && double_star_is_recursive(pattern, pattern_index)
         {
-            fill_double_star_row(pattern, text, pattern_index, &mut table);
+            fill_double_star_row(pattern, text, pattern_index, stride, &mut table);
             continue;
         }
         for text_index in (0..=text.len()).rev() {
-            table[pattern_index][text_index] = match pattern[pattern_index] {
+            table[row + text_index] = match pattern[pattern_index] {
                 b'*' => {
-                    table[pattern_index + 1][text_index]
+                    table[next_row + text_index]
                         || (text_index < text.len()
                             && text[text_index] != b'/'
-                            && table[pattern_index][text_index + 1])
+                            && table[row + text_index + 1])
                 }
                 b'?' => {
                     text_index < text.len()
                         && text[text_index] != b'/'
-                        && table[pattern_index + 1][text_index + 1]
+                        && table[next_row + text_index + 1]
                 }
-                byte => {
-                    text.get(text_index) == Some(&byte) && table[pattern_index + 1][text_index + 1]
-                }
+                byte => text.get(text_index) == Some(&byte) && table[next_row + text_index + 1],
             };
         }
     }
-    table[0][0]
+    table[0]
 }
 
 fn double_star_is_recursive(pattern: &[u8], pattern_index: usize) -> bool {
@@ -50,22 +60,23 @@ fn fill_double_star_row(
     pattern: &[u8],
     text: &[u8],
     pattern_index: usize,
-    table: &mut [Vec<bool>],
+    stride: usize,
+    table: &mut [bool],
 ) {
+    let row = pattern_index * stride;
     let next_pattern_index = pattern_index + 2;
     if pattern.get(next_pattern_index) == Some(&b'/') {
-        let after_slash_index = next_pattern_index + 1;
+        let after_slash_row = (next_pattern_index + 1) * stride;
         let mut later_segment_matches = false;
         for text_index in (0..=text.len()).rev() {
             if text_index < text.len() && text[text_index] == b'/' {
-                later_segment_matches |= table[pattern_index][text_index + 1];
+                later_segment_matches |= table[row + text_index + 1];
             }
-            table[pattern_index][text_index] =
-                table[after_slash_index][text_index] || later_segment_matches;
+            table[row + text_index] = table[after_slash_row + text_index] || later_segment_matches;
         }
         return;
     }
-    table[pattern_index].fill(true);
+    table[row..row + stride].fill(true);
 }
 
 #[cfg(test)]

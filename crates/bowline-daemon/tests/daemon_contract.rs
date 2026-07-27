@@ -16,8 +16,12 @@ use bowline_core::wire::generated::{
     DaemonClientHello, DaemonRpcError, DaemonRpcErrorCode, DaemonRpcRequest, DaemonRpcResponse,
     DaemonServerHello,
 };
-use bowline_daemon_rpc::{CONNECTION_MAGIC, DAEMON_RPC_PROTOCOL, FrameCodec};
+use bowline_daemon_rpc::{
+    CONNECTION_MAGIC, DAEMON_RPC_PROTOCOL, FrameCodec, MACHINE_CONTRACT_WINDOW,
+};
 use serde_json::json;
+
+const MINIMUM_SUPPORTED_CONTRACT_VERSION: u16 = MACHINE_CONTRACT_WINDOW.minimum;
 
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(1);
 static DAEMON_SERVE_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -53,13 +57,47 @@ fn stopped_status_json_is_stable() {
         .output()
         .expect("bowline-daemon status should run");
 
+    // An absent socket is a legitimately stopped daemon, so the exit code stays 0.
     assert!(output.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("status json parses");
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["command"], "status");
+    assert_eq!(parsed["contractVersion"], CONTRACT_VERSION);
+    assert_eq!(parsed["daemon"]["state"], "stopped");
+    assert_eq!(parsed["daemon"]["socket"], socket.display().to_string());
     assert_eq!(
-        String::from_utf8(output.stdout).expect("json should be utf8"),
-        format!(
-            "{{\"ok\":true,\"command\":\"status\",\"daemon\":{{\"state\":\"stopped\",\"socket\":{},\"protocol\":\"bowline-daemon-v2\",\"version\":2}}}}\n",
-            json_string(&socket.display().to_string())
-        )
+        parsed["daemon"]["protocol"]["protocol"],
+        "bowline-daemon-v2"
+    );
+    assert_eq!(parsed["daemon"]["protocol"]["version"], 2);
+    // The reason and the remedy are always present when the daemon is absent.
+    assert!(parsed["daemon"]["unavailableBecause"].is_string());
+    assert!(parsed["daemon"]["remediation"].is_string());
+    assert!(parsed["snapshot"].is_null());
+}
+
+#[test]
+fn an_unreachable_daemon_is_not_reported_as_stopped() {
+    // A socket that exists but has no listener behind it is `stopped`; a socket
+    // path the CLI cannot use at all must not be laundered into the same state,
+    // because a script has to be able to tell "start one" from "look at this".
+    let dir = unique_socket("unreachable");
+    let socket = dir.parent().expect("socket parent").to_path_buf();
+
+    let output = daemon()
+        .args(["status", "--json", "--socket"])
+        .arg(&socket)
+        .output()
+        .expect("bowline-daemon status should run");
+
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("status json parses");
+    assert_eq!(parsed["daemon"]["state"], "unreachable");
+    assert_eq!(parsed["ok"], false);
+    assert!(
+        !output.status.success(),
+        "an unreachable daemon must exit non-zero so scripts notice"
     );
 }
 
@@ -71,10 +109,20 @@ fn help_json_lists_only_real_daemon_commands() {
         .expect("bowline-daemon help should run");
 
     assert!(output.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("help json parses");
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["command"], "help");
+    // `phase` was an implementation-plan marker no consumer could interpret; the
+    // machine contract carries the contract version like every other surface.
+    assert!(parsed["phase"].is_null());
+    assert_eq!(parsed["contractVersion"], CONTRACT_VERSION);
     assert_eq!(
-        String::from_utf8(output.stdout).expect("json should be utf8"),
-        "{\"ok\":true,\"command\":\"help\",\"phase\":\"0D\",\"commands\":[\"serve\",\"stop\",\"status\",\"metrics\",\"version\"],\"socket\":{\"protocol\":\"bowline-daemon-v2\",\"version\":2}}\n"
+        parsed["commands"],
+        json!(["serve", "stop", "status", "metrics", "version"])
     );
+    assert_eq!(parsed["socket"]["protocol"], "bowline-daemon-v2");
+    assert_eq!(parsed["socket"]["version"], 2);
 }
 
 #[test]
@@ -110,8 +158,11 @@ fn serve_once_answers_version_handshake() {
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("status json parses");
     assert_eq!(parsed["daemon"]["state"], "running");
     assert_eq!(parsed["daemon"]["socket"], socket.display().to_string());
-    assert_eq!(parsed["daemon"]["protocol"], "bowline-daemon-v2");
-    assert_eq!(parsed["daemon"]["version"], 2);
+    assert_eq!(
+        parsed["daemon"]["protocol"]["protocol"],
+        "bowline-daemon-v2"
+    );
+    assert_eq!(parsed["daemon"]["protocol"]["version"], 2);
     assert_eq!(parsed["daemon"]["daemonVersion"], env!("CARGO_PKG_VERSION"));
     assert_eq!(parsed["snapshot"]["contractVersion"], 8);
     assert_eq!(parsed["snapshot"]["command"], "status");
@@ -204,7 +255,7 @@ fn serve_once_accepts_fragmented_v2_magic_and_multiple_framed_messages() {
 }
 
 #[test]
-fn serve_once_rejects_wrong_schema_hash_before_any_status_frame() {
+fn serve_once_accepts_a_different_schema_hash_and_rejects_an_unsupported_contract() {
     let _serve_guard = daemon_serve_test_guard();
     let socket = unique_socket("serve-v2-wrong-schema");
     let _ = fs::remove_file(&socket);
@@ -229,17 +280,30 @@ fn serve_once_rejects_wrong_schema_hash_before_any_status_frame() {
             &DaemonClientHello {
                 protocol: DAEMON_RPC_PROTOCOL.to_string(),
                 protocol_version: 2,
-                contract_version: CONTRACT_VERSION,
+                // The schema hash digests hosted-only documents too, so it must
+                // not gate local RPC: an unrelated dashboard edit changing it
+                // used to brick every resident daemon.
+                contract_version: MINIMUM_SUPPORTED_CONTRACT_VERSION - 1,
                 schema_hash: "different-schema".to_string(),
                 client_kind: "integration-test".to_string(),
                 client_version: "1".to_string(),
-                capabilities: vec!["status.snapshot".to_string()],
+                capabilities: vec!["status.getSnapshot".to_string()],
             },
         )
         .expect("hello frame");
     let error: DaemonRpcError = codec.read(&mut stream).expect("structured mismatch error");
     assert_eq!(error.code, DaemonRpcErrorCode::UnsupportedVersion);
-    assert!(error.message.contains("wire schema hash"));
+    assert!(
+        error.message.contains("machine-contract"),
+        "{}",
+        error.message
+    );
+    // The rejection names the daemon build, so the client can say which half of
+    // the install is stale instead of reporting a running daemon as stopped.
+    assert_eq!(
+        error.required_client_version.as_deref(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
     assert!(codec.read::<serde_json::Value, _>(&mut stream).is_err());
 
     drop(stream);
@@ -281,8 +345,11 @@ fn default_serve_status_has_no_synthetic_mount_state() {
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("status json parses");
     assert_eq!(parsed["daemon"]["state"], "running");
     assert_eq!(parsed["daemon"]["socket"], socket.display().to_string());
-    assert_eq!(parsed["daemon"]["protocol"], "bowline-daemon-v2");
-    assert_eq!(parsed["daemon"]["version"], 2);
+    assert_eq!(
+        parsed["daemon"]["protocol"]["protocol"],
+        "bowline-daemon-v2"
+    );
+    assert_eq!(parsed["daemon"]["protocol"]["version"], 2);
     assert_eq!(parsed["daemon"]["daemonVersion"], env!("CARGO_PKG_VERSION"));
     assert_eq!(parsed["snapshot"]["contractVersion"], 8);
     assert_eq!(parsed["snapshot"]["command"], "status");
@@ -372,12 +439,17 @@ fn stop_shuts_down_running_daemon() {
 
     assert!(serve_status.success());
     assert!(output.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stop json parses");
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["command"], "stop");
+    assert_eq!(parsed["contractVersion"], CONTRACT_VERSION);
+    assert_eq!(parsed["daemon"]["state"], "stopping");
+    assert_eq!(parsed["daemon"]["socket"], socket.display().to_string());
+    // Every command's daemon block carries the same protocol shape.
     assert_eq!(
-        String::from_utf8(output.stdout).expect("json should be utf8"),
-        format!(
-            "{{\"ok\":true,\"command\":\"stop\",\"daemon\":{{\"state\":\"stopping\",\"socket\":{}}}}}\n",
-            json_string(&socket.display().to_string())
-        )
+        parsed["daemon"]["protocol"]["protocol"],
+        "bowline-daemon-v2"
     );
     assert!(!socket.exists());
 }
@@ -577,24 +649,4 @@ fn unique_socket(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("bld-{}-{socket_id}", std::process::id()));
     fs::create_dir_all(&dir).expect("socket dir");
     dir.join("s.sock")
-}
-
-fn json_string(input: &str) -> String {
-    let mut escaped = String::with_capacity(input.len() + 2);
-    escaped.push('"');
-    for character in input.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            character if character.is_control() => {
-                escaped.push_str(&format!("\\u{:04x}", character as u32));
-            }
-            character => escaped.push(character),
-        }
-    }
-    escaped.push('"');
-    escaped
 }

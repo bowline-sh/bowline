@@ -19,7 +19,11 @@ export * from "./guards";
 export * from "./ids";
 export * from "./policy";
 export * from "./resolve";
-export * from "./snapshot";
 export * from "./status";
 export * from "./work";
 export * from "./wire";
+// `CommandName` and `EventSeverity` exist in both the wire model and the
+// hand-written CLI contracts. The CLI definitions are the richer superset, so
+// they win at the package boundary until the two contract generators are one.
+export { type CommandName } from "./command-names";
+export { type EventSeverity } from "./events";

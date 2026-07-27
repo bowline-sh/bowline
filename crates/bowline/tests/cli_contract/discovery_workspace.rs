@@ -11,13 +11,17 @@ fn help_groups_commands_by_intent() {
         include_str!("../../../../tests/golden/cli/help.txt")
     );
     assert!(stdout.contains("Workspace:"));
-    assert!(stdout.contains("bowline tui [--root <path>] [--project <path>]"));
     assert!(stdout.contains("Trust:"));
     assert!(stdout.contains("Remote:"));
     assert!(stdout.contains("Work:"));
     assert!(stdout.contains("Daemon:"));
     assert!(stdout.contains("Support:"));
-    assert!(stdout.contains("bowline diagnostics collect"));
+    // Top-level help lists what each command is for; option grammar belongs to
+    // `bowline help <command>`, not the index.
+    assert!(stdout.contains("tui                  Open the terminal workspace UI."));
+    assert!(stdout.contains("diagnostics collect  Print a redacted diagnostics bundle."));
+    assert!(!stdout.contains("[--root <path>]"));
+    assert!(stdout.contains("Run `bowline help <command>` for options and examples"));
 }
 
 #[test]
@@ -170,27 +174,32 @@ fn dry_run_does_not_mask_parsed_usage_errors() {
     let json = parse_stdout_json(output);
     assert_eq!(json["command"], "work create");
     assert_eq!(json["status"], "usage-error");
-    assert_eq!(json["error"]["code"], "usage_error");
+    // The parse error names the specific defect rather than a generic usage
+    // code, and --dry-run never masks it.
+    assert_eq!(json["error"]["code"], "missing_argument");
     assert_ne!(json["error"]["code"], "dry_run_unsupported");
 }
 
 #[test]
-fn recovery_verify_accepts_advertised_dry_run_contract() {
-    let output = run_bowline(&["recover", "verify", "rk_123", "--dry-run", "--json"]);
+fn recovery_verify_is_read_only_and_refuses_dry_run() {
+    // `recover verify` only checks words against a stored envelope, so the
+    // registry declares it Read and it takes no --dry-run to preview.
+    let refused = run_bowline(&["recover", "verify", "rk_123", "--dry-run", "--json"]);
 
-    assert!(output.status.success(), "{output:?}");
-    let json = parse_stdout_json(output);
-    assert_eq!(json["command"], "recover");
-    assert_eq!(json["status"], "dry-run");
-    assert_eq!(json["target"], "rk_123");
-    assert!(
-        json["applyCommand"]
-            .as_str()
-            .expect("applyCommand string")
-            .contains("recover verify rk_123")
-    );
-    assert_eq!(json["nextActions"][0]["command"], json["applyCommand"]);
-    assert_eq!(json["nextActions"][0]["mutates"], true);
+    assert_eq!(refused.status.code(), Some(2));
+    let refused_json = parse_stdout_json(refused);
+    assert_eq!(refused_json["status"], "usage-error");
+    assert_eq!(refused_json["error"]["code"], "usage_error");
+
+    // ...and the machine contract agrees, so an agent never plans a preview
+    // step for it.
+    let contract = run_bowline(&["contract", "recover verify", "--json"]);
+
+    assert!(contract.status.success(), "{contract:?}");
+    let contract_json = parse_stdout_json(contract);
+    let spec = &contract_json["descriptor"];
+    assert_eq!(spec["name"], "recover verify");
+    assert_eq!(spec["sideEffectLevel"], "read");
 }
 
 #[test]
@@ -199,9 +208,18 @@ fn work_cleanup_dry_run_points_to_applying_cleanup() {
 
     assert!(output.status.success(), "{output:?}");
     let json = parse_stdout_json(output);
-    assert_eq!(json["applyCommand"], "bowline work cleanup --apply");
+    // The apply line is the caller's own argv minus --dry-run, so it can never
+    // disagree with what was previewed — and a preview that changes nothing
+    // must not claim to mutate.
+    assert_eq!(json["applyCommand"], "bowline work cleanup --json");
     assert_eq!(json["nextActions"][0]["command"], json["applyCommand"]);
-    assert_eq!(json["nextActions"][0]["mutates"], true);
+    assert_eq!(json["nextActions"][0]["mutates"], false);
+    // The preview still has to offer a way to reach the real mutation.
+    assert_eq!(
+        json["nextActions"][1]["command"],
+        "bowline work cleanup --json --apply"
+    );
+    assert_eq!(json["nextActions"][1]["mutates"], true);
 }
 
 #[test]
@@ -727,8 +745,8 @@ fn bare_setup_json_creates_code_on_fresh_home() {
 }
 
 #[test]
-fn bare_setup_json_requires_explicit_root_when_non_code_root_exists() {
-    let temp = TempWorkspace::new("cli-init-ambiguous-root").expect("temp workspace");
+fn bare_setup_json_adopts_the_one_existing_code_root() {
+    let temp = TempWorkspace::new("cli-init-single-non-code-root").expect("temp workspace");
     let home = temp.root().join("home");
     fs::create_dir_all(home.join("Projects")).expect("projects root");
     let db_path = temp.root().join(".state").join("local.sqlite3");
@@ -742,22 +760,15 @@ fn bare_setup_json_requires_explicit_root_when_non_code_root_exists() {
         ],
     );
 
-    assert_eq!(output.status.code(), Some(2));
+    // A developer whose work lives in ~/Projects is the common case, not an
+    // error: one existing code directory is unambiguous whatever it is called,
+    // so setup adopts it instead of demanding --root or inventing ~/Code.
+    assert!(output.status.success(), "{output:?}");
     assert!(!home.join("Code").exists());
     let json = parse_stdout_json(output);
     assert_eq!(json["contractVersion"], 8);
     assert_eq!(json["command"], "setup");
-    assert_eq!(json["status"], "usage-error");
-    assert_eq!(json["error"]["code"], "ambiguous_root");
-    assert_eq!(json["error"]["recoverability"], "user-action");
-    assert_eq!(
-        json["error"]["message"],
-        "bowline setup found multiple existing code roots; pass an explicit root: ~/Projects"
-    );
-    assert_eq!(
-        json["nextActions"][0]["command"],
-        "bowline setup --root ~/Projects"
-    );
+    assert_eq!(json["root"], "~/Projects");
 }
 
 #[test]

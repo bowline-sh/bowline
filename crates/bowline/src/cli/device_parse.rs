@@ -41,6 +41,32 @@ fn parse_device_action(
     }
 }
 
+/// `device key-status` is a purely local custody question, so it takes the
+/// workspace id directly instead of resolving a workspace root: the caller that
+/// needs it most is a bootstrap probe over SSH, which knows the id and has no
+/// materialized root to select from yet.
+pub(super) fn parse_device_key_status_command(
+    values: &crate::registry::ParsedValues,
+) -> Result<Command, ParseError> {
+    if let Some(value) = values.positionals().first() {
+        return unexpected_argument(CommandName::DeviceKeyStatus, "device key-status", value);
+    }
+    let Some(workspace_id) = values
+        .option("--workspace")
+        .filter(|value| !value.is_empty())
+    else {
+        return command_usage_error(
+            CommandName::DeviceKeyStatus,
+            "usage_error",
+            "bowline device key-status requires --workspace <id>".to_string(),
+            devices_usage_actions(),
+        );
+    };
+    Ok(Command::DeviceKeyStatus(devices::DeviceKeyStatusArgs {
+        workspace_id: WorkspaceId::new(workspace_id),
+    }))
+}
+
 pub(super) fn devices_usage_actions() -> Vec<RepairCommand> {
     vec![
         RepairCommand::inspect(

@@ -228,28 +228,6 @@
       }
     },
     {
-      "id": "snapshot.content-layout-segmented-v1",
-      "family": "snapshots",
-      "path": "snapshots/content-layout-segmented-v1.json",
-      "format": "json",
-      "kind": "ContentLayout",
-      "languageDecoders": {
-        "rust": "ContentLayout",
-        "typescript": "ContentLayout"
-      }
-    },
-    {
-      "id": "snapshot.mixed-tree",
-      "family": "snapshots",
-      "path": "snapshots/mixed-tree.json",
-      "format": "json",
-      "kind": "SnapshotManifest",
-      "languageDecoders": {
-        "rust": "SnapshotManifest",
-        "typescript": "SnapshotManifest"
-      }
-    },
-    {
       "id": "status.attention",
       "family": "status",
       "path": "status/attention.json",

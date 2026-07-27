@@ -2,11 +2,47 @@
 
 use std::sync::Arc;
 
-use super::pull_apply::pull_from_observation;
+use std::collections::BTreeSet;
+
+use super::pull_apply::{PullScope, pull_from_observation};
+use super::push::WatcherEvidence;
 use super::{
     Clock, CycleError, DEBOUNCE_MS, EngineIo, ManifestEngine, PullDeps, RefObservation,
-    RemoteObjects, RemoteRef, pull, pull_cycle_error,
+    RemoteObjects, RemoteRef, WorkspacePath, pull, pull_cycle_error,
 };
+
+/// How much the driver knows about local divergence when it starts a pull.
+///
+/// A pull only re-observes paths that can produce merge work, and the dirty set
+/// is what stands in for "everything the remote did not move". Whether that set
+/// was just rebuilt from a full stat walk decides whether the narrowing can be
+/// proved (debug builds) or merely trusted.
+#[derive(Clone, Copy)]
+pub(super) enum LocalObservation {
+    /// Watcher events are the only evidence since the last cycle.
+    Reactive,
+    /// A full stat walk refreshed the dirty set inside this same cycle.
+    FreshlyWalked,
+}
+
+impl LocalObservation {
+    /// How much a matching stat fingerprint may be trusted for this cycle's
+    /// push. A cycle that had to stat-walk did so precisely because the tree
+    /// went unobserved for an unbounded interval.
+    pub(super) fn watcher_evidence(self) -> WatcherEvidence {
+        match self {
+            Self::Reactive => WatcherEvidence::Continuous,
+            Self::FreshlyWalked => WatcherEvidence::Gapped,
+        }
+    }
+
+    fn scope<'a>(self, dirty: &'a BTreeSet<WorkspacePath>) -> PullScope<'a> {
+        match self {
+            Self::Reactive => PullScope::ChangedAndDirty(dirty),
+            Self::FreshlyWalked => PullScope::ChangedAndWalked(dirty),
+        }
+    }
+}
 
 impl ManifestEngine {
     /// Retain a useful live observation and report whether it requires a pull.
@@ -56,11 +92,13 @@ impl ManifestEngine {
     pub(super) fn do_pull<O: RemoteObjects, R: RemoteRef, C: Clock>(
         &mut self,
         io: &EngineIo<'_, O, R, C>,
+        observation: LocalObservation,
     ) -> Result<(), CycleError> {
         let deps = PullDeps {
             ctx: &self.ctx,
             objects: io.objects,
             refs: io.refs,
+            scope: observation.scope(&self.dirty),
         };
         let observed = if self.force_ref_read {
             self.pending_ref_hint = None;

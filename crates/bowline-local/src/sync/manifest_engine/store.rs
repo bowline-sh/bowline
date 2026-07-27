@@ -1,11 +1,13 @@
 //! The manifest-sync engine's own SQLite store (Plan 109 Step 2).
 //!
 //! This owns `manifest_engine.sqlite3` — a database distinct from the product's
-//! `local.sqlite3`, which is never touched here. Three tables model the whole
-//! engine: `files` is the three-way ancestor (state at last successful sync)
-//! carrying both portable identity and the local stat fingerprint;
-//! `engine_state` is a typed singleton row (never a key/value registry); and
-//! `intents` is the crash-recovery journal for in-flight apply operations.
+//! `local.sqlite3`, which is never touched here. `files` is the three-way
+//! ancestor (state at last successful sync) carrying both portable identity and
+//! the local stat fingerprint; `engine_state` is a typed singleton row (never a
+//! key/value registry); `intents` is the crash-recovery journal for in-flight
+//! apply operations; `unsyncable` records paths this device cannot sync; and
+//! `blobs`/`tree_nodes` are the two content-addressed ledgers of objects this
+//! device has proven the store already holds.
 //!
 //! Portable `files` identity mutates only with a proven push/pull or intent
 //! recovery. [`ManifestStore::refresh_local_file_records`] may separately
@@ -21,7 +23,10 @@ use std::path::Path;
 use bowline_core::ids::ContentId;
 use rusqlite::{Connection, OptionalExtension, params};
 
+use super::endpoint::EndpointInstant;
+use super::manifest::directory_tree::SubtreeHash;
 use super::manifest::{BlobKey, EntryKind, FileMode, KeyEpoch, ManifestKey, WorkspacePath};
+use super::unsyncable::{UnsyncableReason, UnsyncableRecord};
 
 const SCHEMA: &str = "\
 CREATE TABLE IF NOT EXISTS files (
@@ -56,6 +61,23 @@ CREATE TABLE IF NOT EXISTS intents (
     preserved_preimage TEXT,
     target_manifest_key TEXT,
     created_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS unsyncable (
+    path TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    errno INTEGER,
+    observed_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS blobs (
+    content_id TEXT PRIMARY KEY,
+    blob_key TEXT NOT NULL,
+    key_epoch INTEGER NOT NULL,
+    byte_len INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS tree_nodes (
+    subtree_hash TEXT PRIMARY KEY,
+    node_key TEXT NOT NULL,
+    key_epoch INTEGER NOT NULL
 ) STRICT;";
 
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
@@ -83,7 +105,25 @@ pub struct FileRecord {
     pub key_epoch: Option<KeyEpoch>,
     pub fingerprint: StatFingerprint,
     pub hashed_at: Option<i64>,
-    pub verified_at: Option<i64>,
+    /// The endpoint-clock reading this row was PROVED against, or `None` when
+    /// the cycle that wrote it could prove nothing. Never a wall-clock instant:
+    /// see [`super::endpoint`] for why the two clocks disagree and what that
+    /// disagreement costs. Written only by `endpoint::prove_rows`.
+    pub verified_at: Option<EndpointInstant>,
+}
+
+/// One row of the blob ledger: content this device has already sealed and PUT.
+///
+/// The ledger is what turns content addressing into actual dedup. A rename, an
+/// A→B→A edit cycle, and a `git checkout` that returns to a previous branch all
+/// re-present content whose sealed object is already in the store; without this
+/// row the push re-seals it (zstd + AEAD over the whole file) and pays another
+/// create-only PUT round trip to write bytes that are already there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedBlob {
+    pub blob_key: BlobKey,
+    pub key_epoch: KeyEpoch,
+    pub byte_len: u64,
 }
 
 /// The typed singleton engine-state row. Absent fields read as `None` before the
@@ -172,6 +212,7 @@ impl ManifestStore {
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.execute_batch(SCHEMA)?;
+        raise_ratchet_floor(&connection)?;
         Ok(Self { connection })
     }
 
@@ -209,6 +250,173 @@ impl ManifestStore {
             files.insert(path, record);
         }
         Ok(files)
+    }
+
+    /// How many ancestor rows exist. The workspace-root sentinel uses it to tell
+    /// "a brand-new workspace with nothing to lose" from "a workspace whose root
+    /// has been replaced under committed state" — the latter must never be
+    /// adopted, because adopting it publishes an empty manifest to every peer.
+    pub fn file_count(&self) -> Result<u64, ManifestStoreError> {
+        let count: i64 = self
+            .connection
+            .query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))?;
+        from_i64(count)
+    }
+
+    /// Every path the engine currently cannot sync, sorted by path.
+    pub fn unsyncable(
+        &self,
+    ) -> Result<BTreeMap<WorkspacePath, UnsyncableRecord>, ManifestStoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT path, reason, errno, observed_at FROM unsyncable ORDER BY path")?;
+        let rows = statement.query_map([], |row| Ok(row_to_unsyncable(row)))?;
+        let mut entries = BTreeMap::new();
+        for row in rows {
+            let (path, record) = row??;
+            entries.insert(path, record);
+        }
+        Ok(entries)
+    }
+
+    /// Replace the unsyncable rows for the paths a scan just examined: `observed`
+    /// are the paths that failed, `resolved` the paths that were examined and
+    /// succeeded (so a fixed permission clears its attention item). One
+    /// transaction, so status never sees a half-updated set.
+    pub fn record_unsyncable(
+        &mut self,
+        observed: &BTreeMap<WorkspacePath, UnsyncableRecord>,
+        resolved: &BTreeSet<WorkspacePath>,
+    ) -> Result<(), ManifestStoreError> {
+        if observed.is_empty() && resolved.is_empty() {
+            return Ok(());
+        }
+        self.in_transaction(|connection| {
+            {
+                let mut clear = connection.prepare("DELETE FROM unsyncable WHERE path = ?1")?;
+                for path in resolved {
+                    clear.execute(params![path.as_str()])?;
+                }
+            }
+            let mut upsert = connection.prepare(
+                "INSERT INTO unsyncable (path, reason, errno, observed_at) \
+                 VALUES (?1, ?2, ?3, ?4) ON CONFLICT(path) DO UPDATE SET \
+                 reason = excluded.reason, errno = excluded.errno, \
+                 observed_at = excluded.observed_at",
+            )?;
+            for (path, record) in observed {
+                upsert.execute(params![
+                    path.as_str(),
+                    record.reason.tag(),
+                    record.errno,
+                    record.observed_at,
+                ])?;
+            }
+            Ok(())
+        })
+    }
+
+    /// The sealed object this device already holds for `content_id` under the
+    /// current key epoch, if any. A primary-key lookup, so the ledger costs
+    /// O(log rows) per changed file and never a table scan.
+    ///
+    /// Epoch-scoped deliberately: a key rotation must re-seal, so a row from an
+    /// older epoch is not a hit.
+    pub fn sealed_blob(
+        &self,
+        content_id: &ContentId,
+        key_epoch: KeyEpoch,
+    ) -> Result<Option<SealedBlob>, ManifestStoreError> {
+        self.connection
+            .query_row(
+                "SELECT blob_key, key_epoch, byte_len FROM blobs WHERE content_id = ?1 \
+                 AND key_epoch = ?2",
+                params![content_id.as_str(), i64::from(key_epoch.get())],
+                |row| Ok(row_to_sealed_blob(row)),
+            )
+            .optional()?
+            .transpose()
+    }
+
+    /// Record content this push actually sealed and PUT, so a later push that
+    /// re-presents the same bytes skips both.
+    pub fn record_sealed_blobs(
+        &mut self,
+        blobs: &BTreeMap<ContentId, SealedBlob>,
+    ) -> Result<(), ManifestStoreError> {
+        if blobs.is_empty() {
+            return Ok(());
+        }
+        self.in_transaction(|connection| {
+            let mut upsert = connection.prepare(
+                "INSERT INTO blobs (content_id, blob_key, key_epoch, byte_len) \
+                 VALUES (?1, ?2, ?3, ?4) ON CONFLICT(content_id) DO UPDATE SET \
+                 blob_key = excluded.blob_key, key_epoch = excluded.key_epoch, \
+                 byte_len = excluded.byte_len",
+            )?;
+            for (content_id, blob) in blobs {
+                upsert.execute(params![
+                    content_id.as_str(),
+                    blob.blob_key.as_str(),
+                    i64::from(blob.key_epoch.get()),
+                    to_i64(blob.byte_len)?,
+                ])?;
+            }
+            Ok(())
+        })
+    }
+
+    /// The node object this device has proven exists for a subtree with this
+    /// content, if any. A primary-key lookup, so a publish costs O(log rows) per
+    /// directory it touches and never a scan.
+    ///
+    /// Keyed by CONTENT, never by directory path: a row therefore cannot go
+    /// stale as the ancestor moves, and no transaction has to keep this table in
+    /// step with `files`. The worst a crash can do is lose a cached row, costing
+    /// one reseal. Epoch-scoped for the same reason the blob ledger is — a key
+    /// rotation must re-seal, so an older epoch's row is not a hit.
+    pub fn tree_node(
+        &self,
+        subtree_hash: &SubtreeHash,
+        key_epoch: KeyEpoch,
+    ) -> Result<Option<ManifestKey>, ManifestStoreError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT node_key FROM tree_nodes WHERE subtree_hash = ?1 AND key_epoch = ?2",
+                params![subtree_hash.as_str(), i64::from(key_epoch.get())],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(ManifestKey::new))
+    }
+
+    /// Record subtrees whose node object this device has proven present — it
+    /// either uploaded it or just downloaded it. Never called for a node whose
+    /// upload did not return.
+    pub fn record_tree_nodes(
+        &mut self,
+        nodes: &BTreeMap<SubtreeHash, ManifestKey>,
+        key_epoch: KeyEpoch,
+    ) -> Result<(), ManifestStoreError> {
+        if nodes.is_empty() {
+            return Ok(());
+        }
+        self.in_transaction(|connection| {
+            let mut upsert = connection.prepare(
+                "INSERT INTO tree_nodes (subtree_hash, node_key, key_epoch) \
+                 VALUES (?1, ?2, ?3) ON CONFLICT(subtree_hash) DO UPDATE SET \
+                 node_key = excluded.node_key, key_epoch = excluded.key_epoch",
+            )?;
+            for (subtree_hash, node_key) in nodes {
+                upsert.execute(params![
+                    subtree_hash.as_str(),
+                    node_key.as_str(),
+                    i64::from(key_epoch.get()),
+                ])?;
+            }
+            Ok(())
+        })
     }
 
     /// The singleton engine-state row (default if not yet written).
@@ -429,9 +637,37 @@ fn apply_ancestor(
             record.fingerprint.inode as i64,
             record.fingerprint.dev as i64,
             record.hashed_at,
-            record.verified_at,
+            record.verified_at.map(EndpointInstant::nanos),
         ])?;
     }
+    Ok(())
+}
+
+/// Re-derive the ref-freshness ratchet floor from the applied head on every
+/// open.
+///
+/// `synchronous=NORMAL` trades a lost *last* transaction on power loss for the
+/// fsync cost of every commit. Everywhere else that trade converges — the next
+/// cycle re-observes disk and the hosted ref and redoes the lost work — but the
+/// ratchet is the one durable value whose whole job is to be monotone. A window
+/// where the applied head sits above the ratchet is a window where a hosted
+/// rollback below the head this device already applied would pass
+/// `enforce_freshness`. The applied head is itself a verified observation (it was
+/// either CAS-advanced by this device or fetched, authenticated, and decoded), so
+/// raising the floor to it costs nothing and closes the window. Never lowers:
+/// the `WHERE` clause is the same monotone guard as
+/// [`advance_verified_ratchet`].
+fn raise_ratchet_floor(connection: &Connection) -> Result<(), ManifestStoreError> {
+    connection.execute(
+        "UPDATE engine_state SET \
+         highest_verified_ref_version = last_ref_version, \
+         highest_verified_manifest_key = applied_manifest_key \
+         WHERE singleton = 1 AND last_ref_version IS NOT NULL \
+         AND applied_manifest_key IS NOT NULL \
+         AND (highest_verified_ref_version IS NULL \
+         OR highest_verified_ref_version < last_ref_version)",
+        [],
+    )?;
     Ok(())
 }
 
@@ -500,9 +736,19 @@ fn row_to_file(row: &rusqlite::Row<'_>) -> Result<(WorkspacePath, FileRecord), M
             dev: row.get::<_, i64>(11)? as u64,
         },
         hashed_at: row.get::<_, Option<i64>>(12)?,
-        verified_at: row.get::<_, Option<i64>>(13)?,
+        verified_at: row
+            .get::<_, Option<i64>>(13)?
+            .map(EndpointInstant::from_stored_nanos),
     };
     Ok((path, record))
+}
+
+fn row_to_sealed_blob(row: &rusqlite::Row<'_>) -> Result<SealedBlob, ManifestStoreError> {
+    Ok(SealedBlob {
+        blob_key: BlobKey::new(row.get::<_, String>(0)?),
+        key_epoch: KeyEpoch::new(u32_from_i64(row.get::<_, i64>(1)?, "key_epoch")?),
+        byte_len: from_i64(row.get::<_, i64>(2)?)?,
+    })
 }
 
 fn row_to_engine_state(row: &rusqlite::Row<'_>) -> Result<EngineState, ManifestStoreError> {
@@ -525,6 +771,22 @@ fn row_to_intent(row: &rusqlite::Row<'_>) -> Result<Intent, ManifestStoreError> 
         target_manifest_key: row.get::<_, Option<String>>(6)?.map(ManifestKey::new),
         created_at: row.get::<_, i64>(7)?,
     })
+}
+
+fn row_to_unsyncable(
+    row: &rusqlite::Row<'_>,
+) -> Result<(WorkspacePath, UnsyncableRecord), ManifestStoreError> {
+    let path = WorkspacePath::new(row.get::<_, String>(0)?);
+    let reason = UnsyncableReason::from_tag(&row.get::<_, String>(1)?)
+        .ok_or(ManifestStoreError::Corrupt { field: "reason" })?;
+    Ok((
+        path,
+        UnsyncableRecord {
+            reason,
+            errno: row.get::<_, Option<i64>>(2)?.map(|code| code as i32),
+            observed_at: row.get::<_, i64>(3)?,
+        },
+    ))
 }
 
 fn entry_kind_to_i64(kind: EntryKind) -> i64 {

@@ -1,21 +1,19 @@
 //! Pull / merge-matrix / apply-transaction / recovery tests (Plan 109 Step 5).
 //!
 //! Every one of the eleven merge-matrix rows is a named test, plus the apply
-//! guards (preimage race, no-resurrect, mode-only, symlink), the Git contract,
-//! and the six recovery boundaries as pure-function checks.
+//! guards (preimage race, no-resurrect, mode-only, symlink) and the Git
+//! contract. Crash recovery has its own suite in the sibling `recovery_tests`.
 
-use super::apply::{Applied, apply_op, git_apply_rank, recovery_action, recovery_boundary};
-use super::intents::{PreimagePayload, target_payload};
-use super::materialize::{DeleteOutcome, checked_delete};
-use super::{
-    FsOp, FsOpKind, LocalDelta, PullDeps, PullError, RecoveryAction, RecoveryBoundary,
-    RecoveryObservation, local_vs_record,
-};
+use super::apply::{Applied, apply_op};
+use super::delta::{LocalDelta, local_vs_record};
+use super::git_contract::git_apply_rank;
+use super::intents::PreimagePayload;
+use super::{FsOp, FsOpKind, PullDeps, PullError, PullScope};
 use crate::sync::manifest_engine::engine_test_support::{Event, TestEngine};
 use crate::sync::manifest_engine::manifest::{FileMode, ManifestEntry, ManifestKey, WorkspacePath};
-use crate::sync::manifest_engine::store::{Intent, IntentOperationKind};
+use crate::sync::manifest_engine::unsyncable::UnsyncableReason;
 
-fn wp(path: &str) -> WorkspacePath {
+pub(super) fn wp(path: &str) -> WorkspacePath {
     WorkspacePath::new(path)
 }
 
@@ -162,6 +160,8 @@ fn conflict_aside_recovery_is_idempotent_across_double_crash() {
         ctx: &engine.ctx,
         objects: &engine.remote,
         refs: &engine.remote,
+
+        scope: PullScope::WholeAncestor,
     };
     let plan = super::decide_head(&mut engine.store, &deps, &head).expect("decide head");
     let op = plan
@@ -222,14 +222,14 @@ fn is_case_insensitive_dir(dir: &std::path::Path) -> bool {
 }
 
 /// Workspace-relative names of every conflict aside under `root`.
-fn aside_names(root: &std::path::Path) -> Vec<String> {
+pub(super) fn aside_names(root: &std::path::Path) -> Vec<String> {
     let mut names = Vec::new();
     let Ok(entries) = std::fs::read_dir(root) else {
         return names;
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.contains("conflict from") {
+        if super::naming::is_conflict_aside(&name) {
             names.push(name);
         }
     }
@@ -260,6 +260,8 @@ fn first_pull_crash_recovery_lets_a_later_push_cas_against_the_real_version() {
             ctx: &engine.ctx,
             objects: &engine.remote,
             refs: &engine.remote,
+
+            scope: PullScope::WholeAncestor,
         };
         let plan = super::decide_head(&mut engine.store, &deps, &head).expect("decide head");
         let op = plan
@@ -677,6 +679,284 @@ fn symlink_recreated_never_followed() {
 }
 
 #[test]
+fn a_link_published_under_a_peers_mode_is_not_resurrected_by_a_remote_delete() {
+    // The two-platform resurrection loop. A symlink's `st_mode` is a constant the
+    // kernel picks and no API sets — Linux 0o120777, macOS 0o120755 — so a link
+    // one device published arrived carrying a mode the other device's `lstat`
+    // would never report. That made it permanently locally CHANGED, and a remote
+    // deletion then hit the (Changed, Absent) row: keep local, re-push as a
+    // creation. The peer that had deleted the link installed it again, parent
+    // directories and all, and neither device could ever delete it.
+    //
+    // The published mode here is neither host's constant, so the scenario is the
+    // same on every platform the suite runs on.
+    let mut engine = TestEngine::new("link-foreign-mode");
+    let entry = ManifestEntry::Symlink {
+        mode: FileMode::new(0o120_700),
+        target: "main.txt".to_string(),
+    };
+    engine.publish(&[("src/link-to-main.txt", entry)]);
+    engine.pull();
+    assert!(
+        std::fs::symlink_metadata(engine.root().join("src/link-to-main.txt")).is_ok(),
+        "the peer's link materializes"
+    );
+
+    // The peer deletes it: the next head simply does not list it.
+    engine.publish(&[]);
+    let outcome = engine.pull();
+
+    assert!(
+        std::fs::symlink_metadata(engine.root().join("src/link-to-main.txt")).is_err(),
+        "the deletion is applied to disk"
+    );
+    assert!(
+        !engine.files().contains_key(&wp("src/link-to-main.txt")),
+        "and the ancestor row goes with it"
+    );
+    assert!(
+        outcome.push_again.is_empty(),
+        "nothing is kept local, so nothing re-publishes the link the peer deleted"
+    );
+}
+
+#[test]
+fn symlink_target_escaping_the_workspace_is_never_materialized() {
+    // A hostile or compromised peer publishes a link out of the workspace. Bowline
+    // never follows a symlink, but the user's editor and tools do, so the entry
+    // must not reach `symlink()` at all.
+    let mut engine = TestEngine::new("symlink-escape");
+    let entry = ManifestEntry::Symlink {
+        mode: FileMode::new(0o777),
+        target: "../../../.ssh/authorized_keys".to_string(),
+    };
+    engine.publish(&[("link", entry)]);
+
+    engine.pull();
+
+    assert!(
+        !engine.exists("link"),
+        "the escaping link is never created on disk"
+    );
+    assert!(
+        std::fs::symlink_metadata(engine.root().join("link")).is_err(),
+        "not even as a dangling link"
+    );
+    assert!(
+        !engine.files().contains_key(&wp("link")),
+        "a refused entry never enters the ancestor"
+    );
+    assert_eq!(
+        engine
+            .store
+            .unsyncable()
+            .expect("unsyncable")
+            .get(&wp("link"))
+            .map(|record| record.reason),
+        Some(UnsyncableReason::EscapingSymlinkTarget),
+        "status names the refused path instead of silently dropping it"
+    );
+}
+
+#[test]
+fn escaping_symlink_is_refused_at_the_aside_path_too() {
+    // Local holds untracked bytes at the same path, the row that would normally
+    // materialize the remote as a conflict-aside. The aside must not become the
+    // escape hatch that puts the link on disk under a different name.
+    let mut engine = TestEngine::new("symlink-escape-aside");
+    engine.write("link", b"local bytes");
+    let entry = ManifestEntry::Symlink {
+        mode: FileMode::new(0o777),
+        target: "/etc/passwd".to_string(),
+    };
+    engine.publish(&[("link", entry)]);
+
+    let outcome = engine.pull();
+
+    assert_eq!(
+        std::fs::read(engine.root().join("link")).expect("local file"),
+        b"local bytes",
+        "local bytes are untouched"
+    );
+    assert!(
+        outcome.conflict_asides.is_empty(),
+        "no aside is materialized for a refused entry"
+    );
+    let escaping: Vec<_> = std::fs::read_dir(engine.root())
+        .expect("read root")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|kind| kind.is_symlink())
+                .unwrap_or(false)
+        })
+        .collect();
+    assert!(
+        escaping.is_empty(),
+        "no symlink was created anywhere in the root, aside path included"
+    );
+}
+
+#[test]
+fn a_target_routed_through_an_existing_escaping_symlink_is_refused() {
+    // The lexical gate alone cannot see this: `escape/passwd` never climbs and is
+    // not absolute, so on its face it is contained. The user's own
+    // `~/Code/escape -> /etc` is what makes it an escape — Bowline refuses to
+    // publish that link, but refusing to sync it does not remove it from their
+    // disk. A hostile peer then names a target that routes through it, and the
+    // materialized link resolves to /etc/passwd for every editor and agent.
+    let mut engine = TestEngine::new("symlink-escape-through-existing-link");
+    std::os::unix::fs::symlink("/etc", engine.root().join("escape")).expect("plant escape link");
+
+    let entry = ManifestEntry::Symlink {
+        mode: FileMode::new(0o777),
+        target: "escape/passwd".to_string(),
+    };
+    engine.publish(&[("read-passwd", entry)]);
+
+    engine.pull();
+
+    assert!(
+        std::fs::symlink_metadata(engine.root().join("read-passwd")).is_err(),
+        "the routed link is never created, not even as a dangling link"
+    );
+    assert!(
+        !engine.files().contains_key(&wp("read-passwd")),
+        "a refused entry never enters the ancestor"
+    );
+    assert_eq!(
+        engine
+            .store
+            .unsyncable()
+            .expect("unsyncable")
+            .get(&wp("read-passwd"))
+            .map(|record| record.reason),
+        Some(UnsyncableReason::EscapingSymlinkTarget),
+        "the refusal is recorded against the path, not swallowed"
+    );
+}
+
+#[test]
+fn a_target_routed_through_a_contained_symlink_still_applies() {
+    // The counterweight to the test above, and the reason the gate resolves a
+    // symlinked component instead of refusing it outright: pnpm links
+    // `node_modules/.bin/<tool>` through a symlinked `node_modules/<pkg>`, so
+    // "refuse any symlinked component" would stop Bowline syncing ordinary
+    // repositories. Every hop here stays inside the root, so the link is safe.
+    let mut engine = TestEngine::new("symlink-through-contained-link");
+    engine.write("store/pkg/bin.js", b"#!/usr/bin/env node\n");
+    std::fs::create_dir_all(engine.root().join("node_modules")).expect("node_modules");
+    std::os::unix::fs::symlink("../store/pkg", engine.root().join("node_modules/pkg"))
+        .expect("plant contained link");
+
+    let entry = ManifestEntry::Symlink {
+        mode: FileMode::new(0o777),
+        target: "../pkg/bin.js".to_string(),
+    };
+    engine.publish(&[("node_modules/.bin/tool", entry)]);
+
+    engine.pull();
+
+    assert_eq!(
+        std::fs::read_link(engine.root().join("node_modules/.bin/tool")).expect("readlink"),
+        std::path::Path::new("../pkg/bin.js"),
+        "a link resolving through a contained symlink is materialized"
+    );
+    assert!(
+        engine.store.unsyncable().expect("unsyncable").is_empty(),
+        "nothing was refused"
+    );
+}
+
+#[test]
+fn symlink_that_climbs_but_stays_inside_the_workspace_still_applies() {
+    // The kernel resolves a target against the link's own directory, so `../` is
+    // ordinary intra-workspace linking (this repo's own `.claude/skills/*` links
+    // are exactly this shape). Refusing it would be both wrong and a lie.
+    let mut engine = TestEngine::new("symlink-contained-climb");
+    let entry = ManifestEntry::Symlink {
+        mode: FileMode::new(0o777),
+        target: "../README.md".to_string(),
+    };
+    engine.publish(&[
+        ("docs/link", entry),
+        (
+            "README.md",
+            ManifestEntry::Directory {
+                mode: FileMode::new(0o755),
+            },
+        ),
+    ]);
+
+    engine.pull();
+
+    assert_eq!(
+        std::fs::read_link(engine.root().join("docs/link")).expect("readlink"),
+        std::path::Path::new("../README.md"),
+        "a contained relative link is materialized with its target intact"
+    );
+    assert!(
+        engine.files().contains_key(&wp("docs/link")),
+        "and it is tracked like any other entry"
+    );
+    assert!(
+        engine.store.unsyncable().expect("unsyncable").is_empty(),
+        "nothing was refused"
+    );
+}
+
+#[test]
+fn one_escaping_entry_does_not_stop_the_rest_of_the_manifest() {
+    // The availability half of the contract: a single hostile entry must not fail
+    // the manifest, kill the cycle, or hold the applied head back. Wave 1 removed
+    // "any non-transport error is fatal"; refusing at decode would put it back.
+    let mut engine = TestEngine::new("symlink-escape-partial");
+    engine.write("seed.txt", b"seed");
+    engine.push(&["seed.txt"]);
+    let seed = engine
+        .remote
+        .decoded_manifest(&engine.ctx.crypto)
+        .expect("head")
+        .entries[&wp("seed.txt")]
+        .clone();
+
+    engine.publish(&[
+        ("seed.txt", seed),
+        (
+            "escape",
+            ManifestEntry::Symlink {
+                mode: FileMode::new(0o777),
+                target: "../../outside".to_string(),
+            },
+        ),
+        (
+            "good/link",
+            ManifestEntry::Symlink {
+                mode: FileMode::new(0o777),
+                target: "../seed.txt".to_string(),
+            },
+        ),
+    ]);
+
+    let outcome = engine.pull();
+
+    assert!(!engine.exists("escape"), "the escaping entry is refused");
+    assert!(
+        std::fs::read_link(engine.root().join("good/link")).is_ok(),
+        "every other entry in the same cycle still applies"
+    );
+    assert!(
+        outcome.deferred.is_empty(),
+        "a refusal is not a deferral: it must never hold the head back and livelock"
+    );
+    assert!(
+        outcome.applied_manifest_key.is_some(),
+        "the head still advances past a manifest containing a refused entry"
+    );
+}
+
+#[test]
 fn deletion_does_not_resurrect() {
     let mut engine = TestEngine::new("no-resurrect");
     engine.write("d.txt", b"content");
@@ -775,15 +1055,22 @@ fn object_before_ref_apply() {
 #[test]
 fn git_add_races_remote_index_apply() {
     // A `git add` rewrites `.git/index` while we apply a remote index change. The
-    // preimage re-observation must keep the local index and aside the remote.
+    // preimage re-observation must keep the local index. Git state is the one
+    // place an aside is destructive rather than helpful — a second index file
+    // corrupts the repository — so the remote is not materialized beside it; the
+    // local index stays canonical and pushes back.
     let mut engine = TestEngine::new("git-index-race");
     engine.write(".git/index", b"index written by a racing git add");
     let entry = engine.remote_file(b"remote index bytes");
     let applied = apply_install_expecting_absent(&mut engine, ".git/index", entry, "m_idx");
-    assert!(matches!(applied, Applied::Aside(_)));
+    assert!(matches!(applied, Applied::KeptLocal(_)));
     assert_eq!(
         engine.read(".git/index"),
         b"index written by a racing git add"
+    );
+    assert!(
+        aside_names(&engine.root().join(".git")).is_empty(),
+        "no aside may ever be written under .git/",
     );
 }
 
@@ -799,136 +1086,6 @@ fn kill9_with_index_lock_present() {
     let outcome = engine.pull();
     assert!(outcome.deferred.contains(&wp(".git/refs/heads/main")));
     assert!(!engine.exists(".git/refs/heads/main"));
-}
-
-// ---- recovery boundaries (pure classification) -----------------------------
-
-/// Named recovery facts for the boundary tests. A struct with `Default` keeps
-/// each case readable (only the true facts are named) and avoids a five-bool
-/// positional helper (`clippy::fn-params-excessive-bools`).
-#[derive(Default)]
-struct RecoveryFacts {
-    target_present: bool,
-    target_matches_target_record: bool,
-    target_matches_preimage: bool,
-    temp_exists: bool,
-    quarantine_exists: bool,
-}
-
-fn observation(facts: RecoveryFacts) -> RecoveryObservation {
-    RecoveryObservation {
-        target_present: facts.target_present,
-        target_matches_target_record: facts.target_matches_target_record,
-        target_matches_preimage: facts.target_matches_preimage,
-        temp_exists: facts.temp_exists,
-        quarantine_exists: facts.quarantine_exists,
-    }
-}
-
-#[test]
-fn recovery_boundary_temp_only_discards() {
-    let observed = observation(RecoveryFacts {
-        temp_exists: true,
-        ..Default::default()
-    });
-    let boundary = recovery_boundary(IntentOperationKind::Install, &observed);
-    assert_eq!(boundary, RecoveryBoundary::TempOnly);
-    assert_eq!(recovery_action(boundary), RecoveryAction::DiscardTemp);
-}
-
-#[test]
-fn recovery_boundary_intent_old_target_reapplies() {
-    let observed = observation(RecoveryFacts {
-        target_present: true,
-        target_matches_preimage: true,
-        temp_exists: true,
-        ..Default::default()
-    });
-    let boundary = recovery_boundary(IntentOperationKind::Install, &observed);
-    assert_eq!(boundary, RecoveryBoundary::IntentOldTarget);
-    assert_eq!(recovery_action(boundary), RecoveryAction::Reapply);
-}
-
-#[test]
-fn recovery_boundary_installed_intent_finalizes() {
-    let observed = observation(RecoveryFacts {
-        target_present: true,
-        target_matches_target_record: true,
-        ..Default::default()
-    });
-    let boundary = recovery_boundary(IntentOperationKind::Install, &observed);
-    assert_eq!(boundary, RecoveryBoundary::InstalledIntent);
-    assert_eq!(recovery_action(boundary), RecoveryAction::FinalizeInstalled);
-}
-
-#[test]
-fn recovery_boundary_preserved_no_target_restores() {
-    let observed = observation(RecoveryFacts {
-        quarantine_exists: true,
-        ..Default::default()
-    });
-    let boundary = recovery_boundary(IntentOperationKind::Install, &observed);
-    assert_eq!(boundary, RecoveryBoundary::PreservedNoTarget);
-    assert_eq!(recovery_action(boundary), RecoveryAction::RestoreOrComplete);
-}
-
-#[test]
-fn recovery_boundary_delete_done_intent_finalizes() {
-    let observed = observation(RecoveryFacts::default());
-    let boundary = recovery_boundary(IntentOperationKind::Delete, &observed);
-    assert_eq!(boundary, RecoveryBoundary::DeleteDoneIntent);
-    assert_eq!(recovery_action(boundary), RecoveryAction::FinalizeDeleted);
-}
-
-#[test]
-fn recovery_boundary_target_modified_while_down_keeps_local() {
-    let observed = observation(RecoveryFacts {
-        target_present: true,
-        ..Default::default()
-    });
-    let boundary = recovery_boundary(IntentOperationKind::Install, &observed);
-    assert_eq!(boundary, RecoveryBoundary::TargetModifiedWhileDown);
-    assert_eq!(recovery_action(boundary), RecoveryAction::KeepLocalAside);
-}
-
-// ---- recovery integration --------------------------------------------------
-
-#[test]
-fn recover_intents_finalizes_an_installed_target_and_clears_the_journal() {
-    let mut engine = TestEngine::new("recover-installed");
-    // Establish an applied head so recovery has a manifest key to commit under.
-    engine.write("seed.txt", b"seed");
-    engine.push(&["seed.txt"]);
-
-    // Simulate an interrupted install: the file is on disk (installed) but its
-    // intent was never cleared because the outcome transaction was lost.
-    let bytes = b"already installed bytes";
-    engine.write("recovered.txt", bytes);
-    let entry = engine.remote_file(bytes);
-    let target_record = install_target_record(&entry);
-    let intent = Intent {
-        path: wp("recovered.txt"),
-        operation_kind: IntentOperationKind::Install,
-        temp_name: None,
-        expected_preimage: Some(serde_json::to_string(&PreimagePayload::absent()).expect("encode")),
-        target_record: Some(target_record),
-        preserved_preimage: None,
-        target_manifest_key: engine.remote.current_ref().map(|head| head.manifest_key),
-        created_at: 1,
-    };
-    engine.store.open_intent(&intent).expect("open intent");
-
-    let deps = PullDeps {
-        ctx: &engine.ctx,
-        objects: &engine.remote,
-        refs: &engine.remote,
-    };
-    super::recover_intents(&mut engine.store, &deps).expect("recover");
-
-    // Journal cleared; the file survived; ancestor now records it.
-    assert!(engine.store.pending_intents().expect("intents").is_empty());
-    assert_eq!(engine.read("recovered.txt"), bytes);
-    assert!(engine.files().contains_key(&wp("recovered.txt")));
 }
 
 // ---- symlinked-parent workspace escape (P1 security guard) -----------------
@@ -958,11 +1115,13 @@ fn is_symlink(path: &std::path::Path) -> bool {
 }
 
 /// Apply exactly one fs op through the production apply transaction.
-fn apply_single_op(engine: &mut TestEngine, op: FsOp, manifest_key: &str) -> Applied {
+pub(super) fn apply_single_op(engine: &mut TestEngine, op: FsOp, manifest_key: &str) -> Applied {
     let deps = PullDeps {
         ctx: &engine.ctx,
         objects: &engine.remote,
         refs: &engine.remote,
+
+        scope: PullScope::WholeAncestor,
     };
     apply_op(
         &mut engine.store,
@@ -1124,6 +1283,8 @@ fn recovery_install_through_symlinked_parent_does_not_escape() {
         ctx: &engine.ctx,
         objects: &engine.remote,
         refs: &engine.remote,
+
+        scope: PullScope::WholeAncestor,
     };
     let mut commit = AncestorCommit::default();
     let mut temps = BTreeSet::new();
@@ -1140,100 +1301,10 @@ fn recovery_install_through_symlinked_parent_does_not_escape() {
     );
 }
 
-// ---- Finding A: recursive directory delete must not destroy local work ------
-
-/// A directory kind manifest entry (push records dirs, but a remote peer can also
-/// publish one directly).
-fn dir_entry() -> ManifestEntry {
-    ManifestEntry::Directory {
-        mode: FileMode::new(0o755),
-    }
-}
-
-fn is_dir(engine: &TestEngine, rel: &str) -> bool {
-    std::fs::symlink_metadata(engine.root().join(rel))
-        .map(|meta| meta.is_dir())
-        .unwrap_or(false)
-}
-
-#[test]
-fn directory_delete_preserves_untracked_local_child() {
-    // Remote deletes a tracked directory tree; the user has an untracked file
-    // inside it. A recursive `remove_dir_all` would destroy that racing local work
-    // (branch invariant: never silently destroy it). The tracked child goes away;
-    // the directory and the untracked child survive and re-push.
-    let mut engine = TestEngine::new("dir-delete-untracked-child");
-    engine.write("dir/tracked.txt", b"tracked");
-    // Present at push time so the directory's recorded fingerprint includes it and
-    // the directory still classifies Unchanged (a Delete op is emitted for it).
-    engine.write("dir/untracked.txt", b"local only work");
-    engine.push(&["dir", "dir/tracked.txt"]);
-    assert!(engine.files().contains_key(&wp("dir")));
-
-    engine.publish(&[]); // remote head removes the whole tracked tree
-    let outcome = engine.pull();
-
-    assert!(
-        engine.exists("dir/untracked.txt"),
-        "untracked child survives"
-    );
-    assert_eq!(engine.read("dir/untracked.txt"), b"local only work");
-    assert!(
-        is_dir(&engine, "dir"),
-        "the directory survives (kept local)"
-    );
-    assert!(
-        !engine.exists("dir/tracked.txt"),
-        "the tracked child is deleted"
-    );
-    assert!(outcome.deleted.contains(&wp("dir/tracked.txt")));
-    assert!(
-        outcome.push_again.contains(&wp("dir")),
-        "the kept-local directory re-pushes"
-    );
-}
-
-#[test]
-fn directory_delete_of_fully_tracked_tree_removes_everything() {
-    // The plain case still works: with no local-only content, the whole tree is
-    // deleted bottom-up (child unlinked, then the now-empty directory).
-    let mut engine = TestEngine::new("dir-delete-fully-tracked");
-    engine.write("dir/child.txt", b"tracked");
-    engine.push(&["dir", "dir/child.txt"]);
-    assert!(engine.exists("dir/child.txt"));
-
-    engine.publish(&[]);
-    let outcome = engine.pull();
-
-    assert!(!engine.exists("dir/child.txt"));
-    assert!(!engine.exists("dir"));
-    assert!(outcome.deleted.contains(&wp("dir")));
-    assert!(outcome.deleted.contains(&wp("dir/child.txt")));
-}
-
-#[test]
-fn checked_delete_keeps_a_nonempty_directory_local() {
-    // The delete executor (shared by apply and crash-recovery replay) removes a
-    // directory only when empty; local-only content keeps it local rather than
-    // destroying it.
-    let engine = TestEngine::new("checked-delete-nonempty");
-    engine.write("dir/keep.txt", b"must survive");
-    let outcome = checked_delete(&engine.ctx, &wp("dir")).expect("checked delete");
-    assert!(matches!(outcome, DeleteOutcome::KeptLocal));
-    assert!(engine.exists("dir"));
-    assert_eq!(engine.read("dir/keep.txt"), b"must survive");
-
-    // An empty directory deletes cleanly.
-    std::fs::remove_file(engine.root().join("dir/keep.txt")).expect("rm child");
-    let outcome = checked_delete(&engine.ctx, &wp("dir")).expect("checked delete empty");
-    assert!(matches!(outcome, DeleteOutcome::Deleted));
-    assert!(!engine.exists("dir"));
-}
-
 // ---- Review Finding A: apply-time mode race deflects to keep-local ----------
 
 /// Chmod a workspace-relative path to the exact `mode` bits.
-fn chmod(engine: &TestEngine, rel: &str, mode: u32) {
+pub(super) fn chmod(engine: &TestEngine, rel: &str, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(
         engine.root().join(rel),
@@ -1271,37 +1342,6 @@ fn file_chmod_between_plan_and_apply_deflects_and_local_mode_survives() {
     );
     assert_eq!(engine.read("f.txt"), b"content", "local bytes survive");
     assert_eq!(engine.mode_bits("f.txt"), 0o600, "local mode survives");
-}
-
-#[test]
-fn directory_chmod_between_plan_and_apply_deflects_and_local_mode_survives() {
-    // Same guard for a directory: a raced chmod diverges the preimage, so a remote
-    // delete keeps local rather than discarding the permission change.
-    let mut engine = TestEngine::new("mode-race-dir");
-    std::fs::create_dir(engine.root().join("d")).expect("mkdir");
-    chmod(&engine, "d", 0o755);
-    let observed = engine.observe("d").expect("present");
-    let expected = PreimagePayload::from_observed(&observed, None);
-
-    chmod(&engine, "d", 0o700);
-
-    let op = FsOp {
-        path: wp("d"),
-        kind: FsOpKind::Delete,
-        expected,
-    };
-    let applied = apply_single_op(&mut engine, op, "m_mode_dir");
-
-    assert!(
-        matches!(applied, Applied::KeptLocal(_)),
-        "the raced directory chmod deflects the remote delete to keep-local"
-    );
-    assert!(is_dir(&engine, "d"), "the directory survives");
-    assert_eq!(
-        engine.mode_bits("d"),
-        0o700,
-        "local directory mode survives"
-    );
 }
 
 #[test]
@@ -1450,130 +1490,6 @@ fn set_mode_never_chmods_external_target_under_a_racing_symlink_swap() {
 fn chmod_path(path: &std::path::Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod path");
-}
-
-// ---- Finding C: entry-kind replacement (file↔directory↔symlink) -------------
-
-#[test]
-fn kind_change_classifies_as_install_not_aside() {
-    // The premise: a remote entry of a different kind over an unchanged local entry
-    // is a plain Install (not conflict-aside), so the executor must materialize it.
-    let mut engine = TestEngine::new("kind-change-classify");
-    engine.write("f", b"original");
-    engine.push(&["f"]);
-    engine.publish(&[("f", dir_entry())]);
-
-    let head = engine.remote.current_ref().expect("head");
-    let deps = PullDeps {
-        ctx: &engine.ctx,
-        objects: &engine.remote,
-        refs: &engine.remote,
-    };
-    let plan = super::decide_head(&mut engine.store, &deps, &head).expect("decide head");
-    let op = plan
-        .fs_ops
-        .iter()
-        .find(|op| op.path.as_str() == "f")
-        .expect("an fs op for f");
-    assert!(
-        matches!(op.kind, FsOpKind::Install(_)),
-        "a kind change classifies as install"
-    );
-}
-
-#[test]
-fn kind_change_file_to_directory_converges() {
-    let mut engine = TestEngine::new("kind-file-to-dir");
-    engine.write("f", b"original file");
-    engine.push(&["f"]);
-
-    let child = engine.remote_file(b"child bytes");
-    engine.publish(&[("f", dir_entry()), ("f/c.txt", child)]);
-    let outcome = engine.pull();
-
-    assert!(is_dir(&engine, "f"), "f became a directory");
-    assert_eq!(engine.read("f/c.txt"), b"child bytes");
-    assert!(outcome.conflict_asides.is_empty());
-}
-
-#[test]
-fn kind_change_directory_to_file_converges() {
-    let mut engine = TestEngine::new("kind-dir-to-file");
-    engine.write("d/c.txt", b"child");
-    engine.push(&["d", "d/c.txt"]);
-
-    let file_entry = engine.remote_file(b"now a file");
-    engine.publish(&[("d", file_entry)]); // remote drops d/c.txt, makes d a file
-    let outcome = engine.pull();
-
-    assert!(!is_dir(&engine, "d"), "d became a file");
-    assert_eq!(engine.read("d"), b"now a file");
-    assert!(!engine.exists("d/c.txt"));
-    assert!(outcome.conflict_asides.is_empty());
-}
-
-#[test]
-fn kind_change_symlink_to_directory_converges() {
-    use std::os::unix::fs::symlink;
-    let mut engine = TestEngine::new("kind-symlink-to-dir");
-    symlink("elsewhere", engine.root().join("l")).expect("symlink");
-    engine.push(&["l"]);
-
-    let child = engine.remote_file(b"deep bytes");
-    engine.publish(&[("l", dir_entry()), ("l/c.txt", child)]);
-    let outcome = engine.pull();
-
-    assert!(is_dir(&engine, "l"), "l became a directory");
-    assert_eq!(engine.read("l/c.txt"), b"deep bytes");
-    assert!(outcome.conflict_asides.is_empty());
-}
-
-#[test]
-fn kind_change_file_to_symlink_converges() {
-    let mut engine = TestEngine::new("kind-file-to-symlink");
-    engine.write("s", b"file bytes");
-    engine.push(&["s"]);
-
-    let link = ManifestEntry::Symlink {
-        mode: FileMode::new(0o777),
-        target: "target/path".to_string(),
-    };
-    engine.publish(&[("s", link)]);
-    let outcome = engine.pull();
-
-    let meta = std::fs::symlink_metadata(engine.root().join("s")).expect("metadata");
-    assert!(meta.file_type().is_symlink(), "s became a symlink");
-    assert_eq!(
-        std::fs::read_link(engine.root().join("s")).expect("readlink"),
-        std::path::Path::new("target/path")
-    );
-    assert!(outcome.conflict_asides.is_empty());
-}
-
-#[test]
-fn kind_change_directory_to_file_preserves_untracked_local_child() {
-    // A remote replaces a directory with a file while the directory holds an
-    // untracked local file. The replacement must NOT destroy it: keep the
-    // directory local and aside the remote file.
-    let mut engine = TestEngine::new("kind-dir-to-file-untracked");
-    engine.write("d/tracked.txt", b"tracked");
-    engine.write("d/keep.txt", b"local work"); // untracked, present at push
-    engine.push(&["d", "d/tracked.txt"]);
-
-    let file_entry = engine.remote_file(b"remote file bytes");
-    engine.publish(&[("d", file_entry)]); // remote: d is a file, tracked.txt gone
-    let outcome = engine.pull();
-
-    assert!(is_dir(&engine, "d"), "d stays a directory (kept local)");
-    assert!(engine.exists("d/keep.txt"), "untracked child survives");
-    assert_eq!(engine.read("d/keep.txt"), b"local work");
-    assert!(!engine.exists("d/tracked.txt"));
-    let aside = outcome
-        .conflict_asides
-        .iter()
-        .next()
-        .expect("the remote file is asided");
-    assert_eq!(engine.read(aside.as_str()), b"remote file bytes");
 }
 
 // ---- Finding B: first-pull Git-lock deferral must not commit the head -------
@@ -1844,7 +1760,7 @@ fn full_mode_file_at(engine: &TestEngine, plaintext: &[u8], mode: u32) -> Manife
     }
 }
 
-fn apply_install_expecting_absent(
+pub(super) fn apply_install_expecting_absent(
     engine: &mut TestEngine,
     path: &str,
     entry: ManifestEntry,
@@ -1859,6 +1775,8 @@ fn apply_install_expecting_absent(
         ctx: &engine.ctx,
         objects: &engine.remote,
         refs: &engine.remote,
+
+        scope: PullScope::WholeAncestor,
     };
     apply_op(
         &mut engine.store,
@@ -1869,14 +1787,136 @@ fn apply_install_expecting_absent(
     .expect("apply op")
 }
 
-/// The `target_record` JSON an install intent would carry, built through the
-/// production `target_payload` path (never hand-assembled).
-fn install_target_record(entry: &ManifestEntry) -> String {
-    let op = FsOp {
-        path: wp("recovered.txt"),
-        kind: FsOpKind::Install(entry.clone()),
-        expected: PreimagePayload::absent(),
-    };
-    let (_kind, payload) = target_payload(&op);
-    serde_json::to_string(&payload).expect("encode target record")
+// ---- the pull cost model ----------------------------------------------------
+
+/// Entries in the A/B fixture below. Small on purpose: the contrast between
+/// "one syscall" and "one syscall per entry" is what the test proves, and the
+/// 1000-entry version of the same claim lives in `invariant_tests`.
+const COST_MODEL_ENTRIES: usize = 64;
+
+#[test]
+fn narrowing_a_pull_replaces_one_stat_per_entry_with_one_stat_per_change() {
+    let mut engine = TestEngine::new("pull-cost-model");
+    let paths: Vec<String> = (0..COST_MODEL_ENTRIES)
+        .map(|index| format!("f{index:04}.dat"))
+        .collect();
+    for path in &paths {
+        engine.write(path, b"payload");
+    }
+    let owned: Vec<&str> = paths.iter().map(String::as_str).collect();
+    engine.push(&owned);
+
+    let mut head = engine
+        .remote
+        .decoded_manifest(&engine.ctx.crypto)
+        .expect("published head");
+    assert_eq!(head.entries.len(), COST_MODEL_ENTRIES);
+
+    // A: the unnarrowed scope, which is what every pull used to do.
+    let first = engine.remote.publish_blob(&engine.ctx.crypto, b"peer one");
+    head.entries.insert(wp(&paths[0]), first);
+    engine.remote.publish_manifest(&engine.ctx.crypto, &head);
+    let before = engine.counters().merge_observations;
+    engine.pull();
+    assert_eq!(
+        engine.counters().merge_observations - before,
+        COST_MODEL_ENTRIES as u64,
+        "observing the whole ancestor costs one stat per entry"
+    );
+
+    // B: the same single-entry change under the driver's narrowed scope.
+    let second = engine.remote.publish_blob(&engine.ctx.crypto, b"peer two");
+    head.entries.insert(wp(&paths[1]), second);
+    engine.remote.publish_manifest(&engine.ctx.crypto, &head);
+    let before = engine.counters().merge_observations;
+    engine.pull_dirty(&[]);
+    assert_eq!(
+        engine.counters().merge_observations - before,
+        1,
+        "the narrowed scope costs one stat per changed entry"
+    );
+    assert_eq!(engine.read(&paths[1]), b"peer two");
+}
+
+#[test]
+fn a_narrowed_pull_still_sees_a_local_divergence_the_dirty_set_carries() {
+    let mut engine = TestEngine::new("pull-cost-dirty");
+    engine.write("shared.txt", b"base");
+    engine.write("quiet.txt", b"quiet");
+    engine.push(&["shared.txt", "quiet.txt"]);
+
+    // The peer republishes the SAME content for `shared.txt` (remote delta is
+    // Unchanged), while locally it diverged. Only the dirty set can put it back
+    // in the observed scope, and it must come back as a keep-local re-push.
+    let mut head = engine
+        .remote
+        .decoded_manifest(&engine.ctx.crypto)
+        .expect("published head");
+    let unrelated = engine.remote.publish_blob(&engine.ctx.crypto, b"peer edit");
+    head.entries.insert(wp("quiet.txt"), unrelated);
+    engine.remote.publish_manifest(&engine.ctx.crypto, &head);
+    engine.write("shared.txt", b"local edit");
+
+    let outcome = engine.pull_dirty(&["shared.txt"]);
+
+    assert!(
+        outcome.push_again.contains(&wp("shared.txt")),
+        "a dirty path that the remote did not move is still re-pushed"
+    );
+    assert_eq!(engine.read("shared.txt"), b"local edit");
+    assert_eq!(engine.read("quiet.txt"), b"peer edit");
+}
+
+#[test]
+fn a_git_lock_taken_mid_plan_defers_the_very_next_op() {
+    // `index.lock` is what `git add`, `git commit`, `git checkout` and `git rebase`
+    // take. Applying remote opaque Git state alongside a live Git transaction is
+    // the repository corruption this guard exists to prevent, so the cached refs
+    // walk must never carry an "unlocked" answer past the moment it stops being
+    // true.
+    let engine = TestEngine::new("git-lock-midplan");
+    let root = engine.root();
+    std::fs::create_dir_all(root.join("repo").join(".git").join("refs")).expect("refs dir");
+
+    let mut cache = super::git_contract::GitLockCache::default();
+    assert!(
+        !cache.is_active(&root, &wp("repo/.git/objects/aa")),
+        "an unlocked repo applies"
+    );
+    std::fs::write(root.join("repo").join(".git").join("index.lock"), b"").expect("index.lock");
+
+    assert!(
+        cache.is_active(&root, &wp("repo/.git/objects/bb")),
+        "the op right after the lock appears must defer, not ride a cached verdict"
+    );
+}
+
+#[test]
+fn the_recursive_refs_walk_is_per_repo_per_plan_not_per_op() {
+    let engine = TestEngine::new("git-lock-probe-cost");
+    let root = engine.root();
+    // Two repos' worth of `.git/objects/**` entries — the shape a first pull of a
+    // real workspace produces, and the shape that used to trigger one recursive
+    // `.git/refs` walk per filesystem op.
+    for repo in ["repo-a", "repo-b"] {
+        std::fs::create_dir_all(root.join(repo).join(".git").join("refs")).expect("refs dir");
+    }
+    let ops = 2_000_usize;
+
+    let mut cache = super::git_contract::GitLockCache::default();
+    for index in 0..ops {
+        let repo = if index % 2 == 0 { "repo-a" } else { "repo-b" };
+        assert!(!cache.is_active(&root, &wp(&format!("{repo}/.git/objects/{index:05}"))));
+    }
+
+    // Two repos, re-walked once every `GIT_LOCK_REPROBE_OPS` ops. Only the
+    // recursive walk rides that schedule — the three single-file lock stats run on
+    // every one of these ops, which is what the mid-plan test above asserts. The
+    // bound is what matters: walks must track the reprobe schedule, never the op
+    // count.
+    assert!(
+        cache.probes() as usize <= 2 * (ops / 256 + 1),
+        "refs walks ({}) must stay bounded by the reprobe schedule, not by {ops} ops",
+        cache.probes()
+    );
 }

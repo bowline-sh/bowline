@@ -14,6 +14,10 @@ pub struct CompactEvent {
     pub subject: String,
 }
 
+/// Every kind the hosted event log can emit. The hosted decoder maps the
+/// generated wire enum onto this one with a total match, so a new server kind
+/// is a compile error at contract-generation time rather than a runtime failure
+/// that poisons the whole event listing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactEventKind {
     DeviceHarnessApproved,
@@ -31,6 +35,18 @@ pub enum CompactEventKind {
     ObjectPointerAdded,
     WorkspaceCreated,
     WorkspaceRefAdvanced,
+    WorkspaceStatusPublished,
+    WorkspaceKeyRotated,
+    WorkspaceKeySeeded,
+    WorkspaceKeyRegrantOffered,
+    WorkspaceKeyRegrantSettled,
+    MemberInvited,
+    MemberJoined,
+    MemberRemoved,
+    NamespaceArchived,
+    NamespaceArchiveRestored,
+    NamespacePurgePending,
+    NamespacePurgeCancelled,
 }
 
 impl CompactEventKind {
@@ -51,6 +67,18 @@ impl CompactEventKind {
             Self::ObjectPointerAdded => "object_pointer.added",
             Self::WorkspaceCreated => "workspace.created",
             Self::WorkspaceRefAdvanced => "workspace_ref.advanced",
+            Self::WorkspaceStatusPublished => "workspace_status.published",
+            Self::WorkspaceKeyRotated => "workspace_key.rotated",
+            Self::WorkspaceKeySeeded => "workspace_key.seeded",
+            Self::WorkspaceKeyRegrantOffered => "workspace_key.regrant_offered",
+            Self::WorkspaceKeyRegrantSettled => "workspace_key.regrant_settled",
+            Self::MemberInvited => "member.invited",
+            Self::MemberJoined => "member.joined",
+            Self::MemberRemoved => "member.removed",
+            Self::NamespaceArchived => "namespace.archived",
+            Self::NamespaceArchiveRestored => "namespace.archive_restored",
+            Self::NamespacePurgePending => "namespace.purge_pending",
+            Self::NamespacePurgeCancelled => "namespace.purge_cancelled",
         }
     }
 }

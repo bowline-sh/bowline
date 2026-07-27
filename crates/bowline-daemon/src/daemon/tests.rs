@@ -1,10 +1,14 @@
-use super::protocol::{SocketGuard, prepare_socket};
+use super::socket_server::{SocketGuard, prepare_socket};
+use bowline_core::ids::{DeviceId, WorkspaceId};
+use bowline_local::metadata::DEFAULT_DATABASE_FILE;
+use bowline_local::notifications::NotificationDedupe;
+use std::os::unix::net::UnixListener;
+
 use super::{
-    Command, ContinuousSyncRuntime, DEFAULT_DATABASE_FILE, DaemonRuntime, DaemonServerState,
-    NotificationDedupe, STATUS_PUBLISH_INTERVAL, StatusPublishOutcome, StatusPublishPayload,
-    StatusPublishRequest, StatusPublisher, SyncArgs, WorkspaceId, daemon_env_var, drain_policy,
-    invalidate_policy_cache_for_path, load_persisted_daemon_env, parse_args, runtime_error,
-    test_hosted_context_resolver, watcher_relative_path,
+    Command, ContinuousSyncRuntime, DaemonRuntime, DaemonServerState, STATUS_PUBLISH_INTERVAL,
+    StatusPublishOutcome, StatusPublishPayload, StatusPublishRequest, StatusPublisher, SyncArgs,
+    bind_daemon_state_root, daemon_env_var, drain_policy, invalidate_policy_cache_for_path,
+    parse_args, runtime_error, test_hosted_context_resolver, watcher_relative_path,
 };
 use bowline_core::policy::PathClassification;
 use bowline_local::metadata::MetadataStore;
@@ -99,7 +103,7 @@ fn socket_owner_removes_control_socket_when_shutdown_scope_exits() {
     ));
     let socket = temp.join("d.sock");
     prepare_socket(&socket).expect("prepare socket");
-    let listener = super::UnixListener::bind(&socket).expect("bind socket");
+    let listener = UnixListener::bind(&socket).expect("bind socket");
     assert!(socket.exists());
 
     let owner = SocketGuard {
@@ -121,7 +125,7 @@ fn persisted_daemon_env_loads_allowlisted_values_without_shell() {
     )
     .expect("daemon env");
 
-    load_persisted_daemon_env(&temp);
+    bind_daemon_state_root(&temp);
 
     assert_eq!(
         daemon_env_var("BOWLINE_DEVICE_NAME").as_deref(),
@@ -158,8 +162,8 @@ fn parses_continuous_sync_for_serve() {
 
     assert_eq!(sync.root, PathBuf::from("/tmp/code"));
     assert_eq!(sync.state_root, PathBuf::from("/tmp/state"));
-    assert_eq!(sync.workspace_id, "ws_custom");
-    assert_eq!(sync.device_id, "device_custom");
+    assert_eq!(sync.workspace_id, WorkspaceId::new("ws_custom"));
+    assert_eq!(sync.device_id, DeviceId::new("device_custom"));
 }
 
 #[test]
@@ -170,6 +174,10 @@ fn parses_notify_approvals_for_continuous_serve() {
         "/tmp/code",
         "--sync-state-root",
         "/tmp/state",
+        "--sync-workspace",
+        "ws_notify",
+        "--sync-device",
+        "device_notify",
         "--notify-approvals",
     ]);
 
@@ -214,8 +222,8 @@ fn initial_background_build_failure_uses_the_initial_retry_delay() {
     let mut runtime = ContinuousSyncRuntime::new(SyncArgs {
         root: temp.join("Code"),
         state_root: temp.join(".state"),
-        workspace_id: "ws_initial_retry".to_string(),
-        device_id: "device-test".to_string(),
+        workspace_id: WorkspaceId::new("ws_initial_retry"),
+        device_id: DeviceId::new("device-test"),
     });
     let first_attempt = runtime
         .next_manifest_retry()
@@ -325,10 +333,40 @@ fn running_manifest_thread_without_initial_ref_value_is_not_observer_ready() {
     );
 }
 
+/// A refused credential is the one observer condition a reconnect cannot clear.
+/// Reporting it as the same "degraded" a network blip earns would leave the
+/// daemon silently unable to see remote heads; unavailable is what makes the
+/// status surface say so out loud.
+#[test]
+fn a_refused_credential_reports_the_observer_unavailable() {
+    use bowline_daemon::manifest_transport::RefObserverReadiness;
+    use bowline_daemon::status_projection::StatusSourceState;
+
+    assert_eq!(
+        super::server_state::observer_status_source_state(RefObserverReadiness::Live),
+        StatusSourceState::Ready
+    );
+    assert_eq!(
+        super::server_state::observer_status_source_state(RefObserverReadiness::Retrying),
+        StatusSourceState::Degraded
+    );
+    assert_eq!(
+        super::server_state::observer_status_source_state(RefObserverReadiness::Unauthenticated),
+        StatusSourceState::Unavailable
+    );
+}
+
 #[test]
 fn remote_observer_reconnects_promptly_with_bounded_backoff() {
     let delays = (1..=8)
-        .map(super::sync::remote_observer_reconnect_delay)
+        .map(|consecutive_failures| {
+            super::sync::remote_observer_reconnect_delay(
+                bowline_daemon::manifest_transport::ReconnectAttempt {
+                    consecutive_failures,
+                    stage: bowline_daemon::manifest_transport::RefObserverFailureStage::Stream,
+                },
+            )
+        })
         .collect::<Vec<_>>();
 
     assert_eq!(
@@ -343,6 +381,32 @@ fn remote_observer_reconnects_promptly_with_bounded_backoff() {
             Duration::from_secs(5),
             Duration::from_secs(5),
         ]
+    );
+}
+
+/// A refused credential is not a dropped websocket. Reopening every few seconds
+/// registers another account session against a control plane that has already
+/// refused this identity, so the schedule climbs to a far longer ceiling while
+/// the status projection carries the condition.
+#[test]
+fn a_refused_credential_backs_off_far_longer_than_a_dropped_websocket() {
+    let delays = (1..=10)
+        .map(|consecutive_failures| {
+            super::sync::remote_observer_reconnect_delay(
+                bowline_daemon::manifest_transport::ReconnectAttempt {
+                    consecutive_failures,
+                    stage:
+                        bowline_daemon::manifest_transport::RefObserverFailureStage::Authentication,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(delays.first(), Some(&Duration::from_millis(250)));
+    assert_eq!(delays.last(), Some(&Duration::from_secs(60)));
+    assert!(
+        delays.windows(2).all(|pair| pair[0] <= pair[1]),
+        "the re-authentication schedule never speeds up: {delays:?}"
     );
 }
 
@@ -370,11 +434,10 @@ pub(super) fn watcher_test_runtime(
         args: SyncArgs {
             root,
             state_root,
-            workspace_id: workspace_id.to_string(),
-            device_id: "device-test".to_string(),
+            workspace_id: WorkspaceId::new(workspace_id),
+            device_id: DeviceId::new("device-test"),
         },
-        watcher: None,
-        change_rx: None,
+        watcher: super::sync::WatcherHost::unarmed(Instant::now()),
         status_publisher: noop_status_publisher(),
         next_status_publish: Instant::now() + STATUS_PUBLISH_INTERVAL,
         last_status_publish_fingerprint: None,
@@ -553,7 +616,7 @@ fn status_publish_rejects_projection_for_a_different_workspace() {
         fixture.workspace_id.as_str(),
     )
     .args;
-    args.workspace_id = "ws_different_configured".to_string();
+    args.workspace_id = WorkspaceId::new("ws_different_configured");
 
     let error = StatusPublishPayload::from_projection(StatusPublishRequest { args }, &projection)
         .expect_err("workspace mismatch must be rejected");
@@ -610,4 +673,76 @@ fn unique_test_suffix() -> u128 {
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos()
+}
+
+#[test]
+fn a_watcher_that_cannot_arm_is_a_retrying_degradation_not_a_silent_absence() {
+    // The daemon has no periodic rescan fallback, so a watcher that never armed
+    // means no local edit is ever observed. It must stay visibly down and stay
+    // retryable rather than leaving the daemon looking healthy.
+    let temp = unique_temp_dir("bowline-daemon-watcher-never-arms");
+    let missing_root = temp.join("never-materialized");
+    let runtime = ContinuousSyncRuntime::new(SyncArgs {
+        root: missing_root,
+        state_root: temp.join(".state"),
+        workspace_id: WorkspaceId::new("ws_watcher_down"),
+        device_id: DeviceId::new("device-test"),
+    });
+
+    assert!(
+        !runtime.watcher.is_armed(),
+        "a watcher over a missing root cannot be armed"
+    );
+    assert!(
+        runtime.next_runtime_retry().is_some(),
+        "a down watcher keeps a retry scheduled so the scheduler wakes for it"
+    );
+
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn a_watcher_arms_and_then_stays_out_of_the_retry_schedule() {
+    let temp = unique_temp_dir("bowline-daemon-watcher-arms");
+    let root = temp.join("Code");
+    fs::create_dir_all(&root).expect("workspace root");
+    let mut runtime = ContinuousSyncRuntime::new(SyncArgs {
+        root,
+        state_root: temp.join(".state"),
+        workspace_id: WorkspaceId::new("ws_watcher_up"),
+        device_id: DeviceId::new("device-test"),
+    });
+
+    assert!(runtime.watcher.is_armed());
+    // Only the pending manifest rebuild remains due; the watcher adds nothing.
+    assert_eq!(runtime.next_runtime_retry(), runtime.next_manifest_retry());
+    assert!(runtime.watcher.take_signals().is_some());
+    // Once a bridge owns the receiver the kernel must be rebuilt, which the
+    // scheduler learns from the retry schedule rather than a one-shot flag.
+    assert!(runtime.next_runtime_retry().is_some());
+
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn partial_sync_flags_are_a_usage_error_not_a_daemon_that_syncs_nothing() {
+    let cli = parse_args(["serve", "--sync-root", "/tmp/code"]);
+
+    assert!(matches!(cli.command, Command::UsageError(_)));
+    assert!(cli.continuous_sync.is_none());
+}
+
+#[test]
+fn sync_flags_have_no_default_identity() {
+    let cli = parse_args([
+        "serve",
+        "--sync-root",
+        "/tmp/code",
+        "--sync-state-root",
+        "/tmp/state",
+    ]);
+
+    // A placeholder workspace id would make every later mismatch read as
+    // "different workspace" instead of "misconfigured at launch".
+    assert!(matches!(cli.command, Command::UsageError(_)));
 }

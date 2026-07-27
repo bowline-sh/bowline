@@ -1,54 +1,63 @@
 bowline command shell
 
 Discovery:
-  bowline help [topic] [--json]
-  bowline version [--json]
-  bowline contract [topic] [--summary] [--json]
+  help                 Show human or JSON help for every CLI command.
+  version              Print CLI version and protocol compatibility.
+  contract             Print the machine-readable CLI command and output contract.
 
 Workspace:
-  bowline update [--check] [--version <version>] [--json]
-  bowline login [--headless] [--no-poll] [--json]
-  bowline logout [--json]
-  bowline status [--root <path>] [--project <path>] [--watch] [--all] [--json]
-  bowline setup [--root <path>] [--socket <path>] [--json] | bowline setup <path> [--yes] [--socket <path>] [--json]
-  bowline events [--root <path>] [--project <path>] [--limit <n>] [--json|--human|--quiet]
-  bowline tui [--root <path>] [--project <path>] [--socket <path>]
-  bowline forget-local <project> [--yes] [--json] [--dry-run]
-  bowline archive <project> [--restore] [--json] [--dry-run]
-  bowline purge <project> [--grace <days>|--cancel] [--json] [--dry-run]
+  update               Check for or install the latest Bowline release.
+  login                Sign in and onboard this machine with the default ~/Code workspace.
+  logout               Clear the saved local account session without removing device trust.
+  status               Inspect workspace, sync, and safe next actions.
+  setup                Set up this machine or prepare one project for Bowline.
+  conflicts            List files whose incoming version is waiting beside them.
+  resolve              Reconcile one conflict: keep your file, take the incoming one, or diff them.
+  deletions            Show the deletion sync refuses to publish, and confirm it.
+  events               List recent workspace events.
+  tui                  Open the terminal workspace UI.
+  forget-local         Remove one materialized project from this device after preview.
+  archive              Hide one project from default namespace views without deleting local bytes.
+  purge                Schedule remote destruction for an archived project after a grace window.
 
 Trust:
-  bowline device approve [--root <path>] (--request <id>|--code <short-code>) [--yes] [--json] [--dry-run]
-  bowline device deny [--root <path>] (--request <id>|--code <short-code>) [--json] [--dry-run]
-  bowline device revoke [--root <path>] --device <id> [--json] [--dry-run]
-  bowline recover <status|create|verify <id>|rotate|revoke <id>|use <id>> [--json] [--dry-run]
-  bowline device list [--root <path>] [--json|--human|--quiet]
-  bowline device request [--root <path>] [--json]
-  bowline device accept [--root <path>] --request <id> [--json]
+  device approve       Approve a pending device trust request.
+  device deny          Deny a pending device trust request.
+  device revoke        Revoke a trusted device.
+  device list          List local device records.
+  device request       Raise a device approval request for this machine.
+  device accept        Accept an encrypted device grant for this machine.
+  device key-status    Report whether this device holds workspace key material.
+  recover status       Report Recovery Key state for this workspace.
+  recover create       Create a Recovery Key and print its words once.
+  recover verify       Check Recovery Key words from stdin without granting access.
+  recover rotate       Mint a fresh Recovery Key and invalidate the previous one.
+  recover revoke       Permanently revoke a Recovery Key.
+  recover use          Grant this device workspace access with Recovery Key words from stdin.
 
 Remote:
-  bowline connect <host> [--root <path>] [--binary <path>] [--json] [--dry-run]
+  connect              Inbound SSH: install and trust a machine you own.
 
 Work:
-  bowline work create [project] <name> [--from <restore-point>] [--json] [--dry-run]
-  bowline work list [--all] [--json|--human|--quiet]
-  bowline work diff [target] [--path <glob>...] [--json]
-  bowline work review <target> [--path <glob>...] [--json]
-  bowline work accept <target> [--path <glob>...] [--json] [--dry-run]
-  bowline work discard <target> [--json] [--dry-run]
-  bowline work restore <target> [--json] [--dry-run]
-  bowline work cleanup [--apply] [--json] [--dry-run]
+  work create          Create or reuse a named work view for a project.
+  work list            List work views.
+  work diff            Show the diff for a work view.
+  work review          Preview whether a work view is ready to accept.
+  work accept          Apply a review-ready work view.
+  work discard         Discard a work view.
+  work restore         Restore a discarded work view.
+  work cleanup         Preview or apply cleanup for retained work views.
 
 Daemon:
-  bowline daemon start [--json]
-  bowline daemon stop [--json]
-  bowline daemon status [--json]
-  bowline daemon install [--json] [--dry-run]
-  bowline daemon restart [--json] [--dry-run]
-  bowline daemon uninstall [--json] [--dry-run]
+  daemon start         Start the local daemon process.
+  daemon stop          Stop the local daemon process.
+  daemon status        Inspect daemon process and service state.
+  daemon install       Install or update the OS service for the daemon.
+  daemon restart       Restart the installed daemon service.
+  daemon uninstall     Uninstall the daemon OS service.
 
 Support:
-  bowline diagnostics collect --root <path> [--json]
-  bowline doctor [--engine manifest] [--json]
+  diagnostics collect  Print a redacted diagnostics bundle.
+  doctor               Run read-only engine diagnostics with redacted, fixed reason codes.
 
-Command options follow the complete command path. Inspect `bowline help <command>` for the exact definition.
+Run `bowline help <command>` for options and examples, or `bowline contract --json` for the machine contract.

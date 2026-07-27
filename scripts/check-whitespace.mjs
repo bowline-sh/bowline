@@ -1,17 +1,9 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-const roots = [
-  "apps",
-  "packages",
-  "crates",
-  "scripts",
-  "infra",
-  "tests",
-  "docs",
-  "plans",
-  "examples",
-];
+import { SOURCE_ROOTS } from "./repo-roots.mjs";
+
+const roots = SOURCE_ROOTS;
 const ignoredDirectories = new Set([
   ".build",
   ".git",

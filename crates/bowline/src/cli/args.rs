@@ -110,7 +110,7 @@ pub(super) fn parse_error(result: Result<Command, ParseError>) -> ParseError {
     }
 }
 
-fn command_usage_parse_error(
+pub(super) fn command_usage_parse_error(
     command: CommandName,
     code: &'static str,
     message: String,

@@ -40,6 +40,9 @@ pub(crate) struct DefinitionInvocation {
     pub(crate) quiet: bool,
     pub(crate) socket: PathBuf,
     pub(crate) dry_run: bool,
+    /// Declared by the spec this invocation resolved to. Carried through so the
+    /// dry-run preview reports the registry's level instead of a second table.
+    pub(crate) side_effect_level: SideEffectLevel,
     pub(crate) values: ParsedValues,
 }
 
@@ -52,11 +55,9 @@ pub(crate) struct ResolvedDefinition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DefinitionTarget {
     Public(CommandName),
+    Recovery(RecoveryCommandAction),
     DebugClassify,
     SyncWait,
-    SyncAttention,
-    SyncRetry,
-    SyncDismiss,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,12 +87,7 @@ pub(crate) fn resolve_definition(args: &[String]) -> Result<ResolvedDefinition, 
             json: false,
             human: false,
             quiet: false,
-            error: ParseError::Unknown(
-                effective_args
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "help".to_string()),
-            ),
+            error: unresolved_command_error(effective_args),
         });
     };
     let tail = &effective_args[path_len..];
@@ -107,6 +103,36 @@ pub(crate) fn resolve_definition(args: &[String]) -> Result<ResolvedDefinition, 
             quiet,
             error,
         })
+}
+
+/// A bare family token (`bowline work`, `bowline device`, `bowline recover`) is
+/// not an unknown command — it is a command path missing its subcommand, so it
+/// answers with the subcommands the registry already knows about.
+fn unresolved_command_error(args: &[String]) -> ParseError {
+    let family = args.first().cloned().unwrap_or_else(|| "help".to_string());
+    let subcommands = subcommands_of(&family);
+    if subcommands.is_empty() {
+        return ParseError::Unknown(family);
+    }
+    ParseError::Command(CommandUsageError {
+        // A family token is a wire command name only when one exists (`recover`);
+        // `work` and `device` are paths, not names.
+        command: CommandName::from_token(&family).unwrap_or(CommandName::Unknown),
+        code: "missing_subcommand",
+        message: format!(
+            "bowline {family} needs a subcommand: {}",
+            subcommands
+                .iter()
+                .filter_map(|name| name.strip_prefix(&format!("{family} ")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        next_actions: std::iter::once(RepairCommand::inspect(
+            format!("List the {family} subcommands"),
+            Some(format!("bowline help {family}")),
+        ))
+        .collect(),
+    })
 }
 
 fn normalize_discovery_aliases(args: &[String]) -> Vec<String> {
@@ -238,7 +264,7 @@ pub(super) fn parse_definition_arguments(
 
     for option in spec.options {
         if option.required && !options.contains_key(option.name) {
-            return Err(missing_option_value(spec, option.name));
+            return Err(missing_required_option(spec, option));
         }
     }
     validate_positionals(spec, &positionals)?;
@@ -272,6 +298,7 @@ pub(super) fn parse_definition_arguments(
         quiet,
         socket,
         dry_run,
+        side_effect_level: spec.side_effect_level,
         values: ParsedValues {
             options,
             positionals,
@@ -298,22 +325,38 @@ fn validate_positionals(spec: &CommandSpec, positionals: &[String]) -> Result<()
             .find(|positional| positional.required)
             .map(|positional| positional.name)
             .unwrap_or("argument");
-        return Err(ParseError::Usage {
-            command: spec.command_name(),
-            message: format!("bowline {} requires <{missing}>", spec.name),
-        });
+        return Err(positional_error(
+            spec,
+            "missing_argument",
+            format!("bowline {} requires <{missing}>", spec.name),
+        ));
     }
     if maximum.is_some_and(|maximum| positionals.len() > maximum) {
-        return Err(ParseError::Usage {
-            command: spec.command_name(),
-            message: format!(
+        return Err(positional_error(
+            spec,
+            "unexpected_argument",
+            format!(
                 "unexpected bowline {} argument `{}`",
                 spec.name,
                 positionals[spec.positionals.len()]
             ),
-        });
+        ));
     }
     Ok(())
+}
+
+/// Argument-shape failures carry the same structure as every other command
+/// error: a stable code and a next action, not just a sentence.
+fn positional_error(spec: &CommandSpec, code: &'static str, message: String) -> ParseError {
+    ParseError::Command(CommandUsageError {
+        command: spec.command_name(),
+        code,
+        message,
+        next_actions: vec![RepairCommand::inspect(
+            format!("Inspect `bowline {}` arguments", spec.name),
+            Some(format!("bowline help {} --json", spec.name)),
+        )],
+    })
 }
 
 fn split_option(argument: &str) -> Option<(&str, Option<&str>)> {
@@ -344,9 +387,9 @@ fn output_hints(spec: &CommandSpec, args: &[String]) -> (bool, bool, bool) {
             break;
         }
         match argument.as_str() {
-            "--json" if spec.supports_json => json = true,
-            "--human" if spec.supports_json => human = true,
-            "--quiet" if spec.options.iter().any(|option| option.name == "--quiet") => quiet = true,
+            "--json" if spec.supports_json() => json = true,
+            "--human" if spec.supports_json() => human = true,
+            "--quiet" if spec.supports_quiet() => quiet = true,
             _ => {}
         }
     }
@@ -357,14 +400,33 @@ fn definition_option(spec: &'static CommandSpec, spelling: &str) -> Option<&'sta
     spec.options
         .iter()
         .find(|option| option.name == spelling)
-        .or_else(|| (spelling == "--human" && spec.supports_json).then_some(&HUMAN_OPTION))
+        .or_else(|| (spelling == "--human" && spec.supports_json()).then_some(&HUMAN_OPTION))
 }
 
+/// `--opt` at end of argv, or `--opt=`: the option is present but empty.
 fn missing_option_value(spec: &CommandSpec, option: &str) -> ParseError {
     ParseError::Usage {
         command: spec.command_name(),
         message: format!("bowline {} {option} requires a value", spec.name),
     }
+}
+
+/// The option was never supplied at all, which is a different failure with a
+/// different fix, and the one an agent can act on without re-reading help.
+fn missing_required_option(spec: &CommandSpec, option: &OptionSpec) -> ParseError {
+    let value = option
+        .value_name
+        .map(|value| format!(" <{value}>"))
+        .unwrap_or_default();
+    ParseError::Command(CommandUsageError {
+        command: spec.command_name(),
+        code: "missing_required_option",
+        message: format!("bowline {} requires {}{value}", spec.name, option.name),
+        next_actions: vec![RepairCommand::inspect(
+            format!("Inspect `bowline {}` options", spec.name),
+            Some(format!("bowline help {} --json", spec.name)),
+        )],
+    })
 }
 
 #[cfg(test)]

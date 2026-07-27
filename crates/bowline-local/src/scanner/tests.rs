@@ -406,7 +406,7 @@ fn nested_bare_exclusion_stays_local_only() {
 }
 
 #[test]
-fn scanner_does_not_restore_dependency_paths_with_slash_free_include() {
+fn scanner_restores_dependency_paths_named_by_a_slash_free_include() {
     let temp = crate::workspace::TempWorkspace::new("scan-slash-free-include").expect("workspace");
     temp.write_file(".bowlineignore", b"node_modules\n!kept.js\n")
         .expect("policy");
@@ -417,11 +417,17 @@ fn scanner_does_not_restore_dependency_paths_with_slash_free_include() {
 
     let report = scan_workspace(temp.root()).expect("scan succeeds");
 
+    // A slash-free include matches at any depth below its policy file, exactly
+    // as gitignore negation does.
+    assert!(report.paths.iter().any(|observed| {
+        observed.path == "node_modules/deep/kept.js"
+            && serde_json::to_value(observed.policy.mode).unwrap() == "workspace-sync"
+    }));
     assert!(
         !report
             .paths
             .iter()
-            .any(|observed| observed.path == "node_modules/deep/kept.js")
+            .any(|observed| observed.path == "node_modules/deep/drop.js")
     );
 }
 
@@ -500,7 +506,7 @@ fn scan_records_dangling_symlink_without_following_it() {
 }
 
 #[test]
-fn scanner_does_not_restore_explicitly_included_dependency_paths() {
+fn scanner_restores_explicitly_included_dependency_paths() {
     let temp = crate::workspace::TempWorkspace::new("scan-include").expect("temp workspace");
     temp.write_file(".bowlineignore", b"!node_modules/kept.js\n")
         .expect("ignore");
@@ -513,12 +519,12 @@ fn scanner_does_not_restore_explicitly_included_dependency_paths() {
 
     let report = scan_workspace(temp.root()).expect("scan succeeds");
 
-    assert!(
-        !report
-            .paths
-            .iter()
-            .any(|path| path.path == "node_modules/kept.js")
-    );
+    // An explicit `!`-include is the only escape hatch from the built-in name
+    // heuristics, so the named path syncs while its unnamed sibling does not.
+    assert!(report.paths.iter().any(|path| {
+        path.path == "node_modules/kept.js"
+            && serde_json::to_value(path.policy.mode).unwrap() == "workspace-sync"
+    }));
     assert!(
         !report
             .paths

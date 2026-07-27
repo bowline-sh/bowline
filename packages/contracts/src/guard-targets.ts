@@ -28,7 +28,6 @@ export type {
 export type { EventName } from "./event-names";
 export type { EventsCommandOutput, WorkspaceEvent } from "./events";
 export type { ResolveCommandOutput } from "./resolve";
-export type { ContentLayout, SnapshotManifest } from "./snapshot";
 export type {
   DeviceApprovalAffordance,
   RepairCommand,

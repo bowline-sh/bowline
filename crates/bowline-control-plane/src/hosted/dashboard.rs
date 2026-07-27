@@ -3,7 +3,7 @@ use crate::{ControlPlaneResult, FakeControlPlaneClient};
 use super::{HostedControlPlaneClient, generated};
 use generated::{
     DashboardGetDashboardShell, DashboardGetWorkspaceDashboardCurrent,
-    DashboardListDashboardDevices, DashboardListDashboardRecoveryEnvelopes,
+    DashboardListDashboardDevices, DashboardListDashboardRecoveryEnvelopes, Timestamp,
 };
 
 pub type DashboardProviderEnvironment = generated::HostedDashboardProviderEnvironment;
@@ -50,7 +50,7 @@ impl DashboardCurrentStateControlPlaneClient for HostedControlPlaneClient {
     ) -> ControlPlaneResult<DashboardShellResponse> {
         request.account_session_id = request
             .account_session_id
-            .or_else(|| self.account_session_id.clone());
+            .or_else(|| self.pinned_account_session_id());
         self.call::<DashboardGetDashboardShell>(&request)
     }
 
@@ -60,7 +60,7 @@ impl DashboardCurrentStateControlPlaneClient for HostedControlPlaneClient {
     ) -> ControlPlaneResult<WorkspaceDashboardCurrentResponse> {
         request.account_session_id = request
             .account_session_id
-            .or_else(|| self.account_session_id.clone());
+            .or_else(|| self.pinned_account_session_id());
         self.call::<DashboardGetWorkspaceDashboardCurrent>(&request)
     }
 
@@ -70,7 +70,7 @@ impl DashboardCurrentStateControlPlaneClient for HostedControlPlaneClient {
     ) -> ControlPlaneResult<DashboardDevicesResponse> {
         request.account_session_id = request
             .account_session_id
-            .or_else(|| self.account_session_id.clone());
+            .or_else(|| self.pinned_account_session_id());
         self.call::<DashboardListDashboardDevices>(&request)
     }
 
@@ -80,7 +80,7 @@ impl DashboardCurrentStateControlPlaneClient for HostedControlPlaneClient {
     ) -> ControlPlaneResult<DashboardRecoveryEnvelopesResponse> {
         request.account_session_id = request
             .account_session_id
-            .or_else(|| self.account_session_id.clone());
+            .or_else(|| self.pinned_account_session_id());
         self.call::<DashboardListDashboardRecoveryEnvelopes>(&request)
     }
 }
@@ -170,8 +170,8 @@ fn unavailable_projection_metadata() -> generated::HostedProjectionMetadata {
     }
 }
 
-fn fake_timestamp() -> String {
-    "1970-01-01T00:00:00Z".to_string()
+fn fake_timestamp() -> Timestamp {
+    super::parse::wire_timestamp("1970-01-01T00:00:00Z")
 }
 
 #[cfg(test)]

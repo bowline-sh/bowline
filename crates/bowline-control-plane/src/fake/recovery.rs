@@ -58,7 +58,7 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             .push(self.build_event(
                 &input.workspace_id,
                 CompactEventKind::RecoveryKeyCreated,
-                &record.envelope_id,
+                record.envelope_id.as_str(),
             ));
         Ok(record)
     }
@@ -119,7 +119,7 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             .push(self.build_event(
                 workspace_id,
                 CompactEventKind::RecoveryKeyVerified,
-                envelope_id,
+                envelope_id.as_str(),
             ));
         Ok(record)
     }
@@ -189,7 +189,7 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             .push(self.build_event(
                 &record.workspace_id,
                 CompactEventKind::RecoveryKeyRotated,
-                &record.envelope_id,
+                record.envelope_id.as_str(),
             ));
         Ok(record)
     }
@@ -229,7 +229,7 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             .push(self.build_event(
                 workspace_id,
                 CompactEventKind::RecoveryKeyRevoked,
-                envelope_id,
+                envelope_id.as_str(),
             ));
         Ok(record)
     }

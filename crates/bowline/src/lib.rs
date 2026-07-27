@@ -11,8 +11,10 @@ use std::{env, panic, thread};
 mod bootstrap;
 mod cli;
 mod command_error_classification;
+mod conflict_commands;
 mod daemon;
 mod debug;
+mod deletion_commands;
 mod device_commands;
 mod devices;
 mod dispatch;
@@ -31,7 +33,6 @@ mod runtime;
 mod service;
 mod status_commands;
 mod surface;
-mod sync_attention;
 mod sync_wait;
 mod update;
 mod wire;
@@ -66,9 +67,11 @@ use bowline_core::status::{
 use bowline_local::{
     bootstrap::process::{ProcessRunner, SystemProcessRunner},
     init::{InitOptions, LocalInitError},
-    linux_service::{self, LinuxServiceConfig, LinuxServiceOptions},
-    macos_service::{self, MacosServiceConfig, MacosServiceOptions},
     metadata::{MetadataStore, default_control_socket_path, default_database_path},
+    service_runtime::ServiceError,
+    service_supervisor::{
+        PlatformService, ServiceConfig, ServiceOutcome, ServiceState, ServiceSupervisor,
+    },
     setup::{ProjectSetupOptions, ProjectSetupState, redact::redact_setup_text, run_project_setup},
     status::{EventsOptions, StatusOptions},
 };
@@ -126,32 +129,35 @@ fn usage_error(command: CommandName, message: impl Into<String>) -> Result<Comma
 fn selected_workspace_path(selection: WorkspaceSelection) -> Option<String> {
     let root = resolve_explicit_path(selection.root);
     match selection.project {
-        Some(project) if !project.is_empty() => {
-            if project == "." || project.starts_with("./") {
-                current_path_within_root(&root, Some(&project)).or_else(|| {
-                    let resolved = resolve_explicit_path(project);
-                    Some(
-                        std::fs::canonicalize(&resolved)
-                            .unwrap_or_else(|_| PathBuf::from(&resolved))
-                            .display()
-                            .to_string(),
-                    )
-                })
-            } else if project == "~"
-                || project.starts_with("~/")
-                || Path::new(&project).is_absolute()
-            {
-                Some(resolve_explicit_path(project))
-            } else {
-                Some(format!(
-                    "{}/{}",
-                    root.trim_end_matches('/'),
-                    project.trim_start_matches('/')
-                ))
-            }
-        }
+        Some(project) if !project.is_empty() => selected_project_path(&root, &project),
         _ => current_path_within_root(&root, None).or(Some(root)),
     }
+}
+
+/// The absolute path a non-empty `--project` names, under the one convention
+/// every command shares: `.` and `./x` are relative to the working directory,
+/// `~` and absolute paths are taken as written, and anything else is relative to
+/// the workspace root.
+fn selected_project_path(root: &str, project: &str) -> Option<String> {
+    if project == "." || project.starts_with("./") {
+        return current_path_within_root(root, Some(project)).or_else(|| {
+            let resolved = resolve_explicit_path(project.to_string());
+            Some(
+                std::fs::canonicalize(&resolved)
+                    .unwrap_or_else(|_| PathBuf::from(&resolved))
+                    .display()
+                    .to_string(),
+            )
+        });
+    }
+    if project == "~" || project.starts_with("~/") || Path::new(project).is_absolute() {
+        return Some(resolve_explicit_path(project.to_string()));
+    }
+    Some(format!(
+        "{}/{}",
+        root.trim_end_matches('/'),
+        project.trim_start_matches('/')
+    ))
 }
 
 fn current_path_within_root(root: &str, project: Option<&str>) -> Option<String> {
@@ -169,8 +175,10 @@ fn current_path_within_root(root: &str, project: Option<&str>) -> Option<String>
     Some(root_path.join(relative).display().to_string())
 }
 
+use conflict_commands::*;
 use daemon::*;
 use debug::*;
+use deletion_commands::*;
 use device_commands::*;
 use errors::*;
 use io_helpers::*;

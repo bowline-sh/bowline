@@ -1,6 +1,16 @@
-use super::sync::{NotificationPollCompletion, PreparedStatusPublish, StatusPublishCompletion};
-use super::*;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::time::{Duration, Instant};
+use std::{env, fs, io};
 
+use bowline_core::ids::WorkspaceId;
+use time::OffsetDateTime;
+
+use crate::daemon::{ContinuousSyncRuntime, DaemonRuntime, SyncArgs};
+
+mod device_trust;
 mod projection;
 
 #[cfg(test)]
@@ -10,30 +20,23 @@ pub(super) fn runtime_adapter_observer_state(
     projection::runtime_adapter_facts(runtime).observer.state
 }
 
+#[cfg(test)]
+pub(super) fn observer_status_source_state(
+    readiness: bowline_daemon::manifest_transport::RefObserverReadiness,
+) -> bowline_daemon::status_projection::StatusSourceState {
+    projection::observer_source_state(readiness)
+}
+
 use projection::{
     ProjectionSourceHandles, device_trust_status_facts, projection_io_error, start_projection,
 };
 
-#[cfg(test)]
-use bowline_daemon::status_projection::ProjectionBuildReason;
 use bowline_daemon::status_projection::{
-    DaemonInstanceId, DaemonStatusProjection, DeviceTrustStatusFacts, EngineStatusCollector,
-    LatestProjectionReceiver, LocalStatusProjectionCollector, ProjectionServiceConfig,
-    SafetyRefreshInterval, SharedStatusSourceCollector, SharedStatusSourceHandle, StatusInputEvent,
-    StatusProjectionInput, StatusProjectionService, StatusSource, StatusSourceCollector,
-    StatusSourceFacts, StatusSourceState, StatusSourceStateFacts, replace_convergence_status,
-    scoped_engine_convergence_facts,
+    DaemonStatusProjection, LatestProjectionReceiver, StatusProjectionInput,
+    StatusProjectionService, replace_convergence_status, scoped_engine_convergence_facts,
 };
 
-use bowline_core::{
-    commands::StatusCommandOutput,
-    ids::DeviceId,
-    status::{
-        StatusFact, StatusFactScope, StatusItem, StatusItemKind, StatusScope, StatusSubject,
-        StatusSubjectKind, status_fact_policy,
-    },
-    wire::generated::DeviceApprovalAffordance,
-};
+use bowline_core::{commands::StatusCommandOutput, ids::DeviceId, status::StatusScope};
 use bowline_local::sync::manifest_engine::WorkspacePath;
 use crossbeam_channel::Sender;
 use std::sync::atomic::AtomicU8;
@@ -209,12 +212,12 @@ pub(super) struct DaemonServerState {
     status: Mutex<CachedDaemonStatus>,
     subscriptions: Mutex<HashMap<String, Arc<StatusSubscription>>>,
     connection_wakes: Mutex<HashMap<u64, Sender<()>>>,
-    acceptor_wake: Mutex<Option<super::protocol::acceptor::AcceptorWake>>,
+    acceptor_wake: Mutex<Option<super::socket_server::acceptor::AcceptorWake>>,
     coordinator_wake: Mutex<Option<super::coordinator::CoordinatorHandle>>,
     coordinator_metrics: Mutex<Option<Arc<super::coordinator::CoordinatorMetrics>>>,
     manifest_counters: Mutex<Option<Arc<bowline_local::sync::manifest_engine::EngineCounters>>>,
     manifest_snapshot: Option<bowline_daemon::manifest_driver::EngineSnapshotHandle>,
-    rpc_executor: Mutex<Option<Weak<super::protocol_v2::RpcExecutor>>>,
+    rpc_executor: Mutex<Option<Weak<super::rpc_service::RpcExecutor>>>,
     engine_work_wake_pending: AtomicBool,
     projection_wake_pending: Arc<AtomicBool>,
     next_subscription_id: AtomicU64,
@@ -344,27 +347,58 @@ impl DaemonServerState {
         Some(snapshot)
     }
 
+    /// Wait for an exact convergence boundary. `cancelled` is polled throughout
+    /// the wait so a disconnected or expired request releases its RPC worker
+    /// instead of parking it for the whole timeout.
     pub(super) fn request_sync_barrier(
         &self,
         timeout: Duration,
-    ) -> io::Result<bowline_local::sync::manifest_engine::EngineSnapshot> {
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<
+        bowline_local::sync::manifest_engine::EngineSnapshot,
+        bowline_daemon::manifest_driver::SyncBarrierError,
+    > {
         self.manifest_snapshot
             .as_ref()
-            .ok_or_else(|| io::Error::other("daemon is not serving a sync workspace"))?
+            .ok_or(bowline_daemon::manifest_driver::SyncBarrierError::WorkspaceNotServed)?
             .request_sync_barrier()?
-            .wait(timeout)
+            .wait(timeout, cancelled)
     }
 
-    pub(super) fn serves_workspace(&self, workspace_id: &str) -> bool {
+    /// The engine's latest published snapshot, or `None` when this daemon is not
+    /// serving a sync workspace at all.
+    pub(super) fn engine_snapshot(
+        &self,
+    ) -> Option<bowline_local::sync::manifest_engine::EngineSnapshot> {
+        self.manifest_snapshot
+            .as_ref()
+            .map(bowline_daemon::manifest_driver::EngineSnapshotHandle::current)
+    }
+
+    /// Authorise the removal batch the engine is currently refusing.
+    pub(super) fn confirm_mass_deletion(
+        &self,
+    ) -> Result<(), bowline_daemon::manifest_driver::EngineCommandError> {
+        self.manifest_snapshot
+            .as_ref()
+            .ok_or(
+                bowline_daemon::manifest_driver::EngineCommandError::Unavailable {
+                    reason: "daemon is not serving a sync workspace",
+                },
+            )?
+            .confirm_mass_deletion()
+    }
+
+    pub(super) fn serves_workspace(&self, workspace_id: &WorkspaceId) -> bool {
         self.sync_options
             .as_ref()
-            .is_some_and(|options| options.workspace_id == workspace_id)
+            .is_some_and(|options| &options.workspace_id == workspace_id)
     }
 
     pub(super) fn register_runtime_metrics(
         &self,
         coordinator: Arc<super::coordinator::CoordinatorMetrics>,
-        rpc_executor: Weak<super::protocol_v2::RpcExecutor>,
+        rpc_executor: Weak<super::rpc_service::RpcExecutor>,
     ) {
         if let Ok(mut metrics) = self.coordinator_metrics.lock() {
             *metrics = Some(coordinator);
@@ -539,81 +573,9 @@ impl DaemonServerState {
     }
 
     pub(super) fn sync_identity(&self) -> Option<(WorkspaceId, DeviceId)> {
-        self.sync_options.as_ref().map(|args| {
-            (
-                WorkspaceId::new(args.workspace_id.clone()),
-                DeviceId::new(args.device_id.clone()),
-            )
-        })
-    }
-
-    pub(super) fn refresh_device_trust_if_due(&self) {
-        if self.cancels_side_work() {
-            return;
-        }
-        let now = Instant::now();
-        let due = self
-            .next_device_trust_refresh
-            .lock()
-            .map(|mut next_refresh| {
-                if now < *next_refresh {
-                    return false;
-                }
-                *next_refresh = now + DEVICE_TRUST_REFRESH_INTERVAL;
-                true
-            })
-            .unwrap_or(false);
-        if !due {
-            return;
-        }
-        if self.sync_options.is_none() {
-            return;
-        }
-        let result = self.fetch_device_trust();
-        if self.cancels_side_work() {
-            return;
-        }
-        match result {
-            Ok(trust) => {
-                let facts = device_trust_status_facts(
-                    &trust,
-                    self.sync_options.as_ref().map(|args| args.root.as_path()),
-                );
-                self.update_projection_source(
-                    &self.projection_sources.device_trust,
-                    StatusSourceFacts::DeviceTrustDetails(facts),
-                );
-            }
-            Err(()) => self.mark_device_trust_degraded(),
-        }
-    }
-
-    fn fetch_device_trust(&self) -> Result<DeviceApprovalRequestList, ()> {
-        let (workspace_id, device_id) = self.sync_identity().ok_or(())?;
-        let key_store = key_store().map_err(|_| ())?;
-        let control_plane =
-            hosted_control_plane(&*key_store, workspace_id.clone(), device_id).map_err(|_| ())?;
-        control_plane
-            .list_device_trust(&workspace_id)
-            .map_err(|_| ())
-    }
-
-    fn mark_device_trust_degraded(&self) {
-        let Some(current) = self.projection_sources.device_trust.current() else {
-            return;
-        };
-        let degraded = match current {
-            StatusSourceFacts::DeviceTrust(mut facts) => {
-                facts.state = StatusSourceState::Degraded;
-                StatusSourceFacts::DeviceTrust(facts)
-            }
-            StatusSourceFacts::DeviceTrustDetails(mut facts) => {
-                facts.state.state = StatusSourceState::Degraded;
-                StatusSourceFacts::DeviceTrustDetails(facts)
-            }
-            _ => return,
-        };
-        self.update_projection_source(&self.projection_sources.device_trust, degraded);
+        self.sync_options
+            .as_ref()
+            .map(|args| (args.workspace_id.clone(), args.device_id.clone()))
     }
 
     pub(super) fn resolve_status_scope(
@@ -669,7 +631,10 @@ impl DaemonServerState {
         }
     }
 
-    pub(super) fn register_acceptor_wake(&self, wake: super::protocol::acceptor::AcceptorWake) {
+    pub(super) fn register_acceptor_wake(
+        &self,
+        wake: super::socket_server::acceptor::AcceptorWake,
+    ) {
         if let Ok(mut acceptor_wake) = self.acceptor_wake.lock() {
             *acceptor_wake = Some(wake);
         }

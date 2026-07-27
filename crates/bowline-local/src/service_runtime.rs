@@ -1,242 +1,127 @@
-use std::{fmt, io, path::PathBuf};
+//! Process plumbing every service supervisor shares: one error type, one
+//! command runner, one failure classification.
+
+use std::{fmt, io};
 
 use crate::bootstrap::process::{ProcessError, ProcessOutput, ProcessRunner};
 
-// The service files keep platform parsing local; shared runtime plumbing lives here so platform-specific behavior cannot drift through copy-paste.
+/// Every failure any supervisor can produce. One enum, so a new failure mode is
+/// modelled once instead of once per platform.
 #[derive(Debug)]
-pub(crate) enum ServiceRuntimeError {
+pub enum ServiceError {
+    /// `HOME` is unset, so neither the systemd user unit directory nor the
+    /// launchd agents directory can be resolved.
+    MissingHome,
+    /// The current user id could not be read, so launchd's GUI domain is unknown.
+    MissingUserId,
     Io(io::Error),
     Process(ProcessError),
+    /// The supervisor exists but refuses to serve this session.
     Unavailable(String),
-    CommandFailed(CommandFailure),
+    CommandFailed {
+        program: String,
+        status_code: i32,
+        stderr: String,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CommandFailure {
-    program: String,
-    status_code: i32,
-    stderr: String,
-}
-
-impl CommandFailure {
-    fn new(program: &str, status_code: i32, stderr: String) -> Self {
-        Self {
-            program: program.to_string(),
-            status_code,
-            stderr,
+impl ServiceError {
+    /// The stderr of a failed supervisor command, for callers that classify a
+    /// failure by what the supervisor said.
+    pub fn command_stderr(&self) -> Option<&str> {
+        match self {
+            Self::CommandFailed { stderr, .. } => Some(stderr),
+            _ => None,
         }
     }
+}
 
-    pub(crate) fn stderr(&self) -> &str {
-        &self.stderr
+impl fmt::Display for ServiceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingHome => formatter.write_str("HOME is unavailable"),
+            Self::MissingUserId => formatter.write_str("the current user id is unavailable"),
+            Self::Io(error) => write!(formatter, "service file operation failed: {error}"),
+            Self::Process(error) => fmt::Display::fmt(error, formatter),
+            Self::Unavailable(message) => formatter.write_str(message),
+            Self::CommandFailed {
+                program,
+                status_code,
+                stderr,
+            } => write!(
+                formatter,
+                "`{program}` failed with status {status_code}: {stderr}"
+            ),
+        }
     }
+}
 
-    pub(crate) fn into_parts(self) -> (String, i32, String) {
-        (self.program, self.status_code, self.stderr)
+impl std::error::Error for ServiceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Process(error) => Some(error),
+            _ => None,
+        }
     }
 }
 
-pub(crate) trait ServiceOutcomeParts<State> {
-    fn from_service_parts(service_name: String, unit_path: PathBuf, state: State) -> Self;
-}
-
-pub(crate) fn service_outcome<Outcome, State>(
-    service_name: &str,
-    unit_path: PathBuf,
-    state: State,
-) -> Outcome
-where
-    Outcome: ServiceOutcomeParts<State>,
-{
-    Outcome::from_service_parts(service_name.to_string(), unit_path, state)
-}
-
-pub(crate) fn run_service_command<R, I, S, IgnoreFailure, ClassifyFailure>(
-    runner: &R,
-    program: &str,
-    args: I,
-    ignore_failure: IgnoreFailure,
-    classify_failure: ClassifyFailure,
-) -> Result<ProcessOutput, ServiceRuntimeError>
-where
-    R: ProcessRunner,
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-    IgnoreFailure: FnOnce(&str) -> bool,
-    ClassifyFailure: FnOnce(CommandFailure) -> ServiceRuntimeError,
-{
-    let args = args
-        .into_iter()
-        .map(|arg| arg.as_ref().to_string())
-        .collect::<Vec<_>>();
-    let output = runner.run(program, &args)?;
-    if output.status_code == 0 || ignore_failure(&output.stderr) {
-        return Ok(output);
-    }
-    Err(classify_failure(CommandFailure::new(
-        program,
-        output.status_code,
-        output.stderr,
-    )))
-}
-
-pub(crate) fn classify_command_failure(
-    failure: CommandFailure,
-    unavailable: impl FnOnce(&str) -> bool,
-    unavailable_message: &'static str,
-) -> ServiceRuntimeError {
-    if unavailable(failure.stderr()) {
-        return ServiceRuntimeError::Unavailable(unavailable_message.to_string());
-    }
-    ServiceRuntimeError::CommandFailed(failure)
-}
-
-pub(crate) fn fmt_io_error(
-    formatter: &mut fmt::Formatter<'_>,
-    context: &str,
-    error: &io::Error,
-) -> fmt::Result {
-    write!(formatter, "{context}: {error}")
-}
-
-pub(crate) fn fmt_command_failed(
-    formatter: &mut fmt::Formatter<'_>,
-    program: &str,
-    status_code: i32,
-    stderr: &str,
-) -> fmt::Result {
-    write!(
-        formatter,
-        "`{program}` failed with status {status_code}: {stderr}"
-    )
-}
-
-impl From<io::Error> for ServiceRuntimeError {
+impl From<io::Error> for ServiceError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
     }
 }
 
-impl From<ProcessError> for ServiceRuntimeError {
+impl From<ProcessError> for ServiceError {
     fn from(error: ProcessError) -> Self {
         Self::Process(error)
     }
 }
 
-macro_rules! service_error {
-    (
-        $(#[$meta:meta])*
-        $vis:vis enum $name:ident {
-            $($platform_variant:ident => $platform_message:expr,)*
-        }
-        io_context: $io_context:expr $(,)?
-    ) => {
-        $(#[$meta])*
-        #[derive(Debug)]
-        $vis enum $name {
-            $($platform_variant,)*
-            Io(std::io::Error),
-            Process($crate::bootstrap::process::ProcessError),
-            Unavailable(String),
-            CommandFailed {
-                program: String,
-                status_code: i32,
-                stderr: String,
-            },
-        }
-
-        impl std::fmt::Display for $name {
-            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                match self {
-                    $(Self::$platform_variant => formatter.write_str($platform_message),)*
-                    Self::Io(error) => $crate::service_runtime::fmt_io_error(
-                        formatter,
-                        $io_context,
-                        error,
-                    ),
-                    Self::Process(error) => std::fmt::Display::fmt(error, formatter),
-                    Self::Unavailable(message) => formatter.write_str(message),
-                    Self::CommandFailed {
-                        program,
-                        status_code,
-                        stderr,
-                    } => $crate::service_runtime::fmt_command_failed(
-                        formatter,
-                        program,
-                        *status_code,
-                        stderr,
-                    ),
-                }
-            }
-        }
-
-        impl std::error::Error for $name {
-            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-                match self {
-                    Self::Io(error) => Some(error),
-                    Self::Process(error) => Some(error),
-                    _ => None,
-                }
-            }
-        }
-
-        impl From<std::io::Error> for $name {
-            fn from(error: std::io::Error) -> Self {
-                Self::Io(error)
-            }
-        }
-
-        impl From<$crate::bootstrap::process::ProcessError> for $name {
-            fn from(error: $crate::bootstrap::process::ProcessError) -> Self {
-                Self::Process(error)
-            }
-        }
-
-        impl From<$crate::service_runtime::ServiceRuntimeError> for $name {
-            fn from(error: $crate::service_runtime::ServiceRuntimeError) -> Self {
-                match error {
-                    $crate::service_runtime::ServiceRuntimeError::Io(error) => Self::Io(error),
-                    $crate::service_runtime::ServiceRuntimeError::Process(error) => {
-                        Self::Process(error)
-                    }
-                    $crate::service_runtime::ServiceRuntimeError::Unavailable(message) => {
-                        Self::Unavailable(message)
-                    }
-                    $crate::service_runtime::ServiceRuntimeError::CommandFailed(failure) => {
-                        let (program, status_code, stderr) = failure.into_parts();
-                        Self::CommandFailed {
-                            program,
-                            status_code,
-                            stderr,
-                        }
-                    }
-                }
-            }
-        }
-    };
+/// How a supervisor command decides that a non-zero exit is not a failure and
+/// how it explains the failures that are.
+pub(crate) struct ServiceCommand<'a> {
+    pub(crate) program: &'a str,
+    /// Stderr patterns that mean "there was nothing to act on", which every
+    /// supervisor reports as an error and every caller treats as success.
+    pub(crate) tolerate_failure: fn(&str) -> bool,
+    /// Stderr patterns that mean the supervisor itself is not serving this
+    /// session, which is a different kind of failure from a rejected command.
+    pub(crate) unavailable: fn(&str) -> bool,
+    pub(crate) unavailable_message: &'static str,
 }
 
-pub(crate) use service_error;
-
-macro_rules! service_outcome_parts {
-    ($outcome:ty, $state:ty) => {
-        impl $crate::service_runtime::ServiceOutcomeParts<$state> for $outcome {
-            fn from_service_parts(
-                service_name: String,
-                unit_path: std::path::PathBuf,
-                state: $state,
-            ) -> Self {
-                Self {
-                    service_name,
-                    unit_path,
-                    state,
-                }
-            }
+impl ServiceCommand<'_> {
+    pub(crate) fn run<R, I, S>(&self, runner: &R, args: I) -> Result<ProcessOutput, ServiceError>
+    where
+        R: ProcessRunner + ?Sized,
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let args = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_string())
+            .collect::<Vec<_>>();
+        let output = runner.run(self.program, &args)?;
+        if output.status_code == 0 || (self.tolerate_failure)(&output.stderr) {
+            return Ok(output);
         }
-    };
+        if (self.unavailable)(&output.stderr) {
+            return Err(ServiceError::Unavailable(
+                self.unavailable_message.to_string(),
+            ));
+        }
+        Err(ServiceError::CommandFailed {
+            program: self.program.to_string(),
+            status_code: output.status_code,
+            stderr: output.stderr,
+        })
+    }
 }
 
-pub(crate) use service_outcome_parts;
+pub(crate) fn tolerate_nothing(_stderr: &str) -> bool {
+    false
+}
 
 #[cfg(test)]
 pub(crate) mod test_support {

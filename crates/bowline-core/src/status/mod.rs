@@ -271,6 +271,12 @@ impl std::str::FromStr for SetupReceiptState {
     }
 }
 
+impl std::fmt::Display for SetupReceiptState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StaleBaseStatus {

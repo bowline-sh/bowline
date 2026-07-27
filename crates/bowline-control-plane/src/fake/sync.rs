@@ -59,14 +59,16 @@ impl WorkspaceControlPlaneClient for FakeControlPlaneClient {
         project_id: Option<&bowline_core::ids::ProjectId>,
     ) -> Result<WorkspaceRef, CompareAndSwapError> {
         if self.is_offline() {
-            return Err(CompareAndSwapError::Storage(
-                Self::offline_transport_error().to_string(),
+            // Offline: the mutation never left the client, so the outcome is
+            // known, not ambiguous.
+            return Err(CompareAndSwapError::rejected(
+                Self::offline_transport_error(),
             ));
         }
         let mut state = self.state.lock().expect("fake control plane poisoned");
         // Match hosted assertTrustedDevice: revoked devices cannot advance the head.
         Self::ensure_trusted_device_if_configured(&state, workspace_id, Some(writer_device_id))
-            .map_err(|error| CompareAndSwapError::Storage(error.to_string()))?;
+            .map_err(CompareAndSwapError::rejected)?;
         if let Some(injected_current) = state.next_workspace_ref_cas_stale.remove(workspace_id) {
             state
                 .workspace_refs
@@ -105,7 +107,7 @@ impl WorkspaceControlPlaneClient for FakeControlPlaneClient {
         let event = self.build_event(
             workspace_id,
             CompactEventKind::WorkspaceRefAdvanced,
-            new_snapshot_id,
+            new_snapshot_id.as_str(),
         );
         state
             .events
@@ -121,7 +123,7 @@ impl WorkspaceControlPlaneClient for FakeControlPlaneClient {
                 version: next_ref.version,
                 base_snapshot_id: current.snapshot_id,
                 target_snapshot_id: new_snapshot_id.clone(),
-                occurred_at: event.at.to_string(),
+                occurred_at: event.at,
                 advanced_by_device_id: Some(writer_device_id.clone()),
                 caused_by_event_id: Some(event.event_id),
                 project_id: project_id.cloned(),

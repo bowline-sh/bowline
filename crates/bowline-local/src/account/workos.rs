@@ -79,9 +79,8 @@ pub fn start_login(
             authenticated_at: None,
         },
         local_device: None,
-        next_actions: vec![RepairCommand::inspect(
-            "Open the verification URL and confirm the code".to_string(),
-            None,
+        next_actions: vec![pending_login_next_action(
+            &authorization.verification_uri_complete,
         )],
     };
     Ok((authorization, output))
@@ -97,6 +96,7 @@ where
     let client = workos_http_client()?;
     let authorization = request_device_authorization(&client, &options.client_id)?;
     if !options.poll {
+        let next_action = pending_login_next_action(&authorization.verification_uri_complete);
         return Ok(LoginCommandOutput {
             contract_version: CONTRACT_VERSION,
             command: bowline_core::commands::CommandName::Login,
@@ -114,10 +114,7 @@ where
                 authenticated_at: None,
             },
             local_device: None,
-            next_actions: vec![RepairCommand::inspect(
-                "Open the verification URL and confirm the code".to_string(),
-                None,
-            )],
+            next_actions: vec![next_action],
         });
     }
 
@@ -126,6 +123,22 @@ where
         &options.client_id,
         authorization,
         options.generated_at,
+    )
+}
+
+/// Opens the verification URL and reports the outcome as the next action, so a
+/// user who did get a browser tab is told to confirm it and a user who did not
+/// is handed the URL rather than a next action with no command.
+fn pending_login_next_action(verification_uri_complete: &str) -> RepairCommand {
+    if super::browser::open_verification_url(verification_uri_complete).opened() {
+        return RepairCommand::inspect(
+            "Confirm the code in the browser tab that just opened".to_string(),
+            None,
+        );
+    }
+    RepairCommand::inspect(
+        "Open this verification URL and confirm the code".to_string(),
+        Some(verification_uri_complete.to_string()),
     )
 }
 

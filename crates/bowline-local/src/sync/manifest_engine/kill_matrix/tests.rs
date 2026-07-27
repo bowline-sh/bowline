@@ -23,15 +23,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::engine_test_support::{SharedRemote, open_store, test_context, test_crypto};
-use super::fs_guard::{ParentChainMode, observe, prepare_parent_chain};
+use super::engine_test_support::{
+    SharedRemote, observe_present, open_store, test_context, test_crypto,
+};
+use super::fs_guard::{ParentChainMode, prepare_parent_chain};
 use super::manifest::{FileMode, ManifestEntry, ManifestKey, WorkspacePath};
 use super::pull_apply::apply::build_intent;
 use super::pull_apply::materialize::{
     TempFile, fsync_parent, materialize_aside, preserve_preimage, set_mode, stage_write_temp,
 };
 use super::pull_apply::{
-    FsOp, FsOpKind, PullDeps, decide_head, entry_mode, pull, record_for_entry,
+    FsOp, FsOpKind, PullDeps, PullScope, decide_head, entry_mode, pull, record_for_entry,
 };
 use super::push::{PushDeps, RemoteObjects, RemoteRef, push};
 use super::store::AncestorCommit;
@@ -338,6 +340,7 @@ fn kill_child() {
         ctx: &ctx,
         objects: &remote,
         refs: &remote,
+        scope: PullScope::WholeAncestor,
     };
     let head = remote
         .current_ref()
@@ -387,7 +390,7 @@ fn staged_apply<O: RemoteObjects, R: RemoteRef>(
     hit(Barrier::AfterIntentCommit);
 
     let absolute = ctx.workspace_root.join(op.path.as_str());
-    let observed = observe(&ctx.workspace_root, &op.path).expect("observe");
+    let observed = observe_present(&ctx.workspace_root, &op.path);
     let mut commit = AncestorCommit::default();
 
     match &op.kind {
@@ -396,8 +399,7 @@ fn staged_apply<O: RemoteObjects, R: RemoteRef>(
                 &ctx.workspace_root,
                 &op.path,
                 ParentChainMode::CreateMissing,
-            )
-            .expect("prepare parent chain");
+            );
             let replacing = observed.is_some();
             if replacing {
                 preserve_preimage(ctx, &op.path, &absolute).expect("preserve preimage");
@@ -405,10 +407,9 @@ fn staged_apply<O: RemoteObjects, R: RemoteRef>(
             hit(Barrier::AfterPreimagePreserved);
             install_bytes(ctx, &op.path, &absolute, entry, temp.as_ref(), replacing);
             hit(Barrier::AfterMutation);
-            fsync_parent(&absolute).expect("fsync parent");
+            fsync_parent(&absolute);
             hit(Barrier::AfterParentFsync);
-            let fingerprint = observe(&ctx.workspace_root, &op.path)
-                .expect("re-observe")
+            let fingerprint = observe_present(&ctx.workspace_root, &op.path)
                 .expect("installed target present")
                 .fingerprint;
             commit
@@ -420,18 +421,17 @@ fn staged_apply<O: RemoteObjects, R: RemoteRef>(
             hit(Barrier::AfterPreimagePreserved);
             remove_path(&absolute);
             hit(Barrier::AfterMutation);
-            fsync_parent(&absolute).expect("fsync parent");
+            fsync_parent(&absolute);
             hit(Barrier::AfterParentFsync);
             commit.removals.insert(op.path.clone());
         }
         FsOpKind::ModeChange(entry) => {
             set_mode(&ctx.workspace_root, &op.path, entry_mode(entry)).expect("set mode");
             hit(Barrier::AfterMutation);
-            fsync_parent(&absolute).expect("fsync parent");
+            fsync_parent(&absolute);
             hit(Barrier::AfterParentFsync);
-            let observed = observe(&ctx.workspace_root, &op.path)
-                .expect("re-observe")
-                .expect("mode target present");
+            let observed =
+                observe_present(&ctx.workspace_root, &op.path).expect("mode target present");
             commit.upserts.insert(
                 op.path.clone(),
                 record_for_entry(entry, observed.fingerprint),
@@ -524,6 +524,7 @@ fn assert_recovers(op: Op, barrier: Barrier, root: &Path, remote_dir: &Path, pat
         ctx: &ctx,
         objects: &remote,
         refs: &remote,
+        scope: PullScope::WholeAncestor,
     };
     let label = format!("{}/{}", op.name(), barrier.name());
 
@@ -540,6 +541,13 @@ fn assert_recovers(op: Op, barrier: Barrier, root: &Path, remote_dir: &Path, pat
         !tmp_contains(root, &new_bytes(op)),
         "no remote plaintext may be left in an orphan temp for {label}"
     );
+    // A quarantined preimage is a rollback asset for a PENDING intent only. Once
+    // recovery has cleared the journal it is dead weight, and keeping it is what
+    // grew `.bowline/quarantine` into a second copy of the workspace.
+    assert!(
+        quarantine_is_empty(root),
+        "no preimage may survive a cleared intent journal for {label}"
+    );
 
     match op {
         Op::Create => {
@@ -547,17 +555,9 @@ fn assert_recovers(op: Op, barrier: Barrier, root: &Path, remote_dir: &Path, pat
         }
         Op::Update => {
             assert_eq!(read(root, path), new_bytes(op), "update target for {label}");
-            assert!(
-                quarantine_contains(root, &old_bytes(op)),
-                "preimage preserved for {label}"
-            );
         }
         Op::Delete => {
             assert!(!exists(root, path), "deleted target absent for {label}");
-            assert!(
-                quarantine_contains(root, &old_bytes(op)),
-                "preimage preserved for {label}"
-            );
             // Deletions must not resurrect on the follow-on pull.
             assert!(
                 !exists(root, path),
@@ -644,8 +644,10 @@ fn tmp_contains(root: &Path, needle: &[u8]) -> bool {
     dir_has_file_content(&root.join(".bowline").join("tmp"), needle)
 }
 
-fn quarantine_contains(root: &Path, needle: &[u8]) -> bool {
-    dir_has_file_content(&root.join(".bowline").join("quarantine"), needle)
+fn quarantine_is_empty(root: &Path) -> bool {
+    fs::read_dir(root.join(".bowline").join("quarantine"))
+        .map(|entries| entries.count() == 0)
+        .unwrap_or(true)
 }
 
 fn dir_has_file_content(dir: &Path, needle: &[u8]) -> bool {

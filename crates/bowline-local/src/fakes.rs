@@ -8,7 +8,7 @@ use std::{
 
 use crate::device_keys::{
     AccountTokens, DeviceIdentity, DeviceKeyError, DeviceKeyStore, DeviceProofVerifier,
-    SecretUnavailableReason, WorkspaceKeyMaterial,
+    WorkspaceKeyring,
 };
 pub use bowline_control_plane::{
     ByteRange, CompactEvent, CompareAndSwapError, ControlPlaneClient, ControlPlaneError,
@@ -60,21 +60,23 @@ impl DeviceKeyStore for FakeKeychain {
         Ok(self.delete_secret("account-tokens-v1").is_some())
     }
 
-    fn store_workspace_key(&self, key: WorkspaceKeyMaterial) -> Result<(), DeviceKeyError> {
+    fn store_workspace_keyring(&self, keyring: WorkspaceKeyring) -> Result<(), DeviceKeyError> {
         self.put_secret(
-            format!("workspace-key-v1:{}", key.workspace_id.as_str()),
-            serde_json::to_vec(&key)?,
+            crate::device_keys::workspace_keyring_secret_name(&keyring.workspace_id),
+            serde_json::to_vec(&keyring)?,
         );
         Ok(())
     }
 
-    fn load_workspace_key(
+    fn load_workspace_keyring(
         &self,
         workspace_id: &WorkspaceId,
-    ) -> Result<Option<WorkspaceKeyMaterial>, DeviceKeyError> {
-        self.get_secret(&format!("workspace-key-v1:{}", workspace_id.as_str()))
-            .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
-            .transpose()
+    ) -> Result<Option<WorkspaceKeyring>, DeviceKeyError> {
+        self.get_secret(&crate::device_keys::workspace_keyring_secret_name(
+            workspace_id,
+        ))
+        .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
+        .transpose()
     }
 
     fn store_device_proof_verifier(
@@ -132,14 +134,6 @@ impl DeviceKeyStore for FakeKeychain {
             "device-proof-verifiers-v1".to_string(),
             serde_json::to_vec(&persisted)?,
         );
-        Ok(())
-    }
-
-    fn mark_secret_unavailable(
-        &self,
-        reason: SecretUnavailableReason,
-    ) -> Result<(), DeviceKeyError> {
-        self.put_secret("secret-unavailable-reason", serde_json::to_vec(&reason)?);
         Ok(())
     }
 }

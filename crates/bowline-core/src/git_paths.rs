@@ -27,26 +27,22 @@ impl GitPathClass {
     }
 }
 
-const GIT_VOLATILE_ROOT_NAMES: &[&str] = &[
-    "FETCH_HEAD",
-    "ORIG_HEAD",
-    "MERGE_HEAD",
-    "MERGE_MSG",
-    "MERGE_MODE",
-    "MERGE_AUTOSTASH",
-    "AUTO_MERGE",
-    "CHERRY_PICK_HEAD",
-    "REVERT_HEAD",
-    "REBASE_HEAD",
-    "COMMIT_EDITMSG",
-    "SQUASH_MSG",
-    "gc.log",
-    "gc.pid",
-];
+/// Machine-local git state, and nothing else.
+///
+/// The split here is deliberate and load-bearing. An interrupted merge, rebase,
+/// cherry-pick, revert, or bisect is uncommitted work: the conflicted worktree
+/// files sync, and the index that stages them syncs, so the operation head that
+/// names them must sync too. A device that received the conflicted tree without
+/// `MERGE_HEAD` or `rebase-merge/` cannot run `git rebase --continue` or commit
+/// the merge, which is exactly the stranding Bowline exists to remove.
+///
+/// What stays local is state that is derivable, per-machine, or scratch: reflogs
+/// (`logs/`), the last fetch and pre-operation heads, gc bookkeeping, git's own
+/// lockfiles, and loose-object/pack temp files.
+const GIT_VOLATILE_ROOT_NAMES: &[&str] = &["FETCH_HEAD", "ORIG_HEAD", "gc.log", "gc.pid"];
 
-const GIT_VOLATILE_DIR_PREFIXES: &[&str] =
-    &["logs/", "rebase-merge/", "rebase-apply/", "sequencer/"];
-const GIT_VOLATILE_DIR_NAMES: &[&str] = &["logs", "rebase-merge", "rebase-apply", "sequencer"];
+const GIT_VOLATILE_DIR_PREFIXES: &[&str] = &["logs/"];
+const GIT_VOLATILE_DIR_NAMES: &[&str] = &["logs"];
 const GIT_WORKTREE_LOCAL_ROOT_NAMES: &[&str] =
     &["gitdir", "commondir", "locked", "config.worktree"];
 
@@ -133,8 +129,7 @@ fn classify_nested_module_suffix(tail: &[&str]) -> Option<GitPathClass> {
 
     if tail.len() == 1
         && (GIT_VOLATILE_ROOT_NAMES.contains(&root_name)
-            || GIT_VOLATILE_DIR_NAMES.contains(&root_name)
-            || root_name.starts_with("BISECT_"))
+            || GIT_VOLATILE_DIR_NAMES.contains(&root_name))
     {
         return Some(GitPathClass::DerivableVolatile);
     }
@@ -142,9 +137,6 @@ fn classify_nested_module_suffix(tail: &[&str]) -> Option<GitPathClass> {
         return Some(GitPathClass::DerivableVolatile);
     }
     if is_git_temp_object_path(tail, &tail_path, final_name) {
-        return Some(GitPathClass::DerivableVolatile);
-    }
-    if is_nested_module_volatile_dir_suffix(tail) {
         return Some(GitPathClass::DerivableVolatile);
     }
     if matches!(tail_path.as_str(), "HEAD" | "packed-refs" | "shallow")
@@ -163,9 +155,7 @@ fn classify_plain_git_tail(tail: &[&str]) -> GitPathClass {
     let root_name = tail[0];
     let final_name = tail[tail.len() - 1];
 
-    if tail.len() == 1
-        && (GIT_VOLATILE_ROOT_NAMES.contains(&root_name) || root_name.starts_with("BISECT_"))
-    {
+    if tail.len() == 1 && GIT_VOLATILE_ROOT_NAMES.contains(&root_name) {
         return GitPathClass::DerivableVolatile;
     }
     if tail.len() == 1 && GIT_VOLATILE_DIR_NAMES.contains(&root_name) {
@@ -211,16 +201,6 @@ fn is_git_temp_object_path(tail: &[&str], tail_path: &str, final_name: &str) -> 
             .any(|component| component.starts_with("tmp_"))
 }
 
-fn is_nested_module_volatile_dir_suffix(tail: &[&str]) -> bool {
-    match tail {
-        // `.git/modules/**/logs/HEAD` is ambiguous with a submodule whose path
-        // itself ends in `logs`; prefer syncing the pointer over dropping a
-        // potentially real nested gitdir HEAD.
-        ["rebase-merge" | "rebase-apply" | "sequencer", ..] if tail.len() >= 2 => true,
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{GitPathClass, classify_git_path, is_git_directory_path};
@@ -261,8 +241,22 @@ mod tests {
             (".git/config.lock", Some(GitPathClass::DerivableVolatile)),
             (".git/logs", Some(GitPathClass::DerivableVolatile)),
             (".git/logs/HEAD", Some(GitPathClass::DerivableVolatile)),
-            (".git/rebase-merge", Some(GitPathClass::DerivableVolatile)),
-            (".git/sequencer", Some(GitPathClass::DerivableVolatile)),
+            (".git/rebase-merge", Some(GitPathClass::OrdinaryState)),
+            (".git/rebase-merge/done", Some(GitPathClass::OrdinaryState)),
+            (".git/sequencer", Some(GitPathClass::OrdinaryState)),
+            (".git/MERGE_HEAD", Some(GitPathClass::OrdinaryState)),
+            (".git/MERGE_MSG", Some(GitPathClass::OrdinaryState)),
+            (".git/MERGE_MODE", Some(GitPathClass::OrdinaryState)),
+            (".git/MERGE_AUTOSTASH", Some(GitPathClass::OrdinaryState)),
+            (".git/AUTO_MERGE", Some(GitPathClass::OrdinaryState)),
+            (".git/CHERRY_PICK_HEAD", Some(GitPathClass::OrdinaryState)),
+            (".git/REVERT_HEAD", Some(GitPathClass::OrdinaryState)),
+            (".git/REBASE_HEAD", Some(GitPathClass::OrdinaryState)),
+            (".git/COMMIT_EDITMSG", Some(GitPathClass::OrdinaryState)),
+            (".git/SQUASH_MSG", Some(GitPathClass::OrdinaryState)),
+            (".git/FETCH_HEAD", Some(GitPathClass::DerivableVolatile)),
+            (".git/ORIG_HEAD", Some(GitPathClass::DerivableVolatile)),
+            (".git/gc.log", Some(GitPathClass::DerivableVolatile)),
             (".git/modules/sub/index", Some(GitPathClass::OrdinaryState)),
             (
                 ".git/modules/libs/foo/index",
@@ -278,7 +272,7 @@ mod tests {
             ),
             (
                 ".git/modules/foo/rebase-merge/head-name",
-                Some(GitPathClass::DerivableVolatile),
+                Some(GitPathClass::OrdinaryState),
             ),
             (
                 ".git/modules/libs/foo/logs",
@@ -286,15 +280,15 @@ mod tests {
             ),
             (
                 ".git/modules/libs/foo/rebase-merge",
-                Some(GitPathClass::DerivableVolatile),
+                Some(GitPathClass::OrdinaryState),
             ),
             (
                 ".git/modules/libs/foo/rebase-apply",
-                Some(GitPathClass::DerivableVolatile),
+                Some(GitPathClass::OrdinaryState),
             ),
             (
                 ".git/modules/libs/foo/sequencer",
-                Some(GitPathClass::DerivableVolatile),
+                Some(GitPathClass::OrdinaryState),
             ),
             (
                 ".git/modules/libs/logs/HEAD",
@@ -349,12 +343,37 @@ mod tests {
             ("src/foo.lock", None),
             ("foo.git/index", None),
             ("sub/.git", Some(GitPathClass::DerivableVolatile)),
-            (".git/BISECT_LOG", Some(GitPathClass::DerivableVolatile)),
+            (".git/BISECT_LOG", Some(GitPathClass::OrdinaryState)),
             (".git/shallow", Some(GitPathClass::PointerState)),
         ];
 
         for (path, expected) in cases {
             assert_eq!(classify_git_path(path), expected, "{path}");
+        }
+    }
+
+    /// An interrupted operation must travel as one bundle: the conflicted
+    /// worktree, the index that stages it, and the operation head that names it.
+    /// Any one of these classified apart from the others strands the user on the
+    /// second machine.
+    #[test]
+    fn in_progress_operation_state_travels_with_the_index_it_belongs_to() {
+        for path in [
+            ".git/index",
+            ".git/MERGE_HEAD",
+            ".git/MERGE_MSG",
+            ".git/CHERRY_PICK_HEAD",
+            ".git/REVERT_HEAD",
+            ".git/REBASE_HEAD",
+            ".git/rebase-merge/head-name",
+            ".git/rebase-apply/next",
+            ".git/sequencer/todo",
+        ] {
+            assert_eq!(
+                classify_git_path(path),
+                Some(GitPathClass::OrdinaryState),
+                "{path}"
+            );
         }
     }
 

@@ -132,6 +132,35 @@ pub(super) fn render_setup_human(output: &bowline_core::commands::SetupCommandOu
     lines.join("\n")
 }
 
+pub(super) fn render_device_key_status_human(
+    output: &bowline_core::commands::DeviceKeyStatusCommandOutput,
+) -> String {
+    let pres = presentation();
+    let (summary, role) = match output.workspace_key {
+        bowline_core::commands::WorkspaceKeyCustody::Held => ("held", Role::Ready),
+        bowline_core::commands::WorkspaceKeyCustody::Absent => ("absent", Role::Attention),
+    };
+    let epoch = output
+        .key_epoch
+        .map(|epoch| format!(" (epoch {epoch})"))
+        .unwrap_or_default();
+    let mut lines = vec![
+        format!(
+            "{}  {}",
+            style::section("Workspace", &pres),
+            output.workspace_id.as_str()
+        ),
+        format!(
+            "{}  {}{epoch}",
+            style::section("Key", &pres),
+            style::paint(summary, role, &pres)
+        ),
+    ];
+    append_next_actions(&mut lines, &output.next_actions);
+    lines.push(String::new());
+    lines.join("\n")
+}
+
 pub(super) fn render_devices_human(
     output: &bowline_core::commands::DevicesCommandOutput,
 ) -> String {
@@ -275,7 +304,9 @@ pub(super) fn render_work_quiet(output: &bowline_core::commands::WorkListCommand
     bare_values(output.work_views.iter().map(|view| view.id.as_str()))
 }
 
-fn bare_values<'a>(values: impl Iterator<Item = &'a str>) -> String {
+/// One primary identifier per line, newline-terminated — the `--quiet` shape
+/// every command shares so a caller can pipe any of them into `xargs`.
+pub(super) fn bare_values<'a>(values: impl Iterator<Item = &'a str>) -> String {
     let mut output = values.collect::<Vec<_>>().join("\n");
     if !output.is_empty() {
         output.push('\n');

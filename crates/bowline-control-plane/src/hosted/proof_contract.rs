@@ -6,12 +6,14 @@ use serde_json::Value as JsonValue;
 use super::*;
 use crate::Sha256Checksum;
 use bowline_core::ids::ContentId;
+use bowline_core::status::{StatusAttention, StatusAvailability, StatusSnapshotFreshness};
 
 const RUST_BUILDERS: &[&str] = &[
     "statusPublish",
     "bootstrapSession",
     "deviceRequestApproval",
     "deviceRequestDenial",
+    "deviceGrantFetch",
     "deviceRevocation",
     "workspaceRef",
     "workspaceHead",
@@ -22,10 +24,17 @@ const RUST_BUILDERS: &[&str] = &[
     "objectMetadata",
     "objectPointer",
     "headObjectMetadata",
+    "storageGcList",
+    "storageGcObject",
     "recoveryEnvelopeCreate",
     "recoveryEnvelopeVerify",
     "recoveryEnvelopeRotate",
     "recoveryEnvelopeRevoke",
+    "devicePublicKey",
+    "keyRegrantWork",
+    "keyRegrantAccept",
+    "keyRegrantSeed",
+    "keyRegrantOffer",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -64,8 +73,11 @@ struct ProjectionInvariant {
 struct StatusInput {
     workspace_id: String,
     snapshot_id: String,
-    availability: String,
-    attention: String,
+    // Deserialized straight into the domain enums: the fixture spelling and the
+    // signed proof-subject spelling are then the same value, not two strings
+    // that happen to agree.
+    availability: StatusAvailability,
+    attention: StatusAttention,
     schema_hash: String,
     snapshot_version: u64,
     observed_at: String,
@@ -86,19 +98,52 @@ struct BootstrapInput {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceRequestProofInput {
-    request_id: String,
+    request_id: DeviceApprovalRequestId,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceRevocationProofInput {
-    device_id: String,
+    device_id: DeviceId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DevicePublicKeyProofInput {
+    device_public_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyRegrantWorkProofInput {
+    workspace_id: WorkspaceId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyRegrantEpochProofInput {
+    key_epoch: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyRegrantOfferProofInput {
+    key_epoch: u32,
+    offers: Vec<KeyRegrantOfferFixture>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyRegrantOfferFixture {
+    recipient_device_id: DeviceId,
+    acceptance_proof_verifier: String,
+    ciphertext: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RecoveryEnvelopeProofInput {
-    envelope_id: String,
+    envelope_id: RecoveryEnvelopeId,
     ciphertext: Option<String>,
     fingerprint: Option<String>,
     recovery_proof_verifier: Option<String>,
@@ -108,15 +153,15 @@ struct RecoveryEnvelopeProofInput {
 #[serde(rename_all = "camelCase")]
 struct WorkspaceRefInput {
     expected_version: u64,
-    next_snapshot_id: String,
+    next_snapshot_id: SnapshotId,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkspaceHeadInput {
-    workspace_id: String,
+    workspace_id: WorkspaceId,
     version: u64,
-    snapshot_id: String,
+    snapshot_id: SnapshotId,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,7 +171,7 @@ struct UploadIntentInput {
     kind: String,
     byte_length: u64,
     checksum_sha256: String,
-    content_id: Option<String>,
+    content_id: Option<ContentId>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,7 +193,7 @@ struct RangeInput {
 struct UploadVerificationInput {
     object_key: String,
     byte_length: u64,
-    content_id: Option<String>,
+    content_id: Option<ContentId>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,7 +207,7 @@ struct ObjectRetentionInput {
 #[serde(rename_all = "camelCase")]
 struct ObjectPointerInput {
     object_key: String,
-    content_id: String,
+    content_id: ContentId,
     byte_length: u64,
     hash: String,
     key_epoch: u32,
@@ -173,6 +218,12 @@ struct ObjectPointerInput {
 #[serde(rename_all = "camelCase")]
 struct ObjectKeyInput {
     object_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GcCursorInput {
+    cursor: Option<String>,
 }
 
 #[test]
@@ -213,7 +264,13 @@ fn builder_allows_action(builder: &str, action: &str) -> bool {
         "bootstrapSession" => &["create-bootstrap-session"],
         "deviceRequestApproval" => &["approve-device-request"],
         "deviceRequestDenial" => &["deny-device-request"],
+        "deviceGrantFetch" => &[crate::FETCH_DEVICE_GRANT_ACTION],
         "deviceRevocation" => &["revoke-device"],
+        "devicePublicKey" => &["attest-device-public-key"],
+        "keyRegrantWork" => &["list-workspace-key-regrant-work"],
+        "keyRegrantAccept" => &["accept-workspace-key-regrant"],
+        "keyRegrantSeed" => &["seed-workspace-key-epoch"],
+        "keyRegrantOffer" => &["offer-workspace-key-regrant"],
         "workspaceRef" => &["compare-and-swap-workspace-ref"],
         "workspaceHead" => &["sign-workspace-head"],
         "uploadIntent" => &["create-upload-intent"],
@@ -223,6 +280,11 @@ fn builder_allows_action(builder: &str, action: &str) -> bool {
         "objectMetadata" => &["commit-uploaded-object-metadata"],
         "objectPointer" => &["fragment", "fixture-only"],
         "headObjectMetadata" => &["head-object-metadata"],
+        "storageGcList" => &["list-storage-gc-objects"],
+        "storageGcObject" => &[
+            "create-storage-gc-delete-intent",
+            "delete-object-metadata-after-gc",
+        ],
         "statusPublish" => &["publish-workspace-status"],
         "recoveryEnvelopeCreate" => &["create-recovery-envelope"],
         "recoveryEnvelopeVerify" => &["verify-recovery-envelope"],
@@ -307,12 +369,36 @@ fn build_subject(case: &FixtureCase) -> String {
     match case.builder.as_str() {
         "statusPublish" => status_publish_subject(case),
         "bootstrapSession" => bootstrap_session_subject(case),
-        "deviceRequestApproval" | "deviceRequestDenial" => crate::device_request_proof_subject(
-            &deserialize::<DeviceRequestProofInput>(case).request_id,
-        ),
+        "deviceRequestApproval" | "deviceRequestDenial" | "deviceGrantFetch" => {
+            crate::device_request_proof_subject(
+                &deserialize::<DeviceRequestProofInput>(case).request_id,
+            )
+        }
         "deviceRevocation" => crate::device_revocation_proof_subject(
             &deserialize::<DeviceRevocationProofInput>(case).device_id,
         ),
+        "devicePublicKey" => crate::device_public_key_proof_subject(
+            &deserialize::<DevicePublicKeyProofInput>(case).device_public_key,
+        ),
+        "keyRegrantWork" => crate::key_regrant_work_proof_subject(
+            &deserialize::<KeyRegrantWorkProofInput>(case).workspace_id,
+        ),
+        "keyRegrantAccept" => crate::key_regrant_accept_proof_subject(
+            deserialize::<KeyRegrantEpochProofInput>(case).key_epoch,
+        ),
+        "keyRegrantSeed" | "keyRegrantOffer" => {
+            let input = deserialize::<KeyRegrantOfferProofInput>(case);
+            let offers = input
+                .offers
+                .into_iter()
+                .map(|offer| crate::WorkspaceKeyRegrantOffer {
+                    acceptance_proof_verifier: offer.acceptance_proof_verifier,
+                    ciphertext: offer.ciphertext,
+                    recipient_device_id: offer.recipient_device_id,
+                })
+                .collect::<Vec<_>>();
+            crate::key_regrant_offer_proof_subject(input.key_epoch, &offers)
+        }
         "workspaceRef" => {
             let input = deserialize::<WorkspaceRefInput>(case);
             workspace_ref_proof_subject(input.expected_version, &input.next_snapshot_id)
@@ -330,7 +416,7 @@ fn build_subject(case: &FixtureCase) -> String {
                 parse_object_kind_for_fixture(&input.kind),
                 input.byte_length,
                 &checksum_sha256,
-                input.content_id.as_deref(),
+                input.content_id.as_ref(),
             )
         }
         "downloadIntent" => {
@@ -348,7 +434,7 @@ fn build_subject(case: &FixtureCase) -> String {
             upload_verification_proof_subject(
                 &input.object_key,
                 input.byte_length,
-                input.content_id.as_deref(),
+                input.content_id.as_ref(),
             )
         }
         "objectRetention" => {
@@ -361,11 +447,17 @@ fn build_subject(case: &FixtureCase) -> String {
         "objectMetadata" => object_metadata_proof_subject(&object_pointer(deserialize(case))),
         "objectPointer" => object_pointer_proof_subject(&object_pointer(deserialize(case))),
         "headObjectMetadata" => deserialize::<ObjectKeyInput>(case).object_key,
+        "storageGcList" => {
+            storage_gc_list_proof_subject(deserialize::<GcCursorInput>(case).cursor.as_deref())
+        }
+        "storageGcObject" => {
+            storage_gc_object_proof_subject(&deserialize::<ObjectKeyInput>(case).object_key)
+        }
         "recoveryEnvelopeCreate" | "recoveryEnvelopeRotate" => {
             let input = deserialize::<RecoveryEnvelopeProofInput>(case);
             crate::recovery_envelope_payload_proof_subject(&RecoveryEnvelopeInput {
                 workspace_id: WorkspaceId::new("ws_fixture"),
-                envelope_id: RecoveryEnvelopeId::new(input.envelope_id),
+                envelope_id: input.envelope_id,
                 created_by_device_id: DeviceId::new("device_fixture"),
                 created_by_device_proof: String::new(),
                 ciphertext: input.ciphertext.expect("recovery fixture ciphertext"),
@@ -396,7 +488,7 @@ fn status_publish_subject(case: &FixtureCase) -> String {
         attention: input.attention,
         primary_fact_id: None,
         facts: Vec::new(),
-        freshness: "fresh".to_string(),
+        freshness: StatusSnapshotFreshness::Fresh,
         schema_hash: input.schema_hash,
         snapshot_version: input.snapshot_version,
         producer_version: "fixture".to_string(),
@@ -436,7 +528,7 @@ fn has_implementation(case: &FixtureCase, implementation: &str) -> bool {
 fn object_pointer(input: ObjectPointerInput) -> ObjectPointer {
     ObjectPointer {
         object_key: input.object_key,
-        content_id: ContentId::new(input.content_id),
+        content_id: input.content_id,
         byte_len: input.byte_length,
         hash: input.hash,
         key_epoch: input.key_epoch,

@@ -2,7 +2,10 @@ use std::{error::Error, fmt};
 
 pub use bowline_core::shell::quote_word as shell_quote;
 
-use crate::bootstrap::process::{ProcessError, ProcessRunner};
+use crate::{
+    bootstrap::process::{ProcessError, ProcessRunner},
+    daemon_env,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootstrapSshOptions {
@@ -25,6 +28,7 @@ pub struct RemoteBootstrapProbe {
 #[derive(Debug)]
 pub enum BootstrapSshError {
     InvalidHost(String),
+    InvalidWorkspaceId(String),
     Process(ProcessError),
     RemoteFailed { status_code: i32, stderr: String },
 }
@@ -71,20 +75,33 @@ where
     })
 }
 
-pub fn server_local_workspace_key_available<R>(
+/// Asks the remote host, through its own secret-store abstraction, whether it
+/// holds workspace key material. The question must go through the CLI: the
+/// custody backend is the host's choice (OS keychain on a desktop, a file on a
+/// headless agent host), so reading any one backend's storage answers for the
+/// wrong hosts, and a shell that names a secrets file puts secret-adjacent
+/// material into the SSH command line every operator's process list can read.
+pub fn workspace_key_status_remote<R>(
     runner: &R,
     options: &BootstrapSshOptions,
     workspace_id: &str,
-) -> Result<bool, BootstrapSshError>
+) -> Result<RemoteBootstrapProbe, BootstrapSshError>
 where
     R: ProcessRunner,
 {
-    let command = format!(
-        "workspace_id={}; secret_file=\"${{XDG_STATE_HOME:-$HOME/.local/state}}/bowline/secrets.v1\"; if [ -f \"$secret_file\" ] && grep -F \"\\\"workspaceId\\\": \\\"$workspace_id\\\"\" \"$secret_file\" >/dev/null 2>&1; then printf yes; else printf no; fi",
-        shell_quote(workspace_id),
-    );
-    let output = run_remote_shell_with_stdin(runner, options, &command, "")?;
-    Ok(output.stdout.trim() == "yes")
+    let workspace_id = validated_remote_state_id(workspace_id)?;
+    let output = run_remote_bowline(
+        runner,
+        options,
+        &format!(
+            "device key-status --workspace {} --json",
+            shell_quote(workspace_id)
+        ),
+    )?;
+    Ok(RemoteBootstrapProbe {
+        stdout: output.stdout,
+        stderr: output.stderr,
+    })
 }
 
 pub fn accept_remote_grant<R>(
@@ -144,6 +161,7 @@ where
             stderr: String::new(),
         });
     };
+    let workspace_id = validated_remote_state_id(workspace_id)?;
     let workspace_db = remote_shell_path(&format!(
         "~/.local/share/bowline/workspaces/{workspace_id}/local.sqlite3"
     ));
@@ -254,7 +272,7 @@ where
         .unwrap_or_else(|| format!("bowline {bowline_args}"));
     let remote_command = format!(
         "{}{}{}{}{}",
-        remote_state_prefix(options),
+        remote_state_prefix(options)?,
         remote_stdin_env_prefix(options),
         command_prefix,
         remote_env_prefix(&options.remote_env),
@@ -400,19 +418,37 @@ fn remote_env_prefix(env: &[(String, String)]) -> String {
     format!("{assignments} ")
 }
 
-fn remote_state_prefix(options: &BootstrapSshOptions) -> String {
+/// Selects the remote per-workspace metadata database. A workspace id that
+/// cannot address remote state is refused rather than silently dropped: the
+/// empty prefix would run every remote command against the host's *default*
+/// database, which succeeds against the wrong state with nothing to diagnose.
+fn remote_state_prefix(options: &BootstrapSshOptions) -> Result<String, BootstrapSshError> {
     let Some(workspace_id) = options.remote_workspace_id.as_deref() else {
-        return String::new();
+        return Ok(String::new());
     };
-    if !valid_remote_state_id(workspace_id) {
-        return String::new();
-    }
+    let workspace_id = validated_remote_state_id(workspace_id)?;
     let state_dir = remote_shell_path(&format!("~/.local/share/bowline/workspaces/{workspace_id}"));
     let db_path = remote_shell_path(&format!(
         "~/.local/share/bowline/workspaces/{workspace_id}/local.sqlite3"
     ));
-    format!("mkdir -p {state_dir}; BOWLINE_METADATA_DB={db_path}; export BOWLINE_METADATA_DB; ")
+    Ok(format!(
+        "mkdir -p {state_dir}; BOWLINE_METADATA_DB={db_path}; export BOWLINE_METADATA_DB; "
+    ))
 }
+
+fn validated_remote_state_id(workspace_id: &str) -> Result<&str, BootstrapSshError> {
+    if valid_remote_state_id(workspace_id) {
+        return Ok(workspace_id);
+    }
+    Err(BootstrapSshError::InvalidWorkspaceId(
+        workspace_id.to_string(),
+    ))
+}
+
+/// `sysexits.h` EX_CONFIG. The remote uses it for "these credentials can never
+/// arrive on this invocation", which is a misconfigured call rather than work
+/// that failed and could be retried.
+const REMOTE_STDIN_EXIT_CODE: u8 = 78;
 
 fn remote_stdin_env_prefix(options: &BootstrapSshOptions) -> String {
     let mut keys = Vec::new();
@@ -428,9 +464,21 @@ fn remote_stdin_env_prefix(options: &BootstrapSshOptions) -> String {
     if keys.is_empty() {
         return String::new();
     }
-    keys.into_iter()
-        .map(|key| format!("IFS= read -r {key}; export {key}; "))
-        .collect::<String>()
+    // `read` on a terminal waits forever, and on a closed stdin leaves the
+    // variable unset so the CLI reports a missing configuration it cannot
+    // explain. Both are refused here, where the reason is still known.
+    let mut prefix = format!(
+        "if [ -t 0 ]; then echo 'bowline: remote bootstrap credentials must be piped on stdin; \
+         run `bowline connect <host>` instead of this command by hand' >&2; \
+         exit {REMOTE_STDIN_EXIT_CODE}; fi; "
+    );
+    for key in keys {
+        prefix.push_str(&format!(
+            "IFS= read -r {key} || {{ echo 'bowline: bootstrap credential {key} was not delivered \
+             on stdin' >&2; exit {REMOTE_STDIN_EXIT_CODE}; }}; export {key}; "
+        ));
+    }
+    prefix
 }
 
 fn remote_stdin_env_stdin(options: &BootstrapSshOptions) -> String {
@@ -460,33 +508,15 @@ fn valid_remote_env_key(key: &str) -> bool {
     )
 }
 
+/// The remote `daemon.env` is rendered by the one writer that owns the format,
+/// so the key set is not a fourth hand-maintained allow-list.
 fn daemon_env_file(options: &BootstrapSshOptions) -> String {
-    options
-        .remote_env
-        .iter()
-        .chain(options.remote_secret_env.iter())
-        .filter(|(key, value)| {
-            valid_daemon_env_key(key) && !value.is_empty() && !value.contains('\n')
-        })
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
-}
-
-fn valid_daemon_env_key(key: &str) -> bool {
-    matches!(
-        key,
-        "CONVEX_URL"
-            | "BOWLINE_WORKSPACE_ID"
-            | "BOWLINE_DEVICE_ID"
-            | "BOWLINE_DEVICE_NAME"
-            | "BOWLINE_SECRET_STORE"
-            | "BOWLINE_ACCOUNT_SESSION_ID"
-            | "BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN"
-            | "BOWLINE_CONTROL_PLANE_TOKEN"
-            | "BOWLINE_WORKOS_ACCESS_TOKEN"
-            | "BOWLINE_WORKOS_CLIENT_ID"
+    daemon_env::render(
+        options
+            .remote_env
+            .iter()
+            .chain(options.remote_secret_env.iter())
+            .map(|(key, value)| (key.as_str(), value.as_str())),
     )
 }
 
@@ -501,6 +531,11 @@ impl fmt::Display for BootstrapSshError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidHost(error) => formatter.write_str(error),
+            Self::InvalidWorkspaceId(workspace_id) => write!(
+                formatter,
+                "workspace id `{workspace_id}` cannot address remote state; \
+                 expected only letters, digits, `-` and `_`"
+            ),
             Self::Process(error) => error.fmt(formatter),
             Self::RemoteFailed {
                 status_code,
@@ -516,7 +551,7 @@ impl fmt::Display for BootstrapSshError {
 impl Error for BootstrapSshError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::InvalidHost(_) => None,
+            Self::InvalidHost(_) | Self::InvalidWorkspaceId(_) => None,
             Self::Process(error) => Some(error),
             Self::RemoteFailed { .. } => None,
         }

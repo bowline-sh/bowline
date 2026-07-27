@@ -1,15 +1,15 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL};
 use bowline_control_plane::{
-    ByteRange, Capability, CompactEventKind, CompareAndSwapError, ControlPlaneClient,
-    ControlPlaneError, ControlPlaneTimestamp, DeviceApprovalInput, DeviceControlPlaneClient,
-    DeviceRequestInput, DeviceRequestInputDraft, DeviceRevocationInput, DownloadIntentRequest,
-    FakeControlPlaneClient, FirstAuthorizedDeviceInput, GrantAcceptanceInput,
-    ObjectControlPlaneClient, ObjectKind, ObjectMetadataCommit, ObjectPointer,
-    ObjectRetentionStateUpdate, RecoveryControlPlaneClient, RecoveryDeviceAuthorizationInput,
-    RecoveryEnvelopeInput, RecoveryEnvelopeState, RejectionCode, Sha256Checksum,
-    UploadIntentRequest, WorkspaceControlPlaneClient, device_request_proof_subject,
-    device_revocation_proof_subject, is_opaque_object_key, recovery_envelope_payload_proof_subject,
-    recovery_envelope_proof_subject,
+    ByteRange, CompactEventKind, CompareAndSwapError, ControlPlaneClient, ControlPlaneError,
+    ControlPlaneTimestamp, DeviceApprovalInput, DeviceControlPlaneClient, DeviceRequestInput,
+    DeviceRequestInputDraft, DeviceRevocationInput, DownloadIntentRequest, EncryptedGrantRequest,
+    FETCH_DEVICE_GRANT_ACTION, FakeControlPlaneClient, FirstAuthorizedDeviceInput,
+    GrantAcceptanceInput, ObjectControlPlaneClient, ObjectKind, ObjectMetadataCommit,
+    ObjectPointer, ObjectRetentionStateUpdate, RecoveryControlPlaneClient,
+    RecoveryDeviceAuthorizationInput, RecoveryEnvelopeInput, RecoveryEnvelopeState, RejectionCode,
+    Sha256Checksum, UploadIntent, UploadIntentOutcome, UploadIntentRequest,
+    WorkspaceControlPlaneClient, device_request_proof_subject, device_revocation_proof_subject,
+    is_opaque_object_key, recovery_envelope_payload_proof_subject, recovery_envelope_proof_subject,
 };
 use bowline_core::ids::*;
 use bowline_storage::RetentionState;
@@ -112,7 +112,7 @@ fn fake_cas_with_stale_base_returns_current_ref() {
         CompareAndSwapError::StaleRef(stale)
             if stale.expected_version == initial_ref.version
                 && stale.current.snapshot_id == Some(SnapshotId::new("snapshot-a"))
-                && stale.current.updated_by_device_id.as_deref() == Some("device-a")
+                && stale.current.updated_by_device_id == Some(DeviceId::new("device-a"))
     ));
 }
 
@@ -136,76 +136,7 @@ fn fake_project_scoped_cas_records_project_id_in_ref_history() {
         .expect("history is readable");
 
     assert_eq!(history.len(), 1);
-    assert_eq!(history[0].project_id.as_deref(), Some("project-a"));
-}
-
-#[test]
-fn fake_client_reports_only_typed_supported_capabilities() {
-    let control_plane = FakeControlPlaneClient::default();
-    assert_capability_matrix(
-        &control_plane,
-        &[
-            (Capability::WorkspaceRefHistory, true),
-            (Capability::StorageGc, true),
-            (Capability::ObjectMetadata, true),
-            (Capability::DeviceBootstrap, true),
-            (Capability::DeviceTrust, true),
-            (Capability::RecoveryKey, true),
-        ],
-    );
-}
-
-#[cfg(feature = "hosted-convex")]
-#[test]
-fn hosted_client_reports_only_typed_supported_capabilities() {
-    let control_plane = bowline_control_plane::HostedControlPlaneClient::try_new_with_token(
-        "http://127.0.0.1:3210",
-        "token",
-    )
-    .expect("hosted client can be constructed for capability reporting");
-    assert_capability_matrix(
-        &control_plane,
-        &[
-            (Capability::WorkspaceRefHistory, true),
-            (Capability::StorageGc, true),
-            (Capability::ObjectMetadata, true),
-            (Capability::DeviceBootstrap, true),
-            (Capability::DeviceTrust, true),
-            (Capability::RecoveryKey, true),
-        ],
-    );
-}
-
-fn assert_capability_matrix(
-    control_plane: &dyn ControlPlaneClient,
-    expected: &[(Capability, bool)],
-) {
-    let capabilities = control_plane.capabilities();
-
-    assert_eq!(
-        expected.len(),
-        Capability::ALL.len(),
-        "capability matrix must make one support decision per known capability"
-    );
-
-    for capability in Capability::ALL {
-        let matching_rows = expected
-            .iter()
-            .filter(|(expected_capability, _)| expected_capability == capability)
-            .count();
-        assert_eq!(
-            matching_rows, 1,
-            "capability matrix must contain exactly one row for {capability}"
-        );
-    }
-
-    for (capability, supported) in expected {
-        assert!(
-            capabilities.contains(capability) == *supported,
-            "reported capability support for {capability} did not match expected {supported}"
-        );
-        assert_eq!(control_plane.supports_capability(*capability), *supported);
-    }
+    assert_eq!(history[0].project_id, Some(ProjectId::new("project-a")));
 }
 
 #[test]
@@ -224,6 +155,7 @@ fn upload_and_download_intents_use_opaque_object_keys() {
             .with_content_id("content-1"),
         )
         .expect("upload intent");
+    let blob_upload = reserved(blob_upload);
     let upload_retry = control_plane
         .create_upload_intent(
             UploadIntentRequest::new(
@@ -236,7 +168,7 @@ fn upload_and_download_intents_use_opaque_object_keys() {
         )
         .expect("idempotent upload retry");
 
-    assert_eq!(upload_retry, blob_upload);
+    assert_eq!(reserved(upload_retry), blob_upload);
     assert!(is_opaque_object_key(&blob_upload.object_key));
     assert!(!blob_upload.object_key.contains("Users"));
     assert!(!blob_upload.object_key.contains("src"));
@@ -303,6 +235,7 @@ fn explicit_object_keys_are_scoped_by_workspace() {
                 .with_object_key(&shared_blob_key),
             )
             .expect("workspace-scoped blob upload intent");
+        let blob_upload = reserved(blob_upload);
         let manifest_upload = control_plane
             .create_upload_intent(
                 UploadIntentRequest::new(
@@ -315,6 +248,7 @@ fn explicit_object_keys_are_scoped_by_workspace() {
                 .with_object_key(&shared_manifest_key),
             )
             .expect("workspace-scoped manifest upload intent");
+        let manifest_upload = reserved(manifest_upload);
 
         assert_eq!(blob_upload.object_key, shared_blob_key);
         assert_eq!(manifest_upload.object_key, shared_manifest_key);
@@ -464,9 +398,21 @@ fn create_first_device(
             device_name: format!("{device_id}-name"),
             platform: "macos".to_string(),
             device_fingerprint: format!("fp_{device_id}"),
+            device_public_key: format!("age1{device_id}"),
+            device_public_key_proof: format!("dapp_test_{device_id}"),
             device_authorization_proof_verifier: device_verifier(device_id),
         })
         .expect("first device trust root");
+}
+
+/// Every fixture here pushes fresh content, so the server must reserve the key.
+/// A different outcome means the fixture stopped testing what it claims to.
+fn reserved(outcome: UploadIntentOutcome) -> UploadIntent {
+    match outcome {
+        UploadIntentOutcome::Reserved(intent) => Some(intent),
+        UploadIntentOutcome::AlreadyCommitted(_) => None,
+    }
+    .expect("fresh content must be reserved, not reported as already committed")
 }
 
 fn commit_one_direct_object(
@@ -485,6 +431,7 @@ fn commit_one_direct_object(
             .with_content_id(content_id),
         )
         .expect("blob upload intent");
+    let upload = reserved(upload);
 
     let direct_object = ObjectPointer {
         object_key: upload.object_key,

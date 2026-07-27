@@ -155,6 +155,31 @@ function requireFailure(name, result, output) {
   }
 }
 
+function initFixtureRepo(label, directory) {
+  requireSuccess(`${label} git init`, run("git", ["init"], { cwd: directory }));
+  requireSuccess(
+    `${label} git config name`,
+    run("git", ["config", "user.name", "fixture"], { cwd: directory }),
+  );
+  requireSuccess(
+    `${label} git config email`,
+    run("git", ["config", "user.email", "fixture@example.com"], {
+      cwd: directory,
+    }),
+  );
+}
+
+function commitFixtureRepo(label, directory) {
+  requireSuccess(
+    `${label} git add`,
+    run("git", ["add", "-A"], { cwd: directory }),
+  );
+  requireSuccess(
+    `${label} git commit`,
+    run("git", ["commit", "-m", "seed"], { cwd: directory }),
+  );
+}
+
 function runPublicExportFixture() {
   const root = mkdtempSync(join(tmpdir(), "bowline-public-export-"));
   const source = join(root, "source");
@@ -176,20 +201,11 @@ function runPublicExportFixture() {
     JSON.stringify({ include: ["README.md", "docs", "run.sh"] }, null, 2),
   );
 
-  requireSuccess(
-    "public export fixture git init",
-    run("git", ["init"], { cwd: target }),
-  );
-  requireSuccess(
-    "public export fixture git config name",
-    run("git", ["config", "user.name", "fixture"], { cwd: target }),
-  );
-  requireSuccess(
-    "public export fixture git config email",
-    run("git", ["config", "user.email", "fixture@example.com"], {
-      cwd: target,
-    }),
-  );
+  initFixtureRepo("public export source fixture", source);
+  commitFixtureRepo("public export source fixture", source);
+  writeFileSync(join(source, "docs", "scratch-notes.md"), "private scratch\n");
+
+  initFixtureRepo("public export fixture", target);
   writeFileSync(join(target, "stale.txt"), "stale\n");
   requireSuccess(
     "public export fixture git add",
@@ -221,6 +237,9 @@ function runPublicExportFixture() {
   }
   if (existsSync(join(target, "stale.txt"))) {
     errors.push("public export fixture: stale file was not pruned");
+  }
+  if (existsSync(join(target, "docs", "scratch-notes.md"))) {
+    errors.push("public export fixture: untracked source file was exported");
   }
 
   writeFileSync(
@@ -259,6 +278,35 @@ function runPublicExportFixture() {
     ]),
     "secret-looking assignment",
   );
+  for (const [name, body, expected] of [
+    [
+      "deploy.sh",
+      "#!/bin/sh\nDEPLOY_API_KEY=not-a-real-key-value-1234\n",
+      "secret-looking assignment",
+    ],
+    [
+      "signing.pem",
+      ["", "Users", "alice", "Code", "acme", "signing.pem"].join("/") + "\n",
+      "private local absolute path",
+    ],
+  ]) {
+    writeFileSync(join(secretRoot, name), body);
+    writeFileSync(
+      join(secretRoot, "manifest.json"),
+      JSON.stringify({ include: [name] }),
+    );
+    requireFailure(
+      `public export ${name} content fixture`,
+      run(process.execPath, [
+        join(process.cwd(), "scripts/check-public-export.mjs"),
+        "--root",
+        secretRoot,
+        "--manifest",
+        "manifest.json",
+      ]),
+      expected,
+    );
+  }
   writeFileSync(
     join(secretRoot, "home-path.txt"),
     ["", "Users", "alice", "Code", "acme"].join("/") + "\n",
@@ -311,6 +359,10 @@ function runPublicExportFixture() {
     "crates/missing: Rust workspace member is absent from the public export",
   );
   symlinkSync("../private-source", join(source, "private-link"));
+  requireSuccess(
+    "public export symlink fixture git add",
+    run("git", ["add", "private-link"], { cwd: source }),
+  );
   writeFileSync(
     join(source, "public-export.symlink.json"),
     JSON.stringify({ include: ["private-link"] }, null, 2),

@@ -114,39 +114,124 @@ pub(super) fn print_command_usage_error(
     exit_code_for_error(&output)
 }
 
+/// One failure, fully specified. Runtime failures used to be a bare code with no
+/// remediation and no next actions, which told a caller "retryable" and nothing
+/// else; every printer below now has to answer "and what do I run next?".
+pub(super) struct CommandFailure<'a> {
+    pub(super) command: CommandName,
+    pub(super) generated_at: String,
+    pub(super) code: &'static str,
+    pub(super) message: &'a str,
+    pub(super) remediation: &'a str,
+    pub(super) recoverability: CommandRecoverability,
+    pub(super) next_actions: Vec<RepairCommand>,
+}
+
+pub(super) fn print_command_failure(failure: CommandFailure<'_>, json: bool) -> CommandExitCode {
+    let mut output = bowline_local::status::command_error_output(
+        failure.command,
+        failure.generated_at,
+        failure.code,
+        failure.message,
+        failure.recoverability,
+    );
+    output.error.remediation = Some(failure.remediation.to_string());
+    output.next_actions = failure.next_actions;
+    print_command_error_output(&output, json)
+}
+
+const RUNTIME_REMEDIATION: &str =
+    "Retry the command. If it keeps failing, run `bowline doctor --json` for the failing check.";
+
+/// The actions that apply to any unclassified runtime failure: find out what is
+/// broken, then hand over a redacted bundle if it is not self-explanatory.
+fn runtime_next_actions() -> Vec<RepairCommand> {
+    vec![
+        RepairCommand::inspect(
+            "Diagnose this device".to_string(),
+            Some("bowline doctor --json".to_string()),
+        ),
+        RepairCommand::inspect(
+            "Collect a redacted diagnostics bundle".to_string(),
+            Some("bowline diagnostics collect --json".to_string()),
+        ),
+    ]
+}
+
 pub(super) fn print_runtime_error(
     command: CommandName,
     generated_at: String,
     message: &str,
     json: bool,
 ) -> CommandExitCode {
-    let output = bowline_local::status::command_error_output(
-        command,
-        generated_at,
-        "runtime_error",
-        message,
-        CommandRecoverability::Retry,
-    );
-    print_command_error_output(&output, json)
+    print_command_failure(
+        CommandFailure {
+            command,
+            generated_at,
+            code: "runtime_error",
+            message,
+            remediation: RUNTIME_REMEDIATION,
+            recoverability: CommandRecoverability::Retry,
+            next_actions: runtime_next_actions(),
+        },
+        json,
+    )
+}
+
+/// A failure that no amount of retrying fixes: the daemon this command needs is
+/// not running.
+pub(super) fn print_daemon_unreachable_error(
+    command: CommandName,
+    generated_at: String,
+    message: &str,
+    json: bool,
+) -> CommandExitCode {
+    print_command_failure(
+        CommandFailure {
+            command,
+            generated_at,
+            code: "daemon_unreachable",
+            message,
+            remediation: "Start the local daemon, then run the command again.",
+            recoverability: CommandRecoverability::UserAction,
+            next_actions: vec![
+                RepairCommand::mutating(
+                    "Start the local daemon".to_string(),
+                    Some("bowline daemon start".to_string()),
+                ),
+                RepairCommand::inspect(
+                    "Inspect daemon process and service state".to_string(),
+                    Some("bowline daemon status --json".to_string()),
+                ),
+            ],
+        },
+        json,
+    )
 }
 
 pub(super) fn print_user_action_error(
     command: CommandName,
     generated_at: String,
-    code: &str,
+    code: &'static str,
     message: &str,
     remediation: &str,
     json: bool,
 ) -> CommandExitCode {
-    let mut output = bowline_local::status::command_error_output(
-        command,
-        generated_at,
-        code,
-        message,
-        CommandRecoverability::UserAction,
-    );
-    output.error.remediation = Some(remediation.to_string());
-    print_command_error_output(&output, json)
+    print_command_failure(
+        CommandFailure {
+            command,
+            generated_at,
+            code,
+            message,
+            remediation,
+            recoverability: CommandRecoverability::UserAction,
+            next_actions: vec![RepairCommand::inspect(
+                format!("Inspect `bowline {}` help", command.token()),
+                Some(format!("bowline help {} --json", command.token())),
+            )],
+        },
+        json,
+    )
 }
 
 pub(super) fn print_command_error_output(

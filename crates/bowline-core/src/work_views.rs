@@ -175,6 +175,14 @@ pub struct WorkLifecycleCommandOutput {
     /// — so accept surfaces them here rather than reporting them as accepted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub discarded_deletions: Vec<String>,
+    /// Paths where the work view's version could not be kept beside the
+    /// workspace's, because no conflict-aside may be written there: `.git/**`
+    /// state, which an extra sibling corrupts, or an origin whose aside name
+    /// would exceed the workspace path budget. The local file stays canonical and
+    /// the view's version is dropped, so accept reports them rather than counting
+    /// them as accepted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aside_refused_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub partial: bool,
     pub work_view: WorkView,

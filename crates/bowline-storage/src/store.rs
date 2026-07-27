@@ -2,8 +2,9 @@ use std::{
     cell::RefCell,
     error::Error,
     fmt, fs, io,
-    io::{Cursor, Read, Seek, SeekFrom, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    time::{Duration, SystemTime},
 };
 
 use bowline_core::{
@@ -17,15 +18,15 @@ mod object_key;
 mod range;
 mod recovery;
 mod request;
-mod streaming;
 
 use clock::StoreClock;
 pub use object_key::ObjectKey;
 #[cfg(test)]
 pub(super) use object_key::assert_object_key_does_not_leak_path;
 pub use range::ByteRange;
-use request::read_verified_source;
-pub use request::{ObjectContentId, ObjectHash, PutObjectReaderRequest, ReopenableObjectSource};
+pub use request::{
+    ObjectContentId, ObjectHash, PutObjectRequest, PutObjectSource, ReopenableObjectSource,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -34,6 +35,21 @@ pub enum ObjectKind {
     // a file blob (`b_<sealed hash>`) and a workspace manifest (`m_<sealed hash>`).
     WorkspaceFileV1,
     WorkspaceManifestV1,
+}
+
+impl ObjectKind {
+    /// Token this kind contributes to AEAD associated data.
+    ///
+    /// Written out rather than derived from the serde rename so that changing
+    /// the JSON vocabulary cannot silently change the associated data and brick
+    /// every object already sealed under the old bytes. Changing a token here
+    /// is exactly that break, and the pinned-byte tests in `envelope` say so.
+    pub(crate) const fn associated_data_token(self) -> &'static str {
+        match self {
+            Self::WorkspaceFileV1 => "workspace-file-v1",
+            Self::WorkspaceManifestV1 => "workspace-manifest-v1",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,112 +95,32 @@ pub struct ByteStoreMetrics {
     pub peak_object_bytes_in_flight: u64,
 }
 
+/// A content-addressed store of immutable, already-sealed object bytes.
+///
+/// Every method is required. There are deliberately no defaulted convenience
+/// puts: each one used to discard a guarantee the caller had supplied — the
+/// content id that binds an upload intent, the key epoch, or the streaming
+/// property of a reader source — and a backend that forgot an override lost
+/// that guarantee silently.
 pub trait ByteStore {
-    fn put_object(
-        &self,
-        key: ObjectKey,
-        kind: ObjectKind,
-        bytes: &[u8],
-        created_by_device_id: Option<&DeviceId>,
-    ) -> Result<ObjectMetadata, ByteStoreError>;
-
-    fn put_object_with_content_id(
-        &self,
-        key: ObjectKey,
-        kind: ObjectKind,
-        _content_id: &str,
-        bytes: &[u8],
-        created_by_device_id: Option<&DeviceId>,
-    ) -> Result<ObjectMetadata, ByteStoreError> {
-        self.put_object(key, kind, bytes, created_by_device_id)
-    }
-
-    fn put_object_with_content_id_at_epoch(
-        &self,
-        key: ObjectKey,
-        kind: ObjectKind,
-        content_id: &str,
-        bytes: &[u8],
-        key_epoch: u32,
-        created_by_device_id: Option<&DeviceId>,
-    ) -> Result<ObjectMetadata, ByteStoreError> {
-        let metadata = self.put_object_with_content_id(
-            key.clone(),
-            kind,
-            content_id,
-            bytes,
-            created_by_device_id,
-        )?;
-        if metadata.key_epoch == key_epoch {
-            Ok(metadata)
-        } else {
-            Err(ByteStoreError::CorruptObject {
-                key,
-                reason: "object metadata key epoch did not match requested epoch",
-            })
-        }
-    }
+    fn put(&self, request: PutObjectRequest<'_>) -> Result<ObjectMetadata, ByteStoreError>;
 
     fn get_object(&self, key: &ObjectKey) -> Result<Vec<u8>, ByteStoreError>;
 
-    fn put_object_reader(
-        &self,
-        key: ObjectKey,
-        kind: ObjectKind,
-        reader: &mut dyn Read,
-        _byte_len_hint: Option<u64>,
-        created_by_device_id: Option<&DeviceId>,
-    ) -> Result<ObjectMetadata, ByteStoreError> {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes)?;
-        self.put_object(key, kind, &bytes, created_by_device_id)
-    }
-
-    fn put_object_reader_with_content_id_at_epoch(
-        &self,
-        request: PutObjectReaderRequest<'_>,
-    ) -> Result<ObjectMetadata, ByteStoreError> {
-        let bytes = read_verified_source(
-            &request.key,
-            request.source.open()?.as_mut(),
-            request.byte_len,
-            request.expected_hash.as_str(),
-        )?;
-        self.put_object_with_content_id_at_epoch(
-            request.key,
-            request.kind,
-            request.content_id.as_str(),
-            &bytes,
-            request.key_epoch,
-            request.created_by_device_id,
-        )
-    }
-
-    fn supports_streaming_puts(&self) -> bool {
-        false
-    }
-
+    /// Streams a verified object into `writer` without buffering it in memory.
     fn get_object_to_writer(
         &self,
         key: &ObjectKey,
         writer: &mut dyn Write,
-    ) -> Result<u64, ByteStoreError> {
-        let bytes = self.get_object(key)?;
-        writer.write_all(&bytes)?;
-        Ok(bytes.len() as u64)
-    }
+    ) -> Result<u64, ByteStoreError>;
 
     fn get_range(&self, key: &ObjectKey, range: ByteRange) -> Result<Vec<u8>, ByteStoreError>;
 
     fn head_object(&self, key: &ObjectKey) -> Result<ObjectMetadata, ByteStoreError>;
 
-    fn delete_object(&self, _key: &ObjectKey) -> Result<(), ByteStoreError> {
-        Err(ByteStoreError::UnsupportedOperation("delete_object"))
-    }
-
-    fn creates_upload_intents(&self) -> bool {
-        false
-    }
+    /// Removes an object. Idempotent: a key whose bytes are already gone is
+    /// `Ok(())`, so a sweep that crashed part way through converges on re-run.
+    fn delete_object(&self, key: &ObjectKey) -> Result<(), ByteStoreError>;
 
     fn metrics(&self) -> ByteStoreMetrics;
 }
@@ -200,6 +136,7 @@ impl LocalByteStore {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, ByteStoreError> {
         let root = root.into();
         fs::create_dir_all(objects_dir(&root))?;
+        Self::reclaim_stale_write_temps(&root)?;
         Ok(Self {
             root,
             clock: StoreClock::system(),
@@ -213,6 +150,7 @@ impl LocalByteStore {
     ) -> Result<Self, ByteStoreError> {
         let root = root.into();
         fs::create_dir_all(objects_dir(&root))?;
+        Self::reclaim_stale_write_temps(&root)?;
         Ok(Self {
             root,
             clock: StoreClock::deterministic(start_unix_ms),
@@ -250,7 +188,7 @@ impl LocalByteStore {
         key: ObjectKey,
         kind: ObjectKind,
         byte_len: u64,
-        hash: String,
+        hash: ObjectHash,
         key_epoch: u32,
         created_by_device_id: Option<&DeviceId>,
     ) -> ObjectMetadata {
@@ -258,7 +196,7 @@ impl LocalByteStore {
             key,
             kind,
             byte_len,
-            hash,
+            hash: hash.into_string(),
             key_epoch,
             created_by_device_id: created_by_device_id.cloned(),
             created_at_unix_ms: self.clock.now_unix_ms(),
@@ -360,25 +298,26 @@ impl LocalByteStore {
         Ok(metadata)
     }
 
-    fn put_object_reader_at_epoch(
+    /// Streams a source into the object file, hashing as it goes.
+    ///
+    /// The identity check happens inside the atomic write so a source that
+    /// changed underneath us never reaches the committed object path.
+    fn write_streamed_object(
         &self,
-        key: ObjectKey,
-        kind: ObjectKind,
+        request: &PutObjectRequest<'_>,
         reader: &mut dyn Read,
-        key_epoch: u32,
-        created_by_device_id: Option<&DeviceId>,
-        expected_identity: Option<(u64, &str)>,
     ) -> Result<ObjectMetadata, ByteStoreError> {
-        let path = self.stored_path(&key);
-        if self.metadata_path(&key).exists() {
-            return Err(ByteStoreError::ObjectAlreadyExists(key));
+        let key = &request.key;
+        let path = self.stored_path(key);
+        if self.metadata_path(key).exists() {
+            return Err(ByteStoreError::ObjectAlreadyExists(key.clone()));
         }
 
         let mut hasher = blake3::Hasher::new();
         let mut byte_len = 0_u64;
         let mut source_identity_mismatch = false;
         let write_result = write_atomic_with(&path, create_new_options(), |file| {
-            let mut buffer = [0_u8; 64 * 1024];
+            let mut buffer = [0_u8; OBJECT_STREAM_BUFFER_BYTES];
             loop {
                 let read = reader.read(&mut buffer)?;
                 if read == 0 {
@@ -387,7 +326,7 @@ impl LocalByteStore {
                 let next_byte_len = byte_len.checked_add(read as u64).ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "object length overflow")
                 })?;
-                if expected_identity.is_some_and(|(expected_len, _)| next_byte_len > expected_len) {
+                if next_byte_len > request.byte_len {
                     source_identity_mismatch = true;
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -398,10 +337,9 @@ impl LocalByteStore {
                 byte_len = next_byte_len;
                 file.write_all(&buffer[..read])?;
             }
-            let actual_hash = format!("b3_{}", hasher.clone().finalize().to_hex());
-            if expected_identity.is_some_and(|(expected_len, expected_hash)| {
-                byte_len != expected_len || actual_hash != expected_hash
-            }) {
+            if byte_len != request.byte_len
+                || ObjectHash::from_hasher(&hasher) != request.expected_hash
+            {
                 source_identity_mismatch = true;
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -413,23 +351,23 @@ impl LocalByteStore {
         if let Err(error) = write_result {
             if source_identity_mismatch {
                 return Err(ByteStoreError::CorruptObject {
-                    key,
+                    key: key.clone(),
                     reason: "streamed object source did not match requested identity",
                 });
             }
-            let error = map_create_error(error, &key);
+            let error = map_create_error(error, key);
             if matches!(error, ByteStoreError::ObjectAlreadyExists(_)) {
-                let expected_hash = format!("b3_{}", hasher.finalize().to_hex());
+                let observed_hash = ObjectHash::from_hasher(&hasher);
                 let metadata = self.metadata_for(
                     key.clone(),
-                    kind,
+                    request.kind,
                     byte_len,
-                    expected_hash.clone(),
-                    key_epoch,
-                    created_by_device_id,
+                    observed_hash.clone(),
+                    request.key_epoch,
+                    request.created_by_device_id,
                 );
                 if let Some(metadata) =
-                    self.adopt_matching_uncommitted_object(&metadata, byte_len, &expected_hash)?
+                    self.adopt_matching_uncommitted_object(&metadata, byte_len, &observed_hash)?
                 {
                     self.record_put_metrics(byte_len);
                     return Ok(metadata);
@@ -440,11 +378,11 @@ impl LocalByteStore {
 
         let metadata = self.metadata_for(
             key.clone(),
-            kind,
+            request.kind,
             byte_len,
-            format!("b3_{}", hasher.finalize().to_hex()),
-            key_epoch,
-            created_by_device_id,
+            ObjectHash::from_hasher(&hasher),
+            request.key_epoch,
+            request.created_by_device_id,
         );
         let metadata = self.commit_metadata_after_object_write(&metadata)?;
 
@@ -452,106 +390,106 @@ impl LocalByteStore {
 
         Ok(metadata)
     }
-}
 
-impl ByteStore for LocalByteStore {
-    fn put_object(
+    fn write_buffered_object(
         &self,
-        key: ObjectKey,
-        kind: ObjectKind,
+        request: &PutObjectRequest<'_>,
         bytes: &[u8],
-        created_by_device_id: Option<&DeviceId>,
     ) -> Result<ObjectMetadata, ByteStoreError> {
-        self.put_object_with_content_id_at_epoch(
-            key,
-            kind,
-            &stable_object_hash(bytes),
-            bytes,
-            CURRENT_WRITE_KEY_EPOCH,
-            created_by_device_id,
-        )
-    }
-
-    fn put_object_with_content_id_at_epoch(
-        &self,
-        key: ObjectKey,
-        kind: ObjectKind,
-        _content_id: &str,
-        bytes: &[u8],
-        key_epoch: u32,
-        created_by_device_id: Option<&DeviceId>,
-    ) -> Result<ObjectMetadata, ByteStoreError> {
-        let path = self.stored_path(&key);
-        if self.metadata_path(&key).exists() {
-            return Err(ByteStoreError::ObjectAlreadyExists(key));
+        let key = &request.key;
+        let observed_hash = ObjectHash::of_bytes(bytes);
+        if bytes.len() as u64 != request.byte_len || observed_hash != request.expected_hash {
+            return Err(ByteStoreError::CorruptObject {
+                key: key.clone(),
+                reason: "object source did not match requested identity",
+            });
+        }
+        let path = self.stored_path(key);
+        if self.metadata_path(key).exists() {
+            return Err(ByteStoreError::ObjectAlreadyExists(key.clone()));
         }
 
         let metadata = self.metadata_for(
             key.clone(),
-            kind,
-            bytes.len() as u64,
-            stable_object_hash(bytes),
-            key_epoch,
-            created_by_device_id,
+            request.kind,
+            request.byte_len,
+            observed_hash.clone(),
+            request.key_epoch,
+            request.created_by_device_id,
         );
         if let Err(error) = write_atomic(&path, bytes, create_new_options()) {
-            let error = map_create_error(error, &key);
+            let error = map_create_error(error, key);
             if matches!(error, ByteStoreError::ObjectAlreadyExists(_)) {
                 if let Some(metadata) = self.adopt_matching_uncommitted_object(
                     &metadata,
-                    bytes.len() as u64,
-                    &stable_object_hash(bytes),
+                    request.byte_len,
+                    &observed_hash,
                 )? {
-                    self.record_put_metrics(bytes.len() as u64);
+                    self.record_put_metrics(request.byte_len);
                     return Ok(metadata);
                 }
-                return Err(ByteStoreError::ObjectAlreadyExists(key));
-            } else {
-                return Err(error);
+                return Err(ByteStoreError::ObjectAlreadyExists(key.clone()));
             }
+            return Err(error);
         }
         let metadata = self.commit_metadata_after_object_write(&metadata)?;
 
-        self.record_put_metrics(bytes.len() as u64);
+        self.record_put_metrics(request.byte_len);
 
         Ok(metadata)
     }
 
-    fn put_object_reader(
-        &self,
-        key: ObjectKey,
-        kind: ObjectKind,
-        reader: &mut dyn Read,
-        _byte_len_hint: Option<u64>,
-        created_by_device_id: Option<&DeviceId>,
-    ) -> Result<ObjectMetadata, ByteStoreError> {
-        self.put_object_reader_at_epoch(
-            key,
-            kind,
-            reader,
-            CURRENT_WRITE_KEY_EPOCH,
-            created_by_device_id,
-            None,
-        )
+    /// Removes write temps left behind by a crash.
+    ///
+    /// Nothing else reclaims them: `list_object_keys` deliberately skips them,
+    /// so without this sweep an interrupted sync silently costs the user disk
+    /// in files they will never find.
+    fn reclaim_stale_write_temps(root: &Path) -> Result<(), ByteStoreError> {
+        let now = SystemTime::now();
+        for entry in fs::read_dir(objects_dir(root))? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !is_atomic_temp_sibling(&name) {
+                continue;
+            }
+            // A temp older than this cannot belong to an in-flight write: every
+            // atomic write renames or removes its temp within one operation.
+            // Age rather than owning-pid keeps a concurrent process's in-flight
+            // write safe.
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let stale = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .is_some_and(|age| age >= STALE_WRITE_TEMP_AGE);
+            if !stale {
+                continue;
+            }
+            match fs::remove_file(entry.path()) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(ByteStoreError::Io(error)),
+            }
+        }
+        Ok(())
     }
+}
 
-    fn put_object_reader_with_content_id_at_epoch(
-        &self,
-        request: PutObjectReaderRequest<'_>,
-    ) -> Result<ObjectMetadata, ByteStoreError> {
-        let mut source = request.source.open()?;
-        self.put_object_reader_at_epoch(
-            request.key,
-            request.kind,
-            source.as_mut(),
-            request.key_epoch,
-            request.created_by_device_id,
-            Some((request.byte_len, request.expected_hash.as_str())),
-        )
-    }
-
-    fn supports_streaming_puts(&self) -> bool {
-        true
+impl ByteStore for LocalByteStore {
+    fn put(&self, request: PutObjectRequest<'_>) -> Result<ObjectMetadata, ByteStoreError> {
+        // `content_id` names an upload intent, which only a remote backend
+        // creates; a local put has nothing to bind it to. Every other field is
+        // enforced: byte_len and expected_hash are checked against the source
+        // before anything is committed.
+        match request.source {
+            PutObjectSource::Bytes(bytes) => self.write_buffered_object(&request, bytes),
+            PutObjectSource::Reader(source) => {
+                let mut reader = source.open()?;
+                self.write_streamed_object(&request, reader.as_mut())
+            }
+        }
     }
 
     fn get_object(&self, key: &ObjectKey) -> Result<Vec<u8>, ByteStoreError> {
@@ -562,37 +500,42 @@ impl ByteStore for LocalByteStore {
         Ok(bytes)
     }
 
+    /// Verifies the stored object, then streams it straight into `writer`.
+    ///
+    /// Two passes over the immutable object file rather than one pass into a
+    /// verified temp copy: the temp cost a full extra write plus an fsync plus
+    /// 2x free space per hydration, and survived at full size on a crash.
     fn get_object_to_writer(
         &self,
         key: &ObjectKey,
         writer: &mut dyn Write,
     ) -> Result<u64, ByteStoreError> {
-        let (temp_path, byte_len) = streaming::write_verified_object_to_temp(
-            &self.root,
-            key,
-            self.metadata_for_key(key)?,
-            self.stored_path(key),
-        )?;
-        let copy_result = (|| {
-            let mut temp = fs::File::open(&temp_path)?;
-            let copied = io::copy(&mut temp, writer)?;
-            if copied != byte_len {
-                return Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "verified object copy wrote an unexpected byte count",
-                ));
-            }
-            Ok(())
-        })();
-        let cleanup_result = fs::remove_file(&temp_path);
-        if let Err(error) = copy_result {
-            return Err(ByteStoreError::Io(error));
+        let metadata = self.metadata_for_key(key)?;
+        let path = self.stored_path(key);
+        let mut source =
+            fs::File::open(&path).map_err(|error| map_missing(error, key, "object"))?;
+        let observed_hash = ObjectHash::of_reader(&mut source).map_err(ByteStoreError::Io)?;
+        if observed_hash.as_str() != metadata.hash {
+            return Err(ByteStoreError::CorruptObject {
+                key: key.clone(),
+                reason: "object bytes did not match metadata",
+            });
         }
-        cleanup_result.map_err(ByteStoreError::Io)?;
+
+        let mut source =
+            fs::File::open(&path).map_err(|error| map_missing(error, key, "object"))?;
+        let copied = io::copy(&mut source, writer).map_err(ByteStoreError::Io)?;
+        if copied != metadata.byte_len {
+            return Err(ByteStoreError::CorruptObject {
+                key: key.clone(),
+                reason: "object bytes did not match metadata",
+            });
+        }
+
         let mut metrics = self.metrics.borrow_mut();
         metrics.full_read_count += 1;
-        metrics.bytes_downloaded += byte_len;
-        Ok(byte_len)
+        metrics.bytes_downloaded += copied;
+        Ok(copied)
     }
 
     fn get_range(&self, key: &ObjectKey, range: ByteRange) -> Result<Vec<u8>, ByteStoreError> {
@@ -625,13 +568,23 @@ impl ByteStore for LocalByteStore {
     }
 
     fn delete_object(&self, key: &ObjectKey) -> Result<(), ByteStoreError> {
-        let metadata = self.metadata_for_key(key)?;
-        self.verify_metadata(&metadata)?;
-        fs::remove_file(self.metadata_path(key))
-            .map_err(|error| map_missing(error, key, "metadata"))?;
-        fs::remove_file(self.stored_path(key))
-            .map_err(|error| map_missing(error, key, "object"))?;
-        self.metrics.borrow_mut().delete_count += 1;
+        let metadata_path = self.metadata_path(key);
+        let object_path = self.stored_path(key);
+        // Verify only a complete object. A half-deleted pair in either
+        // direction is residue to reclaim, not something to authenticate.
+        if metadata_path.exists() && object_path.exists() {
+            let metadata = self.metadata_for_key(key)?;
+            self.verify_metadata(&metadata)?;
+        }
+        // Blob first. Metadata is the commit record: an object without it is
+        // already invisible to every read path, and `adopt_matching_uncommitted_object`
+        // relies on exactly that. Removing metadata first instead strands a blob
+        // that no later sweep can name, which is how GC used to wedge.
+        let removed_object = remove_file_if_present(&object_path)?;
+        let removed_metadata = remove_file_if_present(&metadata_path)?;
+        if removed_object || removed_metadata {
+            self.metrics.borrow_mut().delete_count += 1;
+        }
         Ok(())
     }
 
@@ -785,24 +738,17 @@ impl From<io::Error> for ByteStoreError {
 }
 
 pub fn stable_object_hash(bytes: &[u8]) -> String {
-    stable_object_hash_reader(&mut Cursor::new(bytes)).expect("slice hashing does not fail")
+    ObjectHash::of_bytes(bytes).into_string()
 }
 
 pub fn stable_object_hash_reader(reader: &mut dyn Read) -> io::Result<String> {
-    let mut hasher = blake3::Hasher::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = reader.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(format!("b3_{}", hasher.finalize().to_hex()))
+    Ok(ObjectHash::of_reader(reader)?.into_string())
 }
 
 fn verify_object_bytes(metadata: &ObjectMetadata, bytes: &[u8]) -> Result<(), ByteStoreError> {
-    if bytes.len() as u64 != metadata.byte_len || stable_object_hash(bytes) != metadata.hash {
+    if bytes.len() as u64 != metadata.byte_len
+        || ObjectHash::of_bytes(bytes).as_str() != metadata.hash
+    {
         return Err(ByteStoreError::CorruptObject {
             key: metadata.key.clone(),
             reason: "object bytes did not match metadata",
@@ -811,12 +757,27 @@ fn verify_object_bytes(metadata: &ObjectMetadata, bytes: &[u8]) -> Result<(), By
     Ok(())
 }
 
-const CURRENT_WRITE_KEY_EPOCH: u32 = 1;
+const OBJECT_STREAM_BUFFER_BYTES: usize = 64 * 1024;
+
+/// How long a write temp must sit untouched before it counts as crash residue.
+/// Generous on purpose: an atomic write renames or removes its temp within one
+/// operation, so nothing legitimate ever survives this long.
+const STALE_WRITE_TEMP_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 fn create_new_options() -> AtomicWriteOptions {
     AtomicWriteOptions {
         replace_existing: false,
         ..AtomicWriteOptions::default()
+    }
+}
+
+/// Removes `path` if it exists. Returns whether anything was removed, so
+/// callers can tell an idempotent no-op from real work.
+fn remove_file_if_present(path: &Path) -> Result<bool, ByteStoreError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(ByteStoreError::Io(error)),
     }
 }
 

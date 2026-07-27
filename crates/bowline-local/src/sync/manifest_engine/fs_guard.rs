@@ -7,18 +7,31 @@
 //! bytes from — or write bytes to — outside the workspace root. Observation is
 //! `symlink_metadata`; the parent chain is walked component-by-component
 //! no-follow ([`prepare_parent_chain`]); leaf reads open `O_NOFOLLOW` and fstat
-//! the descriptor they hold ([`read_file_bounded`]). Extracted from `push.rs`
+//! the descriptor they hold ([`read_file_bounded`]); renames, deletes, and
+//! recursive walks hold the containing directory open and act on that descriptor
+//! ([`anchored`]). Extracted from `push.rs`
 //! (which landed it first as Step 4) once the shared boundary earned its own
 //! seam; it reuses [`PushError`] as the engine's read/traversal error taxonomy.
 
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{self, Read};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
+use bowline_core::workspace_graph::resolve_symlink_target;
+
 use super::manifest::{EntryKind, FileMode, WorkspacePath};
 use super::push::PushError;
 use super::store::StatFingerprint;
+use super::unsyncable::{UnsyncableReason, path_scoped_reason};
+
+mod anchored;
+
+pub use anchored::{
+    AnchoredDirectory, AnchoredEntry, AnchoredLeafKind, AnchoredOpen, LeafName, MAX_ANCHORED_DEPTH,
+    open_containing_directory, open_workspace_root,
+};
 
 /// 0600 — owner read/write only. Every engine-authored file (temp, spool,
 /// quarantine) is created private so a crash cannot leak plaintext to other
@@ -37,66 +50,88 @@ pub struct Observed {
     pub fingerprint: StatFingerprint,
 }
 
-/// Observe a workspace-relative path. `Ok(None)` = absent. Directories, regular
-/// files, and symlinks are typed; anything else (socket, fifo, device) is
-/// rejected as unsupported rather than silently synced.
-pub fn observe(root: &Path, path: &WorkspacePath) -> io::Result<Option<Observed>> {
+/// What one observation found. `Unsyncable` is the third answer the engine used
+/// to lack: a path that exists but can never be represented or read (a device
+/// node, a symlink whose target is not UTF-8, an unreadable leaf). Conflating it
+/// with an error is what turned one bad file into a dead engine.
+#[derive(Debug)]
+pub enum ObserveOutcome {
+    Absent,
+    Present(Observed),
+    Unsyncable(UnsyncableReason),
+}
+
+/// Observe a workspace-relative path. **Total by construction**: every outcome
+/// is one of the three answers, so observing a path can never fail a cycle.
+///
+/// `Absent` covers both "nothing there" and "an intermediate component is not a
+/// directory" (e.g. a manifest names `f/child` while local `f` is still a file
+/// mid kind-swap) — both mean absent locally. Directories, regular files, and
+/// symlinks are typed; anything else (socket, fifo, device) and every remaining
+/// stat failure is [`ObserveOutcome::Unsyncable`], carrying the reason.
+///
+/// The absence of a fourth "and sometimes it errors" answer is the design. This
+/// function used to return `io::Result`, and an unmodelled errno (ELOOP on an
+/// intermediate component, EIO, ENAMETOOLONG) propagated into
+/// `CycleError::Fatal` — one path taking the whole workspace's sync down, and,
+/// behind a durable intent, taking every subsequent startup down with it.
+pub fn observe_classified(root: &Path, path: &WorkspacePath) -> ObserveOutcome {
     let absolute = root.join(path.as_str());
     let metadata = match fs::symlink_metadata(&absolute) {
         Ok(metadata) => metadata,
-        // NotFound: nothing at that path. NotADirectory: an intermediate component
-        // is a file/symlink, so the path cannot exist as a file/dir/symlink — e.g.
-        // a manifest names `f/child` while local `f` is still a file mid kind-swap.
-        // Both mean "absent locally", never a fatal.
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-            ) =>
-        {
-            return Ok(None);
-        }
-        Err(error) => return Err(error),
+        Err(error) if is_absent(&error) => return ObserveOutcome::Absent,
+        Err(error) => return ObserveOutcome::Unsyncable(path_scoped_reason(&error)),
     };
     let file_type = metadata.file_type();
     let fingerprint = fingerprint_of(&metadata);
     let mode = FileMode::new(metadata.permissions().mode());
 
     if file_type.is_symlink() {
-        let target = fs::read_link(&absolute)?
-            .to_str()
-            .map(str::to_string)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "non-utf8 symlink target"))?;
-        return Ok(Some(Observed {
+        let link = match fs::read_link(&absolute) {
+            Ok(link) => link,
+            Err(error) if is_absent(&error) => return ObserveOutcome::Absent,
+            Err(error) => return ObserveOutcome::Unsyncable(path_scoped_reason(&error)),
+        };
+        let Some(target) = link.to_str().map(str::to_string) else {
+            return ObserveOutcome::Unsyncable(UnsyncableReason::NonUtf8SymlinkTarget);
+        };
+        return ObserveOutcome::Present(Observed {
             kind: EntryKind::Symlink,
             size: 0,
-            mode,
+            // Never the mode `lstat` reported: it is the kernel's own constant and
+            // differs per platform, so carrying it would make the same link
+            // compare unequal across devices (see [`FileMode::symlink`]).
+            mode: FileMode::symlink(),
             symlink_target: Some(target),
             fingerprint,
-        }));
+        });
     }
     if file_type.is_dir() {
-        return Ok(Some(Observed {
+        return ObserveOutcome::Present(Observed {
             kind: EntryKind::Directory,
             size: 0,
             mode,
             symlink_target: None,
             fingerprint,
-        }));
+        });
     }
     if file_type.is_file() {
-        return Ok(Some(Observed {
+        return ObserveOutcome::Present(Observed {
             kind: EntryKind::File,
             size: metadata.len(),
             mode,
             symlink_target: None,
             fingerprint,
-        }));
+        });
     }
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        "unsupported filesystem object kind",
-    ))
+    ObserveOutcome::Unsyncable(UnsyncableReason::UnsupportedKind)
+}
+
+fn is_absent(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
 }
 
 fn fingerprint_of(metadata: &fs::Metadata) -> StatFingerprint {
@@ -161,9 +196,11 @@ pub enum ParentChain {
     /// were created per-component under [`ParentChainMode::CreateMissing`]); the
     /// final-component operation may proceed.
     Ready,
-    /// An intermediate component exists but is NOT a real directory — a symlink
-    /// or a file. Reading, writing, or deleting through it would escape the
-    /// workspace root, so the caller must refuse and treat it as a divergence.
+    /// The chain could not be made ready: an intermediate component exists but is
+    /// NOT a real directory (a symlink or a file), or the filesystem refused to
+    /// stat or create one. Reading, writing, or deleting through it would escape
+    /// the workspace root or cannot proceed at all, so the caller must refuse and
+    /// treat it as a divergence.
     Blocked,
 }
 
@@ -195,16 +232,23 @@ pub enum ParentChainMode {
 /// descend through a non-directory keeps every mutation and every read inside the
 /// root; callers map `Blocked` to a keep-local / skip divergence.
 ///
-/// Scope: this defends against the on-disk FS shape. A local attacker racing a
-/// symlink swap into an intermediate component between this check and the final
-/// open/rename is DELIBERATELY out of scope here — the local user already owns
-/// the machine and every file on it. On the read side the post-open fstat
-/// identity check is the backstop that still refuses to seal a raced inode.
+/// Scope: this answers about the on-disk shape of a PATH, and that answer
+/// expires when it returns. It is sound for a caller whose next step re-verifies
+/// what it actually touched — the read side's post-open fstat identity check —
+/// but not on its own for a caller that then mutates by name, because the kernel
+/// re-resolves every component it just walked. Mutations use
+/// [`anchored::open_containing_directory`] and act on the held descriptor
+/// instead, so the check and the operation reference one directory handle.
+///
+/// Total by construction, like [`observe_classified`]: a stat or `create_dir`
+/// the filesystem refuses (EACCES on a parent, ENOSPC, EROFS, ELOOP) answers
+/// `Blocked` — the honest reading of "this chain is not usable" — rather than
+/// raising an error that would classify as a fatal and stop the whole workspace.
 pub fn prepare_parent_chain(
     root: &Path,
     path: &WorkspacePath,
     mode: ParentChainMode,
-) -> Result<ParentChain, PushError> {
+) -> ParentChain {
     let components: Vec<&str> = path.as_str().split('/').collect();
     // The final component is the target itself; the operation (open / rename /
     // create / remove / symlink) acts on it by name and never follows it. Only the
@@ -218,17 +262,127 @@ pub fn prepare_parent_chain(
         current.push(component);
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.is_dir() => {}
-            Ok(_) => return Ok(ParentChain::Blocked),
+            Ok(_) => return ParentChain::Blocked,
             Err(error) if error.kind() == io::ErrorKind::NotFound => match mode {
                 ParentChainMode::CreateMissing => {
-                    fs::create_dir(&current).map_err(PushError::Io)?;
+                    if !ensure_dir(&current) {
+                        return ParentChain::Blocked;
+                    }
                 }
-                ParentChainMode::RequireExisting => return Ok(ParentChain::Ready),
+                ParentChainMode::RequireExisting => return ParentChain::Ready,
             },
-            Err(error) => return Err(PushError::Io(error)),
+            Err(_) => return ParentChain::Blocked,
         }
     }
-    Ok(ParentChain::Ready)
+    ParentChain::Ready
+}
+
+/// Create one missing intermediate component, tolerating a racing writer that
+/// created it first — but only when what now sits there is a real directory. An
+/// `AlreadyExists` that turns out to be a file or a symlink is exactly the escape
+/// this walk exists to refuse, so it answers `false` (blocked).
+fn ensure_dir(current: &Path) -> bool {
+    match fs::create_dir(current) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            fs::symlink_metadata(current).is_ok_and(|metadata| metadata.is_dir())
+        }
+        Err(_) => false,
+    }
+}
+
+/// How many symlink hops one containment resolution follows before refusing.
+/// Matches the kernel's own `ELOOP` ceiling, so a chain this walk refuses is one
+/// the kernel would refuse to resolve anyway — and the bound is what makes a
+/// cycle (`a -> b`, `b -> a`) terminate instead of spinning.
+const MAX_SYMLINK_HOPS: u32 = 40;
+
+/// Whether a symlink materialized at `link` with `target` still LANDS inside the
+/// workspace once the on-disk shape of the path it names is taken into account.
+///
+/// The lexical gate
+/// ([`bowline_core::workspace_graph::symlink_target_stays_in_workspace`]) decides
+/// only where the target points on its face. It cannot see that
+/// `~/Code/escape -> /etc` already exists — Bowline refuses to publish that link,
+/// but refusing to sync it does not delete it — so a peer entry
+/// `read-passwd -> escape/passwd` passes the lexical gate and resolves to
+/// `/etc/passwd`. Bowline never follows a symlink, but the user's editor, build
+/// tooling, and agents do. This is the gate that catches it, and it is why the
+/// two gates are not redundant.
+///
+/// It reuses [`prepare_parent_chain`]'s discipline — component by component from
+/// the root, `symlink_metadata` only, never an `open` or a `canonicalize` that
+/// would let the kernel traverse on our behalf — with one deliberate difference:
+/// a symlinked component is RESOLVED rather than refused outright, provided its
+/// own target is lexically contained. Refusing every symlinked component would be
+/// safe but wrong in practice: a pnpm workspace links `node_modules/.bin/x` to
+/// `../pkg/bin.js` through a symlinked `node_modules/pkg`, and Bowline would stop
+/// syncing ordinary repositories. Following only contained hops keeps every step
+/// of the resolution inside the root, which is the property that actually matters.
+///
+/// Any doubt refuses: an unreadable component, a non-UTF-8 hop target, or a chain
+/// past [`MAX_SYMLINK_HOPS`] all return `false`. Refusal is path-scoped by the
+/// caller (recorded unsyncable, the path frozen), never a failed cycle, so a
+/// hostile entry cannot take a peer's whole manifest down with it.
+pub fn symlink_target_lands_in_workspace(root: &Path, link: &WorkspacePath, target: &str) -> bool {
+    let Some(resolved) = resolve_symlink_target(link.as_str(), target) else {
+        return false; // escapes on its face; the on-disk shape cannot redeem it
+    };
+    let mut pending: VecDeque<String> = path_components(resolved.as_str()).collect();
+    let mut walked: Vec<String> = Vec::new();
+    let mut hops = 0_u32;
+
+    while let Some(component) = pending.pop_front() {
+        walked.push(component);
+        let walked_path = walked.join("/");
+        let metadata = match fs::symlink_metadata(root.join(&walked_path)) {
+            Ok(metadata) => metadata,
+            // Nothing exists here, so nothing below it exists either: the rest of
+            // the walk can meet no symlink, and the lexical resolution stands.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return true;
+            }
+            Err(_) => return false,
+        };
+        if !metadata.file_type().is_symlink() {
+            continue;
+        }
+        hops = hops.saturating_add(1);
+        if hops > MAX_SYMLINK_HOPS {
+            return false;
+        }
+        let Ok(hop) = fs::read_link(root.join(&walked_path)) else {
+            return false;
+        };
+        let Some(hop_target) = hop.to_str() else {
+            return false;
+        };
+        let Some(hop_resolved) = resolve_symlink_target(&walked_path, hop_target) else {
+            return false; // an existing local symlink that itself leaves the root
+        };
+        // The hop destination is a fresh workspace-relative path, so resolution
+        // restarts from the root with the components not yet consumed still queued.
+        walked.clear();
+        for component in path_components(hop_resolved.as_str())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
+            pending.push_front(component);
+        }
+    }
+    true
+}
+
+fn path_components(path: &str) -> impl Iterator<Item = String> + '_ {
+    path.split('/')
+        .filter(|component| !component.is_empty())
+        .map(str::to_string)
 }
 
 /// Read a regular file's bytes, but ONLY if the on-disk object is still exactly
@@ -258,8 +412,7 @@ pub fn read_file_bounded(
     // A symlinked intermediate component would let the open below escape the
     // root; refuse to read through it. Missing components mean the leaf cannot
     // exist — the open then fails NOENT and diverges.
-    if let ParentChain::Blocked =
-        prepare_parent_chain(root, path, ParentChainMode::RequireExisting)?
+    if let ParentChain::Blocked = prepare_parent_chain(root, path, ParentChainMode::RequireExisting)
     {
         return Ok(FileRead::Diverged);
     }
@@ -367,8 +520,7 @@ pub fn write_private_file_atomic(
     use rustix::io::Errno;
     use std::io::Write;
 
-    if let ParentChain::Blocked = prepare_parent_chain(root, path, ParentChainMode::CreateMissing)?
-    {
+    if let ParentChain::Blocked = prepare_parent_chain(root, path, ParentChainMode::CreateMissing) {
         return Ok(AtomicWrite::Blocked);
     }
 
@@ -414,7 +566,11 @@ pub fn write_private_file_atomic(
     Ok(AtomicWrite::Written)
 }
 
-trait MetadataNsecPair {
+/// Unix metadata timestamps flattened to a single nanosecond count, so the
+/// engine compares one number rather than a (seconds, nanoseconds) pair. Shared
+/// with [`super::endpoint`], which reads the endpoint volume's clock off a probe
+/// file's mtime and must flatten it exactly the way a fingerprint does.
+pub(super) trait MetadataNsecPair {
     fn mtime_nsec_pair(&self) -> i64;
     fn ctime_nsec_pair(&self) -> i64;
 }
@@ -432,5 +588,31 @@ impl MetadataNsecPair for fs::Metadata {
         self.ctime()
             .saturating_mul(1_000_000_000)
             .saturating_add(self.ctime_nsec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::TempWorkspace;
+
+    #[test]
+    fn an_observed_link_carries_the_canonical_mode_not_the_kernel_constant() {
+        // Linux reports 0o120777 for a link it has just created and macOS
+        // 0o120755, for the same `symlink(2)` call with no mode argument at all.
+        // Carrying whichever one `lstat` said made a single link two different
+        // entries across a two-platform fleet, so the observation pins the value.
+        let workspace = TempWorkspace::new("observe-link-mode").expect("temp workspace");
+        let root = workspace.root();
+        std::os::unix::fs::symlink("main.txt", root.join("link.txt")).expect("create link");
+
+        let ObserveOutcome::Present(observed) =
+            observe_classified(root, &WorkspacePath::new("link.txt"))
+        else {
+            panic!("the link is observable");
+        };
+
+        assert_eq!(observed.kind, EntryKind::Symlink);
+        assert_eq!(observed.mode, FileMode::symlink());
     }
 }

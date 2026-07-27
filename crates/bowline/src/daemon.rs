@@ -1,32 +1,17 @@
 use super::*;
 use bowline_core::commands::DaemonSyncState;
+use bowline_core::status::StatusLevel;
 
-pub(super) fn print_unknown_command(command: &str, json: bool) {
-    if json {
-        print_json(&CommandErrorOutput {
-            contract_version: CONTRACT_VERSION,
-            command: CommandName::Unknown,
-            generated_at: generated_at(),
-            status: CommandErrorStatus::UsageError,
-            error: CommandError {
-                code: "unknown_command".to_string(),
-                message: format!("unknown command `{command}`"),
-                recoverability: CommandRecoverability::UserAction,
-                remediation: Some(
-                    "Run `bowline help --json` to discover supported commands.".to_string(),
-                ),
-                details: Some(serde_json::json!({ "command": command })),
-                retry_after_seconds: None,
-                correlation_id: None,
-            },
-            next_actions: vec![RepairCommand::inspect(
-                "List bowline commands".to_string(),
-                Some("bowline help --json".to_string()),
-            )],
-        });
-    } else {
-        eprintln!("bowline unknown command: {command}");
-    }
+/// Report an unresolvable command path. Human output goes through the same
+/// printer as every other usage error so the remediation and next action reach
+/// the audience that needs them most.
+pub(super) fn print_unknown_command(command: &str, json: bool) -> CommandExitCode {
+    print_usage_error(
+        CommandName::Unknown,
+        "unknown_command",
+        &format!("unknown command `{command}`"),
+        json,
+    )
 }
 
 pub(super) fn daemon_command_output(
@@ -125,6 +110,11 @@ pub(super) enum DaemonProcessState {
     Starting,
     Stopping,
     Stopped,
+    /// A daemon owns the socket and speaks a wire generation this build cannot.
+    VersionSkew,
+    /// The socket exists but this process could not talk to it. Not `stopped`:
+    /// a daemon may well be running.
+    Unreachable,
 }
 
 impl DaemonProcessState {
@@ -134,13 +124,26 @@ impl DaemonProcessState {
             Self::Starting => "starting",
             Self::Stopping => "stopping",
             Self::Stopped => "stopped",
+            Self::VersionSkew => "version-skew",
+            Self::Unreachable => "unreachable",
+        }
+    }
+
+    /// Render a failed connection as a process state, reusing the one shared
+    /// classification rather than re-deciding what a failure means.
+    pub(super) fn from_reachability(reachability: &bowline_daemon_rpc::DaemonReachability) -> Self {
+        use bowline_daemon_rpc::DaemonReachability;
+        match reachability {
+            DaemonReachability::NotRunning => Self::Stopped,
+            DaemonReachability::VersionSkew(_) => Self::VersionSkew,
+            DaemonReachability::Unreachable => Self::Unreachable,
         }
     }
 }
 
 pub(super) fn daemon_service_state_from_status(status: &DaemonServiceStatus) -> DaemonServiceState {
     DaemonServiceState {
-        state: status.state.clone(),
+        state: status.state.to_string(),
         name: None,
         unit_path: status.unit_path.display().to_string(),
         unavailable_because: status.unavailable_because.clone(),
@@ -151,7 +154,7 @@ pub(super) fn daemon_service_state_from_outcome(
     outcome: &DaemonServiceOutcome,
 ) -> DaemonServiceState {
     DaemonServiceState {
-        state: outcome.state.clone(),
+        state: outcome.state.to_string(),
         name: Some(outcome.service_name.clone()),
         unit_path: outcome.unit_path.display().to_string(),
         unavailable_because: None,
@@ -163,7 +166,7 @@ pub(super) fn print_daemon_start(socket: &Path, json: bool) -> ExitCode {
     let workspace_id =
         daemon_workspace_id_for_start().unwrap_or_else(|_| runtime::active_workspace_id());
     match handshake(socket) {
-        Ok(handshake) => match handshake_start_status(&handshake, workspace_id.as_str()) {
+        Ok(handshake) => match handshake_start_status(&handshake, &workspace_id) {
             DaemonStartHandshakeStatus::Ready => {
                 if json {
                     print_json(&daemon_command_output(
@@ -208,6 +211,9 @@ pub(super) fn print_daemon_start(socket: &Path, json: bool) -> ExitCode {
             }
         },
         Err(error) => {
+            if let Some(skew) = error.version_skew() {
+                return replace_skewed_daemon(socket, &skew, generated_at, json);
+            }
             let _ = remove_stale_daemon_socket_after_connect_error(socket, &error);
         }
     }
@@ -236,11 +242,92 @@ pub(super) fn print_daemon_start(socket: &Path, json: bool) -> ExitCode {
     }
 }
 
+/// How long a supervisor-replaced daemon gets to rebind the control socket and
+/// answer a handshake before `daemon start` reports the replacement as failed.
+const SKEWED_DAEMON_REPLACEMENT_TIMEOUT: Duration = Duration::from_secs(15);
+const SKEWED_DAEMON_PROBE_INTERVAL: Duration = Duration::from_millis(250);
+
+/// A daemon from another Bowline build owns the control socket. Spawning a
+/// second process would lose the bind race and exit, so the only honest moves
+/// are to replace the running daemon through the supervisor that owns it, or to
+/// say plainly that a foreign daemon holds the socket.
+fn replace_skewed_daemon(
+    socket: &Path,
+    skew: &bowline_daemon_rpc::VersionSkew,
+    generated_at: String,
+    json: bool,
+) -> ExitCode {
+    if !daemon_service_is_active() {
+        return print_user_action_error(
+            CommandName::DaemonStart,
+            generated_at,
+            "daemon_version_skew",
+            &format!("{skew} and no managed service owns {}", socket.display()),
+            "Stop the running daemon, then run `bowline daemon install` so Bowline manages it.",
+            json,
+        )
+        .into();
+    }
+    if let Err(message) = daemon_service_restart() {
+        return print_runtime_error(
+            CommandName::DaemonStart,
+            generated_at,
+            &format!("{skew} and the managed service could not be restarted: {message}"),
+            json,
+        )
+        .into();
+    }
+    match wait_for_compatible_daemon(socket, SKEWED_DAEMON_REPLACEMENT_TIMEOUT) {
+        Some(handshake) => {
+            if json {
+                print_json(&daemon_command_output(
+                    CommandName::DaemonStart,
+                    generated_at,
+                    socket,
+                    DaemonProcessState::Running,
+                    Some(&handshake.daemon_version),
+                    None,
+                    true,
+                ));
+            } else {
+                println!(
+                    "bowline daemon: replaced a mismatched daemon, now running (daemon {})",
+                    handshake.daemon_version
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        None => print_runtime_error(
+            CommandName::DaemonStart,
+            generated_at,
+            &format!(
+                "{skew} and the restarted service did not answer on {}",
+                socket.display()
+            ),
+            json,
+        )
+        .into(),
+    }
+}
+
+fn wait_for_compatible_daemon(socket: &Path, timeout: Duration) -> Option<Handshake> {
+    let started = Instant::now();
+    loop {
+        match handshake(socket) {
+            Ok(handshake) => return Some(handshake),
+            Err(_) if started.elapsed() < timeout => {
+                std::thread::sleep(SKEWED_DAEMON_PROBE_INTERVAL);
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
 pub(super) fn remove_stale_daemon_socket_after_connect_error(
     socket: &Path,
-    error: &io::Error,
+    error: &DaemonRpcError,
 ) -> io::Result<bool> {
-    if error.kind() != io::ErrorKind::ConnectionRefused {
+    if error.io_kind() != Some(io::ErrorKind::ConnectionRefused) {
         return Ok(false);
     }
     #[cfg(unix)]
@@ -270,52 +357,35 @@ pub(super) enum DaemonStartHandshakeStatus {
     WorkspaceMismatch,
 }
 
+/// Decide whether a live daemon can serve this invocation, reading the decoded
+/// snapshot directly. The status level is matched exhaustively: a level this
+/// build does not recognise is a compile error here, never a silent `Ready`.
 pub(super) fn handshake_start_status(
     handshake: &Handshake,
-    workspace_id: &str,
+    workspace_id: &WorkspaceId,
 ) -> DaemonStartHandshakeStatus {
-    let status = handshake.status_json.as_str();
-    let Some(sync_workspace_id) = json_string_field(status, "workspaceId") else {
-        return DaemonStartHandshakeStatus::Degraded {
-            state: DaemonSyncState::Unclassified,
-            reason: "workspace status is unavailable".to_string(),
-        };
-    };
-    if sync_workspace_id != workspace_id {
+    let status = &handshake.status;
+    if status.workspace_id != *workspace_id {
         return DaemonStartHandshakeStatus::WorkspaceMismatch;
     }
-    match json_pointer_string(status, "/status/level").as_deref() {
-        Some("limited") => DaemonStartHandshakeStatus::Degraded {
-            state: DaemonSyncState::Limited,
-            reason: daemon_degraded_reason(status, DaemonSyncState::Limited),
-        },
-        Some("attention") => DaemonStartHandshakeStatus::Degraded {
-            state: DaemonSyncState::Degraded,
-            reason: daemon_degraded_reason(status, DaemonSyncState::Degraded),
-        },
-        _ => DaemonStartHandshakeStatus::Ready,
+    let state = match status.status.level {
+        StatusLevel::Healthy => return DaemonStartHandshakeStatus::Ready,
+        StatusLevel::Limited => DaemonSyncState::Limited,
+        StatusLevel::Attention => DaemonSyncState::Degraded,
+    };
+    DaemonStartHandshakeStatus::Degraded {
+        reason: daemon_degraded_reason(status, state),
+        state,
     }
 }
 
-fn daemon_degraded_reason(status: &str, state: DaemonSyncState) -> String {
-    json_pointer_string(status, "/status/attentionItems/0")
+fn daemon_degraded_reason(status: &StatusCommandOutput, state: DaemonSyncState) -> String {
+    status
+        .status
+        .attention_items
+        .first()
+        .cloned()
         .unwrap_or_else(|| format!("sync state is {}", state.as_str()))
-}
-
-fn json_pointer_string(input: &str, pointer: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(input)
-        .ok()?
-        .pointer(pointer)?
-        .as_str()
-        .map(ToOwned::to_owned)
-}
-
-fn json_string_field(input: &str, field: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(input)
-        .ok()?
-        .get(field)?
-        .as_str()
-        .map(ToOwned::to_owned)
 }
 
 pub(super) fn wait_for_daemon_socket_to_stop(socket: &Path, timeout: Duration) -> bool {
@@ -348,7 +418,7 @@ pub(super) fn print_daemon_stop(socket: &Path, json: bool) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+        Err(error) if error.daemon_is_absent() => {
             if json {
                 print_json(&daemon_command_output(
                     CommandName::DaemonStop,
@@ -364,16 +434,69 @@ pub(super) fn print_daemon_stop(socket: &Path, json: bool) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(error) => {
-            print_runtime_error(
+        Err(error) => match error.version_skew() {
+            Some(skew) => stop_skewed_daemon(socket, &skew, generated_at, json),
+            None => print_runtime_error(
                 CommandName::DaemonStop,
                 generated_at,
                 &error.to_string(),
                 json,
-            );
-            ExitCode::from(EXIT_RUNTIME)
-        }
+            )
+            .into(),
+        },
     }
+}
+
+/// A daemon this build cannot speak to still has to be stoppable. The shutdown
+/// RPC is unreachable across a contract skew, so fall through to the supervisor
+/// that owns the process; an unmanaged foreign daemon is reported as such
+/// instead of being mislabelled `stopped`.
+fn stop_skewed_daemon(
+    socket: &Path,
+    skew: &bowline_daemon_rpc::VersionSkew,
+    generated_at: String,
+    json: bool,
+) -> ExitCode {
+    if !daemon_service_is_active() {
+        return print_user_action_error(
+            CommandName::DaemonStop,
+            generated_at,
+            "daemon_version_skew",
+            &format!("{skew} and no managed service owns {}", socket.display()),
+            "Stop that daemon process directly, then run `bowline daemon install` so Bowline manages it.",
+            json,
+        )
+        .into();
+    }
+    if let Err(message) = daemon_service_stop() {
+        return print_runtime_error(
+            CommandName::DaemonStop,
+            generated_at,
+            &format!("{skew} and the managed service could not be stopped: {message}"),
+            json,
+        )
+        .into();
+    }
+    let stopped = wait_for_daemon_socket_to_stop(socket, Duration::from_secs(3));
+    let state = if stopped {
+        DaemonProcessState::Stopped
+    } else {
+        DaemonProcessState::Stopping
+    };
+    if json {
+        print_json(&daemon_command_output(
+            CommandName::DaemonStop,
+            generated_at,
+            socket,
+            state,
+            None,
+            None,
+            false,
+        ));
+    } else {
+        println!("bowline daemon: {} a mismatched daemon", state.as_str());
+    }
+    ExitCode::SUCCESS
 }
 
 pub(super) fn print_diagnostics_collect(

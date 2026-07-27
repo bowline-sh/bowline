@@ -119,6 +119,7 @@ fn open_under_a_foreign_key_is_rejected() {
     let foreign = WorkspaceCrypto::new("ws_code", [7; 32], KeyEpoch::new(1));
     let error = open_aux_index(
         &foreign,
+        sealed.key_epoch,
         &sealed.content_id,
         &sealed.sealed,
         &AuxDecodeLimits::default(),
@@ -136,6 +137,7 @@ fn open_under_a_foreign_epoch_is_rejected() {
     let other_epoch = WorkspaceCrypto::new("ws_code", KEY_BYTES, KeyEpoch::new(2));
     let error = open_aux_index(
         &other_epoch,
+        sealed.key_epoch,
         &sealed.content_id,
         &sealed.sealed,
         &AuxDecodeLimits::default(),
@@ -149,8 +151,14 @@ fn open_with_a_substituted_content_id_is_rejected() {
     let crypto = test_crypto();
     let sealed = seal_aux_index(&crypto, &sample_index()).expect("seal");
     let wrong = ContentId::new("cid_not_the_real_index");
-    let error = open_aux_index(&crypto, &wrong, &sealed.sealed, &AuxDecodeLimits::default())
-        .expect_err("substituted content id must fail");
+    let error = open_aux_index(
+        &crypto,
+        sealed.key_epoch,
+        &wrong,
+        &sealed.sealed,
+        &AuxDecodeLimits::default(),
+    )
+    .expect_err("substituted content id must fail");
     assert!(matches!(error, AuxIndexError::Seal(_)));
 }
 

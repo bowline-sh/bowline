@@ -12,6 +12,7 @@ pub struct DeviceRequestInput {
     pub device_name: String,
     pub platform: String,
     pub device_public_key: String,
+    pub device_public_key_proof: String,
     pub device_fingerprint: String,
     pub device_authorization_proof_verifier: String,
     pub matching_code: String,
@@ -29,6 +30,7 @@ pub struct DeviceRequestInputDraft {
     pub device_id: DeviceId,
     pub device_name: String,
     pub device_public_key: String,
+    pub device_public_key_proof: String,
     pub device_fingerprint: String,
     pub device_authorization_proof_verifier: String,
     pub matching_code: String,
@@ -42,6 +44,7 @@ impl DeviceRequestInput {
             device_name: draft.device_name,
             platform: std::env::consts::OS.to_string(),
             device_public_key: draft.device_public_key,
+            device_public_key_proof: draft.device_public_key_proof,
             device_fingerprint: draft.device_fingerprint,
             device_authorization_proof_verifier: draft.device_authorization_proof_verifier,
             matching_code: draft.matching_code,
@@ -96,6 +99,7 @@ pub struct DeviceRequest {
     pub device_name: String,
     pub platform: String,
     pub device_public_key: String,
+    pub device_public_key_proof: String,
     pub device_fingerprint: String,
     pub device_authorization_proof_verifier: String,
     pub matching_code: String,
@@ -137,6 +141,8 @@ pub struct FirstAuthorizedDeviceInput {
     pub device_name: String,
     pub platform: String,
     pub device_fingerprint: String,
+    pub device_public_key: String,
+    pub device_public_key_proof: String,
     pub device_authorization_proof_verifier: String,
 }
 
@@ -220,6 +226,16 @@ pub struct GrantAcceptanceInput {
     pub request_id: DeviceApprovalRequestId,
     pub device_id: DeviceId,
     pub grant_acceptance_proof: String,
+}
+
+/// Fetching a sealed grant is an authenticated read, not a lookup by id: the
+/// requesting device signs the request subject under the same key whose
+/// verifier it published when it opened the request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncryptedGrantRequest {
+    pub request_id: DeviceApprovalRequestId,
+    pub device_id: DeviceId,
+    pub requested_by_device_proof: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

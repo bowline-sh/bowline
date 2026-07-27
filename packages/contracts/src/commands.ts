@@ -70,6 +70,28 @@ export type BoundedOutputControls = {
   readonly pathPrefix: boolean;
 };
 
+/// The one side-effect taxonomy, mirrored by `SideEffectLevel` in
+/// `crates/bowline-core/src/commands/side_effects.rs`. The contract fixtures in
+/// `tests/contracts` decode real CLI output against this list, so a token that
+/// drifts on either side fails there rather than at runtime.
+export const SIDE_EFFECT_LEVELS = [
+  "none",
+  "read",
+  "interactive",
+  "mutation",
+  "conditional-mutation",
+  "trust-change",
+  "secret-material",
+  "workspace-metadata",
+  "filesystem-write",
+  "local-filesystem-delete",
+  "remote-mutation",
+  "remote-destruction-scheduled",
+  "daemon-mutation",
+  "service-mutation",
+] as const;
+export type SideEffectLevel = (typeof SIDE_EFFECT_LEVELS)[number];
+
 export type CliCommandDescriptor = {
   readonly group: string;
   readonly name: string;
@@ -79,7 +101,7 @@ export type CliCommandDescriptor = {
   readonly options?: readonly CliCommandOption[];
   readonly examples?: readonly CliCommandExample[];
   readonly jsonOutputType: string;
-  readonly sideEffectLevel: string;
+  readonly sideEffectLevel: SideEffectLevel;
   readonly supportsJson: boolean;
   readonly supportsDryRun: boolean;
   readonly boundedOutput?: BoundedOutputControls;
@@ -248,7 +270,7 @@ export type HandoffCommandOutput = CommandOutputBase<"handoff"> & {
 export type DryRunCommandOutput = CommandOutputBase<CommandName> & {
   readonly status: "dry-run";
   readonly allowed: boolean;
-  readonly risk: string;
+  readonly risk: SideEffectLevel;
   readonly target: string;
   readonly wouldChange: readonly string[];
   readonly warnings?: readonly string[];

@@ -40,10 +40,7 @@
     {
       "builder": "workspaceHead",
       "caseName": "unsigned-transport-field-does-not-enter-subject",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "baseInput": {
         "workspaceId": "ws_projection_fixture",
         "version": 7,
@@ -68,10 +65,7 @@
     {
       "builder": "statusPublish",
       "caseName": "existing-rust-pin",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "publish-workspace-status",
       "input": {
         "workspaceId": "ws_code",
@@ -87,10 +81,7 @@
     {
       "builder": "bootstrapSession",
       "caseName": "all-fields",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "create-bootstrap-session",
       "input": {
         "workspaceId": "ws_boot",
@@ -106,10 +97,7 @@
     {
       "builder": "deviceRequestApproval",
       "caseName": "request-id",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "approve-device-request",
       "input": {
         "requestId": "request_approve_fixture"
@@ -119,10 +107,7 @@
     {
       "builder": "deviceRequestDenial",
       "caseName": "request-id",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "deny-device-request",
       "input": {
         "requestId": "request_deny_fixture"
@@ -130,12 +115,19 @@
       "expectedSubject": "requestId=request_deny_fixture"
     },
     {
+      "builder": "deviceGrantFetch",
+      "caseName": "request-id",
+      "implementations": ["rust", "ts"],
+      "action": "fetch-device-grant",
+      "input": {
+        "requestId": "request_fetch_grant_fixture"
+      },
+      "expectedSubject": "requestId=request_fetch_grant_fixture"
+    },
+    {
       "builder": "deviceRevocation",
       "caseName": "device-id",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "revoke-device",
       "input": {
         "deviceId": "device_revoke_fixture"
@@ -145,10 +137,7 @@
     {
       "builder": "bootstrapSession",
       "caseName": "explicit-defaults",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "create-bootstrap-session",
       "input": {
         "workspaceId": "ws_boot",
@@ -160,9 +149,7 @@
     {
       "builder": "bootstrapSession",
       "caseName": "ts-omitted-defaults",
-      "implementations": [
-        "ts"
-      ],
+      "implementations": ["ts"],
       "action": "create-bootstrap-session",
       "input": {
         "workspaceId": "ws_boot",
@@ -173,10 +160,7 @@
     {
       "builder": "workspaceRef",
       "caseName": "zero-version-empty-next",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "compare-and-swap-workspace-ref",
       "input": {
         "expectedVersion": 0,
@@ -187,10 +171,7 @@
     {
       "builder": "workspaceHead",
       "caseName": "signed-head",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "sign-workspace-head",
       "input": {
         "workspaceId": "ws_code",
@@ -202,10 +183,7 @@
     {
       "builder": "uploadIntent",
       "caseName": "content-id-absent",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "create-upload-intent",
       "input": {
         "objectKey": "packs_pk_0123456789abcdef",
@@ -218,10 +196,7 @@
     {
       "builder": "uploadIntent",
       "caseName": "content-id-empty",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "create-upload-intent",
       "input": {
         "objectKey": "indexes_ix_0123456789abcdef",
@@ -235,10 +210,7 @@
     {
       "builder": "uploadIntent",
       "caseName": "content-id-present",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "create-upload-intent",
       "input": {
         "objectKey": "indexes_ix_locator",
@@ -252,10 +224,7 @@
     {
       "builder": "downloadIntent",
       "caseName": "full-range",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "create-download-intent",
       "input": {
         "objectKey": "packs_pk_download"
@@ -265,10 +234,7 @@
     {
       "builder": "downloadIntent",
       "caseName": "bounded-zero-range",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "create-download-intent",
       "input": {
         "objectKey": "packs_pk_download",
@@ -282,10 +248,7 @@
     {
       "builder": "uploadVerification",
       "caseName": "content-id-absent",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "verify-upload-intent",
       "input": {
         "objectKey": "packs_pk_verify",
@@ -296,10 +259,7 @@
     {
       "builder": "uploadVerification",
       "caseName": "content-id-empty",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "verify-upload-intent",
       "input": {
         "objectKey": "packs_pk_verify",
@@ -311,10 +271,7 @@
     {
       "builder": "objectRetention",
       "caseName": "pending",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "mark-object-retention-state",
       "input": {
         "objectKey": "packs_pk_retention",
@@ -325,10 +282,7 @@
     {
       "builder": "objectRetention",
       "caseName": "current",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "mark-object-retention-state",
       "input": {
         "objectKey": "packs_pk_retention",
@@ -339,10 +293,7 @@
     {
       "builder": "objectRetention",
       "caseName": "orphan-candidate",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "mark-object-retention-state",
       "input": {
         "objectKey": "packs_pk_retention",
@@ -353,10 +304,7 @@
     {
       "builder": "objectRetention",
       "caseName": "retained",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "mark-object-retention-state",
       "input": {
         "objectKey": "packs_pk_retention",
@@ -367,10 +315,7 @@
     {
       "builder": "objectRetention",
       "caseName": "delete-eligible",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "mark-object-retention-state",
       "input": {
         "objectKey": "packs_pk_retention",
@@ -381,10 +326,7 @@
     {
       "builder": "objectPointer",
       "caseName": "source-pack",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "fragment",
       "input": {
         "objectKey": "packs_pk_source",
@@ -399,10 +341,7 @@
     {
       "builder": "objectPointer",
       "caseName": "content-id-variant",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "fixture-only",
       "input": {
         "objectKey": "packs_pk_source",
@@ -417,10 +356,7 @@
     {
       "builder": "objectPointer",
       "caseName": "large-number",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "fragment",
       "input": {
         "objectKey": "packs_pk_large",
@@ -435,10 +371,7 @@
     {
       "builder": "objectMetadata",
       "caseName": "locator-index",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "commit-uploaded-object-metadata",
       "input": {
         "objectKey": "indexes_ix_locator_meta",
@@ -453,10 +386,7 @@
     {
       "builder": "headObjectMetadata",
       "caseName": "raw-object-key",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "head-object-metadata",
       "input": {
         "objectKey": "packs_pk_raw_passthrough"
@@ -464,12 +394,47 @@
       "expectedSubject": "packs_pk_raw_passthrough"
     },
     {
+      "builder": "storageGcList",
+      "caseName": "first-page-has-no-cursor",
+      "implementations": ["rust", "ts"],
+      "action": "list-storage-gc-objects",
+      "input": {},
+      "expectedSubject": "cursor="
+    },
+    {
+      "builder": "storageGcList",
+      "caseName": "continued-page",
+      "implementations": ["rust", "ts"],
+      "action": "list-storage-gc-objects",
+      "input": {
+        "cursor": "cursor_opaque_gc_page_2"
+      },
+      "expectedSubject": "cursor=cursor_opaque_gc_page_2"
+    },
+    {
+      "builder": "storageGcObject",
+      "caseName": "delete-intent",
+      "implementations": ["rust", "ts"],
+      "action": "create-storage-gc-delete-intent",
+      "input": {
+        "objectKey": "packs_pk_gc_delete"
+      },
+      "expectedSubject": "objectKey=packs_pk_gc_delete"
+    },
+    {
+      "builder": "storageGcObject",
+      "caseName": "metadata-delete",
+      "implementations": ["rust", "ts"],
+      "action": "delete-object-metadata-after-gc",
+      "input": {
+        "objectKey": "packs_pk_gc_delete"
+      },
+      "expectedSubject": "objectKey=packs_pk_gc_delete"
+    },
+    {
       "builder": "recoveryEnvelopeCreate",
       "caseName": "raw-envelope-id",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "create-recovery-envelope",
       "input": {
         "envelopeId": "recovery_env_1",
@@ -482,10 +447,7 @@
     {
       "builder": "recoveryEnvelopeVerify",
       "caseName": "raw-envelope-id",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "verify-recovery-envelope",
       "input": {
         "envelopeId": "recovery_env_1"
@@ -495,10 +457,7 @@
     {
       "builder": "recoveryEnvelopeRotate",
       "caseName": "raw-envelope-id",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "rotate-recovery-envelope",
       "input": {
         "envelopeId": "recovery_env_2",
@@ -511,15 +470,75 @@
     {
       "builder": "recoveryEnvelopeRevoke",
       "caseName": "raw-envelope-id",
-      "implementations": [
-        "rust",
-        "ts"
-      ],
+      "implementations": ["rust", "ts"],
       "action": "revoke-recovery-envelope",
       "input": {
         "envelopeId": "recovery_env_2"
       },
       "expectedSubject": "envelopeId=recovery_env_2"
+    },
+    {
+      "builder": "devicePublicKey",
+      "caseName": "age-recipient",
+      "implementations": ["rust", "ts"],
+      "action": "attest-device-public-key",
+      "input": {
+        "devicePublicKey": "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+      },
+      "expectedSubject": "devicePublicKey=age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+    },
+    {
+      "builder": "keyRegrantWork",
+      "caseName": "workspace-scoped",
+      "implementations": ["rust", "ts"],
+      "action": "list-workspace-key-regrant-work",
+      "input": {
+        "workspaceId": "ws_code"
+      },
+      "expectedSubject": "workspaceId=ws_code"
+    },
+    {
+      "builder": "keyRegrantAccept",
+      "caseName": "epoch-two",
+      "implementations": ["rust", "ts"],
+      "action": "accept-workspace-key-regrant",
+      "input": {
+        "keyEpoch": 2
+      },
+      "expectedSubject": "keyEpoch=2"
+    },
+    {
+      "builder": "keyRegrantSeed",
+      "caseName": "two-offers-out-of-order",
+      "implementations": ["rust", "ts"],
+      "action": "seed-workspace-key-epoch",
+      "input": {
+        "keyEpoch": 2,
+        "offers": [
+          {
+            "recipientDeviceId": "device_b",
+            "acceptanceProofVerifier": "gapv_b",
+            "ciphertext": "ct_b"
+          },
+          {
+            "recipientDeviceId": "device_a",
+            "acceptanceProofVerifier": "gapv_a",
+            "ciphertext": "ct_a"
+          }
+        ]
+      },
+      "expectedSubject": "keyEpoch=2\nofferDigest=b5cdc573fd646ff41dc746efbd0a6da2e6ccd54949757ff4c8365982143a6205"
+    },
+    {
+      "builder": "keyRegrantOffer",
+      "caseName": "no-offers",
+      "implementations": ["rust", "ts"],
+      "action": "offer-workspace-key-regrant",
+      "input": {
+        "keyEpoch": 3,
+        "offers": []
+      },
+      "expectedSubject": "keyEpoch=3\nofferDigest=3a03da4a336cd65c99c03f3f678ecfb6b387c2eae4b2f2d57bb673098efd1f08"
     }
   ]
 }

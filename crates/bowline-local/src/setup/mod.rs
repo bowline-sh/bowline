@@ -14,7 +14,7 @@ pub use local_state::{
     SetupReceiptIdentityInputs, collect_receipt_identity_inputs,
 };
 pub use readiness::{
-    SetupIdentity, SetupReadinessClassification, SetupReadinessState,
+    SETUP_COMMAND_TIMEOUT, SetupIdentity, SetupReadinessClassification, SetupReadinessState,
     classify_setup_command_result, collect_setup_identity, inferred_receipt_key,
     inferred_recipe_hash, recipe_receipt_key, setup_identity_hash, setup_receipt_id,
 };

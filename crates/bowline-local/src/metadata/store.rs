@@ -7,7 +7,7 @@ pub(super) use std::{
 pub(super) use bowline_core::{
     ids::{DeviceId, EnvRecordId, ProjectId, SnapshotId, WorkViewId, WorkspaceId},
     policy::{AccessFlag, MaterializationMode, PathClassification},
-    status::{EventWatermarks, GitObserverState, ObservedWorkspaceSummary},
+    status::{EventWatermarks, GitObserverState, ObservedWorkspaceSummary, SetupReceiptState},
     work_views::{
         WorkView, WorkViewLifecycle, WorkViewRetention, WorkViewRetentionState, WorkViewSyncState,
         WorkViewVisibility,
@@ -88,6 +88,52 @@ pub struct ProjectRecord {
     pub local_materialization_state: ProjectLocalMaterializationState,
     pub purge_after: Option<String>,
     pub git_observer_state: GitObserverState,
+}
+
+/// Where a project sits in the local warm-up state machine. The literal is
+/// written only at the SQLite edge; no other module compares strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectHotState {
+    /// Observed but never warmed on this device.
+    Cold,
+    /// Setup is running right now, or was interrupted before it finished.
+    Warming,
+    /// Setup completed for the current setup identity.
+    Hot,
+    /// Setup ran and could not finish; its receipt needs attention.
+    SetupBlocked,
+}
+
+impl ProjectHotState {
+    pub const COLD_WIRE: &'static str = "cold";
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cold => Self::COLD_WIRE,
+            Self::Warming => "warming",
+            Self::Hot => "hot",
+            Self::SetupBlocked => "setup.blocked",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            Self::COLD_WIRE => Some(Self::Cold),
+            "warming" => Some(Self::Warming),
+            "hot" => Some(Self::Hot),
+            "setup.blocked" => Some(Self::SetupBlocked),
+            _ => None,
+        }
+    }
+
+    /// Whether a failed or approval-pending setup receipt for this project is
+    /// still the current truth. Only a project that reached `Hot` has proven
+    /// the receipt stale; `Warming` means setup was interrupted and `None`
+    /// means the project has no row yet — both must keep the receipt visible
+    /// rather than reporting green.
+    pub fn setup_receipt_is_current(state: Option<Self>) -> bool {
+        !matches!(state, Some(Self::Hot))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -186,7 +232,7 @@ pub struct SetupReceiptRecord {
     pub workspace_id: WorkspaceId,
     pub project_id: Option<ProjectId>,
     pub command: String,
-    pub state: String,
+    pub state: SetupReceiptState,
     pub recipe_hash: String,
     pub approval_state: String,
     pub trigger: String,

@@ -41,6 +41,10 @@ where
     })
 }
 
+/// A probe that cannot reach the host, or whose answer does not parse, is not
+/// evidence the key is there: bootstrap treats every unclear answer as "absent"
+/// and re-grants, which is idempotent, rather than skipping a grant the host
+/// needs.
 pub(super) fn remote_workspace_key_available<R>(
     runner: &R,
     options: &BootstrapSshOptions,
@@ -49,8 +53,19 @@ pub(super) fn remote_workspace_key_available<R>(
 where
     R: ProcessRunner,
 {
-    ssh::server_local_workspace_key_available(runner, options, workspace_id.as_str())
-        .unwrap_or(false)
+    let Ok(probe) = ssh::workspace_key_status_remote(runner, options, workspace_id.as_str()) else {
+        return false;
+    };
+    remote_workspace_key_custody(&probe.stdout, workspace_id) == Some(WorkspaceKeyCustody::Held)
+}
+
+fn remote_workspace_key_custody(
+    stdout: &str,
+    workspace_id: &bowline_core::ids::WorkspaceId,
+) -> Option<WorkspaceKeyCustody> {
+    let output = serde_json::from_str::<DeviceKeyStatusCommandOutput>(stdout).ok()?;
+    // A reply about a different workspace answers a question nobody asked.
+    (&output.workspace_id == workspace_id).then_some(output.workspace_key)
 }
 
 pub(super) fn set_remote_device_id(options: &mut BootstrapSshOptions, device_id: String) {
@@ -71,9 +86,9 @@ pub(super) fn request_matches_cloud(
     remote: &DeviceApprovalRequest,
     cloud: &bowline_control_plane::DeviceRequest,
 ) -> bool {
-    remote.request_id.as_str() == cloud.request_id
-        && remote.workspace_id.as_str() == cloud.workspace_id
-        && remote.requester_device_id.as_str() == cloud.device_id
+    remote.request_id == cloud.request_id
+        && remote.workspace_id == cloud.workspace_id
+        && remote.requester_device_id == cloud.device_id
         && remote.device_public_key.as_str() == cloud.device_public_key
         && remote.device_fingerprint.as_str() == cloud.device_fingerprint
         && remote.matching_code == cloud.matching_code
@@ -155,21 +170,25 @@ pub(super) fn remote_bootstrap_secret_env_from(
     control_plane_token: Option<String>,
 ) -> Vec<(String, String)> {
     let mut values = Vec::new();
-    if let Some(session) = account_session {
-        values.push(("BOWLINE_ACCOUNT_SESSION_ID".to_string(), session.session_id));
-        values.push((
-            "BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN".to_string(),
-            session.revocation_token,
-        ));
+    match account_session {
+        Some(session) => {
+            values.push(("BOWLINE_ACCOUNT_SESSION_ID".to_string(), session.session_id));
+            values.push((
+                "BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN".to_string(),
+                session.revocation_token,
+            ));
+        }
+        // The remote daemon authenticates every sync read with an account
+        // session. The operator token authenticates the deployment, not the
+        // account, so shipping it alone would provision a host that comes up
+        // looking configured and cannot sync a single ref.
+        None => values.push((
+            "BOWLINE_REMOTE_AUTH_ERROR".to_string(),
+            "missing-durable-account-session".to_string(),
+        )),
     }
     if let Some(token) = control_plane_token {
         values.push(("BOWLINE_CONTROL_PLANE_TOKEN".to_string(), token));
-    }
-    if values.is_empty() {
-        values.push((
-            "BOWLINE_REMOTE_AUTH_ERROR".to_string(),
-            "missing-durable-account-session".to_string(),
-        ));
     }
     values
 }
@@ -188,7 +207,7 @@ pub(super) fn verify_remote_device_trust(
         .list_device_trust(&remote_request.workspace_id)
         .map_err(|error| format!("Could not verify remote device trust: {error}"))?;
     let Some(device) = trust.authorized_devices.into_iter().find(|device| {
-        device.device_id == remote_request.requester_device_id.as_str()
+        device.device_id == DeviceId::new(remote_request.requester_device_id.as_str())
             && device.device_fingerprint == remote_request.device_fingerprint.as_str()
     }) else {
         return Err(format!(
@@ -198,7 +217,7 @@ pub(super) fn verify_remote_device_trust(
     };
 
     Ok(DeviceRecord {
-        id: DeviceId::new(device.device_id),
+        id: device.device_id,
         name: device.device_name,
         workspace_id: remote_request.workspace_id.clone(),
         platform: platform_from_str(&device.platform),
@@ -213,6 +232,25 @@ pub(super) fn verify_remote_device_trust(
 
 pub(super) fn remote_sync_is_ready(status: &WorkspaceStatus) -> bool {
     !status.needs_attention()
+}
+
+/// Whether a remote's only reason for attention is convergence still running.
+/// Bootstrap must not stamp a succeeded pipeline as blocked just because a real
+/// `~/Code` has not finished its first sync; convergence has exactly one owner,
+/// so removing its surfaces answers the question without duplicating its rules.
+pub(super) fn remote_status_is_converging(output: &StatusCommandOutput) -> bool {
+    if !output.status.needs_attention() {
+        return false;
+    }
+    let mut without_convergence = output.clone();
+    bowline_core::status::remove_convergence_surfaces(&mut without_convergence);
+    without_convergence.status.level = bowline_core::status::reduce_status_facts(
+        without_convergence.status_summary.facts.clone(),
+        without_convergence.status_summary.snapshot_version,
+        without_convergence.generated_at.clone(),
+    )
+    .presentation_level();
+    !without_convergence.status.needs_attention()
 }
 
 pub(super) fn remote_daemon_is_running(stdout: &str) -> bool {

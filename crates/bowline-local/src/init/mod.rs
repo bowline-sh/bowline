@@ -1,9 +1,7 @@
 use std::{
-    collections::{BTreeMap, hash_map::DefaultHasher},
+    collections::BTreeMap,
     error::Error,
-    fmt, fs,
-    hash::{Hash, Hasher},
-    io,
+    fmt, fs, io,
     path::{Path, PathBuf},
 };
 
@@ -46,7 +44,7 @@ pub enum LocalInitError {
     Events(LocalEventError),
     EnvImport(EnvImportError),
     Scan(ScanError),
-    AmbiguousDefaultRoot(Vec<PathBuf>),
+    MultipleCandidateRoots(Vec<PathBuf>),
 }
 
 pub fn initialize_root(options: InitOptions) -> Result<RootInitOutput, LocalInitError> {
@@ -129,7 +127,7 @@ impl fmt::Display for LocalInitError {
             Self::Events(error) => error.fmt(formatter),
             Self::EnvImport(error) => error.fmt(formatter),
             Self::Scan(error) => error.fmt(formatter),
-            Self::AmbiguousDefaultRoot(paths) => write!(
+            Self::MultipleCandidateRoots(paths) => write!(
                 formatter,
                 "multiple existing code roots found: {}",
                 paths
@@ -150,7 +148,7 @@ impl Error for LocalInitError {
             Self::Events(error) => Some(error),
             Self::EnvImport(error) => Some(error),
             Self::Scan(error) => Some(error),
-            Self::AmbiguousDefaultRoot(_) => None,
+            Self::MultipleCandidateRoots(_) => None,
         }
     }
 }
@@ -198,10 +196,13 @@ fn choose_root(requested_root: Option<&str>) -> Result<PathBuf, LocalInitError> 
         .filter(|path| path.exists())
         .collect::<Vec<_>>();
 
+    // One existing code directory is not ambiguous, whatever it is called: a
+    // developer whose work lives in `~/Projects` is the common case, not an
+    // error to be reported as "multiple existing code roots found".
     match candidates.as_slice() {
         [] => Ok(code_root),
-        [only] if only == &code_root => Ok(code_root),
-        _ => Err(LocalInitError::AmbiguousDefaultRoot(candidates)),
+        [only] => Ok(only.clone()),
+        _ => Err(LocalInitError::MultipleCandidateRoots(candidates)),
     }
 }
 
@@ -388,11 +389,15 @@ fn append_observed_event(
     }
 }
 
+/// Persisted ids must be stable across toolchains, so this hashes with blake3
+/// like every other id generator in the crate rather than `DefaultHasher`,
+/// whose output std explicitly does not guarantee between releases.
 fn event_id(root: &Path, now: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    root.display().to_string().hash(&mut hasher);
-    now.hash(&mut hasher);
-    format!("evt_init_observed_{:x}", hasher.finish())
+    let input = format!("{}:{now}", root.display());
+    format!(
+        "evt_init_observed_{}",
+        &blake3::hash(input.as_bytes()).to_hex()[..16]
+    )
 }
 
 fn resolve_user_path(path: &str) -> io::Result<PathBuf> {

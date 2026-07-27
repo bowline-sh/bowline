@@ -82,6 +82,9 @@ case "$UNAME_S:$UNAME_M" in
     PLATFORM="linux"
     TARGET="aarch64-unknown-linux-gnu"
     ;;
+  Darwin:*)
+    fail "Bowline on macOS requires Apple silicon; $UNAME_M is not built. See $RELEASE_HOST"
+    ;;
   *)
     fail "unsupported platform $UNAME_S/$UNAME_M; see $RELEASE_HOST"
     ;;
@@ -232,12 +235,39 @@ install_cli_archive() {
   install -m 0755 "$TMPDIR/cli/bowline-daemon" "$INSTALL_DIR/bowline-daemon"
 }
 
+# The replaced app bundle keeps running from the bytes we are about to delete,
+# so quit it before the swap and relaunch after; otherwise the old menu bar app
+# and daemon outlive the new CLI they must agree with.
+quit_macos_app() {
+  [ -d "$APP_DIR/Bowline.app" ] || return 0
+  command -v osascript >/dev/null 2>&1 || return 0
+  osascript -e 'quit app "Bowline"' >/dev/null 2>&1 || true
+  attempt=0
+  while [ "$attempt" -lt 20 ]; do
+    pgrep -f "$APP_DIR/Bowline.app" >/dev/null 2>&1 || return 0
+    sleep 0.25
+    attempt=$((attempt + 1))
+  done
+  note "Bowline.app did not quit in time; restart it manually after the upgrade"
+}
+
+# An upgrade replaces bowline-daemon on disk while the old process keeps
+# serving. Restarting the managed service is not service installation: the
+# service is only ever created by authenticated setup.
+restart_installed_daemon() {
+  [ -x "$INSTALL_DIR/bowline" ] || return 0
+  if "$INSTALL_DIR/bowline" daemon restart >/dev/null 2>&1; then
+    note "restarted the bowline daemon on the newly installed build"
+  fi
+}
+
 install_macos_app() {
   app_zip="$TMPDIR/Bowline-$TARGET.app.zip"
   need ditto
   download "$RELEASE_BASE/Bowline-$TARGET.app.zip" "$app_zip"
   verify_checksum "$app_zip"
   mkdir -p "$APP_DIR" "$INSTALL_DIR"
+  quit_macos_app
   rm -rf "$APP_DIR/Bowline.app"
   ditto -x -k "$app_zip" "$APP_DIR"
   [ -x "$APP_DIR/Bowline.app/Contents/Resources/bin/bowline" ] ||
@@ -259,17 +289,64 @@ else
   install_cli_archive
 fi
 
+restart_installed_daemon
+
 if [ "$PLATFORM" = "macos" ] && [ "$CLI_ONLY" = "0" ]; then
   open "$APP_DIR/Bowline.app" >/dev/null 2>&1 || true
 fi
 
+shell_rc_path() {
+  case "$(basename "${SHELL:-/bin/sh}")" in
+    zsh) printf "%s/.zshrc" "${ZDOTDIR:-$HOME}" ;;
+    bash) printf "%s/.bashrc" "$HOME" ;;
+    fish) printf "%s/.config/fish/config.fish" "$HOME" ;;
+    *) printf "" ;;
+  esac
+}
+
+# $PATH must reach the rc file unexpanded; it is expanded by the shell that
+# later sources it, not by this installer.
+# shellcheck disable=SC2016
+shell_rc_path_line() {
+  case "$(basename "${SHELL:-/bin/sh}")" in
+    fish) printf 'fish_add_path %s' "$1" ;;
+    *) printf 'export PATH="%s:$PATH"' "$1" ;;
+  esac
+}
+
+# Editing a shell rc is the one thing that makes the printed next command run,
+# so do it for the user instead of asking them to.
+persist_install_dir_on_path() {
+  rc="$(shell_rc_path)"
+  [ -n "$rc" ] || return 1
+  line="$(shell_rc_path_line "$INSTALL_DIR")"
+  if [ -f "$rc" ] && grep -Fqs "$line" "$rc"; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$rc")" || return 1
+  {
+    printf '\n# added by bowline install\n'
+    printf '%s\n' "$line"
+  } >>"$rc" || return 1
+  note "added $INSTALL_DIR to PATH in $rc"
+  return 0
+}
+
+NEXT_COMMAND="bowline setup --root ~/Code"
+NEXT_HINT=""
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *)
-    note "add $INSTALL_DIR to PATH, then restart your shell"
+    NEXT_COMMAND="$INSTALL_DIR/bowline setup --root ~/Code"
+    if persist_install_dir_on_path; then
+      NEXT_HINT="New shells pick up $INSTALL_DIR automatically."
+    else
+      NEXT_HINT="Add $INSTALL_DIR to PATH to use the short 'bowline' command."
+    fi
     ;;
 esac
 
 echo
 echo "Bowline installed."
-echo "Next: bowline setup --root ~/Code"
+echo "Next: $NEXT_COMMAND"
+[ -z "$NEXT_HINT" ] || echo "$NEXT_HINT"

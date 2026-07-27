@@ -2,22 +2,6 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 const defaultManifest = "public-export.json";
-const maxTextBytes = 1024 * 1024;
-const textExtensions = new Set([
-  "",
-  ".css",
-  ".js",
-  ".json",
-  ".md",
-  ".mjs",
-  ".rs",
-  ".toml",
-  ".ts",
-  ".tsx",
-  ".txt",
-  ".yaml",
-  ".yml",
-]);
 
 const exactPathReasons = new Map([
   ["AGENTS.md", "prerelease agent instructions must stay private"],
@@ -71,7 +55,6 @@ const ignoredExpansionSegments = new Set([
 ]);
 const ignoredExpansionFilePatterns = [
   /\.tsbuildinfo$/u,
-  /(^|\/)examples\/merge-plugins\/[^/]+\/Cargo\.lock$/u,
   /(^|\/)\.DS_Store$/u,
   /(^|\/)(npm-debug|yarn-error|pnpm-debug)\.log$/u,
 ];
@@ -249,11 +232,14 @@ async function contentReason(root, filePath) {
     return null;
   }
 
-  if (!fileStat.isFile() || fileStat.size > maxTextBytes) return null;
-  if (!textExtensions.has(path.extname(filePath))) return null;
+  if (!fileStat.isFile()) return null;
 
-  const content = await readFile(fullPath, "utf8");
-  if (content.includes("\0")) return null;
+  // Every exported file is scanned regardless of extension: an extension
+  // allowlist fails open the moment a new kind of file joins the manifest.
+  // A NUL byte is the only skip, because binaries cannot be pattern-matched.
+  const bytes = await readFile(fullPath);
+  if (bytes.includes(0)) return null;
+  const content = bytes.toString("utf8");
 
   for (const { pattern, reason } of contentPatterns) {
     if (pattern.test(content)) return reason;

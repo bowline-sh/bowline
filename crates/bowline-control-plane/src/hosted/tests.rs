@@ -3,9 +3,14 @@ use super::generated::{
 };
 use super::*;
 use crate::Sha256Checksum;
-use crate::{ObjectControlPlaneClient, WorkspaceControlPlaneClient, device_authorization_message};
+use crate::{
+    ObjectControlPlaneClient, UploadIntentOutcome, WorkspaceControlPlaneClient,
+    device_authorization_message,
+};
 use bowline_core::ids::{DeviceId, EventId, ProjectId, SnapshotId, WorkspaceId};
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
+use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 
 #[test]
 fn generated_object_keys_preserve_shape_and_change_with_seed() {
@@ -33,12 +38,18 @@ fn hosted_boundary_verifies_workspace_ref_signed_head() {
                 .as_bytes()
         )
     );
-    let signature = sign_workspace_head(&signing_key, "workspace_1", "device_1", 3, "snap_signed");
+    let signature = sign_workspace_head(
+        &signing_key,
+        &WorkspaceId::new("workspace_1"),
+        &DeviceId::new("device_1"),
+        3,
+        &SnapshotId::new("snap_signed"),
+    );
 
     let parsed = workspace_ref_from_dto(
         signed_workspace_ref_dto("device_1", 3, "snap_signed", &signature),
         |_, device_id| {
-            if device_id == "device_1" {
+            if device_id.as_str() == "device_1" {
                 Ok(Some(verifier.clone()))
             } else {
                 Ok(None)
@@ -61,7 +72,7 @@ fn hosted_boundary_verifies_workspace_ref_signed_head() {
     let forged = workspace_ref_from_dto(
         signed_workspace_ref_dto("device_1", 3, "snap_forged", &signature),
         |_, device_id| {
-            if device_id == "device_1" {
+            if device_id.as_str() == "device_1" {
                 Ok(Some(verifier.clone()))
             } else {
                 Ok(None)
@@ -75,7 +86,7 @@ fn hosted_boundary_verifies_workspace_ref_signed_head() {
         workspace_id: "workspace_1".to_string(),
         version: 3,
         snapshot_id: Some("snap_unsigned".to_string()),
-        updated_at: "2026-07-02T12:00:00Z".to_string(),
+        updated_at: wire_timestamp("2026-07-02T12:00:00Z"),
         updated_by_device_id: Some("device_1".to_string()),
         head_signature: None,
     };
@@ -90,7 +101,7 @@ fn hosted_boundary_accepts_headless_genesis_ref() {
         workspace_id: "workspace_1".to_string(),
         version: 0,
         snapshot_id: None,
-        updated_at: "2026-07-02T12:00:00Z".to_string(),
+        updated_at: wire_timestamp("2026-07-02T12:00:00Z"),
         updated_by_device_id: None,
         head_signature: None,
     };
@@ -107,7 +118,7 @@ fn hosted_boundary_rejects_advanced_ref_without_snapshot() {
         workspace_id: "workspace_1".to_string(),
         version: 2,
         snapshot_id: None,
-        updated_at: "2026-07-02T12:00:00Z".to_string(),
+        updated_at: wire_timestamp("2026-07-02T12:00:00Z"),
         updated_by_device_id: Some("device_1".to_string()),
         head_signature: Some("dapp_p256_v1_sig".to_string()),
     };
@@ -116,16 +127,16 @@ fn hosted_boundary_rejects_advanced_ref_without_snapshot() {
 
 fn sign_workspace_head(
     signing_key: &SigningKey,
-    workspace_id: &str,
-    device_id: &str,
+    workspace_id: &WorkspaceId,
+    device_id: &DeviceId,
     version: u64,
-    snapshot_id: &str,
+    snapshot_id: &SnapshotId,
 ) -> String {
     let subject = workspace_head_proof_subject(workspace_id, version, snapshot_id);
     let signature: Signature = signing_key.sign(&device_authorization_message(&[
         "bowline device authorization proof v2",
-        workspace_id,
-        device_id,
+        workspace_id.as_str(),
+        device_id.as_str(),
         "sign-workspace-head",
         &subject,
     ]));
@@ -142,7 +153,7 @@ fn signed_workspace_ref_dto(
         workspace_id: "workspace_1".to_string(),
         version,
         snapshot_id: Some(snapshot_id.to_string()),
-        updated_at: "2026-07-02T12:00:00Z".to_string(),
+        updated_at: wire_timestamp("2026-07-02T12:00:00Z"),
         updated_by_device_id: Some(device_id.to_string()),
         head_signature: Some(head_signature.to_string()),
     }
@@ -183,7 +194,7 @@ fn hosted_object_intent_actions_preserve_server_expires_at() {
         "test-control-plane-token",
     )
     .expect("client")
-    .with_device_id("device_1")
+    .with_device_id(DeviceId::new("device_1"))
     .with_device_proof_signer(|_, _, action, subject| {
         assert!(!action.is_empty());
         assert!(!subject.is_empty());
@@ -200,14 +211,20 @@ fn hosted_object_intent_actions_preserve_server_expires_at() {
                 Some(&Value::from("proof_1"))
             );
             Ok(Value::Object(args([
-                ("byteLength", number_value(128)),
-                ("expiresAt", Value::from("2026-06-23T12:00:11Z")),
-                ("intentId", Value::from("intent_upload")),
-                ("kind", Value::from("blob")),
-                ("method", Value::from("PUT")),
-                ("objectKey", Value::from("object_upload")),
-                ("signedUrl", Value::from("https://storage.example/upload")),
-                ("workspaceId", Value::from("workspace_1")),
+                ("outcome", Value::from("reserved")),
+                (
+                    "reservation",
+                    Value::Object(args([
+                        ("byteLength", number_value(128)),
+                        ("expiresAt", Value::from("2026-06-23T12:00:11Z")),
+                        ("intentId", Value::from("intent_upload")),
+                        ("kind", Value::from("blob")),
+                        ("method", Value::from("PUT")),
+                        ("objectKey", Value::from("object_upload")),
+                        ("signedUrl", Value::from("https://storage.example/upload")),
+                        ("workspaceId", Value::from("workspace_1")),
+                    ])),
+                ),
             ])))
         }
         "objects:createDownloadIntent" => {
@@ -242,9 +259,10 @@ fn hosted_object_intent_actions_preserve_server_expires_at() {
                 ("workspaceId", Value::from("workspace_1")),
             ])))
         }
-        unexpected => Err(ControlPlaneError::Storage(format!(
-            "unexpected action {unexpected}"
-        ))),
+        unexpected => Err(ControlPlaneError::ServerError {
+            function: "objects:test",
+            message: format!("unexpected action {unexpected}"),
+        }),
     });
 
     let upload = client
@@ -258,6 +276,9 @@ fn hosted_object_intent_actions_preserve_server_expires_at() {
             .with_object_key("object_upload"),
         )
         .expect("upload intent");
+    let UploadIntentOutcome::Reserved(upload) = upload else {
+        panic!("stubbed upload intent reserves the key");
+    };
     assert_eq!(upload.signed_url.expires_at.tick, 1782216011000);
 
     let download = client
@@ -340,6 +361,7 @@ fn cached_rpc_reconnects_once_after_transport_failure() {
     let result = runtime
         .block_on(rpc_with_cached_client(
             &cached_client,
+            "test:cachedRpc",
             true,
             {
                 let connect_count = Arc::clone(&connect_count);
@@ -357,9 +379,9 @@ fn cached_rpc_reconnects_once_after_transport_failure() {
                     let call_count = Arc::clone(&call_count);
                     Box::pin(async move {
                         if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                            return Err(ControlPlaneError::Storage(
-                                "transport unavailable".to_string(),
-                            ));
+                            return Err(ControlPlaneError::Transport {
+                                detail: "transport unavailable".to_string(),
+                            });
                         }
                         Ok(FunctionResult::Value(Value::from(format!(
                             "connection-{}",
@@ -397,6 +419,7 @@ fn cached_rpc_does_not_replay_non_retryable_transport_failure() {
     let error = runtime
         .block_on(rpc_with_cached_client(
             &cached_client,
+            "test:cachedRpc",
             false,
             {
                 let connect_count = Arc::clone(&connect_count);
@@ -414,9 +437,9 @@ fn cached_rpc_does_not_replay_non_retryable_transport_failure() {
                     let call_count = Arc::clone(&call_count);
                     Box::pin(async move {
                         call_count.fetch_add(1, Ordering::SeqCst);
-                        Err(ControlPlaneError::Storage(
-                            "transport may have applied mutation".to_string(),
-                        ))
+                        Err(ControlPlaneError::Transport {
+                            detail: "transport may have applied mutation".to_string(),
+                        })
                     })
                 }
             },
@@ -453,6 +476,7 @@ fn cached_rpc_timeout_drops_cached_client() {
     let error = runtime
         .block_on(rpc_with_cached_client_after(
             &cached_client,
+            "test:cachedRpc",
             false,
             // 250ms, not 1ms: under load a 1ms timeout can fire before the
             // connect future runs, leaving connect_count at 0 (flaky). The
@@ -506,6 +530,7 @@ fn cached_rpc_timeout_does_not_include_another_call_duration() {
     let (slow_result, fast_result) = runtime.block_on(async {
         let slow = rpc_with_cached_client_after(
             &cached_client,
+            "test:cachedRpc",
             false,
             std::time::Duration::from_millis(5),
             || async { Ok(TestCachedRpcClient { connection_id: 99 }) },
@@ -521,6 +546,7 @@ fn cached_rpc_timeout_does_not_include_another_call_duration() {
         );
         let fast = rpc_with_cached_client_after(
             &cached_client,
+            "test:cachedRpc",
             false,
             std::time::Duration::from_millis(20),
             || async { Ok(TestCachedRpcClient { connection_id: 99 }) },
@@ -561,6 +587,7 @@ fn cached_rpc_keeps_client_after_convex_function_error() {
     let function_error = runtime
         .block_on(rpc_with_cached_client(
             &cached_client,
+            "test:cachedRpc",
             true,
             {
                 let connect_count = Arc::clone(&connect_count);
@@ -606,6 +633,7 @@ fn cached_rpc_keeps_client_after_convex_function_error() {
     let result = runtime
         .block_on(rpc_with_cached_client(
             &cached_client,
+            "test:cachedRpc",
             true,
             {
                 let connect_count = Arc::clone(&connect_count);
@@ -647,10 +675,13 @@ fn convex_error_payload_maps_to_rejection_code() {
     );
     payload.insert("message".to_string(), Value::from("device is not trusted"));
 
-    let error = unwrap_function_result(FunctionResult::ConvexError(ConvexError {
-        message: "application rejected the call".to_string(),
-        data: Value::Object(payload),
-    }))
+    let error = unwrap_function_result(
+        "test:convexError",
+        FunctionResult::ConvexError(ConvexError {
+            message: "application rejected the call".to_string(),
+            data: Value::Object(payload),
+        }),
+    )
     .expect_err("convex payload rejects");
 
     assert_eq!(
@@ -674,10 +705,13 @@ fn unauthorized_convex_error_maps_to_permanent_rejection_code() {
         Value::from("device cannot update this lease"),
     );
 
-    let error = unwrap_function_result(FunctionResult::ConvexError(ConvexError {
-        message: "application rejected the call".to_string(),
-        data: Value::Object(payload),
-    }))
+    let error = unwrap_function_result(
+        "test:convexError",
+        FunctionResult::ConvexError(ConvexError {
+            message: "application rejected the call".to_string(),
+            data: Value::Object(payload),
+        }),
+    )
     .expect_err("unauthorized convex payload rejects");
 
     assert_eq!(
@@ -691,10 +725,13 @@ fn unauthorized_convex_error_maps_to_permanent_rejection_code() {
 
 #[test]
 fn convex_error_payload_without_code_maps_to_unknown_rejection() {
-    let error = unwrap_function_result(FunctionResult::ConvexError(ConvexError {
-        message: "opaque application failure".to_string(),
-        data: Value::Null,
-    }))
+    let error = unwrap_function_result(
+        "test:convexError",
+        FunctionResult::ConvexError(ConvexError {
+            message: "opaque application failure".to_string(),
+            data: Value::Null,
+        }),
+    )
     .expect_err("convex payload rejects");
 
     assert_eq!(
@@ -710,10 +747,13 @@ fn convex_error_payload_without_code_maps_to_unknown_rejection() {
 fn malformed_convex_error_payloads_map_to_unknown_rejection() {
     let mut missing_code = BTreeMap::new();
     missing_code.insert("message".to_string(), Value::from("missing code"));
-    let error = unwrap_function_result(FunctionResult::ConvexError(ConvexError {
-        message: "application rejected the call".to_string(),
-        data: Value::Object(missing_code),
-    }))
+    let error = unwrap_function_result(
+        "test:convexError",
+        FunctionResult::ConvexError(ConvexError {
+            message: "application rejected the call".to_string(),
+            data: Value::Object(missing_code),
+        }),
+    )
     .expect_err("convex payload rejects");
     assert!(matches!(
         error,
@@ -728,10 +768,13 @@ fn malformed_convex_error_payloads_map_to_unknown_rejection() {
         "code".to_string(),
         Value::from("control_plane/device_not_trusted"),
     );
-    let error = unwrap_function_result(FunctionResult::ConvexError(ConvexError {
-        message: "application rejected the call".to_string(),
-        data: Value::Object(missing_message),
-    }))
+    let error = unwrap_function_result(
+        "test:convexError",
+        FunctionResult::ConvexError(ConvexError {
+            message: "application rejected the call".to_string(),
+            data: Value::Object(missing_message),
+        }),
+    )
     .expect_err("convex payload rejects");
     assert!(matches!(
         error,
@@ -789,6 +832,383 @@ fn account_session_registration_reuses_session_after_first_action() {
     assert_eq!(action_count.load(Ordering::SeqCst), 1);
 }
 
+/// The operator token authenticates the deployment, never the account, so a
+/// client holding only that one is refused every hosted call. Builders ask this
+/// so the refusal happens at construction instead of on the first sync read.
+#[test]
+fn an_operator_token_alone_cannot_authenticate_account_calls() {
+    let operator_only =
+        HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "operator")
+            .expect("hosted client");
+    assert!(!operator_only.can_authenticate_account_calls());
+
+    let with_session =
+        HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "operator")
+            .expect("hosted client")
+            .with_account_session_id("bowline_session_persisted");
+    assert!(with_session.can_authenticate_account_calls());
+
+    let with_workos =
+        HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "operator")
+            .expect("hosted client")
+            .with_workos_access_token("access_token_1");
+    assert!(with_workos.can_authenticate_account_calls());
+}
+
+/// A daemon runs for months on a persisted session id. When that session finally
+/// expires the control plane answers `Unauthorized`, and without this the daemon
+/// repeats the refused call until a human restarts it.
+#[test]
+fn a_refused_account_session_is_replaced_and_the_call_retried_once() {
+    let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+    let recorded = Arc::clone(&calls);
+    let sunk_sessions = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink_target = Arc::clone(&sunk_sessions);
+    let client = HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+        .expect("hosted client")
+        .with_account_session_id("bowline_session_stale")
+        .with_workos_access_token("access_token_1")
+        .with_account_session_sink(move |registration| {
+            sink_target
+                .lock()
+                .expect("sink")
+                .push(registration.session_id.clone());
+        })
+        .with_rpc_override(move |_kind, name, call_args| {
+            recorded.lock().expect("calls").push(name.to_string());
+            match name {
+                "auth:registerAccountSession" => Ok(Value::Object(args([
+                    ("revocationToken", Value::from("bowline_revoke_fresh")),
+                    ("sessionId", Value::from("bowline_session_fresh")),
+                ]))),
+                "events:listCompactEvents" => {
+                    if call_args.get("accountSessionId")
+                        == Some(&Value::from("bowline_session_stale"))
+                    {
+                        return Err(ControlPlaneError::Rejected {
+                            code: RejectionCode::Unauthorized,
+                            message: "account session expired".to_string(),
+                        });
+                    }
+                    Ok(Value::Array(vec![]))
+                }
+                other => panic!("unexpected hosted call `{other}`"),
+            }
+        });
+
+    let events = client
+        .list_events(&WorkspaceId::new("workspace_1"))
+        .expect("the retried call succeeds under the fresh session");
+
+    assert!(events.is_empty());
+    assert_eq!(
+        calls.lock().expect("calls").as_slice(),
+        [
+            "events:listCompactEvents",
+            "auth:registerAccountSession",
+            "events:listCompactEvents",
+        ]
+    );
+    // The replacement is handed to the owner so the next process start does not
+    // begin with the same refusal.
+    assert_eq!(
+        sunk_sessions.lock().expect("sink").as_slice(),
+        ["bowline_session_fresh"]
+    );
+}
+
+/// The sink is owner code — the daemon's writes the daemon environment and the
+/// platform keychain, which on macOS can block on a user prompt. Running it
+/// under the session-cache lock stalls every other thread that needs a session
+/// and self-deadlocks any sink that re-enters this client.
+#[test]
+fn the_account_session_sink_runs_with_the_session_cache_lock_released() {
+    let cache_was_reachable = Arc::new(AtomicBool::new(false));
+    let sink_client = Arc::new(OnceLock::<Arc<HostedControlPlaneClient>>::new());
+    let sink_slot = Arc::clone(&sink_client);
+    let sink_observation = Arc::clone(&cache_was_reachable);
+    let client = Arc::new(
+        HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+            .expect("hosted client")
+            .with_account_session_sink(move |_registration| {
+                let client = Arc::clone(sink_slot.get().expect("client published before any rpc"));
+                let (reached, observed) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = reached.send(client.cached_account_session_id("workspace:workspace_1"));
+                });
+                sink_observation.store(
+                    observed.recv_timeout(Duration::from_secs(5)).is_ok(),
+                    Ordering::SeqCst,
+                );
+            })
+            .with_public_action_override(|name, _action_args| {
+                assert_eq!(name, "auth:registerAccountSession");
+                Ok(Value::Object(args([
+                    ("revocationToken", Value::from("bowline_revoke_fresh")),
+                    ("sessionId", Value::from("bowline_session_fresh")),
+                ])))
+            }),
+    );
+    sink_client
+        .set(Arc::clone(&client))
+        .expect("the client slot is filled once");
+
+    client
+        .register_account_session("access_token_1", Some("workspace_1"))
+        .expect("registration");
+
+    assert!(
+        cache_was_reachable.load(Ordering::SeqCst),
+        "another thread must reach the session cache while the sink runs"
+    );
+}
+
+/// Re-registration needs a live WorkOS credential. Without one the refusal is
+/// the honest answer, and inventing a configuration error would send the
+/// operator looking in the wrong place.
+#[test]
+fn a_refused_session_surfaces_unchanged_without_a_workos_credential() {
+    let attempts = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&attempts);
+    let client = HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+        .expect("hosted client")
+        .with_account_session_id("bowline_session_stale")
+        .with_rpc_override(move |_kind, name, _args| {
+            assert_eq!(name, "events:listCompactEvents");
+            counted.fetch_add(1, Ordering::SeqCst);
+            Err(ControlPlaneError::Rejected {
+                code: RejectionCode::Unauthorized,
+                message: "account session expired".to_string(),
+            })
+        });
+
+    let error = client
+        .list_events(&WorkspaceId::new("workspace_1"))
+        .expect_err("an unrecoverable refusal is surfaced");
+
+    assert!(matches!(
+        error,
+        ControlPlaneError::Rejected {
+            code: RejectionCode::Unauthorized,
+            ..
+        }
+    ));
+    assert_eq!(error.retryability(), Retryability::AuthExpired);
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+/// One replacement per call. A control plane that refuses the fresh session too
+/// is refusing the identity, not the session, and a second re-registration would
+/// only spin.
+#[test]
+fn a_refused_replacement_session_is_not_retried_again() {
+    let attempts = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&attempts);
+    let client = HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+        .expect("hosted client")
+        .with_account_session_id("bowline_session_stale")
+        .with_workos_access_token("access_token_1")
+        .with_rpc_override(move |_kind, name, _args| {
+            if name == "auth:registerAccountSession" {
+                return Ok(Value::Object(args([
+                    ("revocationToken", Value::from("bowline_revoke_fresh")),
+                    ("sessionId", Value::from("bowline_session_fresh")),
+                ])));
+            }
+            counted.fetch_add(1, Ordering::SeqCst);
+            Err(ControlPlaneError::Rejected {
+                code: RejectionCode::Unauthorized,
+                message: "account session expired".to_string(),
+            })
+        });
+
+    client
+        .list_events(&WorkspaceId::new("workspace_1"))
+        .expect_err("a refused replacement still fails");
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+fn unauthorized_refusal() -> ControlPlaneError {
+    ControlPlaneError::Rejected {
+        code: RejectionCode::Unauthorized,
+        message: "account session expired".to_string(),
+    }
+}
+
+fn fresh_session_registration(name: &str) -> ControlPlaneResult<Value> {
+    assert_eq!(name, "auth:registerAccountSession");
+    Ok(Value::Object(args([
+        ("revocationToken", Value::from("bowline_revoke_fresh")),
+        ("sessionId", Value::from("bowline_session_fresh")),
+    ])))
+}
+
+fn opened_session_id(request_args: &ConvexArgs) -> Option<String> {
+    match request_args.get("accountSessionId") {
+        Some(Value::String(session_id)) => Some(session_id.clone()),
+        _ => None,
+    }
+}
+
+/// A subscription proves its account session once, when the websocket opens, so
+/// a session that expires mid-run is refused on every reconnect. Without a
+/// replacement the daemon reopens forever under the same dead credential and
+/// silently stops learning that another device moved the workspace head.
+#[test]
+fn a_refused_subscription_session_reopens_under_a_replacement() {
+    let registrations = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&registrations);
+    let client = HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+        .expect("hosted client")
+        .with_account_session_id("bowline_session_stale")
+        .with_workos_access_token("access_token_1")
+        .with_rpc_override(move |_kind, name, _args| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            fresh_session_registration(name)
+        });
+
+    let mut opened = Vec::new();
+    client
+        .subscribe_reauthenticating("workspace_1", |request_args| {
+            // Driven through the client's own runtime like the real attempt is:
+            // registering the replacement has to happen after that runtime
+            // context is exited, or the refresh would panic instead of recover.
+            client.runtime.block_on(async {
+                opened.push(opened_session_id(&request_args));
+                if opened.len() == 1 {
+                    return Ok(SubscriptionOutcome::AuthRejected(unauthorized_refusal()));
+                }
+                Ok(SubscriptionOutcome::Ended)
+            })
+        })
+        .expect("the reopened subscription runs under the fresh session");
+
+    assert_eq!(
+        opened,
+        [
+            Some("bowline_session_stale".to_string()),
+            Some("bowline_session_fresh".to_string()),
+        ]
+    );
+    assert_eq!(registrations.load(Ordering::SeqCst), 1);
+}
+
+/// A dropped websocket is not a refused credential. Reopening recovers it on its
+/// own, and registering a replacement session would spend an account
+/// registration on every network blip.
+#[test]
+fn a_dropped_subscription_never_registers_a_replacement_session() {
+    let registrations = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&registrations);
+    let client = HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+        .expect("hosted client")
+        .with_account_session_id("bowline_session_pinned")
+        .with_workos_access_token("access_token_1")
+        .with_rpc_override(move |_kind, name, _args| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            fresh_session_registration(name)
+        });
+
+    let mut opens = 0_u32;
+    client
+        .subscribe_reauthenticating("workspace_1", |request_args| {
+            opens += 1;
+            assert_eq!(
+                opened_session_id(&request_args),
+                Some("bowline_session_pinned".to_string())
+            );
+            Ok(SubscriptionOutcome::Ended)
+        })
+        .expect("an ended websocket ends the call");
+
+    let transport = client.subscribe_reauthenticating("workspace_1", |_request_args| {
+        opens += 1;
+        Err(ControlPlaneError::Transport {
+            detail: "connection reset".to_string(),
+        })
+    });
+
+    assert!(matches!(
+        transport.expect_err("a transport failure surfaces"),
+        ControlPlaneError::Transport { .. }
+    ));
+    assert_eq!(opens, 2);
+    assert_eq!(registrations.load(Ordering::SeqCst), 0);
+}
+
+/// One replacement per call, exactly as a one-shot call retries once. A control
+/// plane that refuses a freshly registered session is refusing the identity, so
+/// reopening again would spin against it; the refusal is surfaced instead and
+/// the caller's reconnect backoff owns the wait.
+#[test]
+fn a_refused_replacement_subscription_session_surfaces_instead_of_spinning() {
+    let registrations = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&registrations);
+    let client = HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+        .expect("hosted client")
+        .with_account_session_id("bowline_session_stale")
+        .with_workos_access_token("access_token_1")
+        .with_rpc_override(move |_kind, name, _args| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            fresh_session_registration(name)
+        });
+
+    let mut opens = 0_u32;
+    let refusal = client
+        .subscribe_reauthenticating("workspace_1", |_request_args| {
+            opens += 1;
+            Ok(SubscriptionOutcome::AuthRejected(unauthorized_refusal()))
+        })
+        .expect_err("a refused replacement is surfaced, not retried forever");
+
+    assert_eq!(refusal.retryability(), Retryability::AuthExpired);
+    assert_eq!(opens, 2);
+    assert_eq!(registrations.load(Ordering::SeqCst), 1);
+}
+
+/// Replacing a session needs a live WorkOS credential. Without one the refusal
+/// is the honest answer, and the daemon's observer reports it rather than
+/// reopening on a credential nothing can refresh.
+#[test]
+fn a_refused_subscription_without_a_workos_credential_surfaces_at_once() {
+    let client = HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+        .expect("hosted client")
+        .with_account_session_id("bowline_session_stale")
+        .with_rpc_override(|_kind, name, _args| panic!("unexpected hosted call `{name}`"));
+
+    let mut opens = 0_u32;
+    let refusal = client
+        .subscribe_reauthenticating("workspace_1", |_request_args| {
+            opens += 1;
+            Ok(SubscriptionOutcome::AuthRejected(unauthorized_refusal()))
+        })
+        .expect_err("an unrecoverable refusal is surfaced");
+
+    assert_eq!(refusal.retryability(), Retryability::AuthExpired);
+    assert_eq!(opens, 1);
+}
+
+/// A daemon signed out after construction still holds its token provider, so
+/// testing the provider's presence rather than calling it reported an account
+/// credential that no longer existed — sending an already-trusted device down
+/// the account branch, where it fails, instead of the device-proof branch it can
+/// still satisfy.
+#[test]
+fn a_signed_out_provider_is_not_an_available_account_credential() {
+    let present = HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+        .expect("hosted client")
+        .with_workos_access_token_provider(|| Some("workos_live".to_string()));
+    assert!(present.account_session_auth_available());
+
+    // Same installed provider, nothing to hand back.
+    let signed_out =
+        HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+            .expect("hosted client")
+            .with_workos_access_token_provider(|| None);
+    assert!(!signed_out.account_session_auth_available());
+}
+
 #[test]
 fn account_session_revocation_uses_dedicated_proof() {
     let client = HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
@@ -811,29 +1231,6 @@ fn account_session_revocation_uses_dedicated_proof() {
     client
         .revoke_account_session("bowline_session_test", "bowline_revoke_test")
         .expect("session revocation");
-}
-
-#[test]
-fn hosted_function_call_counts_are_process_local_and_low_cardinality() {
-    reset_hosted_function_call_counts();
-
-    record_hosted_function_call("refs:getWorkspaceRef");
-    record_hosted_function_call("refs:getWorkspaceRef");
-    record_hosted_function_call("objects:createDownloadIntent");
-
-    assert_eq!(
-        hosted_function_call_counts(),
-        vec![
-            HostedFunctionCallCount {
-                function_name: "objects:createDownloadIntent".to_string(),
-                call_count: 1,
-            },
-            HostedFunctionCallCount {
-                function_name: "refs:getWorkspaceRef".to_string(),
-                call_count: 2,
-            },
-        ]
-    );
 }
 
 #[test]
@@ -975,8 +1372,7 @@ fn valid_ref_history_request() -> HostedRefsListWorkspaceRefHistoryRequest {
     HostedRefsListWorkspaceRefHistoryRequest {
         workspace_id: "workspace_1".to_string(),
         limit: Some(100),
-        auth_token: None,
-        account_session_id: None,
+        account_session_id: "bowline_session_test".to_string(),
     }
 }
 
@@ -1102,8 +1498,7 @@ fn refs_history_request_encodes_limit_as_convex_float() {
     let request = super::generated::HostedRefsListWorkspaceRefHistoryRequest {
         workspace_id: "ws_code".to_string(),
         limit: Some(100),
-        auth_token: None,
-        account_session_id: None,
+        account_session_id: "bowline_session_test".to_string(),
     };
     let encoded = encode_hosted_request::<super::generated::RefsListWorkspaceRefHistory>(&request)
         .expect("encodes");
@@ -1113,8 +1508,14 @@ fn refs_history_request_encodes_limit_as_convex_float() {
         Value::Float64(100.0),
         "convex v.number() requires Float64"
     );
+    // Ref history is tenant data: the caller's account principal is the only
+    // authority the request may carry, and the cross-tenant control-plane token
+    // must never reappear on it.
+    assert_eq!(
+        encoded.get("accountSessionId"),
+        Some(&Value::from("bowline_session_test"))
+    );
     assert!(!encoded.contains_key("authToken"));
-    assert!(!encoded.contains_key("accountSessionId"));
 }
 
 fn ref_history_wire_rows() -> Value {
@@ -1148,7 +1549,9 @@ fn expected_ref_history_rows() -> Vec<WorkspaceRefHistoryRecord> {
             version: 2,
             base_snapshot_id: Some(SnapshotId::new("snap_after")),
             target_snapshot_id: SnapshotId::new("snap_later"),
-            occurred_at: "2026-06-23T12:00:02Z".to_string(),
+            occurred_at: ControlPlaneTimestamp {
+                tick: 1_782_216_002_000,
+            },
             advanced_by_device_id: Some(DeviceId::new("dev_writer")),
             caused_by_event_id: Some(EventId::new("evt_2")),
             project_id: Some(ProjectId::new("proj_web")),
@@ -1158,7 +1561,9 @@ fn expected_ref_history_rows() -> Vec<WorkspaceRefHistoryRecord> {
             version: 1,
             base_snapshot_id: Some(SnapshotId::new("snap_base")),
             target_snapshot_id: SnapshotId::new("snap_after"),
-            occurred_at: "2026-06-23T12:00:01Z".to_string(),
+            occurred_at: ControlPlaneTimestamp {
+                tick: 1_782_216_001_000,
+            },
             advanced_by_device_id: None,
             caused_by_event_id: None,
             project_id: None,
@@ -1191,22 +1596,34 @@ fn list_workspace_ref_history_uses_account_session_and_decodes_records() {
 }
 
 #[test]
-fn list_workspace_ref_history_falls_back_to_control_plane_token() {
+fn list_workspace_ref_history_refuses_a_control_plane_token_without_an_account_session() {
+    // The control-plane token is cross-tenant authority, so it is no longer an
+    // alternative to the caller's account principal: a client holding only that
+    // token is refused locally and never reaches the deployment.
+    let dispatched = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&dispatched);
     let client =
         HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "cp-token")
             .expect("client")
-            .with_rpc_override(|kind, name, request| {
-                assert_eq!(kind, ConvexRpcKind::Query);
-                assert_eq!(name, "refs:listWorkspaceRefHistory");
-                assert_eq!(request.get("authToken"), Some(&Value::from("cp-token")));
-                assert!(!request.contains_key("accountSessionId"));
+            .with_rpc_override(move |_, _, _| {
+                observed.store(true, Ordering::SeqCst);
                 Ok(ref_history_wire_rows())
             });
 
-    let records = client
+    let error = client
         .list_workspace_ref_history(&WorkspaceId::new("ws_code"), 50)
-        .expect("history decodes");
-    assert_eq!(records, expected_ref_history_rows());
+        .expect_err("a control-plane token alone cannot read tenant ref history");
+    assert!(matches!(
+        error,
+        ControlPlaneError::Rejected {
+            code: RejectionCode::InvalidRequest,
+            ..
+        }
+    ));
+    assert!(
+        !dispatched.load(Ordering::SeqCst),
+        "no ref-history request may leave the client without an account session"
+    );
 }
 
 #[test]
@@ -1214,17 +1631,17 @@ fn list_workspace_ref_history_decodes_genesis_advance_without_base_snapshot() {
     // The genesis advance (version 1) has no prior head, so its history row omits
     // baseSnapshotId; the domain boundary decodes it as `None` rather than
     // rejecting it or fabricating a base.
-    let client =
-        HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "cp-token")
-            .expect("client")
-            .with_rpc_override(|_, _, _| {
-                Ok(Value::Array(vec![Value::Object(args([
-                    ("workspaceId", Value::from("ws_code")),
-                    ("version", number_value(1)),
-                    ("targetSnapshotId", Value::from("snap_after")),
-                    ("occurredAt", Value::from("2026-06-23T12:00:01Z")),
-                ]))]))
-            });
+    let client = HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+        .expect("client")
+        .with_account_session_id("acct_session_1")
+        .with_rpc_override(|_, _, _| {
+            Ok(Value::Array(vec![Value::Object(args([
+                ("workspaceId", Value::from("ws_code")),
+                ("version", number_value(1)),
+                ("targetSnapshotId", Value::from("snap_after")),
+                ("occurredAt", Value::from("2026-06-23T12:00:01Z")),
+            ]))]))
+        });
 
     let records = client
         .list_workspace_ref_history(&WorkspaceId::new("ws_code"), 50)
@@ -1242,10 +1659,10 @@ fn fake_and_hosted_ref_history_agree_on_empty_domain_result() {
         .expect("fake history");
     assert!(fake_rows.is_empty());
 
-    let hosted =
-        HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "cp-token")
-            .expect("client")
-            .with_rpc_override(|_, _, _| Ok(Value::Array(vec![])));
+    let hosted = HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+        .expect("client")
+        .with_account_session_id("acct_session_1")
+        .with_rpc_override(|_, _, _| Ok(Value::Array(vec![])));
     let hosted_rows = hosted
         .list_workspace_ref_history(&WorkspaceId::new("ws_code"), 50)
         .expect("hosted history");
@@ -1368,8 +1785,7 @@ fn refs_history_request_rejects_oversized_workspace_id_before_transport() {
     let request = HostedRefsListWorkspaceRefHistoryRequest {
         workspace_id: "w".repeat(513),
         limit: Some(100),
-        auth_token: None,
-        account_session_id: None,
+        account_session_id: "bowline_session_test".to_string(),
     };
     let error = encode_hosted_request::<RefsListWorkspaceRefHistory>(&request)
         .expect_err("oversized outbound workspaceId rejects");
@@ -1436,17 +1852,16 @@ fn refs_history_request_accepts_max_length_workspace_id() {
     let request = HostedRefsListWorkspaceRefHistoryRequest {
         workspace_id: "w".repeat(512),
         limit: Some(100),
-        auth_token: None,
-        account_session_id: None,
+        account_session_id: "bowline_session_test".to_string(),
     };
     assert!(encode_hosted_request::<RefsListWorkspaceRefHistory>(&request).is_ok());
 }
 
 #[test]
-fn list_workspace_ref_history_supports_long_workspace_ids_in_both_auth_modes() {
+fn list_workspace_ref_history_supports_long_workspace_ids() {
     // A 300-char workspaceId exceeds the previous 256 narrowing but is within the
     // canonical 512 bound, so a legitimately stored workspace must retrieve its
-    // history through both the account-session and control-plane-token paths.
+    // history over the account-session path.
     let workspace = "w".repeat(300);
 
     let account_session_workspace = workspace.clone();
@@ -1472,24 +1887,6 @@ fn list_workspace_ref_history_supports_long_workspace_ids_in_both_auth_modes() {
     let records = account_session_client
         .list_workspace_ref_history(&WorkspaceId::new(workspace.clone()), 50)
         .expect("account-session history for a long workspaceId");
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].workspace_id.as_str(), workspace);
-
-    let token_workspace = workspace.clone();
-    let token_client =
-        HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "cp-token")
-            .expect("client")
-            .with_rpc_override(move |kind, name, request| {
-                assert_eq!(kind, ConvexRpcKind::Query);
-                assert_eq!(name, "refs:listWorkspaceRefHistory");
-                assert_eq!(request.get("authToken"), Some(&Value::from("cp-token")));
-                Ok(Value::Array(vec![ref_history_record_with_workspace_id(
-                    &token_workspace,
-                )]))
-            });
-    let records = token_client
-        .list_workspace_ref_history(&WorkspaceId::new(workspace.clone()), 50)
-        .expect("control-plane-token history for a long workspaceId");
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].workspace_id.as_str(), workspace);
 }
@@ -1518,4 +1915,123 @@ fn timestamp_policy_sweeps_separators_and_leap_seconds() {
         .is_ok();
         assert_eq!(accepted, second <= 59, "second {second}");
     }
+}
+
+/// `bowline connect` hands the remote a bootstrap token *and* an account
+/// session, because `device accept` needs both: fetching the grant has a
+/// bootstrap-token form, and the device-trust read it makes next — to learn the
+/// approver's published proof verifier — does not. A client that let one
+/// credential displace the other left the remote holding an uploaded grant it
+/// could never accept.
+#[test]
+fn one_client_serves_the_bootstrap_and_account_halves_of_device_accept() {
+    let calls = Arc::new(Mutex::new(Vec::<(String, Option<String>)>::new()));
+    let recorded = Arc::clone(&calls);
+    let client = HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+        .expect("hosted client")
+        .with_bootstrap_token("scoped-bootstrap-token")
+        .with_account_session_id("bowline_session_fixture")
+        .with_rpc_override(move |_kind, name, call_args| {
+            let account_session = match call_args.get("accountSessionId") {
+                Some(Value::String(session_id)) => Some(session_id.to_string()),
+                _ => None,
+            };
+            recorded
+                .lock()
+                .expect("calls")
+                .push((name.to_string(), account_session));
+            match name {
+                "devices:getEncryptedGrantWithBootstrap" => Ok(Value::Null),
+                "devices:listDeviceTrust" => Ok(Value::Object(args([
+                    ("authorizedDevices", Value::Array(vec![])),
+                    ("pendingRequests", Value::Array(vec![])),
+                    ("revokedDevices", Value::Array(vec![])),
+                ]))),
+                other => panic!("unexpected hosted call `{other}`"),
+            }
+        });
+
+    let grant = crate::DeviceControlPlaneClient::get_encrypted_device_grant(
+        &client,
+        crate::EncryptedGrantRequest {
+            request_id: DeviceApprovalRequestId::new("req_1"),
+            device_id: DeviceId::new("device_remote"),
+            requested_by_device_proof: "proof".to_string(),
+        },
+    )
+    .expect("the grant fetch authenticates with the bootstrap token");
+    assert!(grant.is_none());
+
+    crate::DeviceControlPlaneClient::list_device_trust(&client, &WorkspaceId::new("ws_code"))
+        .expect("the device-trust read authenticates with the account session");
+
+    assert_eq!(
+        calls.lock().expect("calls").as_slice(),
+        [
+            ("devices:getEncryptedGrantWithBootstrap".to_string(), None),
+            (
+                "devices:listDeviceTrust".to_string(),
+                Some("bowline_session_fixture".to_string())
+            ),
+        ]
+    );
+}
+
+/// Without an account session there is no credential the device-trust read can
+/// present, so it must say which of the two recoveries applies rather than
+/// naming a browser login an agent host cannot perform.
+#[test]
+fn an_accountless_bootstrap_client_names_both_recoveries() {
+    let client = HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+        .expect("hosted client")
+        .with_bootstrap_token("scoped-bootstrap-token")
+        .with_rpc_override(|_kind, name, _args| panic!("unexpected hosted call `{name}`"));
+
+    let error =
+        crate::DeviceControlPlaneClient::list_device_trust(&client, &WorkspaceId::new("ws_code"))
+            .expect_err("device trust cannot be read without an account session");
+
+    let message = error.to_string();
+    assert!(message.contains("bowline login"), "{message}");
+    assert!(message.contains("bowline connect"), "{message}");
+}
+
+/// A production Convex deployment redacts uncaught exceptions to the literal
+/// string "Server Error", which is exactly what an argument validator generated
+/// from a newer contract produces for an older client. Surfacing that verbatim
+/// tells nobody anything; the endpoint, this client's contract digest, and the
+/// one command that fixes it do.
+#[test]
+fn a_redacted_server_exception_is_reported_as_client_contract_skew() {
+    let client = HostedControlPlaneClient::try_new_with_token("https://example.convex.cloud", "")
+        .expect("hosted client")
+        .with_bootstrap_token("scoped-bootstrap-token")
+        .with_rpc_override(|_kind, function, _args| {
+            Err(ControlPlaneError::ServerError {
+                function: "devices:getEncryptedGrantWithBootstrap",
+                message: format!("Server Error (called {function})"),
+            })
+        });
+
+    let error = crate::DeviceControlPlaneClient::get_encrypted_device_grant(
+        &client,
+        crate::EncryptedGrantRequest {
+            request_id: DeviceApprovalRequestId::new("req_1"),
+            device_id: DeviceId::new("device_remote"),
+            requested_by_device_proof: "proof".to_string(),
+        },
+    )
+    .expect_err("an unclassified refusal is not swallowed");
+
+    assert!(
+        matches!(error, ControlPlaneError::ContractSkew { .. }),
+        "{error:?}"
+    );
+    assert_eq!(error.retryability(), Retryability::Fatal);
+    let message = error.to_string();
+    assert!(message.contains("bowline update"), "{message}");
+    assert!(
+        message.contains(&bowline_core::wire::WIRE_SCHEMA_HASH[..12]),
+        "{message}"
+    );
 }

@@ -34,7 +34,10 @@ pub struct NotificationDispatchFailure {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotificationSendError {
-    Unavailable(String),
+    /// This host structurally has no desktop notification channel. Retrying
+    /// cannot change the answer, so the dispatcher stops re-attempting.
+    Unavailable(&'static str),
+    /// The channel exists and refused this attempt; the next poll may succeed.
     Failed(String),
 }
 
@@ -107,10 +110,15 @@ where
                 dedupe.seen.insert(key);
                 report.sent += 1;
             }
-            Err(error) => report.failures.push(NotificationDispatchFailure {
-                title: payload.title.clone(),
-                message: error.to_string(),
-            }),
+            Err(error) => {
+                if matches!(error, NotificationSendError::Unavailable(_)) {
+                    dedupe.seen.insert(key);
+                }
+                report.failures.push(NotificationDispatchFailure {
+                    title: payload.title.clone(),
+                    message: error.to_string(),
+                });
+            }
         }
     }
     report
@@ -129,33 +137,87 @@ impl NotificationSender for DesktopNotificationSender {
     }
 }
 
+fn notification_body(payload: &NotificationPayload) -> String {
+    match &payload.action {
+        Some(action) => format!("{}\n{action}", payload.body),
+        None => payload.body.clone(),
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn send_desktop_notification(payload: &NotificationPayload) -> Result<(), NotificationSendError> {
-    let mut body = payload.body.clone();
-    if let Some(action) = &payload.action {
-        body.push('\n');
-        body.push_str(action);
-    }
     notify_rust::Notification::new()
         .appname("bowline")
         .summary(&payload.title)
-        .body(&body)
+        .body(&notification_body(payload))
         .show()
         .map(|_| ())
         .map_err(|error| NotificationSendError::Failed(error.to_string()))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn send_desktop_notification(payload: &NotificationPayload) -> Result<(), NotificationSendError> {
+    use std::{io, process::Command, process::Stdio};
+
+    let script = format!(
+        "display notification {} with title {}",
+        applescript_string(&notification_body(payload)),
+        applescript_string(&payload.title)
+    );
+    let status = Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg(&script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                NotificationSendError::Unavailable("osascript is not installed on this host")
+            } else {
+                NotificationSendError::Failed(error.to_string())
+            }
+        })?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(NotificationSendError::Failed(format!(
+        "osascript exited with {status}"
+    )))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn send_desktop_notification(_payload: &NotificationPayload) -> Result<(), NotificationSendError> {
     Err(NotificationSendError::Unavailable(
-        "desktop notifications are available only on Linux".to_string(),
+        "this platform has no desktop notification channel",
     ))
+}
+
+/// AppleScript string literals escape only `"` and `\`; a raw newline would end
+/// the `-e` expression, so it is emitted as the `\n` escape.
+#[cfg(any(target_os = "macos", test))]
+fn applescript_string(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for character in value.chars() {
+        match character {
+            '"' | '\\' => {
+                quoted.push('\\');
+                quoted.push(character);
+            }
+            '\n' => quoted.push_str("\\n"),
+            _ => quoted.push(character),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 impl fmt::Display for NotificationSendError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unavailable(message) | Self::Failed(message) => formatter.write_str(message),
+            Self::Unavailable(reason) => formatter.write_str(reason),
+            Self::Failed(message) => formatter.write_str(message),
         }
     }
 }
@@ -192,12 +254,22 @@ mod tests {
         }
     }
 
-    struct FailingSender;
+    struct UnavailableSender;
 
-    impl NotificationSender for FailingSender {
+    impl NotificationSender for UnavailableSender {
         fn send(&self, _payload: &NotificationPayload) -> Result<(), NotificationSendError> {
             Err(NotificationSendError::Unavailable(
-                "notification server unavailable".to_string(),
+                "this platform has no desktop notification channel",
+            ))
+        }
+    }
+
+    struct TransientlyFailingSender;
+
+    impl NotificationSender for TransientlyFailingSender {
+        fn send(&self, _payload: &NotificationPayload) -> Result<(), NotificationSendError> {
+            Err(NotificationSendError::Failed(
+                "notification server refused the connection".to_string(),
             ))
         }
     }
@@ -292,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_retries_failed_delivery_attempts() {
+    fn dispatcher_retries_transient_delivery_failures() {
         let payload = NotificationPayload {
             title: "bowline device approval".to_string(),
             body: "Dev-Mac requested approval.".to_string(),
@@ -300,13 +372,45 @@ mod tests {
         };
         let mut dedupe = NotificationDedupe::default();
 
-        let first =
-            dispatch_new_notifications(std::slice::from_ref(&payload), &mut dedupe, &FailingSender);
-        let second = dispatch_new_notifications(&[payload], &mut dedupe, &FailingSender);
+        let first = dispatch_new_notifications(
+            std::slice::from_ref(&payload),
+            &mut dedupe,
+            &TransientlyFailingSender,
+        );
+        let second = dispatch_new_notifications(&[payload], &mut dedupe, &TransientlyFailingSender);
 
         assert_eq!(first.sent, 0);
         assert_eq!(first.failures.len(), 1);
         assert_eq!(second.failures.len(), 1);
         assert_eq!(second.skipped, 0);
+    }
+
+    #[test]
+    fn dispatcher_reports_a_missing_channel_once_instead_of_every_poll() {
+        let payload = NotificationPayload {
+            title: "bowline device approval".to_string(),
+            body: "Dev-Mac requested approval.".to_string(),
+            action: Some("bowline device approve --root ~/Code --code 0123-4567".to_string()),
+        };
+        let mut dedupe = NotificationDedupe::default();
+
+        let first = dispatch_new_notifications(
+            std::slice::from_ref(&payload),
+            &mut dedupe,
+            &UnavailableSender,
+        );
+        let second = dispatch_new_notifications(&[payload], &mut dedupe, &UnavailableSender);
+
+        assert_eq!(first.failures.len(), 1);
+        assert!(second.failures.is_empty());
+        assert_eq!(second.skipped, 1);
+    }
+
+    #[test]
+    fn applescript_strings_cannot_escape_the_osascript_expression() {
+        assert_eq!(
+            super::applescript_string("say \"hi\"\\ now\nnext"),
+            "\"say \\\"hi\\\"\\\\ now\\nnext\""
+        );
     }
 }

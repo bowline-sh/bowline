@@ -22,7 +22,7 @@ pub struct WorkspaceRefHistoryRecord {
     /// restore to.
     pub base_snapshot_id: Option<SnapshotId>,
     pub target_snapshot_id: SnapshotId,
-    pub occurred_at: String,
+    pub occurred_at: ControlPlaneTimestamp,
     pub advanced_by_device_id: Option<DeviceId>,
     pub caused_by_event_id: Option<EventId>,
     pub project_id: Option<ProjectId>,

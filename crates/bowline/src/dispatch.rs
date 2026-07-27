@@ -11,6 +11,8 @@ pub(super) fn run(invocation: ParsedInvocation) -> ExitCode {
         quiet: output_mode == OutputMode::Quiet,
         socket: invocation.socket,
         dry_run: invocation.dry_run,
+        side_effect_level: invocation.side_effect_level,
+        argv: invocation.argv,
         command,
     };
     if cli.dry_run {
@@ -30,17 +32,14 @@ pub(super) fn run(invocation: ParsedInvocation) -> ExitCode {
         Command::Status(args) => print_status(args, cli.json, &cli.socket),
         Command::Tui(args) => print_tui(args, cli.json, &cli.socket),
         Command::SyncWait(args) => sync_wait::print_sync_wait(args, cli.json, &cli.socket),
-        Command::SyncAttention => sync_attention::print_sync_attention(cli.json, &cli.socket),
-        Command::SyncRetry(selector) => {
-            sync_attention::print_sync_retry(selector, cli.json, &cli.socket)
-        }
-        Command::SyncDismiss(operation_id) => {
-            sync_attention::print_sync_dismiss(operation_id, cli.json, &cli.socket)
-        }
         Command::DebugClassify(args) => print_debug_classify(args, cli.json),
         Command::Devices(args) => print_devices(args, cli.json, cli.quiet),
+        Command::DeviceKeyStatus(args) => print_device_key_status(args, cli.json),
         Command::Recovery(args) => print_recovery(args, cli.json),
         Command::Events(args) => print_events(args, cli.json, cli.quiet),
+        Command::Conflicts(args) => print_conflicts(args, cli.json, cli.quiet),
+        Command::Resolve(args) => print_resolve(args, cli.json),
+        Command::Deletions(args) => print_deletions(args, cli.json, &cli.socket),
         Command::WorkCreate(args) => print_work_create(args, cli.json),
         Command::Work(args) => print_work(args, cli.json, cli.quiet),
         Command::WorkDiff(args) => print_work_diff(args, cli.json),

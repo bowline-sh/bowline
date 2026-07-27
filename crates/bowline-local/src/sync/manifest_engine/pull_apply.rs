@@ -16,37 +16,92 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::io;
-
-use bowline_core::ids::ContentId;
+use std::path::Path;
 
 pub mod apply;
+pub(crate) mod delta;
+pub mod git_contract;
 pub(crate) mod intents;
 pub mod materialize;
-pub(crate) mod naming;
+pub mod naming;
 
-use apply::{apply_plan, is_git_lock_path};
+use apply::apply_plan;
+// The entry<->row projection has its own module; re-exported here because every
+// child module reaches it as `super::entry_mode` and friends.
+pub(crate) use super::entry_record::{
+    entry_content_id, entry_matches_record, entry_mode, record_for_entry,
+};
+use delta::{LocalDelta, RemoteDelta, local_delta, remote_delta};
+pub(crate) use delta::{LocalRead, read_local_content};
+use git_contract::is_git_lock_path;
 use intents::PreimagePayload;
 
-use super::fs_guard::{FileRead, Observed, observe};
+use super::fs_guard::{
+    ObserveOutcome, Observed, observe_classified, symlink_target_lands_in_workspace,
+};
+use super::manifest::directory_tree::DirectoryTree;
 use super::manifest::{
-    DecodeLimits, DecodedManifest, EntryKind, FileMode, ManifestEntry, ManifestError, ManifestKey,
-    PathCollision, WorkspacePath, open_manifest,
+    DecodeLimits, DecodedManifest, ManifestEntry, ManifestError, ManifestKey, PathCollision,
+    WorkspacePath,
 };
 use super::push::{
-    EngineContext, PushError, RefObservation, RemoteObjects, RemoteRef, TransportError, now_unix_ns,
+    EngineContext, PushError, RefObservation, RemoteObjects, RemoteRef, TransportError,
+    file_record_to_entry, now_unix_ns,
 };
-use super::store::{FileRecord, ManifestStore, ManifestStoreError, StatFingerprint};
+use super::store::{FileRecord, ManifestStore, ManifestStoreError};
+use super::tree_transport::{
+    FetchTreeRequest, PruneBasis, StoreNodeLedger, TreeError, TreeNodeLedger, fetch_tree,
+};
+use super::unsyncable::{UnsyncablePath, UnsyncableReason, UnsyncableRecord};
 
 pub use apply::{
-    RecoveryAction, RecoveryBoundary, RecoveryObservation, git_apply_rank, git_lock_active,
-    recover_intents, recovery_action, recovery_boundary,
+    RecoveryAction, RecoveryBoundary, RecoveryObservation, recover_intents, recovery_action,
+    recovery_boundary,
 };
+pub use git_contract::{git_apply_rank, git_lock_active};
 
 /// The dependency bundle a pull receives (mirrors `PushDeps`).
 pub struct PullDeps<'a, O: RemoteObjects, R: RemoteRef> {
     pub ctx: &'a EngineContext,
     pub objects: &'a O,
     pub refs: &'a R,
+    pub scope: PullScope<'a>,
+}
+
+/// Which local paths a pull re-observes on disk.
+///
+/// The remote delta is a pure function of the ancestor map and the decoded
+/// manifest — zero filesystem access — and only a non-`Unchanged` remote delta,
+/// or a path the driver already knows is locally dirty, can produce merge work.
+/// Every other path provably lands on the `(Unchanged, Unchanged)` no-op row, so
+/// statting it spends a syscall to learn nothing. Narrowing the observed set is
+/// what makes one remote change cost `|Δ|` syscalls instead of one per workspace
+/// entry.
+#[derive(Clone, Copy)]
+pub enum PullScope<'a> {
+    /// Steady state: the driver's dirty set is the whole local-divergence story
+    /// (watcher events plus the paths the last stat walk reported).
+    ChangedAndDirty(&'a BTreeSet<WorkspacePath>),
+    /// A full stat walk refreshed the dirty set inside this same cycle, so the
+    /// set is complete by construction rather than by assumption. Debug builds
+    /// use that guarantee to re-observe every excluded path once and prove the
+    /// narrowing lost nothing.
+    ChangedAndWalked(&'a BTreeSet<WorkspacePath>),
+    /// The caller keeps no dirty set at all — a work-view materialize owns no
+    /// watcher and no driver — so every path is observed. Its ancestor is one
+    /// project rather than the whole workspace.
+    WholeAncestor,
+}
+
+impl PullScope<'_> {
+    fn observes(&self, path: &WorkspacePath, remote: &RemoteDelta) -> bool {
+        match self {
+            Self::WholeAncestor => true,
+            Self::ChangedAndDirty(dirty) | Self::ChangedAndWalked(dirty) => {
+                !matches!(remote, RemoteDelta::Unchanged) || dirty.contains(path)
+            }
+        }
+    }
 }
 
 /// What a pull achieved. `push_again` are paths the driver must reschedule for
@@ -61,6 +116,11 @@ pub struct PullOutcome {
     pub conflict_asides: BTreeSet<WorkspacePath>,
     pub push_again: BTreeSet<WorkspacePath>,
     pub deferred: BTreeSet<WorkspacePath>,
+    /// Paths this pull refused at the mutation boundary rather than at merge
+    /// time: the target raced into an object the engine cannot represent, or a
+    /// single-path filesystem operation was refused. They are recorded durably
+    /// before the outcome commits, exactly like `MergePlan::unsyncable`.
+    pub unsyncable: BTreeMap<WorkspacePath, UnsyncableRecord>,
     /// True when the remote ref equals the applied ref: nothing to do.
     pub already_current: bool,
 }
@@ -174,32 +234,97 @@ pub(crate) fn decide_head<O: RemoteObjects, R: RemoteRef>(
     deps: &PullDeps<'_, O, R>,
     head: &super::push::RefObservation,
 ) -> Result<MergePlan, PullError> {
-    let sealed = deps
-        .objects
-        .get_manifest(&head.manifest_key)
-        .map_err(PullError::Transport)?;
-    if super::manifest::physical_manifest_key(&sealed) != head.manifest_key {
-        return Err(PullError::ManifestKeyMismatch);
-    }
+    let ancestor = store.all_files()?;
     // `head_snapshot` is the new engine's flat `Manifest` (distinct from the old
     // `SnapshotManifest` the page-reader gate targets); binding it to a non-
     // `*manifest` name keeps that intent unambiguous.
+    let (head_snapshot, collisions) = fetch_head(store, deps, head, &ancestor)?;
+    classify(
+        deps.ctx,
+        &ancestor,
+        &head_snapshot.entries,
+        &collisions,
+        deps.scope,
+    )
+}
+
+/// Fetch and flatten the head tree, skipping every subtree whose node key this
+/// device's own ancestor already hashes to.
+///
+/// The prune is byte-exact, not approximate: a node key is a collision-resistant
+/// function of its whole subtree, so a match means the remote subtree and the
+/// local ancestor subtree are the same content and the local copy may stand in
+/// for bytes never fetched. Anything that does not match is downloaded, so the
+/// merge matrix still sees a complete remote manifest and its eleven rows are
+/// unchanged in meaning.
+fn fetch_head<O: RemoteObjects, R: RemoteRef>(
+    store: &mut ManifestStore,
+    deps: &PullDeps<'_, O, R>,
+    head: &super::push::RefObservation,
+    ancestor: &BTreeMap<WorkspacePath, FileRecord>,
+) -> Result<(super::manifest::Manifest, Vec<PathCollision>), PullError> {
+    let key_epoch = deps.ctx.key_epoch();
+    let limits = if deps.ctx.project_view {
+        DecodeLimits::project_view()
+    } else {
+        DecodeLimits::default()
+    };
+    let ancestor_entries = ancestor_manifest_entries(ancestor)?;
+    let ancestor_tree = DirectoryTree::decompose(&ancestor_entries).map_err(PullError::Manifest)?;
+    let ancestor_hashes = ancestor_tree
+        .subtree_hashes(key_epoch)
+        .map_err(PullError::Manifest)?;
+    let mut ledger = StoreNodeLedger::new(store, key_epoch);
+    let fetched = fetch_tree(FetchTreeRequest {
+        objects: deps.objects,
+        crypto: &deps.ctx.crypto,
+        counters: &deps.ctx.counters,
+        root: &head.manifest_key,
+        limits: &limits,
+        names: deps.ctx.names,
+        prune: Some(PruneBasis {
+            entries: &ancestor_entries,
+            hashes: &ancestor_hashes,
+            ledger: &ledger,
+        }),
+    })?;
+    // `head_snapshot` is deliberately not named `*manifest`: the flat-manifest
+    // cutover gate treats a manifest-named binding's entry-map access as the
+    // retired `SnapshotManifest` reader, which this is not.
     let DecodedManifest {
         manifest: head_snapshot,
         collisions,
-    } = open_manifest(
-        &deps.ctx.crypto,
-        &sealed,
-        &if deps.ctx.project_view {
-            DecodeLimits::project_view()
-        } else {
-            DecodeLimits::default()
-        },
-    )
-    .map_err(PullError::Manifest)?;
+    } = fetched.decoded;
+    // Every node the fetch touched is now known to exist remotely, so remember
+    // it: without this a device that only ever pulls would re-download the whole
+    // tree on every head, having proven nothing it could reuse.
+    let head_tree =
+        DirectoryTree::decompose(&head_snapshot.entries).map_err(PullError::Manifest)?;
+    for (dir, hash) in head_tree
+        .subtree_hashes(key_epoch)
+        .map_err(PullError::Manifest)?
+    {
+        if let Some(node_key) = fetched.node_keys.get(&dir) {
+            ledger.record(hash, node_key.clone());
+        }
+    }
+    let recorded = ledger.into_recorded();
+    if !recorded.is_empty() {
+        store.record_tree_nodes(&recorded, key_epoch)?;
+        deps.ctx.counters.record_sqlite_mutation();
+    }
+    Ok((head_snapshot, collisions))
+}
 
-    let ancestor = store.all_files()?;
-    classify(deps.ctx, &ancestor, &head_snapshot.entries, &collisions)
+/// The ancestor rows read as manifest entries — the local side of the prune
+/// comparison, and the content a pruned subtree is filled from.
+fn ancestor_manifest_entries(
+    ancestor: &BTreeMap<WorkspacePath, FileRecord>,
+) -> Result<BTreeMap<WorkspacePath, ManifestEntry>, PullError> {
+    ancestor
+        .iter()
+        .map(|(path, record)| Ok((path.clone(), file_record_to_entry(record)?)))
+        .collect()
 }
 
 // ---- three-way classification (the merge matrix) ----------------------------
@@ -211,6 +336,10 @@ pub(crate) struct MergePlan {
     pub(crate) ancestor_upserts: BTreeMap<WorkspacePath, FileRecord>,
     pub(crate) ancestor_removals: BTreeSet<WorkspacePath>,
     pub(crate) push_again: BTreeSet<WorkspacePath>,
+    /// Remote entries this device refuses to materialize. They produce no fs op,
+    /// no ancestor row, and no deferral: the rest of the manifest still applies
+    /// and the head still advances, so one hostile entry cannot stall sync.
+    pub(crate) unsyncable: BTreeMap<WorkspacePath, UnsyncableRecord>,
 }
 
 pub(crate) struct FsOp {
@@ -234,18 +363,29 @@ fn classify(
     ancestor: &BTreeMap<WorkspacePath, FileRecord>,
     remote: &BTreeMap<WorkspacePath, ManifestEntry>,
     collisions: &[PathCollision],
+    scope: PullScope<'_>,
 ) -> Result<MergePlan, PullError> {
     let collided = collision_set(collisions);
     let mut plan = MergePlan::default();
     let mut paths: BTreeSet<&WorkspacePath> = ancestor.keys().collect();
     paths.extend(remote.keys());
 
+    let mut observations: u64 = 0;
+    let mut excluded: Vec<&WorkspacePath> = Vec::new();
     for path in paths {
         if is_git_lock_path(path.as_str()) {
             // Git lockfiles are local-only signals, never manifest entries.
             continue;
         }
+        // Derived from the ancestor map and the decoded manifest alone: this
+        // branch must stay free of filesystem access, because it is what decides
+        // whether the path is worth a syscall at all.
         let remote_delta = remote_delta(remote.get(path), ancestor.get(path));
+        if !scope.observes(path, &remote_delta) {
+            excluded.push(path);
+            continue;
+        }
+        observations += 1;
         let local = local_delta(
             ctx,
             path,
@@ -254,13 +394,64 @@ fn classify(
         )?;
         // A case-fold collision must never silently clobber: force the aside path.
         let force_aside = collided.contains(path.as_str());
-        classify_one(&mut plan, path, &local, &remote_delta, force_aside)?;
+        classify_one(
+            &mut plan,
+            &ctx.workspace_root,
+            path,
+            &local,
+            &remote_delta,
+            force_aside,
+        )?;
     }
+    ctx.counters.record_merge_observations(observations);
+    prove_narrowing(ctx, ancestor, scope, &excluded)?;
     Ok(plan)
+}
+
+/// Debug-only proof that the narrowed observation set loses nothing.
+///
+/// Every excluded path has an `Unchanged` remote delta, so it can only reach the
+/// `(L::Unchanged, R::Unchanged) => {}` row — unless the driver's dirty set
+/// missed a local divergence, which is precisely the failure the narrowing would
+/// otherwise hide. The check runs only on a cycle whose stat walk just refreshed
+/// the dirty set, where completeness is guaranteed rather than assumed, and it is
+/// compiled out of release builds entirely.
+#[cfg(debug_assertions)]
+fn prove_narrowing(
+    ctx: &EngineContext,
+    ancestor: &BTreeMap<WorkspacePath, FileRecord>,
+    scope: PullScope<'_>,
+    excluded: &[&WorkspacePath],
+) -> Result<(), PullError> {
+    if !matches!(scope, PullScope::ChangedAndWalked(_)) {
+        return Ok(());
+    }
+    for path in excluded {
+        match local_delta(ctx, path, ancestor.get(*path), false)? {
+            LocalDelta::Unchanged { .. } | LocalDelta::Unreadable => {}
+            _ => {
+                return Err(PullError::NarrowingMissedChange {
+                    path: path.as_str().to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn prove_narrowing(
+    _ctx: &EngineContext,
+    _ancestor: &BTreeMap<WorkspacePath, FileRecord>,
+    _scope: PullScope<'_>,
+    _excluded: &[&WorkspacePath],
+) -> Result<(), PullError> {
+    Ok(())
 }
 
 fn classify_one(
     plan: &mut MergePlan,
+    root: &Path,
     path: &WorkspacePath,
     local: &LocalDelta,
     remote: &RemoteDelta,
@@ -268,6 +459,27 @@ fn classify_one(
 ) -> Result<(), PullError> {
     use LocalDelta as L;
     use RemoteDelta as R;
+    // A symlink whose target resolves outside the workspace is dropped from the
+    // matrix entirely rather than routed to any row: an install would create the
+    // escape, an aside would create it under another name, and adopting the
+    // remote's absence would publish a deletion a hostile peer chose. Freezing
+    // the path leaves local exactly as it is, mirroring the `L::Unreadable` row.
+    //
+    // "Outside" is decided by the filesystem-aware gate, which begins with the
+    // lexical resolution and then walks it against the local tree. The lexical
+    // answer alone is not enough here: a target that is contained on its face can
+    // still route through a symlink the user already has (`escape -> /etc`, which
+    // Bowline refuses to sync but cannot remove from their disk).
+    if let Some(entry) = remote.entry()
+        && let ManifestEntry::Symlink { target, .. } = entry
+        && !symlink_target_lands_in_workspace(root, path, target)
+    {
+        plan.unsyncable.insert(
+            path.clone(),
+            UnsyncableRecord::new(UnsyncableReason::EscapingSymlinkTarget, None, now_unix_ns()),
+        );
+        return Ok(());
+    }
     match (local, remote) {
         // ---- ancestor absent ----
         (L::Absent, R::Created(entry)) => {
@@ -378,6 +590,10 @@ fn classify_one(
             plan.aside(path, entry.clone(), local.preimage());
             plan.push_again.insert(path.clone());
         }
+        // An unreadable local path freezes every row: no install (it would have
+        // to displace bytes we could not verify), no delete (it exists), no
+        // ancestor change (we know nothing new about it).
+        (L::Unreadable, _) => {}
         // Remaining pairs are unreachable: an ancestor-absent local (Absent /
         // Untracked) can only meet an ancestor-absent remote (Absent / Created),
         // and an ancestor-present remote delta (Unchanged / Changed / Mode) only
@@ -389,28 +605,24 @@ fn classify_one(
 }
 
 impl MergePlan {
-    fn install(&mut self, path: &WorkspacePath, entry: ManifestEntry, expected: PreimagePayload) {
+    fn op(&mut self, path: &WorkspacePath, kind: FsOpKind, expected: PreimagePayload) {
         self.fs_ops.push(FsOp {
             path: path.clone(),
-            kind: FsOpKind::Install(entry),
+            kind,
             expected,
         });
+    }
+
+    fn install(&mut self, path: &WorkspacePath, entry: ManifestEntry, expected: PreimagePayload) {
+        self.op(path, FsOpKind::Install(entry), expected);
     }
 
     fn aside(&mut self, path: &WorkspacePath, entry: ManifestEntry, expected: PreimagePayload) {
-        self.fs_ops.push(FsOp {
-            path: path.clone(),
-            kind: FsOpKind::ConflictAside(entry),
-            expected,
-        });
+        self.op(path, FsOpKind::ConflictAside(entry), expected);
     }
 
     fn delete(&mut self, path: &WorkspacePath, expected: PreimagePayload) {
-        self.fs_ops.push(FsOp {
-            path: path.clone(),
-            kind: FsOpKind::Delete,
-            expected,
-        });
+        self.op(path, FsOpKind::Delete, expected);
     }
 
     fn mode_change(
@@ -419,11 +631,7 @@ impl MergePlan {
         entry: ManifestEntry,
         expected: PreimagePayload,
     ) {
-        self.fs_ops.push(FsOp {
-            path: path.clone(),
-            kind: FsOpKind::ModeChange(entry),
-            expected,
-        });
+        self.op(path, FsOpKind::ModeChange(entry), expected);
     }
 
     fn adopt(&mut self, path: &WorkspacePath, record: FileRecord) {
@@ -431,276 +639,25 @@ impl MergePlan {
     }
 }
 
-// ---- local / remote deltas --------------------------------------------------
+// ---- observation + collision helpers (shared with apply + intents) --------
 
-enum LocalDelta {
-    Absent,
-    Untracked {
-        observed: Observed,
-        content_id: Option<ContentId>,
-    },
-    Unchanged {
-        record: FileRecord,
-    },
-    Changed {
-        observed: Observed,
-        content_id: Option<ContentId>,
-    },
-    ModeChanged {
-        observed: Observed,
-    },
-    Deleted,
-}
-
-impl LocalDelta {
-    /// The expected on-disk preimage for the apply-time re-observation.
-    fn preimage(&self) -> PreimagePayload {
-        match self {
-            Self::Absent | Self::Deleted => PreimagePayload::absent(),
-            Self::Unchanged { record } => PreimagePayload::from_record(record),
-            Self::Untracked {
-                observed,
-                content_id,
-            }
-            | Self::Changed {
-                observed,
-                content_id,
-            } => PreimagePayload::from_observed(observed, content_id.clone()),
-            Self::ModeChanged { observed } => PreimagePayload::from_observed(observed, None),
-        }
-    }
-
-    /// Build an ancestor row that adopts the remote identity while carrying the
-    /// LOCAL fingerprint (the bytes are already on disk — no rewrite).
-    fn record_from_observed(&self, entry: &ManifestEntry) -> Result<FileRecord, PullError> {
-        let observed = match self {
-            Self::Untracked { observed, .. } | Self::Changed { observed, .. } => observed,
-            _ => {
-                return Err(PullError::Internal {
-                    reason: "adopt without local observation",
-                });
-            }
-        };
-        Ok(record_for_entry(entry, observed.fingerprint))
-    }
-}
-
-fn local_delta(
-    ctx: &EngineContext,
+/// Observe a path the engine is about to mutate or has just mutated, turning an
+/// unsyncable object into the path-scoped refusal the apply/recovery boundary
+/// settles.
+///
+/// `None` means absent, and ONLY absent. The strict `observe` adapter this
+/// replaces manufactured an `io::Error` for the unsyncable case, which every
+/// caller then swept into `PullError::Io` and thence into `CycleError::Fatal` —
+/// so a target that raced into a FIFO, a socket, or a non-UTF-8 symlink between
+/// journalling the intent and applying it killed the engine, on every restart.
+pub(crate) fn observe_syncable(
+    root: &Path,
     path: &WorkspacePath,
-    ancestor: Option<&FileRecord>,
-    verify_file_content: bool,
-) -> Result<LocalDelta, PullError> {
-    let observed = observe(&ctx.workspace_root, path).map_err(PullError::Io)?;
-    match (observed, ancestor) {
-        (None, None) => Ok(LocalDelta::Absent),
-        (None, Some(_)) => Ok(LocalDelta::Deleted),
-        (Some(observed), None) => {
-            let content_id = maybe_hash(ctx, path, &observed)?;
-            Ok(LocalDelta::Untracked {
-                observed,
-                content_id,
-            })
-        }
-        (Some(observed), Some(record)) => {
-            local_vs_record(ctx, path, observed, record, verify_file_content)
-        }
-    }
-}
-
-fn local_vs_record(
-    ctx: &EngineContext,
-    path: &WorkspacePath,
-    observed: Observed,
-    record: &FileRecord,
-    verify_file_content: bool,
-) -> Result<LocalDelta, PullError> {
-    if observed.kind != record.kind {
-        let content_id = maybe_hash(ctx, path, &observed)?;
-        return Ok(LocalDelta::Changed {
-            observed,
-            content_id,
-        });
-    }
-    match observed.kind {
-        EntryKind::Directory if observed.mode == record.mode => {
-            return Ok(LocalDelta::Unchanged {
-                record: record.clone(),
-            });
-        }
-        EntryKind::Symlink
-            if observed.mode == record.mode && observed.symlink_target == record.symlink_target =>
-        {
-            return Ok(LocalDelta::Unchanged {
-                record: record.clone(),
-            });
-        }
-        EntryKind::File
-            if !verify_file_content
-                && observed.fingerprint == record.fingerprint
-                && observed.size == record.size
-                && observed.mode == record.mode =>
-        {
-            return Ok(LocalDelta::Unchanged {
-                record: record.clone(),
-            });
-        }
-        EntryKind::Directory | EntryKind::File | EntryKind::Symlink => {}
-    }
-    // Ambiguous stat: hash to confirm before manufacturing a conflict.
-    match observed.kind {
-        EntryKind::File => {
-            let content_id = match super::fs_guard::read_file_bounded(
-                &ctx.workspace_root,
-                path,
-                ctx.config.max_seal_bytes,
-                &observed.expected_file(),
-            )
-            .map_err(PullError::Push)?
-            {
-                FileRead::Bytes(bytes) => ctx.crypto.content_id(&bytes),
-                // The leaf changed under us (symlink swap / replaced inode): it no
-                // longer matches the record, so it is a Changed delta whose content
-                // the next scan re-derives against the settled file.
-                FileRead::Diverged => {
-                    return Ok(LocalDelta::Changed {
-                        observed,
-                        content_id: None,
-                    });
-                }
-            };
-            if Some(&content_id) == record.content_id.as_ref() {
-                if observed.mode == record.mode {
-                    Ok(LocalDelta::Unchanged {
-                        record: record.clone(),
-                    })
-                } else {
-                    Ok(LocalDelta::ModeChanged { observed })
-                }
-            } else {
-                Ok(LocalDelta::Changed {
-                    observed,
-                    content_id: Some(content_id),
-                })
-            }
-        }
-        EntryKind::Symlink => {
-            if observed.symlink_target == record.symlink_target && observed.mode == record.mode {
-                Ok(LocalDelta::Unchanged {
-                    record: record.clone(),
-                })
-            } else {
-                Ok(LocalDelta::Changed {
-                    observed,
-                    content_id: None,
-                })
-            }
-        }
-        EntryKind::Directory => Ok(LocalDelta::ModeChanged { observed }),
-    }
-}
-
-fn maybe_hash(
-    ctx: &EngineContext,
-    path: &WorkspacePath,
-    observed: &Observed,
-) -> Result<Option<ContentId>, PullError> {
-    if observed.kind != EntryKind::File {
-        return Ok(None);
-    }
-    match super::fs_guard::read_file_bounded(
-        &ctx.workspace_root,
-        path,
-        ctx.config.max_seal_bytes,
-        &observed.expected_file(),
-    )
-    .map_err(PullError::Push)?
-    {
-        FileRead::Bytes(bytes) => Ok(Some(ctx.crypto.content_id(&bytes))),
-        // The leaf is no longer the regular file we observed: its content id is
-        // unknown, so surface None rather than hashing bytes reached no-follow.
-        FileRead::Diverged => Ok(None),
-    }
-}
-
-enum RemoteDelta {
-    Absent,
-    Created(ManifestEntry),
-    Unchanged,
-    ModeChanged(ManifestEntry),
-    Changed(ManifestEntry),
-}
-
-impl RemoteDelta {
-    fn requires_verified_local_content(&self) -> bool {
-        !matches!(self, Self::Unchanged)
-    }
-}
-
-fn remote_delta(remote: Option<&ManifestEntry>, ancestor: Option<&FileRecord>) -> RemoteDelta {
-    match (remote, ancestor) {
-        (None, _) => RemoteDelta::Absent,
-        (Some(entry), None) => RemoteDelta::Created(entry.clone()),
-        (Some(entry), Some(record)) => {
-            if entry_matches_record(entry, record) {
-                if entry_mode(entry) == record.mode {
-                    RemoteDelta::Unchanged
-                } else {
-                    RemoteDelta::ModeChanged(entry.clone())
-                }
-            } else {
-                RemoteDelta::Changed(entry.clone())
-            }
-        }
-    }
-}
-
-// ---- entry/record helpers (shared with apply + intents) -------------------
-
-pub(crate) fn record_for_entry(entry: &ManifestEntry, fingerprint: StatFingerprint) -> FileRecord {
-    match entry {
-        ManifestEntry::File {
-            size,
-            mode,
-            content_id,
-            blob_key,
-            key_epoch,
-        } => FileRecord {
-            kind: EntryKind::File,
-            size: *size,
-            mode: *mode,
-            symlink_target: None,
-            content_id: Some(content_id.clone()),
-            blob_key: Some(blob_key.clone()),
-            key_epoch: Some(*key_epoch),
-            fingerprint,
-            hashed_at: Some(now_unix_ns()),
-            verified_at: Some(now_unix_ns()),
-        },
-        ManifestEntry::Directory { mode } => FileRecord {
-            kind: EntryKind::Directory,
-            size: 0,
-            mode: *mode,
-            symlink_target: None,
-            content_id: None,
-            blob_key: None,
-            key_epoch: None,
-            fingerprint,
-            hashed_at: None,
-            verified_at: Some(now_unix_ns()),
-        },
-        ManifestEntry::Symlink { mode, target } => FileRecord {
-            kind: EntryKind::Symlink,
-            size: 0,
-            mode: *mode,
-            symlink_target: Some(target.clone()),
-            content_id: None,
-            blob_key: None,
-            key_epoch: None,
-            fingerprint,
-            hashed_at: None,
-            verified_at: Some(now_unix_ns()),
-        },
+) -> Result<Option<Observed>, PullError> {
+    match observe_classified(root, path) {
+        ObserveOutcome::Present(observed) => Ok(Some(observed)),
+        ObserveOutcome::Absent => Ok(None),
+        ObserveOutcome::Unsyncable(reason) => Err(PullError::path_refused(path, reason)),
     }
 }
 
@@ -712,53 +669,86 @@ pub(crate) fn collision_set(collisions: &[PathCollision]) -> BTreeSet<String> {
         .collect()
 }
 
-pub(crate) fn entry_mode(entry: &ManifestEntry) -> FileMode {
-    match entry {
-        ManifestEntry::File { mode, .. }
-        | ManifestEntry::Directory { mode }
-        | ManifestEntry::Symlink { mode, .. } => *mode,
-    }
-}
-
-pub(crate) fn entry_content_id(entry: &ManifestEntry) -> Option<&ContentId> {
-    match entry {
-        ManifestEntry::File { content_id, .. } => Some(content_id),
-        _ => None,
-    }
-}
-
-pub(crate) fn entry_matches_record(entry: &ManifestEntry, record: &FileRecord) -> bool {
-    match entry {
-        ManifestEntry::File { content_id, .. } => {
-            record.kind == EntryKind::File && record.content_id.as_ref() == Some(content_id)
-        }
-        ManifestEntry::Directory { .. } => record.kind == EntryKind::Directory,
-        ManifestEntry::Symlink { target, .. } => {
-            record.kind == EntryKind::Symlink && record.symlink_target.as_deref() == Some(target)
-        }
-    }
-}
-
 // ---- errors -----------------------------------------------------------------
 
+/// How a pull failed.
+///
+/// The binding split this type exists to make is [`PullError::Path`] versus
+/// everything else. A `Path` value is a fact about ONE workspace path — it is
+/// settled where it is raised (keep-local, the path recorded unsyncable, the
+/// intent retired) and can never classify as `CycleError::Fatal`. Every other
+/// variant is a fault of the engine, the store, or the network.
+///
+/// There is deliberately no general `Io(io::Error)` arm. That arm was the defect
+/// generator: `.map_err(PullError::Io)` was the shortest thing to write at a new
+/// call site, it swept a per-path condition into the fatal bucket by omission,
+/// and — behind a durable intent that crash recovery replays — turned one racing
+/// file into a device that could never start again. Constructing a `Path` value
+/// requires naming the path, and [`PullError::engine_scratch`] names the engine's
+/// own state directory, so a new call site has to say which it is.
 #[derive(Debug)]
 pub enum PullError {
-    Io(io::Error),
+    /// A condition scoped to one workspace path. Never fatal.
+    Path(UnsyncablePath),
+    /// I/O against the engine's OWN private state (`.bowline/tmp`, the
+    /// quarantine subtree) — no workspace path is involved, so there is no path
+    /// to freeze and this really is an engine fault.
+    EngineScratchIo(io::Error),
     Store(ManifestStoreError),
     Manifest(ManifestError),
     Push(PushError),
     Transport(TransportError),
     ManifestKeyMismatch,
     BlobKeyMismatch,
-    RefRegressed { observed: u64, highest: u64 },
-    RefForked { version: u64 },
-    Internal { reason: &'static str },
+    RefRegressed {
+        observed: u64,
+        highest: u64,
+    },
+    RefForked {
+        version: u64,
+    },
+    /// Debug-only: the narrowed observation set excluded a path that turned out
+    /// to be locally divergent, so the driver's dirty set was incomplete.
+    NarrowingMissedChange {
+        path: String,
+    },
+    Internal {
+        reason: &'static str,
+    },
+}
+
+impl PullError {
+    /// A single-path filesystem operation that failed. The reason comes from
+    /// [`unsyncable::path_scoped_reason`], which has no "not path-scoped" answer,
+    /// so an unmodelled errno cannot become an engine fault here.
+    pub(crate) fn path(path: &WorkspacePath, error: &io::Error) -> Self {
+        Self::Path(UnsyncablePath::from_io(path, error, now_unix_ns()))
+    }
+
+    /// A single-path refusal the engine decided for itself rather than reading
+    /// off an errno (an unsyncable object kind, an abandoned replay).
+    pub(crate) fn path_refused(path: &WorkspacePath, reason: UnsyncableReason) -> Self {
+        Self::Path(UnsyncablePath::new(path, reason, now_unix_ns()))
+    }
+
+    /// I/O against the engine's own scratch state, which names no workspace path.
+    pub(crate) fn engine_scratch(error: io::Error) -> Self {
+        Self::EngineScratchIo(error)
+    }
 }
 
 impl fmt::Display for PullError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(error) => write!(formatter, "pull io failed: {error}"),
+            Self::Path(fault) => write!(
+                formatter,
+                "pull refused one path {}: {}",
+                fault.path.as_str(),
+                fault.record.reason
+            ),
+            Self::EngineScratchIo(error) => {
+                write!(formatter, "pull engine scratch io failed: {error}")
+            }
             Self::Store(error) => write!(formatter, "pull store failed: {error}"),
             Self::Manifest(error) => write!(formatter, "pull manifest failed: {error}"),
             Self::Push(error) => write!(formatter, "pull scan failed: {error}"),
@@ -777,6 +767,10 @@ impl fmt::Display for PullError {
                     "ref forked at version {version} with a different key"
                 )
             }
+            Self::NarrowingMissedChange { path } => write!(
+                formatter,
+                "pull narrowed past a locally divergent path: {path}"
+            ),
             Self::Internal { reason } => write!(formatter, "pull internal invariant: {reason}"),
         }
     }
@@ -785,7 +779,7 @@ impl fmt::Display for PullError {
 impl Error for PullError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Io(error) => Some(error),
+            Self::EngineScratchIo(error) => Some(error),
             Self::Store(error) => Some(error),
             Self::Manifest(error) => Some(error),
             Self::Push(error) => Some(error),
@@ -807,6 +801,23 @@ impl From<PushError> for PullError {
     }
 }
 
+impl From<TreeError> for PullError {
+    fn from(error: TreeError) -> Self {
+        match error {
+            TreeError::Manifest(error) => Self::Manifest(error),
+            TreeError::Store(error) => Self::Store(error),
+            TreeError::Transport(error) => Self::Transport(error),
+            TreeError::NodeKeyMismatch => Self::ManifestKeyMismatch,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "pull_apply/directory_tests.rs"]
+mod directory_tests;
+#[cfg(test)]
+#[path = "pull_apply/recovery_tests.rs"]
+mod recovery_tests;
 #[cfg(test)]
 #[path = "pull_apply/tests.rs"]
 mod tests;

@@ -1,3 +1,12 @@
+use crate::status_projection::{
+    DaemonInstanceId, LocalStatusProjectionCollector, ProjectionBuildReason,
+    ProjectionServiceConfig, SafetyRefreshInterval, SourceFreshness, SourceRevision,
+    StatusCollectorFailure, StatusCollectorFailureCode, StatusInputEvent, StatusProjectionError,
+    StatusProjectionService, StatusRetryPolicy, StatusSequence, StatusSource,
+    StatusSourceCollection, StatusSourceCollector, StatusSourceFacts, StatusSourceFailurePolicy,
+    StatusSourceRevision, StatusSourceState, StatusSourceStateFacts, StatusTimestamp,
+    engine_convergence_facts,
+};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
@@ -17,7 +26,6 @@ use bowline_local::status::{LocalStatusFacts, LocalStatusRevision, StatusOptions
 
 use super::retry::RetrySchedule;
 use super::types::semantic_fingerprint;
-use super::*;
 
 #[test]
 fn canonical_convergence_status_owns_readiness_and_queue_projection() {
@@ -40,6 +48,8 @@ fn canonical_convergence_status_owns_readiness_and_queue_projection() {
         cycle_active: false,
         last_success_at: None,
         degradation: Degradation::Nominal,
+        unsyncable: Arc::new(std::collections::BTreeMap::new()),
+        refused_removals: Arc::new(BTreeSet::new()),
     });
     let mut sources = BTreeMap::from([
         (

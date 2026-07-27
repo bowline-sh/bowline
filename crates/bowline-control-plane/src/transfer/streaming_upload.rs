@@ -6,7 +6,7 @@ use std::{
 use bowline_storage::{ByteStoreError, ObjectKey, ReopenableObjectSource, TransferOperation};
 use reqwest::blocking::{Body, Client};
 
-use super::map_http_error;
+use super::{deadline::signed_url_transfer_timeout, map_http_error};
 
 pub(super) struct StreamingPutRequest<'a> {
     pub key: &'a ObjectKey,
@@ -55,6 +55,7 @@ pub(super) fn send_streaming_put_with_create_only(
     };
     let mut request = http
         .put(url)
+        .timeout(signed_url_transfer_timeout(Some(upload.byte_len)))
         .header(reqwest::header::CONTENT_LENGTH, upload.byte_len)
         .header("x-amz-checksum-sha256", upload.checksum_sha256)
         .body(Body::sized(reader, upload.byte_len));

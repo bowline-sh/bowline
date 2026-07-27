@@ -1,7 +1,7 @@
 use bowline_core::policy::{AccessFlag, MaterializationMode, PathClassification};
 
 use super::{
-    PathFacts, PathPolicyDecision, UserPolicy, classify_builtin, classify_path,
+    NameHeuristics, PathFacts, PathPolicyDecision, UserPolicy, classify_builtin, classify_path,
     normalize_relative_path, preserves_safety_classification,
 };
 
@@ -26,11 +26,24 @@ pub(crate) fn classify_project_view_path(
         return classify_path(facts, policy);
     }
     let projected = parts.next().unwrap_or("__project_directory__");
-    let base = classify_builtin(projected, facts.is_dir, facts.byte_len);
+    let base = classify_builtin(
+        projected,
+        facts.is_dir,
+        facts.byte_len,
+        NameHeuristics::Applied,
+    );
     let Some(rule) = policy.match_rule(&path) else {
         return base;
     };
-    if rule.include || preserves_safety_classification(base.classification) {
+    if rule.include {
+        return classify_builtin(
+            projected,
+            facts.is_dir,
+            facts.byte_len,
+            NameHeuristics::Waived,
+        );
+    }
+    if preserves_safety_classification(base.classification) {
         return base;
     }
     PathPolicyDecision {

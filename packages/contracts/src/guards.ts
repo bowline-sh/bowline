@@ -5,7 +5,6 @@ import type { StatusLevel, WorkspaceStatus } from "./status";
 export {
   isBootstrapSshCommandOutput,
   isCommandErrorOutput,
-  isContentLayout,
   isContractCommandOutput,
   isContractSummaryCommandOutput,
   isDaemonCommandOutput,
@@ -32,7 +31,6 @@ export {
   isSetupCommandOutput,
   isSetupProjectOutput,
   isScopedContractCommandOutput,
-  isSnapshotManifest,
   isStatusCommandOutput,
   isStatusLevel,
   isUpdateCommandOutput,

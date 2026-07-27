@@ -11,10 +11,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Instant;
 
-use super::fs_guard::{Observed, observe};
+use super::engine_test_support::{
+    FakeRemote, observe_present, open_store, publish_test_tree_ledgered,
+};
+use super::fs_guard::Observed;
 use super::manifest::{
     BlobKey, FileMode, KeyEpoch, Manifest, ManifestEntry, WorkspaceCrypto, WorkspacePath,
-    seal_manifest,
 };
 use super::stat_walk::stat_walk;
 use super::store::FileRecord;
@@ -52,7 +54,7 @@ pub(super) fn measure_stat_walk(root: &Path, files: usize) -> StatWalkMeasuremen
     let mut ancestor: BTreeMap<WorkspacePath, FileRecord> = BTreeMap::new();
     for index in 0..files {
         let path = WorkspacePath::new(format!("f{index:06}.dat"));
-        let observed = observe(root, &path).expect("observe").expect("present");
+        let observed = observe_present(root, &path).expect("present");
         ancestor.insert(path, record_from_observed(&observed));
     }
 
@@ -69,58 +71,82 @@ pub(super) fn measure_stat_walk(root: &Path, files: usize) -> StatWalkMeasuremen
     }
 }
 
-/// The manifest-shaped restart costs: canonical + sealed size, the CPU to seal
-/// one 100k manifest, a local transfer proxy (writing the sealed bytes), and the
-/// resident footprint at peak manifest residency.
+/// The manifest-shaped publish costs at scale, measured on the Merkle form.
+///
+/// `full_publish_bytes` is the whole tree — what a first push or a fresh device
+/// pays once. `edit_publish_bytes` is what a ONE-FILE edit costs afterwards, and
+/// it is the number that decides whether the engine's change-proportional claim
+/// is true: under the flat manifest it was identical to `full_publish_bytes`.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct RestartManifestMeasurement {
-    pub manifest_bytes: usize,
-    pub seal_cpu_ms: u128,
-    pub transfer_ms: u128,
+pub(super) struct PublishCostMeasurement {
+    pub full_publish_bytes: u64,
+    pub full_publish_nodes: u64,
+    pub full_publish_ms: u128,
+    pub edit_publish_bytes: u64,
+    pub edit_publish_nodes: u64,
+    pub edit_publish_ms: u128,
     pub peak_memory_bytes: u64,
 }
 
-/// Build an in-memory `files`-entry manifest and measure the reseal-and-ship
-/// costs. `transfer_ms` is a local proxy — the wall time to write the sealed
-/// bytes to disk — because a true network transfer is not available in a unit
-/// fixture; it bounds the local half of the restart cost honestly.
-pub(super) fn measure_restart_manifest(files: usize) -> RestartManifestMeasurement {
+/// The fixture's directory shape. A real `~/Code` is nested; a single flat
+/// directory of 100k files is the tree's worst case and would measure the wrong
+/// thing, so the fixture uses a three-level fan-out closer to a source tree.
+const FIXTURE_FANOUT: usize = 64;
+
+fn scale_manifest(files: usize, edited: Option<usize>) -> Manifest {
     let mut entries: BTreeMap<WorkspacePath, ManifestEntry> = BTreeMap::new();
     for index in 0..files {
+        let outer = index % FIXTURE_FANOUT;
+        let inner = (index / FIXTURE_FANOUT) % FIXTURE_FANOUT;
+        let salt = if edited == Some(index) { 1 } else { 0 };
         entries.insert(
-            WorkspacePath::new(format!("f{index:06}.dat")),
+            WorkspacePath::new(format!("p{outer:03}/m{inner:03}/f{index:06}.dat")),
             ManifestEntry::File {
                 size: 7,
                 mode: FileMode::new(0o644),
-                content_id: ContentId::new(format!("cid_{index:058x}")),
-                blob_key: BlobKey::new(format!("b_{index:062x}")),
+                content_id: ContentId::new(format!("cid_{:058x}", index + salt * files)),
+                blob_key: BlobKey::new(format!("b_{:062x}", index + salt * files)),
                 key_epoch: KeyEpoch::new(1),
             },
         );
     }
-    let manifest = Manifest::new(KeyEpoch::new(1), entries);
-    let canonical = manifest.to_canonical_bytes().expect("canonical bytes");
+    Manifest::new(KeyEpoch::new(1), entries)
+}
 
+/// Publish a `files`-entry manifest as a tree, then publish it again with one
+/// entry changed against the SAME object store, and report both costs.
+///
+/// The second publish reuses every node object the first one produced, so what
+/// it uploads is exactly the path from the edited file to the root.
+pub(super) fn measure_publish_cost(files: usize) -> PublishCostMeasurement {
     let crypto = WorkspaceCrypto::new("scale-fixture-workspace", [7u8; 32], KeyEpoch::new(1));
-    let seal_started = Instant::now();
-    let sealed = seal_manifest(&crypto, &canonical).expect("seal manifest");
-    let seal_cpu_ms = seal_started.elapsed().as_millis();
+    let objects = FakeRemote::new();
+    let workspace = TempWorkspace::new("scale-fixture-publish").expect("temp workspace");
+    let mut store = open_store(workspace.root());
 
-    // Sample residency at peak — after the 100k map plus the canonical and sealed
-    // buffers are all live — so the number reflects the working set the restart
-    // actually holds.
+    let manifest = scale_manifest(files, None);
+    let full_started = Instant::now();
+    publish_test_tree_ledgered(&objects, &crypto, &manifest, &mut store);
+    let full_publish_ms = full_started.elapsed().as_millis();
+    let (full_publish_nodes, full_publish_bytes) = objects.manifest_put_totals();
+
+    // Sample residency at peak — after the 100k map and the whole node set are
+    // live — so the number reflects the working set a publish actually holds.
     let peak_memory_bytes = resident_bytes();
 
-    let workspace = TempWorkspace::new("scale-fixture-transfer").expect("temp workspace");
-    let transfer_target = workspace.root().join("sealed.manifest");
-    let transfer_started = Instant::now();
-    std::fs::write(&transfer_target, sealed.as_bytes()).expect("write sealed manifest");
-    let transfer_ms = transfer_started.elapsed().as_millis();
+    let edited = scale_manifest(files, Some(files / 2));
+    let edit_started = Instant::now();
+    publish_test_tree_ledgered(&objects, &crypto, &edited, &mut store);
+    let edit_publish_ms = edit_started.elapsed().as_millis();
+    let (nodes_after, bytes_after) = objects.manifest_put_totals();
 
-    RestartManifestMeasurement {
-        manifest_bytes: canonical.len(),
-        seal_cpu_ms,
-        transfer_ms,
+    PublishCostMeasurement {
+        full_publish_bytes,
+        full_publish_nodes,
+        full_publish_ms,
+        edit_publish_bytes: bytes_after - full_publish_bytes,
+        edit_publish_nodes: nodes_after - full_publish_nodes,
+        edit_publish_ms,
         peak_memory_bytes,
     }
 }
@@ -175,7 +201,7 @@ fn scale_fixture_budget_emits_statwalk_and_restart_json() {
 
     let restart_workspace = TempWorkspace::new("scale-fixture-restart").expect("temp workspace");
     let restart_walk = measure_stat_walk(restart_workspace.root(), RESTART_FILES);
-    let restart_manifest = measure_restart_manifest(RESTART_FILES);
+    let publish = measure_publish_cost(RESTART_FILES);
 
     // The absolute invariants are asserted regardless of the debug-build timing:
     // a walk hashes nothing (C5) and an unchanged fixture is entirely clean. The
@@ -190,8 +216,16 @@ fn scale_fixture_budget_emits_statwalk_and_restart_json() {
     );
     assert_eq!(restart_walk.dirty, 0, "100k unchanged fixture is clean");
     assert!(
-        restart_manifest.manifest_bytes > 0,
-        "sealed a nonempty manifest"
+        publish.full_publish_bytes > 0,
+        "the first publish sealed a nonempty tree"
+    );
+    // The claim the Merkle manifest exists to make: an edit costs the edit. The
+    // flat form published the whole manifest here, so these were equal.
+    assert!(
+        publish.edit_publish_bytes * 100 < publish.full_publish_bytes,
+        "a one-file edit published {} of {} bytes at {RESTART_FILES} entries",
+        publish.edit_publish_bytes,
+        publish.full_publish_bytes,
     );
 
     let json = serde_json::json!({
@@ -203,24 +237,31 @@ fn scale_fixture_budget_emits_statwalk_and_restart_json() {
         "restart": {
             "files": restart_walk.files,
             "millis": restart_walk.millis,
-            "manifestBytes": restart_manifest.manifest_bytes,
-            "sealCpuMs": restart_manifest.seal_cpu_ms,
-            "transferMs": restart_manifest.transfer_ms,
-            "peakMemoryBytes": restart_manifest.peak_memory_bytes,
+            "fullPublishBytes": publish.full_publish_bytes,
+            "fullPublishNodes": publish.full_publish_nodes,
+            "fullPublishMs": publish.full_publish_ms,
+            "editPublishBytes": publish.edit_publish_bytes,
+            "editPublishNodes": publish.edit_publish_nodes,
+            "editPublishMs": publish.edit_publish_ms,
+            "peakMemoryBytes": publish.peak_memory_bytes,
         },
     });
     let serialized = serde_json::to_vec(&json).expect("serialize fixture json");
     std::fs::write(Path::new(&out_path), serialized).expect("write fixture json");
 
     println!(
-        "scale fixture: statWalk {}f {}ms; restart {}f {}ms manifest={}B seal={}ms transfer={}ms peakRss={}B",
+        "scale fixture: statWalk {}f {}ms; restart {}f {}ms; publish full={}B/{}nodes/{}ms \
+         edit={}B/{}nodes/{}ms peakRss={}B",
         stat_walk.files,
         stat_walk.millis,
         restart_walk.files,
         restart_walk.millis,
-        restart_manifest.manifest_bytes,
-        restart_manifest.seal_cpu_ms,
-        restart_manifest.transfer_ms,
-        restart_manifest.peak_memory_bytes,
+        publish.full_publish_bytes,
+        publish.full_publish_nodes,
+        publish.full_publish_ms,
+        publish.edit_publish_bytes,
+        publish.edit_publish_nodes,
+        publish.edit_publish_ms,
+        publish.peak_memory_bytes,
     );
 }

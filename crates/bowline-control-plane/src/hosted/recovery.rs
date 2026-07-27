@@ -83,33 +83,46 @@ impl RecoveryControlPlaneClient for HostedControlPlaneClient {
         &self,
         workspace_id: &WorkspaceId,
     ) -> ControlPlaneResult<Vec<RecoveryEnvelopeRecord>> {
-        let request = HostedRecoveryGetRecoveryEnvelopesRequest {
-            account_session_id: self.verified_account_session_id(Some(workspace_id.as_str()))?,
-            workspace_id: workspace_id.as_str().to_string(),
-        };
-        self.call::<RecoveryGetRecoveryEnvelopes>(&request)?
-            .into_iter()
-            .map(RecoveryEnvelopeRecord::try_from)
-            .collect()
+        self.call_reauthenticating::<RecoveryGetRecoveryEnvelopes, _>(
+            Some(workspace_id.as_str()),
+            || {
+                Ok(HostedRecoveryGetRecoveryEnvelopesRequest {
+                    account_session_id: self
+                        .verified_account_session_id(Some(workspace_id.as_str()))?,
+                    workspace_id: workspace_id.as_str().to_string(),
+                })
+            },
+        )?
+        .into_iter()
+        .map(RecoveryEnvelopeRecord::try_from)
+        .collect()
     }
 
     fn authorize_device_with_recovery(
         &self,
         input: RecoveryDeviceAuthorizationInput,
     ) -> ControlPlaneResult<DeviceApproval> {
-        let request = HostedRecoveryAuthorizeDeviceWithRecoveryRequest {
-            account_session_id: self
-                .verified_account_session_id(Some(input.workspace_id.as_str()))?,
-            ciphertext: input.encrypted_grant_ciphertext,
-            envelope_id: input.envelope_id.as_str().to_string(),
-            expires_in_ticks: input.expires_in_ticks,
-            grant_acceptance_proof_verifier: input.grant_acceptance_proof_verifier,
-            key_epoch: input.key_epoch,
-            recovery_proof: input.recovery_proof,
-            request_id: input.request_id.as_str().to_string(),
-            workspace_id: input.workspace_id.as_str().to_string(),
-        };
-        DeviceApproval::try_from(self.call::<RecoveryAuthorizeDeviceWithRecovery>(&request)?)
+        DeviceApproval::try_from(
+            self.call_reauthenticating::<RecoveryAuthorizeDeviceWithRecovery, _>(
+                Some(input.workspace_id.as_str()),
+                || {
+                    Ok(HostedRecoveryAuthorizeDeviceWithRecoveryRequest {
+                        account_session_id: self
+                            .verified_account_session_id(Some(input.workspace_id.as_str()))?,
+                        ciphertext: input.encrypted_grant_ciphertext.clone(),
+                        envelope_id: input.envelope_id.as_str().to_string(),
+                        expires_in_ticks: input.expires_in_ticks,
+                        grant_acceptance_proof_verifier: input
+                            .grant_acceptance_proof_verifier
+                            .clone(),
+                        key_epoch: input.key_epoch,
+                        recovery_proof: input.recovery_proof.clone(),
+                        request_id: input.request_id.as_str().to_string(),
+                        workspace_id: input.workspace_id.as_str().to_string(),
+                    })
+                },
+            )?,
+        )
     }
 }
 
@@ -128,7 +141,7 @@ impl TryFrom<HostedRecoveryEnvelope> for RecoveryEnvelopeRecord {
             ciphertext: dto.ciphertext,
             fingerprint: dto.fingerprint,
             state: recovery_envelope_state_from_dto(dto.state),
-            created_at: parse_control_timestamp(&dto.created_at)
+            created_at: parse_control_timestamp(dto.created_at.as_str())
                 .map_err(|error| add_field_context(error, "createdAt"))?,
             verified_at: optional_timestamp_from_dto(dto.verified_at, "verifiedAt")?,
             rotated_at: optional_timestamp_from_dto(dto.rotated_at, "rotatedAt")?,
@@ -156,9 +169,9 @@ impl TryFrom<HostedRecoveryDeviceGrant> for DeviceApproval {
             approved_by_device_id: DeviceId::new(dto.approver_device_id),
             encrypted_grant_ciphertext: dto.ciphertext,
             key_epoch: dto.key_epoch,
-            granted_at: parse_control_timestamp(&dto.created_at)
+            granted_at: parse_control_timestamp(dto.created_at.as_str())
                 .map_err(|error| add_field_context(error, "createdAt"))?,
-            expires_at: parse_control_timestamp(&dto.expires_at)
+            expires_at: parse_control_timestamp(dto.expires_at.as_str())
                 .map_err(|error| add_field_context(error, "expiresAt"))?,
             accepted_at: optional_timestamp_from_dto(dto.accepted_at, "acceptedAt")?,
             harness_only: false,
@@ -189,8 +202,8 @@ mod tests {
             ciphertext: "ciphertext_default".to_string(),
             fingerprint: "fingerprint_default".to_string(),
             state: HostedRecoveryEnvelopeState::Active,
-            created_at: "2026-06-23T12:00:00Z".to_string(),
-            verified_at: Some("2026-06-23T12:00:01Z".to_string()),
+            created_at: wire_timestamp("2026-06-23T12:00:00Z"),
+            verified_at: Some(wire_timestamp("2026-06-23T12:00:01Z")),
             rotated_at: None,
             revoked_at: None,
         }
@@ -208,8 +221,8 @@ mod tests {
             approver_device_id: "recovery:rk_default".to_string(),
             ciphertext: "grant_ciphertext".to_string(),
             key_epoch: 3,
-            created_at: "2026-06-23T12:00:00Z".to_string(),
-            expires_at: "2026-06-23T12:00:01Z".to_string(),
+            created_at: wire_timestamp("2026-06-23T12:00:00Z"),
+            expires_at: wire_timestamp("2026-06-23T12:00:01Z"),
             accepted_at: None,
         }
     }
@@ -227,14 +240,16 @@ mod tests {
     }
 
     #[test]
-    fn envelope_dto_rejects_malformed_optional_timestamp() {
-        let mut dto = envelope_dto();
-        dto.revoked_at = Some("not-a-timestamp".to_string());
-        assert_parse_error_field(RecoveryEnvelopeRecord::try_from(dto), "revokedAt");
-
-        let mut created = envelope_dto();
-        created.created_at = "bad".to_string();
-        assert_parse_error_field(RecoveryEnvelopeRecord::try_from(created), "createdAt");
+    fn envelope_dto_rejects_malformed_timestamps() {
+        for field in ["revokedAt", "createdAt"] {
+            let error = decode_dto_with_field::<_, HostedRecoveryEnvelope>(
+                &envelope_dto(),
+                field,
+                serde_json::json!("not-a-timestamp"),
+            )
+            .expect_err("malformed timestamp must reject");
+            assert!(error.contains("RFC 3339"), "field {field}: {error}");
+        }
     }
 
     #[test]
@@ -283,16 +298,12 @@ mod tests {
 
     #[test]
     fn grant_dto_rejects_malformed_expiry() {
-        let mut dto = grant_dto();
-        dto.expires_at = "nope".to_string();
-        assert_parse_error_field(DeviceApproval::try_from(dto), "expiresAt");
-    }
-
-    fn assert_parse_error_field<T: std::fmt::Debug>(result: ControlPlaneResult<T>, field: &str) {
-        let error = result.expect_err("malformed value must reject");
-        assert!(
-            error.to_string().contains(&format!("`{field}`")),
-            "error must identify field `{field}`, got: {error}"
-        );
+        let error = decode_dto_with_field::<_, HostedRecoveryDeviceGrant>(
+            &grant_dto(),
+            "expiresAt",
+            serde_json::json!("nope"),
+        )
+        .expect_err("malformed timestamp must reject");
+        assert!(error.contains("RFC 3339"), "{error}");
     }
 }

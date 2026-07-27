@@ -10,10 +10,6 @@ export type WorkOsUserId = Brand<"WorkOsUserId">;
 export type WorkOsOrganizationId = Brand<"WorkOsOrganizationId">;
 export type ProjectId = Brand<"ProjectId">;
 export type SnapshotId = Brand<"SnapshotId">;
-export type NamespacePageId = Brand<"NamespacePageId">;
-export type ManifestDigest = Brand<"ManifestDigest">;
-export type ManifestId = Brand<"ManifestId">;
-export type PackId = Brand<"PackId">;
 export type ContentId = Brand<"ContentId">;
 export type LeaseId = Brand<"LeaseId">;
 export type WorkViewId = Brand<"WorkViewId">;
@@ -23,6 +19,5 @@ export type EnvRecordId = Brand<"EnvRecordId">;
 
 export { MACHINE_CONTRACT_VERSION as CONTRACT_VERSION } from "./generated/wire-contracts";
 export const EVENT_SCHEMA_VERSION = 3;
-export const SNAPSHOT_SCHEMA_VERSION = 5;
 
 export const SCHEMA_SOURCE_OF_TRUTH = "contracts/wire";

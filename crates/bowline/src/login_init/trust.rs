@@ -23,7 +23,16 @@ pub(crate) fn advance_device_trust(
 pub(crate) enum DeviceTrustAttachment {
     NotReady,
     Ready,
-    PendingApproval { request_id: String },
+    PendingApproval(PendingDeviceApproval),
+}
+
+/// What the waiting device must tell the user: the short code they will compare
+/// against the trusted device, and the request id the approval command needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingDeviceApproval {
+    pub(crate) request_id: DeviceApprovalRequestId,
+    pub(crate) device_name: String,
+    pub(crate) matching_code: String,
 }
 
 impl DeviceTrustAttachment {
@@ -31,10 +40,10 @@ impl DeviceTrustAttachment {
         matches!(self, Self::Ready)
     }
 
-    pub(crate) fn pending_request_id(&self) -> Option<String> {
+    pub(crate) fn pending_approval(&self) -> Option<&PendingDeviceApproval> {
         match self {
             Self::NotReady | Self::Ready => None,
-            Self::PendingApproval { request_id } => Some(request_id.clone()),
+            Self::PendingApproval(approval) => Some(approval),
         }
     }
 }
@@ -109,7 +118,7 @@ fn workspace_ref_establishment_allowed(
 ) -> bool {
     trust.authorized_devices.is_empty()
         || trust.authorized_devices.iter().any(|device| {
-            device.device_id == current_device_id.as_str()
+            device.device_id == DeviceId::new(current_device_id.as_str())
                 && device.device_fingerprint == current_device_fingerprint
                 && device.platform == device_platform_label(current_device_platform)
                 && device.revoked_at.is_none()
@@ -160,7 +169,7 @@ enum DeviceTrustState {
         request_id: DeviceApprovalRequestId,
     },
     WaitForApproval {
-        request_id: String,
+        request_id: DeviceApprovalRequestId,
         device_name: String,
         matching_code: String,
     },
@@ -177,7 +186,7 @@ fn device_trust_state(
         return DeviceTrustState::BootstrapFirstTrustedDevice;
     }
     if trust.authorized_devices.iter().any(|device| {
-        device.device_id == current_device_id.as_str()
+        device.device_id == DeviceId::new(current_device_id.as_str())
             && device.device_fingerprint == current_device_fingerprint
             && device.platform == device_platform_label(current_device_platform)
             && device.revoked_at.is_none()
@@ -188,7 +197,7 @@ fn device_trust_state(
     // The first device creates the workspace key locally; every later device must
     // prove user presence on an already trusted device before accepting a grant.
     let Some(request) = trust.pending_requests.iter().find(|request| {
-        request.device_id == current_device_id.as_str()
+        request.device_id == DeviceId::new(current_device_id.as_str())
             && request.device_fingerprint == current_device_fingerprint
             && request.platform == device_platform_label(current_device_platform)
     }) else {
@@ -197,11 +206,11 @@ fn device_trust_state(
     match request.state {
         bowline_control_plane::DeviceRequestState::Approved => {
             DeviceTrustState::AcceptApprovedRequest {
-                request_id: DeviceApprovalRequestId::new(request.request_id.clone()),
+                request_id: request.request_id.clone(),
             }
         }
         bowline_control_plane::DeviceRequestState::Pending => DeviceTrustState::WaitForApproval {
-            request_id: request.request_id.clone().into(),
+            request_id: request.request_id.clone(),
             device_name: request.device_name.clone(),
             matching_code: request.matching_code.clone(),
         },
@@ -290,7 +299,7 @@ fn create_trust_request(
         },
     ) {
         Ok(request) => DeviceTrustMessage::ApproveOnTrustedDevice {
-            request_id: request.request_id.as_str().to_string(),
+            request_id: request.request_id,
             device_name: request.device_name,
             matching_code: request.matching_code,
         },
@@ -325,7 +334,7 @@ enum DeviceTrustMessage {
     InspectStatus,
     DeviceGrantNotAccepted(String),
     ApproveOnTrustedDevice {
-        request_id: String,
+        request_id: DeviceApprovalRequestId,
         device_name: String,
         matching_code: String,
     },
@@ -385,7 +394,11 @@ fn append_device_trust_message(
                 bowline_core::devices::display_matching_code(&matching_code)
             ),
             None,
-            DeviceTrustAttachment::PendingApproval { request_id },
+            DeviceTrustAttachment::PendingApproval(PendingDeviceApproval {
+                request_id,
+                device_name,
+                matching_code,
+            }),
             true,
         ),
         DeviceTrustMessage::DeviceApprovalRequestNotCreated(error) => (
@@ -426,14 +439,19 @@ pub(super) fn root_command(prefix: &str, root: &str) -> String {
 
 pub(crate) fn wait_for_device_grant(
     workspace_id: WorkspaceId,
-    request_id: String,
+    approval: &PendingDeviceApproval,
+    root: &str,
 ) -> Result<(), String> {
-    println!(
-        "Waiting for approval. On a trusted device, run `bowline device approve --root <path> --request {request_id}`."
+    let code = bowline_core::devices::display_matching_code(&approval.matching_code);
+    let approve_command = format!(
+        "bowline device approve --root {} --code {code}",
+        io_helpers::shell_word(root)
     );
+    println!("Waiting for approval. This device shows code {code}.");
+    println!("On a trusted device, run `{approve_command}` and check the code matches.");
     let control_plane = runtime::control_plane()?;
     let key_store = runtime::key_store()?;
-    let request_id = DeviceApprovalRequestId::new(request_id);
+    let request_id = approval.request_id.clone();
     let deadline = Instant::now() + Duration::from_secs(300);
     loop {
         match bowline_local::trust::accept_device_grant(
@@ -446,7 +464,10 @@ pub(crate) fn wait_for_device_grant(
             Ok(_) => return Ok(()),
             Err(bowline_local::trust::TrustError::MissingPendingRequest(_)) => {
                 if Instant::now() >= deadline {
-                    return Err("timed out waiting for device approval; run `bowline setup --root <path> --json` to leave the request pending".to_string());
+                    return Err(format!(
+                        "timed out waiting for device approval; the request is still pending, so run `{approve_command}` on a trusted device and then `{}`",
+                        root_command("bowline setup --root", root)
+                    ));
                 }
                 thread::sleep(Duration::from_secs(2));
             }

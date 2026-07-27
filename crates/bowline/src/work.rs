@@ -8,23 +8,16 @@
 //! merge + CAS publish). List, discard, restore, and cleanup are in-process
 //! metadata + aux-file operations.
 
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use bowline_core::commands::{
     CONTRACT_VERSION, CommandName, WorkCleanupCommandOutput, WorkCreateCommandOutput,
     WorkDiffCommandOutput, WorkLifecycleCommandOutput, WorkListCommandOutput,
 };
-use bowline_core::events::EventName;
-use bowline_core::ids::{DeviceId, SnapshotId};
+use bowline_core::ids::DeviceId;
 use bowline_core::status::{RepairCommand, WorkspaceStatus};
-use bowline_core::work_views::{
-    OVERLAY_HEAD_EMPTY, WorkCommandAction, WorkDiffChangeKind, WorkView,
-    WorkViewLifecycle as WireLifecycle, WorkViewRetention, WorkViewRetentionState,
-    WorkViewSyncState, WorkViewVisibility,
-};
-use bowline_local::metadata::{MetadataStore, ProjectRecord};
-use bowline_local::scanner::scan_workspace_scoped;
+use bowline_core::work_views::{WorkCommandAction, WorkDiffChangeKind, WorkView};
+use bowline_local::metadata::MetadataStore;
 use bowline_local::sync::manifest_engine::aux_index::{
     AuxIndex, WorkViewId as AuxWorkViewId, WorkViewLifecycle as AuxLifecycle, WorkViewRecord,
 };
@@ -33,14 +26,52 @@ use bowline_local::sync::manifest_engine::work_view_cli::{
     overlay_engine_truth, read_aux_index_file, wire_diff_entries, write_aux_index_file,
 };
 use bowline_local::work_views::{
-    WorkAcceptTransition, WorkCleanupOptions, WorkListOptions, WorkViewError, append_work_event,
-    apply_accept_success, cleanup_work_views, discard_work_view, display_path, expand_display_path,
-    list_work_views, open_store, overlay_aux_engine_truth, reconcile_aux_work_views,
-    resolve_work_view, restore_work_view, validate_work_view_name, visible_path, work_view_id,
+    WorkAcceptTransition, WorkCleanupOptions, WorkListOptions, WorkViewError, apply_accept_success,
+    cleanup_work_views, discard_work_view, expand_display_path, list_work_views, open_store,
+    resolve_work_view, restore_work_view,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::surface::style::{self, Presentation, Role};
+
+mod create;
+
+pub use create::run_work_create;
+
+/// Accept can write conflict-aside files into the user's project. They are
+/// ordinary synced files, so accept never blocks on them — but the user has to
+/// be told they exist, or they find unexplained files with no record of which
+/// accept produced them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkLifecycleRunOutput {
+    pub output: WorkLifecycleCommandOutput,
+    pub conflict_asides: Vec<String>,
+}
+
+impl WorkLifecycleRunOutput {
+    fn without_conflicts(output: WorkLifecycleCommandOutput) -> Self {
+        Self {
+            output,
+            conflict_asides: Vec::new(),
+        }
+    }
+
+    pub fn json_payload(&self) -> WorkLifecycleJsonPayload<'_> {
+        WorkLifecycleJsonPayload {
+            output: &self.output,
+            conflict_asides: &self.conflict_asides,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkLifecycleJsonPayload<'a> {
+    #[serde(flatten)]
+    output: &'a WorkLifecycleCommandOutput,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    conflict_asides: &'a [String],
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkCreateArgs {
@@ -163,6 +194,8 @@ struct WorkAcceptRpcResult {
     #[serde(default)]
     discarded_deletions: Vec<String>,
     #[serde(default)]
+    aside_refused_paths: Vec<String>,
+    #[serde(default)]
     accepted_paths: Vec<String>,
 }
 
@@ -213,259 +246,6 @@ impl AuxState {
     fn write(&self) -> Result<(), WorkCommandError> {
         write_aux_index_file(&self.root, &self.aux)?;
         Ok(())
-    }
-}
-
-// ---- create -----------------------------------------------------------------
-
-pub fn run_work_create(
-    args: WorkCreateArgs,
-    db_path: Option<PathBuf>,
-    owner_device_id: DeviceId,
-    generated_at: String,
-) -> Result<WorkCreateCommandOutput, WorkCommandError> {
-    validate_work_view_name(&args.name)?;
-    // Base selection died with the snapshot model: a view always forks from the
-    // current synced head (the manifest CAS ref). An explicit `--from` selector
-    // has nothing to resolve against.
-    if let Some(selector) = args.from {
-        return Err(WorkViewError::UnknownBaseSnapshot { selector }.into());
-    }
-    let store = open_store(db_path.as_deref())?;
-    let workspace = store
-        .current_workspace()
-        .map_err(WorkViewError::from)?
-        .ok_or(WorkViewError::MissingWorkspace)?;
-    let root = store
-        .current_workspace_root()
-        .map_err(WorkViewError::from)?
-        .ok_or(WorkViewError::MissingWorkspaceRoot)?;
-    let project = resolve_or_register_git_project(
-        &store,
-        &workspace.id,
-        &root,
-        &args.project_path,
-        &generated_at,
-    )?;
-    reconcile_aux_work_views(&store)?;
-
-    let existing = store
-        .work_views_by_name(&workspace.id, Some(&project.id), &args.name)
-        .map_err(WorkViewError::from)?;
-    if let [row] = existing.as_slice() {
-        if matches!(
-            row.lifecycle,
-            WireLifecycle::Active | WireLifecycle::ReviewReady
-        ) {
-            let mut row = row.clone();
-            let visible = expand_display_path(&row.visible_path);
-            if !visible.is_dir() {
-                let aux_state = AuxState::load(&store)?;
-                let record = aux_state.record(&row, &args.name)?;
-                let _: WorkCreateRpcResult = call_work_rpc(
-                    "create",
-                    "work.create",
-                    serde_json::json!({
-                        "viewDir": visible.display().to_string(),
-                        "projectPath": &project.path,
-                        "overlayManifestKey": record.overlay_manifest_key.as_str(),
-                    }),
-                )?;
-                row.host_materializations = vec![display_path(&visible)];
-                store.upsert_work_view(&row).map_err(WorkViewError::from)?;
-            }
-            overlay_aux_engine_truth(&store, std::slice::from_mut(&mut row))?;
-            return Ok(work_create_output(
-                WorkCommandAction::Reused,
-                row,
-                generated_at,
-            ));
-        }
-        return Err(WorkViewError::NameCollision {
-            name: args.name,
-            project_path: project.path,
-        }
-        .into());
-    }
-
-    let visible = visible_path(&root, &project.path, &args.name);
-    let created: WorkCreateRpcResult = call_work_rpc(
-        "create",
-        "work.create",
-        serde_json::json!({
-            "viewDir": visible.display().to_string(),
-            "projectPath": &project.path,
-        }),
-    )?;
-    let base = created.base_manifest_key;
-
-    let mut aux_state = AuxState::load(&store)?;
-    let id = work_view_id(workspace.id.as_str(), project.id.as_str(), &args.name);
-    aux_state.aux.upsert(
-        AuxWorkViewId::new(id.as_str()),
-        WorkViewRecord {
-            project_id: project.id.clone(),
-            project_path: project.path.clone(),
-            name: args.name.clone(),
-            owner_device_id: owner_device_id.clone(),
-            created_at: generated_at.clone(),
-            updated_at: generated_at.clone(),
-            base_manifest_key: ManifestKey::new(base.clone()),
-            overlay_manifest_key: ManifestKey::new(base.clone()),
-            lifecycle: AuxLifecycle::Active,
-        },
-    );
-    aux_state.write()?;
-
-    let work_view = WorkView {
-        id,
-        workspace_id: workspace.id,
-        project_id: project.id,
-        project_path: project.path,
-        name: args.name,
-        visible_path: display_path(&visible),
-        base_snapshot_id: SnapshotId::new(base),
-        overlay_head: OVERLAY_HEAD_EMPTY.to_string(),
-        overlay_version: 0,
-        env_profile: "default".to_string(),
-        lifecycle: WireLifecycle::Active,
-        visibility: WorkViewVisibility::DefaultVisible,
-        sync_state: WorkViewSyncState::LocalOnly,
-        retention: WorkViewRetention {
-            state: WorkViewRetentionState::Current,
-            retain_until: None,
-            restorable: false,
-        },
-        owner_device_id: Some(owner_device_id),
-        followed_by: Vec::new(),
-        host_materializations: vec![display_path(&visible)],
-        attention: Vec::new(),
-        created_at: generated_at.clone(),
-        updated_at: generated_at.clone(),
-    };
-    store
-        .upsert_work_view(&work_view)
-        .map_err(WorkViewError::from)?;
-    append_work_event(&store, EventName::WorkCreated, &work_view, &generated_at);
-    Ok(work_create_output(
-        WorkCommandAction::Created,
-        work_view,
-        generated_at,
-    ))
-}
-
-fn resolve_or_register_git_project(
-    store: &MetadataStore,
-    workspace_id: &bowline_core::ids::WorkspaceId,
-    workspace_root: &str,
-    requested_path: &str,
-    generated_at: &str,
-) -> Result<ProjectRecord, WorkCommandError> {
-    if let Some(project) = store
-        .current_project_by_path(requested_path)
-        .map_err(WorkViewError::from)?
-    {
-        return Ok(project);
-    }
-
-    let root =
-        std::fs::canonicalize(expand_display_path(workspace_root)).map_err(WorkViewError::from)?;
-    let requested = std::fs::canonicalize(requested_path).map_err(WorkViewError::from)?;
-    if !requested.starts_with(&root) {
-        return Err(WorkViewError::MissingProject {
-            path: requested_path.to_string(),
-        }
-        .into());
-    }
-    let mut candidate = if requested.is_dir() {
-        requested.as_path()
-    } else {
-        requested.parent().unwrap_or(requested.as_path())
-    };
-    let git_root = loop {
-        if candidate.join(".git").exists() {
-            break candidate;
-        }
-        if candidate == root {
-            return Err(WorkViewError::MissingProject {
-                path: requested_path.to_string(),
-            }
-            .into());
-        }
-        candidate = candidate
-            .parent()
-            .filter(|parent| parent.starts_with(&root))
-            .ok_or_else(|| WorkViewError::MissingProject {
-                path: requested_path.to_string(),
-            })?;
-    };
-    let relative = git_root
-        .strip_prefix(&root)
-        .map_err(|_| WorkViewError::MissingProject {
-            path: requested_path.to_string(),
-        })?;
-    let relative = relative
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/");
-    let report =
-        scan_workspace_scoped(&root, &BTreeSet::from([relative.clone()])).map_err(|_| {
-            WorkViewError::MissingProject {
-                path: requested_path.to_string(),
-            }
-        })?;
-    let observed = report
-        .projects
-        .into_iter()
-        .find(|project| project.path == relative && project.has_git_repo)
-        .ok_or_else(|| WorkViewError::MissingProject {
-            path: requested_path.to_string(),
-        })?;
-    let root_id = store
-        .accepted_root_id_for_path(workspace_id, workspace_root)
-        .map_err(WorkViewError::from)?
-        .ok_or(WorkViewError::MissingWorkspaceRoot)?;
-    store
-        .insert_project(
-            &observed.id,
-            workspace_id,
-            &root_id,
-            &observed.path,
-            generated_at,
-        )
-        .map_err(WorkViewError::from)?;
-    store
-        .current_project_by_path(requested_path)
-        .map_err(WorkViewError::from)?
-        .ok_or_else(|| {
-            WorkViewError::MissingProject {
-                path: requested_path.to_string(),
-            }
-            .into()
-        })
-}
-
-fn work_create_output(
-    action: WorkCommandAction,
-    work_view: WorkView,
-    generated_at: String,
-) -> WorkCreateCommandOutput {
-    let next_actions = vec![RepairCommand::inspect(
-        "Open the work view".to_string(),
-        Some(format!(
-            "cd {}",
-            bowline_core::shell::quote_word(&work_view.visible_path)
-        )),
-    )];
-    WorkCreateCommandOutput {
-        contract_version: CONTRACT_VERSION,
-        command: CommandName::WorkCreate,
-        generated_at,
-        action,
-        work_view,
-        status: WorkspaceStatus::healthy(),
-        next_actions,
     }
 }
 
@@ -570,7 +350,7 @@ pub fn run_lifecycle(
     db_path: Option<PathBuf>,
     _current_device_id: DeviceId,
     generated_at: String,
-) -> Result<WorkLifecycleCommandOutput, WorkCommandError> {
+) -> Result<WorkLifecycleRunOutput, WorkCommandError> {
     match lifecycle {
         WorkLifecycle::Accept => run_accept(args, db_path, generated_at),
         WorkLifecycle::Discard => {
@@ -580,6 +360,7 @@ pub fn run_lifecycle(
                 paths: args.paths,
                 generated_at,
             })
+            .map(WorkLifecycleRunOutput::without_conflicts)
             .map_err(Into::into)
         }
         WorkLifecycle::Restore => {
@@ -589,6 +370,7 @@ pub fn run_lifecycle(
                 paths: args.paths,
                 generated_at,
             })
+            .map(WorkLifecycleRunOutput::without_conflicts)
             .map_err(Into::into)
         }
     }
@@ -598,7 +380,7 @@ fn run_accept(
     args: WorkSelectorArgs,
     db_path: Option<PathBuf>,
     generated_at: String,
-) -> Result<WorkLifecycleCommandOutput, WorkCommandError> {
+) -> Result<WorkLifecycleRunOutput, WorkCommandError> {
     let store = open_store(db_path.as_deref())?;
     let mut work_view = resolve_work_view(&store, &args.selector)?;
     let aux_state = AuxState::load(&store)?;
@@ -622,36 +404,100 @@ fn run_accept(
             "paths": args.paths,
         }),
     )?;
-    if partial && accepted.accepted_paths.is_empty() && accepted.discarded_deletions.is_empty() {
+    if partial
+        && accepted.accepted_paths.is_empty()
+        && accepted.discarded_deletions.is_empty()
+        && accepted.aside_refused_paths.is_empty()
+    {
         // Nothing the selector matched changed anything — not even a discarded
-        // deletion, which still counts as a matched (if overridden) change.
+        // deletion or a refused aside, each of which still counts as a matched
+        // (if overridden) change.
         return Err(WorkViewError::EmptyPathSelection {
             patterns: args.paths,
         }
         .into());
     }
     // The merged head carries any conflict-asides as ordinary files; they sync
-    // to every device, so accept itself never blocks on them.
-    let _conflict_asides = accepted.conflict_asides;
+    // to every device, so accept itself never blocks on them — it reports them.
+    let conflict_asides = accepted.conflict_asides;
+    record_accept_conflicts(&store, &work_view, &conflict_asides, &generated_at);
 
     // Project the accepted engine truth onto the wire row before the metadata
     // transition composes the output.
     let mut captured_record = record.clone();
     captured_record.overlay_manifest_key = ManifestKey::new(accepted.overlay_manifest_key.clone());
     overlay_engine_truth(&mut work_view, &captured_record);
-    apply_accept_success(
+    let mut output = apply_accept_success(
         store,
         work_view,
         generated_at,
         WorkAcceptTransition {
             paths: accepted.accepted_paths,
             discarded_deletions: accepted.discarded_deletions,
+            aside_refused_paths: accepted.aside_refused_paths,
             partial,
             captured_overlay: accepted.overlay_manifest_key,
             accepted_base: Some(accepted.base_manifest_key),
         },
-    )
-    .map_err(Into::into)
+    )?;
+    // A next action with no command is a dead end; every aside accept wrote is
+    // reconcilable by the same two verbs status points at, so name them.
+    if let Some(first) = conflict_asides.first() {
+        output.next_actions.push(RepairCommand::inspect(
+            format!("List the {} accept wrote", conflict_noun(&conflict_asides)),
+            Some("bowline conflicts".to_string()),
+        ));
+        output.next_actions.push(RepairCommand::inspect(
+            "Compare both versions of the first one".to_string(),
+            Some(format!(
+                "bowline resolve {} --diff",
+                bowline_core::shell::quote_word(first)
+            )),
+        ));
+    }
+    Ok(WorkLifecycleRunOutput {
+        output,
+        conflict_asides,
+    })
+}
+
+/// Put every aside accept just wrote on the workspace timeline.
+///
+/// The files themselves are what status and `bowline conflicts` read, so the
+/// accept has already succeeded by the time this runs and a metadata failure
+/// must not undo it. It is never silent either: the reason goes to stderr.
+/// Aside paths are project-relative, and the timeline is workspace-scoped.
+fn record_accept_conflicts(
+    store: &MetadataStore,
+    work_view: &WorkView,
+    asides: &[String],
+    generated_at: &str,
+) {
+    for aside in asides {
+        let aside_path = format!("{}/{aside}", work_view.project_path);
+        let Some(origin_path) =
+            bowline_local::sync::manifest_engine::conflict_aside_origin(&aside_path)
+        else {
+            continue;
+        };
+        let subject = bowline_local::events::ConflictEventSubject {
+            workspace_id: &work_view.workspace_id,
+            project_id: Some(&work_view.project_id),
+            origin_path,
+            aside_path: &aside_path,
+            occurred_at: generated_at,
+        };
+        if let Err(error) = store.append_conflict_created(&subject) {
+            eprintln!("bowline work accept: conflict timeline not updated: {error}");
+        }
+    }
+}
+
+fn conflict_noun(asides: &[String]) -> String {
+    match asides.len() {
+        1 => "conflict".to_string(),
+        count => format!("{count} conflicts"),
+    }
 }
 
 // ---- cleanup ----------------------------------------------------------------
@@ -733,7 +579,8 @@ pub fn render_diff_human(output: &WorkDiffCommandOutput) -> String {
     lines.join("\n")
 }
 
-pub fn render_lifecycle_human(output: &WorkLifecycleCommandOutput) -> String {
+pub fn render_lifecycle_human(run: &WorkLifecycleRunOutput) -> String {
+    let output = &run.output;
     let pres = Presentation::detect(false);
     let mut text = format!(
         "{}  {}\n{}  {}\n",
@@ -752,6 +599,43 @@ pub fn render_lifecycle_human(output: &WorkLifecycleCommandOutput) -> String {
         ));
         for path in &output.discarded_deletions {
             text.push_str(&format!("  {}\n", style::paint(path, Role::Label, &pres)));
+        }
+    }
+    // A refused aside leaves no file to discover either: the view's version was
+    // dropped because nowhere beside these paths may hold a second copy.
+    if !output.aside_refused_paths.is_empty() {
+        text.push_str(&format!(
+            "{}  no second copy can sit beside these, so the view's version was not kept\n",
+            style::section("Kept (view version dropped)", &pres),
+        ));
+        for path in &output.aside_refused_paths {
+            text.push_str(&format!("  {}\n", style::paint(path, Role::Label, &pres)));
+        }
+    }
+    // Conflict asides are real files sitting in the project. Naming them here is
+    // the only record of which accept wrote them, and the resolve line is what
+    // turns that record into something the reader can act on without a lookup.
+    if !run.conflict_asides.is_empty() {
+        text.push_str(&format!(
+            "{}  the merge could not reconcile these, so both versions were kept side by side\n",
+            style::section("Conflicts", &pres),
+        ));
+        for path in &run.conflict_asides {
+            text.push_str(&format!(
+                "  {}\n",
+                style::paint(path, Role::Attention, &pres)
+            ));
+            text.push_str(&format!(
+                "{}\n",
+                style::next_action(
+                    &format!(
+                        "bowline resolve {} --diff",
+                        bowline_core::shell::quote_word(path)
+                    ),
+                    "compare both versions",
+                    &pres,
+                )
+            ));
         }
     }
     text.push('\n');
@@ -782,4 +666,91 @@ pub fn render_cleanup_human(output: &WorkCleanupCommandOutput) -> String {
     }
     lines.push(String::new());
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bowline_core::ids::{ProjectId, SnapshotId, WorkViewId, WorkspaceId};
+    use bowline_core::work_views::{
+        WorkViewLifecycle as WireLifecycle, WorkViewRetention, WorkViewRetentionState,
+        WorkViewSyncState, WorkViewVisibility,
+    };
+
+    fn accepted_run(conflict_asides: Vec<String>) -> WorkLifecycleRunOutput {
+        WorkLifecycleRunOutput {
+            output: WorkLifecycleCommandOutput {
+                contract_version: CONTRACT_VERSION,
+                command: CommandName::Accept,
+                generated_at: "2026-07-25T12:00:00Z".to_string(),
+                action: WorkCommandAction::Accepted,
+                paths: vec!["src/main.rs".to_string()],
+                discarded_deletions: Vec::new(),
+                aside_refused_paths: Vec::new(),
+                partial: false,
+                work_view: WorkView {
+                    id: WorkViewId::new("wv_conflicts"),
+                    workspace_id: WorkspaceId::new("ws_conflicts"),
+                    project_id: ProjectId::new("proj_conflicts"),
+                    project_path: "~/Code/app".to_string(),
+                    name: "fix-login".to_string(),
+                    visible_path: "~/Code/app.work/fix-login".to_string(),
+                    base_snapshot_id: SnapshotId::new("snap_base"),
+                    overlay_head: "overlay_head".to_string(),
+                    overlay_version: 1,
+                    env_profile: "default".to_string(),
+                    lifecycle: WireLifecycle::Accepted,
+                    visibility: WorkViewVisibility::DefaultVisible,
+                    sync_state: WorkViewSyncState::Synced,
+                    retention: WorkViewRetention {
+                        state: WorkViewRetentionState::Retained,
+                        retain_until: None,
+                        restorable: true,
+                    },
+                    owner_device_id: None,
+                    followed_by: Vec::new(),
+                    host_materializations: Vec::new(),
+                    attention: Vec::new(),
+                    created_at: "2026-07-25T11:00:00Z".to_string(),
+                    updated_at: "2026-07-25T12:00:00Z".to_string(),
+                },
+                status: WorkspaceStatus::healthy(),
+                next_actions: Vec::new(),
+            },
+            conflict_asides,
+        }
+    }
+
+    /// A silent accept leaves unexplained files in the project; the paths the
+    /// merge could not reconcile have to reach both output surfaces.
+    #[test]
+    fn accept_reports_conflict_asides_in_json() {
+        let run = accepted_run(vec!["src/main.rs.bowline-conflict".to_string()]);
+
+        let json = serde_json::to_value(run.json_payload()).expect("payload serializes");
+
+        assert_eq!(
+            json["conflictAsides"],
+            serde_json::json!(["src/main.rs.bowline-conflict"])
+        );
+    }
+
+    #[test]
+    fn accept_without_conflicts_omits_the_field() {
+        let run = accepted_run(Vec::new());
+
+        let json = serde_json::to_value(run.json_payload()).expect("payload serializes");
+
+        assert!(json.get("conflictAsides").is_none());
+    }
+
+    #[test]
+    fn accept_human_output_names_the_conflict_files() {
+        let run = accepted_run(vec!["src/main.rs.bowline-conflict".to_string()]);
+
+        let human = render_lifecycle_human(&run);
+
+        assert!(human.contains("src/main.rs.bowline-conflict"));
+        assert!(human.contains("Conflicts"));
+    }
 }

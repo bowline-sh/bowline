@@ -1,34 +1,29 @@
 use super::*;
-use crate::ObjectControlPlaneClient;
+use crate::{ObjectControlPlaneClient, UploadIntentOutcome};
 
 impl ObjectControlPlaneClient for FakeControlPlaneClient {
     fn create_upload_intent(
         &self,
         request: UploadIntentRequest,
-    ) -> ControlPlaneResult<UploadIntent> {
+    ) -> ControlPlaneResult<UploadIntentOutcome> {
         self.ensure_workspace(&request.workspace_id)?;
 
         let mut state = self.state.lock().expect("fake control plane poisoned");
         state.upload_intent_requests.push(request.clone());
         let idempotency_key = upload_idempotency_key(&request);
         if let Some(key) = idempotency_key.as_ref()
-            && let Some(object_key) = state.upload_idempotency_keys.get(key)
+            && let Some(object_key) = state.upload_idempotency_keys.get(key).cloned()
         {
+            let workspace_object_key = (request.workspace_id.clone(), object_key);
+            if state.committed_object_keys.contains(&workspace_object_key) {
+                return already_committed_outcome(&mut state, &workspace_object_key);
+            }
             let reservation = state
                 .upload_reservations
-                .get(&(request.workspace_id.clone(), object_key.clone()))
+                .get(&workspace_object_key)
                 .expect("idempotency key points at an upload reservation");
-            if state
-                .committed_object_keys
-                .contains(&(request.workspace_id.clone(), object_key.clone()))
-            {
-                return Err(ControlPlaneError::Conflict {
-                    resource: "upload intent",
-                    reason: "object key is already committed",
-                });
-            }
             if reservation.matches_request(&request) {
-                return Ok(reservation.intent.clone());
+                return Ok(UploadIntentOutcome::Reserved(reservation.intent.clone()));
             }
             return Err(ControlPlaneError::Conflict {
                 resource: "upload intent",
@@ -43,14 +38,11 @@ impl ObjectControlPlaneClient for FakeControlPlaneClient {
         validate_object_key(&object_key)?;
         let workspace_object_key = (request.workspace_id.clone(), object_key.clone());
         if state.committed_object_keys.contains(&workspace_object_key) {
-            return Err(ControlPlaneError::Conflict {
-                resource: "upload intent",
-                reason: "object key is already committed",
-            });
+            return already_committed_outcome(&mut state, &workspace_object_key);
         }
         if let Some(reservation) = state.upload_reservations.get(&workspace_object_key) {
             if reservation.matches_request(&request) {
-                return Ok(reservation.intent.clone());
+                return Ok(UploadIntentOutcome::Reserved(reservation.intent.clone()));
             }
             return Err(ControlPlaneError::Conflict {
                 resource: "upload intent",
@@ -85,7 +77,7 @@ impl ObjectControlPlaneClient for FakeControlPlaneClient {
             state.upload_idempotency_keys.insert(key, object_key);
         }
 
-        Ok(intent)
+        Ok(UploadIntentOutcome::Reserved(intent))
     }
 
     fn create_download_intent(
@@ -382,4 +374,31 @@ impl ObjectControlPlaneClient for FakeControlPlaneClient {
         }
         pointer_storage_metadata(&commit.object)
     }
+}
+
+/// Mirror the hosted `reserveUploadIntent` already-committed branch: the object
+/// key is the hash of the sealed bytes, so a committed row under it proves the
+/// exact bytes are stored. The row goes back to current because a live reference
+/// just appeared for content a retention sweep may have written off.
+fn already_committed_outcome(
+    state: &mut FakeControlPlaneState,
+    workspace_object_key: &(WorkspaceId, String),
+) -> ControlPlaneResult<UploadIntentOutcome> {
+    let pointer = state
+        .object_pointers
+        .get(&workspace_object_key.0)
+        .and_then(|pointers| {
+            pointers
+                .iter()
+                .find(|pointer| pointer.object_key == workspace_object_key.1)
+        })
+        .ok_or_else(|| ControlPlaneError::ObjectMissing {
+            object_key: workspace_object_key.1.clone(),
+        })?;
+    let mut metadata = pointer_storage_metadata(pointer)?;
+    metadata.retention_state = RetentionState::Current;
+    state
+        .object_retention_states
+        .insert(workspace_object_key.clone(), RetentionState::Current);
+    Ok(UploadIntentOutcome::AlreadyCommitted(metadata))
 }

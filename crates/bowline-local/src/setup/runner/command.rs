@@ -91,20 +91,17 @@ pub(super) fn run_shell_command(
         },
     )?;
     let output = run_bounded_shell_command(command.command_text, command.cwd)?;
-    let (redacted_output, redaction_rules) = if output.output_limit_exceeded {
-        (
-            "[redacted] setup output exceeded the local log limit and was discarded.\n".to_string(),
-            vec!["output-limit".to_string()],
-        )
-    } else {
-        let combined = combined_output(&output.stdout, &output.stderr);
-        let output_redacted = redact_setup_text_with_values(&combined, &known_env_values);
-        (
-            bounded_output_text(&output_redacted.text),
-            output_redacted.rules,
-        )
-    };
-    let command_completed = output.status.success() && !output.output_limit_exceeded;
+    let combined = combined_output(&output.stdout, &output.stderr);
+    let output_redacted = redact_setup_text_with_values(&combined, &known_env_values);
+    let mut redacted_output = bounded_output_text(&output_redacted.text);
+    let redaction_rules = output_redacted.rules;
+    if output.elided_bytes > 0 {
+        redacted_output.push_str(&format!(
+            "\n[{} further bytes of setup output elided]\n",
+            output.elided_bytes
+        ));
+    }
+    let command_completed = output.status.success() && !output.timed_out;
     let state = if command_completed {
         SetupReceiptState::Completed
     } else {
@@ -128,7 +125,7 @@ pub(super) fn run_shell_command(
             command.command_text,
             output.status.code(),
             &redacted_output,
-            output.output_limit_exceeded,
+            output.timed_out,
         )
     };
     debug_assert_eq!(
@@ -141,7 +138,7 @@ pub(super) fn run_shell_command(
         workspace_id: context.workspace_id.clone(),
         project_id: Some(context.project_id.clone()),
         command: redacted_command_text.clone(),
-        state: state.as_str().to_string(),
+        state,
         recipe_hash: command.recipe_hash.to_string(),
         approval_state: command.approval_state.as_str().to_string(),
         trigger: context.trigger.to_string(),
@@ -150,9 +147,7 @@ pub(super) fn run_shell_command(
         arch: std::env::consts::ARCH.to_string(),
         env_profile: "default".to_string(),
         output_path: Some(output_path.display().to_string()),
-        redacted_summary: if output.output_limit_exceeded {
-            "Setup command exceeded the output limit; output was discarded.".to_string()
-        } else if command_completed {
+        redacted_summary: if command_completed {
             "Setup command completed; output is redacted.".to_string()
         } else {
             readiness.reason.clone()
@@ -183,8 +178,8 @@ pub(super) fn run_shell_command(
             },
             summary: if command_completed {
                 "Setup command completed; output is redacted."
-            } else if output.output_limit_exceeded {
-                "Setup command exceeded the output limit; output was discarded."
+            } else if output.timed_out {
+                "Setup command timed out; output is redacted."
             } else {
                 "Setup command failed; output is redacted."
             },
@@ -221,7 +216,7 @@ pub(super) fn record_setup_approval(
         workspace_id: context.workspace_id.clone(),
         project_id: Some(context.project_id.clone()),
         command: "setup approval granted".to_string(),
-        state: SetupReceiptState::Approved.as_str().to_string(),
+        state: SetupReceiptState::Approved,
         recipe_hash: approval.recipe_hash.to_string(),
         approval_state: SetupApprovalState::Approved.as_str().to_string(),
         trigger: context.trigger.to_string(),
@@ -307,6 +302,9 @@ pub(super) fn run_bounded_shell_command(
     let mut command = shell_command(command_text);
     command
         .current_dir(cwd)
+        // A prompting setup script must fail fast on EOF rather than block
+        // forever while swallowing the operator's keystrokes.
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     configure_setup_command(&mut command);
@@ -321,28 +319,23 @@ pub(super) fn run_bounded_shell_command(
         .take()
         .ok_or_else(|| io::Error::other("setup command stderr pipe was not available"))?;
     let retained = Arc::new(AtomicUsize::new(0));
-    let output_limit_exceeded = Arc::new(AtomicBool::new(false));
-    let stdout_reader = spawn_bounded_reader(
-        stdout,
-        Arc::clone(&retained),
-        Arc::clone(&output_limit_exceeded),
-    );
-    let stderr_reader = spawn_bounded_reader(
-        stderr,
-        Arc::clone(&retained),
-        Arc::clone(&output_limit_exceeded),
-    );
+    let elided = Arc::new(AtomicUsize::new(0));
+    let stdout_reader = spawn_bounded_reader(stdout, Arc::clone(&retained), Arc::clone(&elided));
+    let stderr_reader = spawn_bounded_reader(stderr, Arc::clone(&retained), Arc::clone(&elided));
 
-    let mut killed_for_output_limit = false;
+    // Volume of output is a logging concern, never a reason to SIGKILL a
+    // package manager mid-write. A wall clock is the only real kill trigger.
+    let deadline = Instant::now() + SETUP_COMMAND_TIMEOUT;
+    let mut timed_out = false;
     let status = loop {
-        if output_limit_exceeded.load(Ordering::Relaxed) && !killed_for_output_limit {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if !timed_out && Instant::now() >= deadline {
             if let Err(error) = kill_setup_process_tree(&mut child, child_id) {
                 tolerate_cleanup_error_if_readers_closed(error, &stdout_reader, &stderr_reader)?;
             }
-            killed_for_output_limit = true;
-        }
-        if let Some(status) = child.try_wait()? {
-            break status;
+            timed_out = true;
         }
         thread::sleep(Duration::from_millis(20));
     };
@@ -356,7 +349,8 @@ pub(super) fn run_bounded_shell_command(
         stdout,
         stderr,
         status,
-        output_limit_exceeded: output_limit_exceeded.load(Ordering::Relaxed),
+        elided_bytes: elided.load(Ordering::Relaxed),
+        timed_out,
     })
 }
 
@@ -421,18 +415,21 @@ fn tolerate_cleanup_error_if_readers_closed(
 pub(super) fn spawn_bounded_reader<R>(
     reader: R,
     retained: Arc<AtomicUsize>,
-    output_limit_exceeded: Arc<AtomicBool>,
+    elided: Arc<AtomicUsize>,
 ) -> thread::JoinHandle<io::Result<Vec<u8>>>
 where
     R: Read + Send + 'static,
 {
-    thread::spawn(move || read_bounded_pipe(reader, retained, output_limit_exceeded))
+    thread::spawn(move || read_bounded_pipe(reader, retained, elided))
 }
 
+/// Drains the pipe to completion, retaining only the first
+/// [`MAX_CAPTURED_OUTPUT`] bytes across both streams and counting the rest.
+/// Draining matters as much as bounding: a full pipe would block the command.
 pub(super) fn read_bounded_pipe<R>(
     mut reader: R,
     retained: Arc<AtomicUsize>,
-    output_limit_exceeded: Arc<AtomicBool>,
+    elided: Arc<AtomicUsize>,
 ) -> io::Result<Vec<u8>>
 where
     R: Read,
@@ -445,13 +442,11 @@ where
             return Ok(output);
         }
         let previous = retained.fetch_add(read, Ordering::Relaxed);
-        if previous < MAX_CAPTURED_OUTPUT {
-            let remaining = MAX_CAPTURED_OUTPUT - previous;
-            output.extend_from_slice(&buffer[..read.min(remaining)]);
+        let kept = MAX_CAPTURED_OUTPUT.saturating_sub(previous).min(read);
+        if kept > 0 {
+            output.extend_from_slice(&buffer[..kept]);
         }
-        if previous + read > MAX_CAPTURED_OUTPUT {
-            output_limit_exceeded.store(true, Ordering::Relaxed);
-        }
+        elided.fetch_add(read - kept, Ordering::Relaxed);
     }
 }
 
@@ -465,5 +460,8 @@ pub(crate) struct CapturedCommandOutput {
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
     pub(crate) status: ExitStatus,
-    pub(crate) output_limit_exceeded: bool,
+    /// Bytes the command produced beyond the retained head. Reported in the
+    /// receipt so a truncated log never reads as a complete one.
+    pub(crate) elided_bytes: usize,
+    pub(crate) timed_out: bool,
 }

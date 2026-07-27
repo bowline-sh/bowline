@@ -126,6 +126,10 @@ pub struct WorkAcceptTransition {
     /// [`WorkLifecycleCommandOutput::discarded_deletions`]); surfaced in the
     /// output so the user learns the deletion did not land.
     pub discarded_deletions: Vec<String>,
+    /// Paths where no conflict-aside may be written, so the view's version was
+    /// dropped and the local file stayed canonical (see
+    /// [`WorkLifecycleCommandOutput::aside_refused_paths`]).
+    pub aside_refused_paths: Vec<String>,
     pub partial: bool,
     /// The overlay key the daemon captured before merging.
     pub captured_overlay: String,
@@ -158,6 +162,7 @@ pub fn apply_accept_success(
             action: WorkCommandAction::Accepted,
             paths: transition.paths,
             discarded_deletions: transition.discarded_deletions,
+            aside_refused_paths: transition.aside_refused_paths,
             partial: true,
             work_view,
             status: WorkspaceStatus::healthy(),
@@ -184,6 +189,7 @@ pub fn apply_accept_success(
         action: WorkCommandAction::Accepted,
         paths: Vec::new(),
         discarded_deletions: transition.discarded_deletions,
+        aside_refused_paths: transition.aside_refused_paths,
         partial: false,
         work_view,
         status: WorkspaceStatus::healthy(),
@@ -255,6 +261,7 @@ fn transition_work_view_with_store(
         action: transition.action,
         paths: Vec::new(),
         discarded_deletions: Vec::new(),
+        aside_refused_paths: Vec::new(),
         partial: false,
         work_view,
         status: WorkspaceStatus::healthy(),

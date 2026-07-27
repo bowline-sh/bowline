@@ -23,6 +23,7 @@ import {
   signReleaseFile,
   verifyReleaseFile,
 } from "./release-signing.mjs";
+import { materializeReleaseFixture } from "./release-fixture.mjs";
 
 const sourceRoot = process.cwd();
 const version = "0.0.1-smoke";
@@ -96,65 +97,41 @@ function writeArchive(workspace, archive) {
   mustRun("tar", ["-C", stage, "-czf", archive, "bowline", "bowline-daemon"]);
 }
 
-function writeManifest(file, releaseDir, archiveName, archive, checksums) {
-  writeFileSync(
-    file,
-    `${JSON.stringify(
-      {
-        version,
-        publishedAt: "2026-07-05T00:00:00.000Z",
-        urgency: "normal",
-        artifacts: {
-          checksums: {
-            url: `file://${releaseDir}/checksums.txt`,
-            sha256: sha256File(checksums),
-          },
-          checksums_sig: {
-            url: `file://${releaseDir}/checksums.txt.sig`,
-            sha256: sha256File(`${checksums}.sig`),
-          },
-          cli: {
-            url: `file://${releaseDir}/${archiveName}`,
-            sha256: sha256File(archive),
-          },
-        },
-      },
-      null,
-      2,
-    )}\n`,
-  );
-}
-
-function writeFixture(workspace, keyFile, pubkey, fixtureTarget = target) {
+// The fixture is produced by the production generator and laid out by the
+// production upload plan, so a manifest shape change that would break real
+// installs breaks this smoke first.
+async function writeFixture(
+  workspace,
+  keyFile,
+  pubkey,
+  fixtureTarget = target,
+) {
   const root = path.join(workspace, "release");
-  const releaseDir = path.join(root, "releases", `v${version}`);
-  const latestDir = path.join(root, "releases", "latest");
-  mkdirSync(releaseDir, { recursive: true });
-  mkdirSync(latestDir, { recursive: true });
-
   const archiveName = `bowline-${fixtureTarget}.tar.gz`;
-  const archive = path.join(releaseDir, archiveName);
-  writeArchive(workspace, archive);
+  const staged = path.join(workspace, "staged", archiveName);
+  mkdirSync(path.dirname(staged), { recursive: true });
+  writeArchive(workspace, staged);
 
-  const checksums = path.join(releaseDir, "checksums.txt");
-  writeFileSync(checksums, `${sha256File(archive)}  ${archiveName}\n`);
-  signReleaseFile(checksums, keyFile, { capture: true });
-
-  const manifest = path.join(releaseDir, "release-manifest.json");
-  writeManifest(manifest, releaseDir, archiveName, archive, checksums);
-  signReleaseFile(manifest, keyFile, { capture: true });
-
-  for (const name of [
-    archiveName,
-    "checksums.txt",
-    "checksums.txt.sig",
+  const { keys } = await materializeReleaseFixture({
+    archives: [staged],
+    distRoot: path.join(workspace, "dist"),
+    keyFile,
+    root,
+    version,
+  });
+  for (const required of [
     "release-manifest.json",
     "release-manifest.json.sig",
   ]) {
-    copyFileSync(path.join(releaseDir, name), path.join(latestDir, name));
+    if (!keys.includes(required)) {
+      throw new Error(`release upload plan is missing bucket-root ${required}`);
+    }
   }
-  copyFileSync(manifest, path.join(root, "release-manifest.json"));
-  copyFileSync(`${manifest}.sig`, path.join(root, "release-manifest.json.sig"));
+
+  const releaseDir = path.join(root, "releases", `v${version}`);
+  const archive = path.join(releaseDir, archiveName);
+  const checksums = path.join(releaseDir, "checksums.txt");
+  const manifest = path.join(releaseDir, "release-manifest.json");
 
   const installer = path.join(workspace, "install.sh");
   const sourceInstaller = readFileSync(
@@ -174,7 +151,7 @@ function writeFixture(workspace, keyFile, pubkey, fixtureTarget = target) {
   return { archive, checksums, installer, keyFile, manifest, releaseDir, root };
 }
 
-function makeFixture(fixtureTarget = target) {
+async function makeFixture(fixtureTarget = target) {
   const workspace = mkdtempSync(path.join(tmpdir(), "bowline-release-auth-"));
   const keyFile = path.join(workspace, "release-key");
   mustRun("ssh-keygen", [
@@ -190,7 +167,7 @@ function makeFixture(fixtureTarget = target) {
   ]);
   const pubkey = readFileSync(`${keyFile}.pub`, "utf8");
   return {
-    fixture: writeFixture(workspace, keyFile, pubkey, fixtureTarget),
+    fixture: await writeFixture(workspace, keyFile, pubkey, fixtureTarget),
     workspace,
   };
 }
@@ -279,8 +256,8 @@ function expectFailure(label, result, expectedMessage) {
   }
 }
 
-function runCase(label, mutate, expectedMessage, options = {}) {
-  const { fixture, workspace } = makeFixture(options.fixtureTarget);
+async function runCase(label, mutate, expectedMessage, options = {}) {
+  const { fixture, workspace } = await makeFixture(options.fixtureTarget);
   try {
     mutate(fixture, workspace);
     const runOptions = options.platform
@@ -428,23 +405,23 @@ async function runReleaseAssetsProducerSmoke() {
 
 assertSshsigCli();
 await runReleaseAssetsProducerSmoke();
-runCase("clean signed fixture", () => undefined, null);
-runCase("clean signed Linux x86_64 fixture", () => undefined, null, {
+await runCase("clean signed fixture", () => undefined, null);
+await runCase("clean signed Linux x86_64 fixture", () => undefined, null, {
   fixtureTarget: "x86_64-unknown-linux-gnu",
   platform: { system: "Linux", machine: "x86_64" },
 });
-runCase("clean signed Linux ARM fixture", () => undefined, null, {
+await runCase("clean signed Linux ARM fixture", () => undefined, null, {
   fixtureTarget: "aarch64-unknown-linux-gnu",
   platform: { system: "Linux", machine: "aarch64" },
 });
-runCase(
+await runCase(
   "missing root manifest signature",
   ({ root }) => {
     rmSync(path.join(root, "release-manifest.json.sig"), { force: true });
   },
   "download release-manifest.json.sig",
 );
-runCase(
+await runCase(
   "tampered latest manifest",
   ({ root }) => {
     const manifest = path.join(root, "release-manifest.json");
@@ -454,7 +431,7 @@ runCase(
   },
   "signature verification failed for release-manifest.json",
 );
-runCase(
+await runCase(
   "missing pinned manifest signature",
   ({ releaseDir }) => {
     rmSync(path.join(releaseDir, "release-manifest.json.sig"), { force: true });
@@ -462,7 +439,7 @@ runCase(
   "download release-manifest.json.sig",
   { args: ["--version", version] },
 );
-runCase(
+await runCase(
   "missing v-prefixed pinned manifest signature",
   ({ releaseDir }) => {
     rmSync(path.join(releaseDir, "release-manifest.json.sig"), { force: true });
@@ -470,7 +447,7 @@ runCase(
   "download release-manifest.json.sig",
   { args: ["--version", `v${version}`] },
 );
-runCase(
+await runCase(
   "signed pinned manifest wrong version",
   ({ keyFile, manifest }) => {
     const body = JSON.parse(readFileSync(manifest, "utf8"));
@@ -481,7 +458,7 @@ runCase(
   `release manifest version 9.9.9 does not match requested ${version}`,
   { args: ["--version", version] },
 );
-runCase(
+await runCase(
   "matching malicious checksum with stale signature",
   ({ archive, checksums }) => {
     writeFileSync(archive, "malicious archive");
@@ -492,7 +469,7 @@ runCase(
   },
   "release manifest hash mismatch for checksums.txt",
 );
-runCase(
+await runCase(
   "corrupt checksum signature",
   ({ checksums, keyFile, manifest, root }) => {
     writeFileSync(`${checksums}.sig`, "not an ssh signature");
@@ -508,14 +485,14 @@ runCase(
   },
   "signature verification failed for checksums.txt",
 );
-runCase(
+await runCase(
   "archive byte flip",
   ({ archive }) => {
     writeFileSync(archive, "tampered archive");
   },
   "checksum mismatch",
 );
-runCase(
+await runCase(
   "replayed checksum root under current manifest",
   ({ archive, checksums, keyFile }) => {
     writeFileSync(archive, "older signed archive");
@@ -527,7 +504,7 @@ runCase(
   },
   "release manifest hash mismatch for checksums.txt",
 );
-runCase(
+await runCase(
   "missing ssh-keygen verifier",
   () => undefined,
   "ssh-keygen is required",

@@ -1,7 +1,10 @@
 use super::*;
 
+use bowline_core::commands::RecoveryCommandAction;
+
 mod model;
 
+pub(crate) use bowline_core::commands::SideEffectLevel;
 pub(crate) use model::{DefinitionFailure, DefinitionTarget, ParsedValues, resolve_definition};
 
 #[derive(Clone, Copy)]
@@ -14,33 +17,82 @@ struct CommandSpec {
     positionals: &'static [PositionalSpec],
     examples: &'static [ExampleSpec],
     json_output_type: &'static str,
-    side_effect_level: &'static str,
-    supports_json: bool,
-    supports_dry_run: bool,
+    side_effect_level: SideEffectLevel,
     bounded_output: Option<BoundedSpec>,
     related_commands: &'static [&'static str],
 }
 
+/// Command paths that do not resolve to their `CommandName` token: internal
+/// machine-facing verbs with no wire name, and the recovery family, whose six
+/// paths all report as `recover` on the wire but dispatch per action.
+const SPECIAL_TARGETS: &[(&str, DefinitionTarget)] = &[
+    ("debug classify", DefinitionTarget::DebugClassify),
+    ("sync wait", DefinitionTarget::SyncWait),
+    (
+        "recover status",
+        DefinitionTarget::Recovery(RecoveryCommandAction::Status),
+    ),
+    (
+        "recover create",
+        DefinitionTarget::Recovery(RecoveryCommandAction::Create),
+    ),
+    (
+        "recover verify",
+        DefinitionTarget::Recovery(RecoveryCommandAction::Verify),
+    ),
+    (
+        "recover rotate",
+        DefinitionTarget::Recovery(RecoveryCommandAction::Rotate),
+    ),
+    (
+        "recover revoke",
+        DefinitionTarget::Recovery(RecoveryCommandAction::Revoke),
+    ),
+    (
+        "recover use",
+        DefinitionTarget::Recovery(RecoveryCommandAction::Use),
+    ),
+];
+
 impl CommandSpec {
     fn command_name(self) -> CommandName {
-        match self.name {
-            "debug classify" | "sync wait" | "sync attention" | "sync retry" | "sync dismiss" => {
-                CommandName::Unknown
-            }
-            name => CommandName::from_token(name)
-                .unwrap_or_else(|| unreachable!("public command definition has a generated name")),
+        match self.target() {
+            DefinitionTarget::Public(command) => command,
+            DefinitionTarget::Recovery(_) => CommandName::Recover,
+            DefinitionTarget::DebugClassify | DefinitionTarget::SyncWait => CommandName::Unknown,
         }
     }
 
     fn target(self) -> DefinitionTarget {
-        match self.name {
-            "debug classify" => DefinitionTarget::DebugClassify,
-            "sync wait" => DefinitionTarget::SyncWait,
-            "sync attention" => DefinitionTarget::SyncAttention,
-            "sync retry" => DefinitionTarget::SyncRetry,
-            "sync dismiss" => DefinitionTarget::SyncDismiss,
-            _ => DefinitionTarget::Public(self.command_name()),
-        }
+        SPECIAL_TARGETS
+            .iter()
+            .find(|(name, _)| *name == self.name)
+            .map(|(_, target)| *target)
+            .unwrap_or_else(|| {
+                DefinitionTarget::Public(
+                    CommandName::from_token(self.name).unwrap_or(CommandName::Unknown),
+                )
+            })
+    }
+
+    /// Derived, never declared: a command supports an output mode exactly when
+    /// its option table carries the flag that selects it.
+    fn supports_json(self) -> bool {
+        self.declares(&GLOBAL_JSON_OPTION)
+    }
+
+    fn supports_dry_run(self) -> bool {
+        self.declares(&DRY_RUN_OPTION)
+    }
+
+    fn supports_quiet(self) -> bool {
+        self.declares(&QUIET_OPTION)
+    }
+
+    fn declares(self, option: &OptionSpec) -> bool {
+        self.options
+            .iter()
+            .any(|declared| declared.name == option.name)
     }
 }
 
@@ -123,13 +175,6 @@ const WORK_PATH_OPTION: OptionSpec = OptionSpec {
     required: false,
     repeatable: true,
 };
-const ROOT_OPTION: OptionSpec = OptionSpec {
-    name: "--root",
-    value_name: Some("path"),
-    summary: "Select the workspace root.",
-    required: true,
-    repeatable: false,
-};
 const ENGINE_OPTION: OptionSpec = OptionSpec {
     name: "--engine",
     value_name: Some("name"),
@@ -165,6 +210,13 @@ const CODE_OPTION: OptionSpec = OptionSpec {
     required: false,
     repeatable: false,
 };
+const WORKSPACE_ID_OPTION: OptionSpec = OptionSpec {
+    name: "--workspace",
+    value_name: Some("id"),
+    summary: "Select the workspace to report on.",
+    required: true,
+    repeatable: false,
+};
 const DEVICE_OPTION: OptionSpec = OptionSpec {
     name: "--device",
     value_name: Some("id"),
@@ -195,18 +247,16 @@ const REQUIRED_PROJECT_POSITIONAL: &[PositionalSpec] = &[PositionalSpec {
     required: true,
     repeatable: false,
 }];
-const RECOVERY_POSITIONALS: &[PositionalSpec] = &[
-    PositionalSpec {
-        name: "action",
-        required: true,
-        repeatable: false,
-    },
-    PositionalSpec {
-        name: "arguments",
-        required: false,
-        repeatable: true,
-    },
-];
+const REQUIRED_ENVELOPE_POSITIONAL: &[PositionalSpec] = &[PositionalSpec {
+    name: "envelope-id",
+    required: true,
+    repeatable: false,
+}];
+const REQUIRED_CONFLICT_ASIDE_POSITIONAL: &[PositionalSpec] = &[PositionalSpec {
+    name: "aside-path",
+    required: true,
+    repeatable: false,
+}];
 const WORK_CREATE_POSITIONALS: &[PositionalSpec] = &[
     PositionalSpec {
         name: "name-or-project",
@@ -318,17 +368,23 @@ pub(super) fn print_help(topic: Option<&[String]>, json: bool) {
     }
 
     println!("bowline command shell\n");
+    // First screen: what each command is for. The option grammar belongs to
+    // `bowline help <command>`, which renders `usage` in full.
+    let width = command_specs()
+        .map(|spec| spec.name.len())
+        .max()
+        .unwrap_or_default();
     for group in command_groups() {
         println!("{}:", group.name);
         for command in group.commands {
             if let Some(spec) = command_specs().find(|spec| spec.name == command) {
-                println!("  {}", spec.usage);
+                println!("  {:<width$}  {}", spec.name, spec.summary);
             }
         }
         println!();
     }
     println!(
-        "Command options follow the complete command path. Inspect `bowline help <command>` for the exact definition."
+        "Run `bowline help <command>` for options and examples, or `bowline contract --json` for the machine contract."
     );
 }
 
@@ -363,8 +419,32 @@ fn command_descriptors_for_topic(topic: Option<&str>) -> Vec<CliCommandDescripto
         return command_descriptors();
     }
     command_specs()
-        .filter(|spec| spec.name == topic || spec.group.eq_ignore_ascii_case(topic))
+        .filter(|spec| spec_matches_topic(spec, topic))
         .map(command_descriptor)
+        .collect()
+}
+
+/// A topic is a command path (`work diff`), a family prefix (`work`, `recover`),
+/// or a group name. Prefix matching is what makes `bowline help device` answer
+/// with the device subcommands instead of nothing.
+fn spec_matches_topic(spec: &CommandSpec, topic: &str) -> bool {
+    spec.name == topic
+        || spec.group.eq_ignore_ascii_case(topic)
+        || spec
+            .name
+            .strip_prefix(topic)
+            .is_some_and(|rest| rest.starts_with(' '))
+}
+
+/// Subcommand paths under a family token, e.g. `work` -> `work create`, ….
+pub(crate) fn subcommands_of(family: &str) -> Vec<&'static str> {
+    command_specs()
+        .filter(|spec| {
+            spec.name
+                .strip_prefix(family)
+                .is_some_and(|rest| rest.starts_with(' '))
+        })
+        .map(|spec| spec.name)
         .collect()
 }
 
@@ -382,9 +462,9 @@ fn command_descriptor(spec: &CommandSpec) -> CliCommandDescriptor {
         positionals: spec.positionals.iter().map(command_positional).collect(),
         examples: spec.examples.iter().map(command_example).collect(),
         json_output_type: spec.json_output_type.to_string(),
-        side_effect_level: spec.side_effect_level.to_string(),
-        supports_json: spec.supports_json,
-        supports_dry_run: spec.supports_dry_run,
+        side_effect_level: spec.side_effect_level,
+        supports_json: spec.supports_json(),
+        supports_dry_run: spec.supports_dry_run(),
         bounded_output: spec.bounded_output.map(|bounded| BoundedOutputControls {
             default_limit: bounded.default_limit,
             max_limit: bounded.max_limit,
@@ -401,7 +481,7 @@ fn command_descriptor(spec: &CommandSpec) -> CliCommandDescriptor {
 
 fn descriptor_options(spec: &CommandSpec) -> Vec<CliCommandOption> {
     let mut options = spec.options.iter().map(command_option).collect::<Vec<_>>();
-    if spec.supports_json {
+    if spec.supports_json() {
         options.push(command_option(&HUMAN_OPTION));
     }
     options

@@ -1,5 +1,33 @@
-use super::*;
+use crate::daemon::server_state::{
+    CachedDaemonStatus, device_trust_status_facts, requested_root_matches,
+    resolve_project_status_scope,
+};
+use crate::daemon::{DaemonRuntime, DaemonServerState, StatusSubscription};
+use bowline_control_plane::ControlPlaneTimestamp;
+use bowline_control_plane::DeviceApprovalRequestList;
+use bowline_core::ids::DeviceId;
+use bowline_core::ids::WorkspaceId;
+use bowline_core::status::StatusFactScope;
+use bowline_core::status::StatusItemKind;
+use bowline_core::status::StatusSubjectKind;
+use bowline_daemon::status_projection::ProjectionBuildReason;
+use bowline_daemon::status_projection::StatusInputEvent;
+use bowline_daemon::status_projection::StatusSource;
+use bowline_daemon::status_projection::StatusSourceFacts;
+use bowline_local::metadata::DEFAULT_DATABASE_FILE;
 use bowline_local::metadata::MetadataStore;
+use bowline_local::notifications::NotificationDedupe;
+use bowline_local::notifications::NotificationSender;
+use bowline_local::notifications::pending_device_payloads;
+use std::env;
+use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
+use std::time::Instant;
+use time::OffsetDateTime;
 
 struct FailingNotificationSender;
 
@@ -199,6 +227,7 @@ fn pending_device_trust_adds_canonical_status_and_local_action_affordances() {
             device_name: "New Mac".to_string(),
             platform: "macos".to_string(),
             device_public_key: "public-key".to_string(),
+            device_public_key_proof: "dapp_test_attestation".to_string(),
             device_fingerprint: "fingerprint".to_string(),
             device_authorization_proof_verifier: "verifier".to_string(),
             matching_code: "bowline-0123456789abcdef".to_string(),
@@ -293,6 +322,7 @@ fn pending_device_projection_is_identical_across_rpc_hosted_and_notifications() 
             device_name: "Shared Mac".to_string(),
             platform: "macos".to_string(),
             device_public_key: "public-key".to_string(),
+            device_public_key_proof: "dapp_test_attestation".to_string(),
             device_fingerprint: "fingerprint".to_string(),
             device_authorization_proof_verifier: "verifier".to_string(),
             matching_code: "bowline-89abcdef01234567".to_string(),

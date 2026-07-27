@@ -1,3 +1,5 @@
+use crate::conflicts::ProjectScope;
+
 use super::*;
 
 const MAX_BLOCKED_PATH_ITEMS: usize = 20;
@@ -72,10 +74,14 @@ pub(super) fn compose_from_store_for_workspace(
     let watermarks = store.scoped_event_watermarks(query)?;
     let recent_events = store.list_events_scoped(resolved.event_query(20))?;
     let status_events = store.list_status_signal_events_scoped(resolved.event_query(0))?;
-    // Post-cutover a conflict is an ordinary conflict-aside file synced by the
-    // manifest engine — there is no local conflict-record store to project, so
-    // legacy conflict signal events are always treated as resolved.
-    let unresolved_conflict_paths = BTreeSet::new();
+    // A conflict is an ordinary conflict-aside file the manifest engine wrote
+    // beside the path it conflicts with; there is no conflict-record store, so
+    // the workspace itself is the authority on what is still unreconciled.
+    let conflicts = observe_conflicts(
+        workspace_root.as_deref(),
+        project_scope(workspace_root.as_deref(), resolved.project_path.as_deref()).as_ref(),
+    );
+    let unresolved_conflict_paths = conflicts.unresolved_paths();
     let _ = &recent_events;
     let inputs = StatusInputs {
         projects: store.projects(&workspace_id)?,
@@ -84,6 +90,7 @@ pub(super) fn compose_from_store_for_workspace(
     let mut acc = StatusAccumulator::new(&options.generated_at);
 
     apply_status_signal_events(&status_events, &unresolved_conflict_paths, &mut acc);
+    apply_conflict_asides(&conflicts, &workspace_id, &watch_root, &mut acc);
 
     let total_projects = store.project_count(&workspace_id)?;
     let observed = store.observed_summary(&workspace_id)?;
@@ -193,6 +200,14 @@ pub(super) fn compose_from_store_for_workspace(
         authentication: None,
         sync: None,
     })
+}
+
+/// The narrowing a project-scoped status confines path findings to, or `None`
+/// for workspace scope.
+fn project_scope(workspace_root: Option<&str>, project_path: Option<&str>) -> Option<ProjectScope> {
+    let workspace_root = workspace_root?;
+    let project_path = project_path?;
+    ProjectScope::new(project_path.strip_prefix(workspace_root)?)
 }
 
 pub(super) fn recent_events_action(root: &str) -> RepairCommand {
@@ -617,11 +632,7 @@ pub(super) fn apply_env_setup_metadata(
         .collect::<Vec<_>>();
     for receipt in &visible_receipts {
         if setup_receipt_needs_current_attention(store, workspace_id, receipt)? {
-            let kind = if receipt.state == "blocked" {
-                "setup.blocked"
-            } else {
-                "setup.failed"
-            };
+            let kind = "setup.failed";
             acc.observe_fact(
                 kind,
                 format!("setup-receipt:{}", receipt.id),
@@ -668,18 +679,17 @@ pub(super) fn setup_receipt_needs_current_attention(
     receipt: &crate::metadata::SetupReceiptRecord,
 ) -> Result<bool, LocalStatusError> {
     let needs_attention = matches!(
-        SetupReceiptState::from_wire(&receipt.state),
-        Some(SetupReceiptState::Failed | SetupReceiptState::ApprovalRequired)
-    ) || receipt.state == "blocked";
+        receipt.state,
+        SetupReceiptState::Failed | SetupReceiptState::ApprovalRequired
+    );
     if !needs_attention {
         return Ok(false);
     }
     let Some(project_id) = receipt.project_id.as_ref() else {
         return Ok(true);
     };
-    Ok(store
-        .project_hot_state(workspace_id, project_id)?
-        .is_none_or(|state| state == "setup.blocked"))
+    let hot_state = store.project_hot_state(workspace_id, project_id)?;
+    Ok(ProjectHotState::setup_receipt_is_current(hot_state))
 }
 
 pub(super) fn project_attention_summaries(

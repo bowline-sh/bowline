@@ -12,25 +12,24 @@ use super::generated::{
 };
 use super::*;
 use crate::WorkspaceControlPlaneClient;
-use bowline_core::status::{StatusAttention, StatusFactAvailabilityImpact, StatusFactScope};
+use bowline_core::status::{
+    StatusAttention, StatusAvailability, StatusFactAvailabilityImpact, StatusFactScope,
+    StatusSnapshotFreshness,
+};
 
 impl WorkspaceControlPlaneClient for HostedControlPlaneClient {
     fn create_workspace_ref(&self, workspace_id: &WorkspaceId) -> ControlPlaneResult<WorkspaceRef> {
         // Pure workspace establishment: seeds a headless version-0 genesis ref.
-        // Exactly one auth field is populated, mirroring the account-session-first,
-        // control-plane-token fallback the other refs endpoints use.
-        let mut request = HostedRefsCreateWorkspaceRefRequest {
-            auth_token: None,
-            account_session_id: None,
-            workspace_id: workspace_id.as_str().to_string(),
-        };
-        if self.account_session_auth_available() {
-            request.account_session_id =
-                Some(self.verified_account_session_id(Some(workspace_id.as_str()))?);
-        } else {
-            request.auth_token = Some(self.control_plane_token.clone());
-        }
-        let dto = self.call::<RefsCreateWorkspaceRef>(&request)?;
+        let dto = self.call_reauthenticating::<RefsCreateWorkspaceRef, _>(
+            Some(workspace_id.as_str()),
+            || {
+                Ok(HostedRefsCreateWorkspaceRefRequest {
+                    account_session_id: self
+                        .verified_account_session_id(Some(workspace_id.as_str()))?,
+                    workspace_id: workspace_id.as_str().to_string(),
+                })
+            },
+        )?;
         // The DTO -> domain boundary re-runs the workspace-head signature
         // verification; a bare serde decode is not verification.
         workspace_ref_from_dto(dto, |workspace_id, device_id| {
@@ -42,18 +41,17 @@ impl WorkspaceControlPlaneClient for HostedControlPlaneClient {
         &self,
         workspace_id: &WorkspaceId,
     ) -> ControlPlaneResult<Option<WorkspaceRef>> {
-        let mut request = HostedRefsGetWorkspaceRefRequest {
-            workspace_id: workspace_id.as_str().to_string(),
-            auth_token: None,
-            account_session_id: None,
-        };
-        if self.account_session_auth_available() {
-            request.account_session_id =
-                Some(self.verified_account_session_id(Some(workspace_id.as_str()))?);
-        } else {
-            request.auth_token = Some(self.control_plane_token.clone());
-        }
-        match self.call::<RefsGetWorkspaceRef>(&request)? {
+        let response = self.call_reauthenticating::<RefsGetWorkspaceRef, _>(
+            Some(workspace_id.as_str()),
+            || {
+                Ok(HostedRefsGetWorkspaceRefRequest {
+                    workspace_id: workspace_id.as_str().to_string(),
+                    account_session_id: self
+                        .verified_account_session_id(Some(workspace_id.as_str()))?,
+                })
+            },
+        )?;
+        match response {
             None => Ok(None),
             // The DTO -> domain boundary re-runs the workspace-head signature
             // verification before the ref is trusted.
@@ -89,23 +87,20 @@ impl WorkspaceControlPlaneClient for HostedControlPlaneClient {
         project_id: Option<&ProjectId>,
     ) -> Result<WorkspaceRef, CompareAndSwapError> {
         self.require_local_device(writer_device_id)
-            .map_err(|error| CompareAndSwapError::Storage(error.to_string()))?;
-        let proof_subject = workspace_ref_proof_subject(expected_version, new_snapshot_id.as_str());
+            .map_err(CompareAndSwapError::rejected)?;
+        let proof_subject = workspace_ref_proof_subject(expected_version, new_snapshot_id);
         let writer_device_proof = self
             .device_proof(
                 workspace_id,
                 "compare-and-swap-workspace-ref",
                 &proof_subject,
             )
-            .map_err(|error| CompareAndSwapError::Storage(error.to_string()))?;
-        let head_signature_subject = workspace_head_proof_subject(
-            workspace_id.as_str(),
-            expected_version + 1,
-            new_snapshot_id.as_str(),
-        );
+            .map_err(CompareAndSwapError::rejected)?;
+        let head_signature_subject =
+            workspace_head_proof_subject(workspace_id, expected_version + 1, new_snapshot_id);
         let head_signature = self
             .device_proof(workspace_id, "sign-workspace-head", &head_signature_subject)
-            .map_err(|error| CompareAndSwapError::Storage(error.to_string()))?;
+            .map_err(CompareAndSwapError::rejected)?;
         let request = HostedRefsCompareAndSwapWorkspaceRefRequest {
             expected_version,
             head_signature,
@@ -117,7 +112,7 @@ impl WorkspaceControlPlaneClient for HostedControlPlaneClient {
         };
         let response = self
             .call::<RefsCompareAndSwapWorkspaceRef>(&request)
-            .map_err(|error| CompareAndSwapError::Storage(error.to_string()))?;
+            .map_err(compare_and_swap_call_failure)?;
 
         if response.ok {
             let dto = response.r#ref.ok_or(CompareAndSwapError::Unsupported {
@@ -126,10 +121,12 @@ impl WorkspaceControlPlaneClient for HostedControlPlaneClient {
             })?;
             // The DTO -> domain boundary re-runs the workspace-head signature
             // verification before the advanced ref is trusted.
+            // The swap applied, but the advanced ref failed head-signature
+            // verification, so the caller must re-read rather than trust it.
             return workspace_ref_from_dto(dto, |workspace_id, device_id| {
                 self.device_proof_verifier(workspace_id, device_id)
             })
-            .map_err(|error| CompareAndSwapError::Storage(error.to_string()));
+            .map_err(CompareAndSwapError::ambiguous);
         }
 
         match response.error.as_deref() {
@@ -146,7 +143,7 @@ impl WorkspaceControlPlaneClient for HostedControlPlaneClient {
                 let current = workspace_ref_from_dto(dto, |workspace_id, device_id| {
                     self.device_proof_verifier(workspace_id, device_id)
                 })
-                .map_err(|error| CompareAndSwapError::Storage(error.to_string()))?;
+                .map_err(CompareAndSwapError::rejected)?;
                 Err(CompareAndSwapError::StaleRef(StaleWorkspaceRef {
                     expected_version,
                     current,
@@ -160,22 +157,20 @@ impl WorkspaceControlPlaneClient for HostedControlPlaneClient {
     }
 
     fn list_events(&self, workspace_id: &WorkspaceId) -> ControlPlaneResult<Vec<CompactEvent>> {
-        let mut request = HostedEventsListCompactEventsRequest {
-            account_session_id: None,
-            auth_token: None,
-            limit: None,
-            workspace_id: workspace_id.as_str().to_string(),
-        };
-        if self.account_session_auth_available() {
-            request.account_session_id =
-                Some(self.verified_account_session_id(Some(workspace_id.as_str()))?);
-        } else {
-            request.auth_token = Some(self.control_plane_token.clone());
-        }
-        self.call::<EventsListCompactEvents>(&request)?
-            .into_iter()
-            .map(CompactEvent::try_from)
-            .collect()
+        self.call_reauthenticating::<EventsListCompactEvents, _>(
+            Some(workspace_id.as_str()),
+            || {
+                Ok(HostedEventsListCompactEventsRequest {
+                    account_session_id: self
+                        .verified_account_session_id(Some(workspace_id.as_str()))?,
+                    limit: None,
+                    workspace_id: workspace_id.as_str().to_string(),
+                })
+            },
+        )?
+        .into_iter()
+        .map(CompactEvent::try_from)
+        .collect()
     }
 
     fn list_workspace_ref_history(
@@ -184,24 +179,21 @@ impl WorkspaceControlPlaneClient for HostedControlPlaneClient {
         limit: u32,
     ) -> ControlPlaneResult<Vec<WorkspaceRefHistoryRecord>> {
         // The server clamps `limit` to 1..500 (default 100); the request carries
-        // it verbatim. Exactly one auth field is populated here, mirroring the
-        // account-session-first, control-plane-token fallback used elsewhere.
-        let mut request = HostedRefsListWorkspaceRefHistoryRequest {
-            workspace_id: workspace_id.as_str().to_string(),
-            limit: Some(limit),
-            auth_token: None,
-            account_session_id: None,
-        };
-        if self.account_session_auth_available() {
-            request.account_session_id =
-                Some(self.verified_account_session_id(Some(workspace_id.as_str()))?);
-        } else {
-            request.auth_token = Some(self.control_plane_token.clone());
-        }
-        self.call::<RefsListWorkspaceRefHistory>(&request)?
-            .into_iter()
-            .map(WorkspaceRefHistoryRecord::try_from)
-            .collect()
+        // it verbatim.
+        self.call_reauthenticating::<RefsListWorkspaceRefHistory, _>(
+            Some(workspace_id.as_str()),
+            || {
+                Ok(HostedRefsListWorkspaceRefHistoryRequest {
+                    workspace_id: workspace_id.as_str().to_string(),
+                    limit: Some(limit),
+                    account_session_id: self
+                        .verified_account_session_id(Some(workspace_id.as_str()))?,
+                })
+            },
+        )?
+        .into_iter()
+        .map(WorkspaceRefHistoryRecord::try_from)
+        .collect()
     }
 
     fn publish_workspace_status(
@@ -236,7 +228,8 @@ impl TryFrom<HostedWorkspaceRefHistoryRecord> for WorkspaceRefHistoryRecord {
             version: record.version,
             base_snapshot_id: record.base_snapshot_id.map(SnapshotId::new),
             target_snapshot_id: SnapshotId::new(record.target_snapshot_id),
-            occurred_at: record.occurred_at,
+            occurred_at: parse_control_timestamp(record.occurred_at.as_str())
+                .map_err(|error| add_field_context(error, "occurredAt"))?,
             advanced_by_device_id: record.advanced_by_device_id.map(DeviceId::new),
             caused_by_event_id: record.caused_by_event_id.map(EventId::new),
             project_id: record.project_id.map(ProjectId::new),
@@ -251,76 +244,90 @@ impl TryFrom<HostedCompactEvent> for CompactEvent {
         Ok(CompactEvent {
             event_id: EventId::new(dto.event_id),
             workspace_id: WorkspaceId::new(dto.workspace_id),
-            at: parse_control_timestamp(&dto.occurred_at)
+            at: parse_control_timestamp(dto.occurred_at.as_str())
                 .map_err(|error| add_field_context(error, "occurredAt"))?,
-            kind: event_kind_from_dto(dto.kind)?,
+            kind: event_kind_from_dto(dto.kind),
             subject: dto.subject,
         })
     }
 }
 
-// Map the full-vocabulary wire event kind onto the domain CompactEventKind,
-// rejecting kinds the control-plane domain does not model. Mirrors the former
-// parse_event_kind, which errored on any unmodeled kind.
-fn event_kind_from_dto(kind: HostedCompactEventKind) -> ControlPlaneResult<CompactEventKind> {
+// Total map from the generated wire vocabulary onto the domain enum. It must
+// stay total: a partial map made one unmodeled event permanently poison every
+// list_events call for that workspace.
+fn event_kind_from_dto(kind: HostedCompactEventKind) -> CompactEventKind {
     match kind {
-        HostedCompactEventKind::WorkspaceCreated => Ok(CompactEventKind::WorkspaceCreated),
-        HostedCompactEventKind::WorkspaceRefAdvanced => Ok(CompactEventKind::WorkspaceRefAdvanced),
-        HostedCompactEventKind::ObjectPointerAdded => Ok(CompactEventKind::ObjectPointerAdded),
-        HostedCompactEventKind::DeviceRequested => Ok(CompactEventKind::DeviceRequested),
-        HostedCompactEventKind::DeviceHarnessApproved => {
-            Ok(CompactEventKind::DeviceHarnessApproved)
-        }
+        HostedCompactEventKind::WorkspaceCreated => CompactEventKind::WorkspaceCreated,
+        HostedCompactEventKind::WorkspaceRefAdvanced => CompactEventKind::WorkspaceRefAdvanced,
+        HostedCompactEventKind::ObjectPointerAdded => CompactEventKind::ObjectPointerAdded,
+        HostedCompactEventKind::DeviceRequested => CompactEventKind::DeviceRequested,
+        HostedCompactEventKind::DeviceHarnessApproved => CompactEventKind::DeviceHarnessApproved,
         HostedCompactEventKind::DeviceApprovalRequested => {
-            Ok(CompactEventKind::DeviceApprovalRequested)
+            CompactEventKind::DeviceApprovalRequested
         }
-        HostedCompactEventKind::DeviceApproved => Ok(CompactEventKind::DeviceApproved),
-        HostedCompactEventKind::DeviceDenied => Ok(CompactEventKind::DeviceDenied),
-        HostedCompactEventKind::DeviceRevoked => Ok(CompactEventKind::DeviceRevoked),
-        HostedCompactEventKind::RecoveryKeyCreated => Ok(CompactEventKind::RecoveryKeyCreated),
-        HostedCompactEventKind::RecoveryKeyVerified => Ok(CompactEventKind::RecoveryKeyVerified),
-        HostedCompactEventKind::RecoveryKeyRotated => Ok(CompactEventKind::RecoveryKeyRotated),
-        HostedCompactEventKind::RecoveryKeyRevoked => Ok(CompactEventKind::RecoveryKeyRevoked),
-        HostedCompactEventKind::AuthLoginStarted => Ok(CompactEventKind::AuthLoginStarted),
-        HostedCompactEventKind::AuthLoginCompleted => Ok(CompactEventKind::AuthLoginCompleted),
-        HostedCompactEventKind::NamespaceArchived
-        | HostedCompactEventKind::NamespaceArchiveRestored
-        | HostedCompactEventKind::NamespacePurgePending
-        | HostedCompactEventKind::NamespacePurgeCancelled
-        | HostedCompactEventKind::WorkspaceStatusPublished
-        | HostedCompactEventKind::MemberInvited
-        | HostedCompactEventKind::MemberJoined
-        | HostedCompactEventKind::MemberRemoved
-        | HostedCompactEventKind::WorkspaceKeyRotated => {
-            Err(shape_error("unknown compact event kind"))
+        HostedCompactEventKind::DeviceApproved => CompactEventKind::DeviceApproved,
+        HostedCompactEventKind::DeviceDenied => CompactEventKind::DeviceDenied,
+        HostedCompactEventKind::DeviceRevoked => CompactEventKind::DeviceRevoked,
+        HostedCompactEventKind::RecoveryKeyCreated => CompactEventKind::RecoveryKeyCreated,
+        HostedCompactEventKind::RecoveryKeyVerified => CompactEventKind::RecoveryKeyVerified,
+        HostedCompactEventKind::RecoveryKeyRotated => CompactEventKind::RecoveryKeyRotated,
+        HostedCompactEventKind::RecoveryKeyRevoked => CompactEventKind::RecoveryKeyRevoked,
+        HostedCompactEventKind::AuthLoginStarted => CompactEventKind::AuthLoginStarted,
+        HostedCompactEventKind::AuthLoginCompleted => CompactEventKind::AuthLoginCompleted,
+        HostedCompactEventKind::NamespaceArchived => CompactEventKind::NamespaceArchived,
+        HostedCompactEventKind::NamespaceArchiveRestored => {
+            CompactEventKind::NamespaceArchiveRestored
+        }
+        HostedCompactEventKind::NamespacePurgePending => CompactEventKind::NamespacePurgePending,
+        HostedCompactEventKind::NamespacePurgeCancelled => {
+            CompactEventKind::NamespacePurgeCancelled
+        }
+        HostedCompactEventKind::WorkspaceStatusPublished => {
+            CompactEventKind::WorkspaceStatusPublished
+        }
+        HostedCompactEventKind::MemberInvited => CompactEventKind::MemberInvited,
+        HostedCompactEventKind::MemberJoined => CompactEventKind::MemberJoined,
+        HostedCompactEventKind::MemberRemoved => CompactEventKind::MemberRemoved,
+        HostedCompactEventKind::WorkspaceKeyRotated => CompactEventKind::WorkspaceKeyRotated,
+        HostedCompactEventKind::WorkspaceKeySeeded => CompactEventKind::WorkspaceKeySeeded,
+        HostedCompactEventKind::WorkspaceKeyRegrantOffered => {
+            CompactEventKind::WorkspaceKeyRegrantOffered
+        }
+        HostedCompactEventKind::WorkspaceKeyRegrantSettled => {
+            CompactEventKind::WorkspaceKeyRegrantSettled
         }
     }
 }
 
 /// Build the typed publish-workspace-status request from the domain snapshot.
-/// The availability/attention/freshness strings are the domain's own
-/// representation; they are re-encoded to the closed wire enums here (rejecting
-/// an unknown value) with byte-identical wire values so the signed proof subject
-/// stays consistent.
+/// Availability/attention/freshness are already domain enums, so the wire
+/// encoding is total and the signed proof subject cannot disagree with it.
+/// Observation instants are the one part the domain still carries as strings,
+/// so they are re-validated here rather than published unchecked.
 fn status_publish_request_from_snapshot(
     snapshot: &WorkspaceStatusSnapshot,
     published_by_device_proof: String,
 ) -> ControlPlaneResult<HostedStatusPublishWorkspaceStatusRequest> {
+    let observed_at = wire_timestamp_from_domain(&snapshot.observed_at, "observedAt")?;
     Ok(HostedStatusPublishWorkspaceStatusRequest {
-        attention: status_attention_to_dto(&snapshot.attention)?,
+        attention: status_attention_to_dto(snapshot.attention),
         attention_items: snapshot.attention_items.clone(),
-        availability: status_availability_to_dto(&snapshot.availability)?,
+        availability: status_availability_to_dto(snapshot.availability),
         event_watermarks: event_watermarks_to_dto(&snapshot.event_watermarks),
-        facts: snapshot.facts.iter().map(status_fact_to_dto).collect(),
-        freshness: status_freshness_to_dto(&snapshot.freshness)?,
+        facts: snapshot
+            .facts
+            .iter()
+            .map(status_fact_to_dto)
+            .collect::<ControlPlaneResult<Vec<_>>>()?,
+        freshness: status_freshness_to_dto(snapshot.freshness),
         // `generatedAt` mirrors `observedAt`, matching the prior hand-assembled
         // request.
-        generated_at: snapshot.observed_at.clone(),
+        generated_at: observed_at.clone(),
         items: (!snapshot.items.is_empty())
             .then(|| snapshot.items.iter().map(status_item_to_dto).collect()),
         limits: (!snapshot.limits.is_empty())
             .then(|| snapshot.limits.iter().map(status_limit_to_dto).collect()),
-        observed_at: snapshot.observed_at.clone(),
+        observed_at,
         primary_fact_id: snapshot.primary_fact_id.clone(),
         producer_version: snapshot.producer_version.clone(),
         published_by_device_id: snapshot.published_by_device_id.as_str().to_string(),
@@ -337,35 +344,58 @@ fn status_publish_request_from_snapshot(
     })
 }
 
-fn status_attention_to_dto(value: &str) -> ControlPlaneResult<HostedStatusAttention> {
-    match value {
-        "none" => Ok(HostedStatusAttention::None),
-        "recommended" => Ok(HostedStatusAttention::Recommended),
-        "required" => Ok(HostedStatusAttention::Required),
-        _ => Err(shape_error("workspace status attention is invalid")),
+/// Re-validate a domain timestamp string on its way onto the wire. The domain
+/// snapshot still carries observation instants as strings, so this is the last
+/// point that can reject a value the hosted contract would refuse.
+fn wire_timestamp_from_domain(
+    value: &str,
+    field: &'static str,
+) -> ControlPlaneResult<generated::Timestamp> {
+    generated::Timestamp::new(value)
+        .map_err(|_| add_field_context(shape_error("timestamp must be RFC3339"), field))
+}
+
+fn status_attention_to_dto(attention: StatusAttention) -> HostedStatusAttention {
+    match attention {
+        StatusAttention::None => HostedStatusAttention::None,
+        StatusAttention::Recommended => HostedStatusAttention::Recommended,
+        StatusAttention::Required => HostedStatusAttention::Required,
     }
 }
 
-fn status_availability_to_dto(value: &str) -> ControlPlaneResult<HostedStatusAvailability> {
-    match value {
-        "ready" => Ok(HostedStatusAvailability::Ready),
-        "degraded" => Ok(HostedStatusAvailability::Degraded),
-        "unavailable" => Ok(HostedStatusAvailability::Unavailable),
-        _ => Err(shape_error("workspace status availability is invalid")),
+fn status_availability_to_dto(availability: StatusAvailability) -> HostedStatusAvailability {
+    match availability {
+        StatusAvailability::Ready => HostedStatusAvailability::Ready,
+        StatusAvailability::Degraded => HostedStatusAvailability::Degraded,
+        StatusAvailability::Unavailable => HostedStatusAvailability::Unavailable,
     }
 }
 
-fn status_freshness_to_dto(value: &str) -> ControlPlaneResult<HostedStatusFreshness> {
-    match value {
-        "fresh" => Ok(HostedStatusFreshness::Fresh),
-        "stale" => Ok(HostedStatusFreshness::Stale),
-        "unknown" => Ok(HostedStatusFreshness::Unknown),
-        _ => Err(shape_error("workspace status freshness is invalid")),
+fn status_freshness_to_dto(freshness: StatusSnapshotFreshness) -> HostedStatusFreshness {
+    match freshness {
+        StatusSnapshotFreshness::Fresh => HostedStatusFreshness::Fresh,
+        StatusSnapshotFreshness::Stale => HostedStatusFreshness::Stale,
+        StatusSnapshotFreshness::Unknown => HostedStatusFreshness::Unknown,
     }
 }
 
-fn status_fact_to_dto(fact: &StatusFact) -> HostedStatusFact {
-    HostedStatusFact {
+/// Classify a compare-and-swap mutation failure. Only failures that provably
+/// never reached the server, or that the server decided, are `Rejected`; a lost
+/// response may have applied, so everything else is `Ambiguous`.
+fn compare_and_swap_call_failure(error: ControlPlaneError) -> CompareAndSwapError {
+    match &error {
+        ControlPlaneError::Rejected { .. }
+        | ControlPlaneError::Internal { .. }
+        | ControlPlaneError::ContractViolation {
+            failure: WireContractFailure::Request,
+            ..
+        } => CompareAndSwapError::rejected(error),
+        _ => CompareAndSwapError::ambiguous(error),
+    }
+}
+
+fn status_fact_to_dto(fact: &StatusFact) -> ControlPlaneResult<HostedStatusFact> {
+    Ok(HostedStatusFact {
         id: fact.id.as_str().to_string(),
         kind: fact.kind.as_str().to_string(),
         source: fact.source.as_str().to_string(),
@@ -384,10 +414,14 @@ fn status_fact_to_dto(fact: &StatusFact) -> HostedStatusFact {
                 kind: action.kind.clone(),
                 target_id: action.target_id.clone(),
             }),
-        observed_at: fact.observed_at.clone(),
-        stale_after: fact.stale_after.clone(),
+        observed_at: wire_timestamp_from_domain(&fact.observed_at, "observedAt")?,
+        stale_after: fact
+            .stale_after
+            .as_deref()
+            .map(|value| wire_timestamp_from_domain(value, "staleAfter"))
+            .transpose()?,
         dedupe_key: fact.dedupe_key.as_str().to_string(),
-    }
+    })
 }
 
 fn status_fact_scope_to_dto(scope: StatusFactScope) -> HostedStatusFactScope {
@@ -477,25 +511,36 @@ mod boundary_tests {
     use super::*;
 
     #[test]
-    fn event_kind_dto_maps_modeled_kinds_and_rejects_unmodeled() {
+    fn event_kind_dto_maps_every_wire_kind_without_failing() {
         assert_eq!(
-            event_kind_from_dto(HostedCompactEventKind::WorkspaceRefAdvanced).expect("modeled"),
+            event_kind_from_dto(HostedCompactEventKind::WorkspaceRefAdvanced),
             CompactEventKind::WorkspaceRefAdvanced
         );
-        // A vocabulary kind the control-plane domain does not model is rejected,
-        // matching the former parse_event_kind.
-        assert!(event_kind_from_dto(HostedCompactEventKind::NamespaceArchived).is_err());
+        // Kinds the server routinely emits (workspace key rotation, membership,
+        // namespace lifecycle) used to poison the whole listing.
+        assert_eq!(
+            event_kind_from_dto(HostedCompactEventKind::WorkspaceKeyRotated),
+            CompactEventKind::WorkspaceKeyRotated
+        );
+        assert_eq!(
+            event_kind_from_dto(HostedCompactEventKind::NamespaceArchived),
+            CompactEventKind::NamespaceArchived
+        );
+        assert_eq!(
+            event_kind_from_dto(HostedCompactEventKind::WorkspaceStatusPublished),
+            CompactEventKind::WorkspaceStatusPublished
+        );
     }
 
     fn status_snapshot() -> WorkspaceStatusSnapshot {
         WorkspaceStatusSnapshot {
             workspace_id: WorkspaceId::new("workspace_1"),
             snapshot_id: SnapshotId::new("snap_1"),
-            availability: "ready".to_string(),
-            attention: "none".to_string(),
+            availability: StatusAvailability::Ready,
+            attention: StatusAttention::None,
             primary_fact_id: None,
             facts: Vec::new(),
-            freshness: "fresh".to_string(),
+            freshness: StatusSnapshotFreshness::Fresh,
             schema_hash: "hash".to_string(),
             snapshot_version: 1,
             producer_version: "1.0.0".to_string(),
@@ -514,13 +559,13 @@ mod boundary_tests {
     fn status_request_mirrors_observed_at_and_maps_enums() {
         let request =
             status_publish_request_from_snapshot(&status_snapshot(), "proof_publish".to_string())
-                .expect("request builds");
+                .expect("snapshot fixture publishes");
         assert_eq!(request.attention, HostedStatusAttention::None);
         assert_eq!(request.availability, HostedStatusAvailability::Ready);
         assert_eq!(request.freshness, HostedStatusFreshness::Fresh);
         // generatedAt mirrors observedAt, matching the prior hand-assembled request.
         assert_eq!(request.generated_at, request.observed_at);
-        assert_eq!(request.generated_at, "2026-07-02T12:00:00Z");
+        assert_eq!(request.generated_at.as_str(), "2026-07-02T12:00:00Z");
         // Empty collections are omitted, matching the prior request.
         assert!(request.items.is_none());
         assert!(request.limits.is_none());
@@ -528,11 +573,16 @@ mod boundary_tests {
     }
 
     #[test]
-    fn status_request_rejects_unknown_availability() {
+    fn signed_proof_subject_matches_the_wire_availability_and_attention() {
         let mut snapshot = status_snapshot();
-        snapshot.availability = "bogus".to_string();
-        let error = status_publish_request_from_snapshot(&snapshot, "proof".to_string())
-            .expect_err("must reject");
-        assert!(error.to_string().contains("availability"), "got: {error}");
+        snapshot.availability = StatusAvailability::Degraded;
+        snapshot.attention = StatusAttention::Required;
+        let request = status_publish_request_from_snapshot(&snapshot, "proof_publish".to_string())
+            .expect("snapshot fixture publishes");
+        assert_eq!(request.availability, HostedStatusAvailability::Degraded);
+        assert_eq!(request.attention, HostedStatusAttention::Required);
+        let subject = snapshot.proof_subject();
+        assert!(subject.contains("availability=degraded"), "got: {subject}");
+        assert!(subject.contains("attention=required"), "got: {subject}");
     }
 }

@@ -12,9 +12,7 @@ pub(super) const COMMAND_REGISTRY: &[CommandSpec] = &[CommandSpec {
         summary: "Diagnose the manifest sync engine and print the redacted report.",
     }],
     json_output_type: "DoctorCommandOutput",
-    side_effect_level: "read",
-    supports_json: true,
-    supports_dry_run: false,
+    side_effect_level: SideEffectLevel::Read,
     bounded_output: None,
     related_commands: &["status", "diagnostics collect"],
 }];

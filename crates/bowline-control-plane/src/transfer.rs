@@ -1,19 +1,21 @@
 use std::{
     cell::RefCell,
     io::Read,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-use bowline_core::ids::{DeviceId, WorkspaceId};
+use bowline_core::ids::WorkspaceId;
 use bowline_storage::{
-    ByteRange, ByteStore, ByteStoreError, ByteStoreMetrics, IntentFailureKind, ObjectKey,
-    ObjectKind as StorageObjectKind, ObjectMetadata, PutObjectReaderRequest, RetentionState,
-    TransferOperation, stable_object_hash,
+    ByteRange, ByteStore, ByteStoreError, ByteStoreMetrics, IntentFailureKind, ObjectHash,
+    ObjectKey, ObjectMetadata, PutObjectRequest, PutObjectSource, ReopenableObjectSource,
+    RetentionState, TransferOperation,
 };
 use reqwest::blocking::Client;
 use sha2::{Digest, Sha256};
 
+mod deadline;
 mod streaming_upload;
+use deadline::{signed_url_connect_timeout, signed_url_transfer_timeout};
 use streaming_upload::{
     StreamingPutRequest, send_streaming_put, send_streaming_put_with_create_only,
     verify_matching_readers,
@@ -21,12 +23,14 @@ use streaming_upload::{
 
 use crate::{
     ControlPlaneClient, ControlPlaneError, DownloadIntentRequest, ObjectKind as ControlObjectKind,
-    RejectionCode, Sha256Checksum, UploadIntentRequest, UploadVerificationIntentRequest,
+    RejectionCode, Sha256Checksum, UploadIntentOutcome, UploadIntentRequest,
+    UploadVerificationIntentRequest,
 };
 
-const SIGNED_URL_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
-
-fn sha256_checksum_reader(reader: &mut dyn Read) -> Result<Sha256Checksum, ByteStoreError> {
+fn sha256_checksum_source(
+    source: &dyn ReopenableObjectSource,
+) -> Result<Sha256Checksum, ByteStoreError> {
+    let mut reader = source.open()?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -47,6 +51,38 @@ impl std::ops::Deref for SignedUrlHttpClient {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+/// What a put had to do under a content-addressed key.
+///
+/// Sealing is convergent, so an object key is a pure function of the plaintext
+/// and re-presenting content the workspace already holds is routine rather than
+/// exceptional. Callers that owe a follow-up metadata commit must branch on
+/// this: an already-committed object owes nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PutOutcome {
+    /// The sealed bytes were transferred. The caller still owes the hosted
+    /// metadata commit that makes the object referenceable.
+    Uploaded(ObjectMetadata),
+    /// The control plane already held committed metadata under this key. The
+    /// key is the hash of the sealed bytes, so that is proof the exact bytes
+    /// are stored: nothing was transferred and no commit is owed. Carries the
+    /// server's committed row, not a locally constructed one.
+    AlreadyCommitted(ObjectMetadata),
+}
+
+impl PutOutcome {
+    pub fn metadata(&self) -> &ObjectMetadata {
+        match self {
+            Self::Uploaded(metadata) | Self::AlreadyCommitted(metadata) => metadata,
+        }
+    }
+
+    pub fn into_metadata(self) -> ObjectMetadata {
+        match self {
+            Self::Uploaded(metadata) | Self::AlreadyCommitted(metadata) => metadata,
+        }
     }
 }
 
@@ -79,60 +115,59 @@ impl<'a, C: ControlPlaneClient> SignedUrlByteStore<'a, C> {
     pub fn build_http_client() -> SignedUrlHttpClient {
         SignedUrlHttpClient(
             Client::builder()
-                .timeout(SIGNED_URL_HTTP_TIMEOUT)
+                .connect_timeout(signed_url_connect_timeout())
+                // No client-wide request deadline: each request sets its own,
+                // derived from how many bytes it is moving.
+                .timeout(None)
                 .build()
-                .expect("reqwest client with timeout should build"),
+                .expect("reqwest client with connect timeout should build"),
         )
     }
 
-    pub fn put_object_with_content_id(
-        &self,
-        key: ObjectKey,
-        kind: StorageObjectKind,
-        content_id: impl Into<String>,
-        bytes: &[u8],
-        created_by_device_id: Option<&DeviceId>,
-    ) -> Result<ObjectMetadata, ByteStoreError> {
-        self.put_object_with_content_id_at_epoch(
-            key,
-            kind,
-            content_id,
-            bytes,
-            1,
-            created_by_device_id,
-        )
+    /// Store the sealed bytes, reporting whether the control plane already held
+    /// them. `ByteStore::put` drops that distinction; callers that owe a
+    /// metadata commit must use this instead.
+    pub fn put_object(&self, request: PutObjectRequest<'_>) -> Result<PutOutcome, ByteStoreError> {
+        let outcome = match request.source {
+            PutObjectSource::Bytes(bytes) => self.put_bytes(&request, bytes)?,
+            PutObjectSource::Reader(source) => self.put_reader(&request, source)?,
+        };
+        let mut metrics = self.metrics.borrow_mut();
+        metrics.put_count += 1;
+        if matches!(outcome, PutOutcome::Uploaded(_)) {
+            metrics.bytes_uploaded += request.byte_len;
+        }
+        Ok(outcome)
     }
 
-    pub fn put_object_with_content_id_at_epoch(
+    /// Upload the buffered form of an object. The identity is checked before
+    /// the PUT starts so wrong bytes never reach R2 under a content-addressed
+    /// key; the mid-stream check on the reader path is the same guarantee.
+    fn put_bytes(
         &self,
-        key: ObjectKey,
-        kind: StorageObjectKind,
-        content_id: impl Into<String>,
+        request: &PutObjectRequest<'_>,
         bytes: &[u8],
-        key_epoch: u32,
-        created_by_device_id: Option<&DeviceId>,
-    ) -> Result<ObjectMetadata, ByteStoreError> {
-        let content_id = content_id.into();
-        let expected_hash = stable_object_hash(bytes);
+    ) -> Result<PutOutcome, ByteStoreError> {
+        if bytes.len() as u64 != request.byte_len
+            || ObjectHash::of_bytes(bytes) != request.expected_hash
+        {
+            return Err(ByteStoreError::CorruptObject {
+                key: request.key.clone(),
+                reason: "buffered upload bytes did not match immutable identity",
+            });
+        }
         let checksum_sha256 = Sha256Checksum::for_bytes(bytes);
-        self.metrics.borrow_mut().convex_action_count += 1;
-        let intent = self
-            .control_plane
-            .create_upload_intent(
-                UploadIntentRequest::new(
-                    self.workspace_id.clone(),
-                    ControlObjectKind::from(kind),
-                    bytes.len() as u64,
-                    checksum_sha256.clone(),
-                )
-                .with_content_id(content_id.clone())
-                .with_object_key(key.as_str()),
-            )
-            .map_err(|error| map_control_error(TransferOperation::Upload, error))?;
+        let intent = match self.create_upload_intent(request, checksum_sha256.clone())? {
+            UploadIntentOutcome::Reserved(intent) => intent,
+            UploadIntentOutcome::AlreadyCommitted(committed) => {
+                return Ok(PutOutcome::AlreadyCommitted(committed));
+            }
+        };
 
         let response = self
             .http
             .put(&intent.signed_url.url)
+            .timeout(signed_url_transfer_timeout(Some(request.byte_len)))
             .header(reqwest::header::IF_NONE_MATCH, "*")
             .header("x-amz-checksum-sha256", checksum_sha256.as_str())
             .body(bytes.to_vec())
@@ -141,13 +176,7 @@ impl<'a, C: ControlPlaneClient> SignedUrlByteStore<'a, C> {
         let status = response.status();
         if status == reqwest::StatusCode::PRECONDITION_FAILED {
             self.metrics.borrow_mut().conditional_write_conflict_count += 1;
-            if let Err(error) = self.verify_existing_upload(
-                &key,
-                bytes.len() as u64,
-                &content_id,
-                bytes,
-                &expected_hash,
-            ) {
+            if let Err(error) = self.verify_existing_upload(request, bytes) {
                 // Random-nonce envelopes re-seal the same logical object to
                 // different ciphertext under the same content-id key. Greenfield
                 // R2 residue can also leave a foreign object at that key. Either
@@ -157,98 +186,153 @@ impl<'a, C: ControlPlaneClient> SignedUrlByteStore<'a, C> {
                     return Err(error);
                 }
                 self.metrics.borrow_mut().verification_failure_count += 1;
-                self.overwrite_object_bytes(&key, kind, &content_id, bytes)?;
+                return self.overwrite_object_bytes(request, bytes);
             }
         } else if !status.is_success() {
             return Err(ByteStoreError::HttpStatus {
-                key,
+                key: request.key.clone(),
                 operation: TransferOperation::Upload,
                 status: status.as_u16(),
             });
         }
+        Ok(PutOutcome::Uploaded(uploaded_metadata(request)))
+    }
 
-        let metadata = ObjectMetadata {
-            key: key.clone(),
-            kind,
-            byte_len: bytes.len() as u64,
-            hash: expected_hash,
-            key_epoch,
-            created_by_device_id: created_by_device_id.cloned(),
-            created_at_unix_ms: current_unix_ms(),
-            retention_state: RetentionState::Pending,
-            retain_until_unix_ms: None,
+    fn put_reader(
+        &self,
+        request: &PutObjectRequest<'_>,
+        source: &dyn ReopenableObjectSource,
+    ) -> Result<PutOutcome, ByteStoreError> {
+        let checksum_sha256 = sha256_checksum_source(source)?;
+        let intent = match self.create_upload_intent(request, checksum_sha256.clone())? {
+            UploadIntentOutcome::Reserved(intent) => intent,
+            UploadIntentOutcome::AlreadyCommitted(committed) => {
+                return Ok(PutOutcome::AlreadyCommitted(committed));
+            }
         };
-        let mut metrics = self.metrics.borrow_mut();
-        metrics.put_count += 1;
-        metrics.bytes_uploaded += bytes.len() as u64;
+        let response = send_streaming_put(
+            &self.http,
+            &intent.signed_url.url,
+            &request.key,
+            source,
+            request.byte_len,
+            request.expected_hash.as_str(),
+            checksum_sha256.as_str(),
+        )?;
+        let status = response.status();
+        if status == reqwest::StatusCode::PRECONDITION_FAILED {
+            self.metrics.borrow_mut().conditional_write_conflict_count += 1;
+            if let Err(error) = self.verify_existing_upload_source(request, source) {
+                let mut metrics = self.metrics.borrow_mut();
+                metrics.verification_failure_count += 1;
+                if matches!(
+                    error,
+                    ByteStoreError::Network { .. }
+                        | ByteStoreError::HttpStatus { .. }
+                        | ByteStoreError::IntentFailed { .. }
+                ) {
+                    metrics.retryable_failure_count += 1;
+                    return Err(error);
+                }
+                if !matches!(error, ByteStoreError::CorruptObject { .. }) {
+                    return Err(error);
+                }
+                drop(metrics);
+                // Same recovery as the buffered put path: re-seal / R2 residue
+                // under a content-id key must overwrite after hash mismatch.
+                let outcome = self.overwrite_object_reader(request, source)?;
+                self.record_streamed_peak();
+                return Ok(outcome);
+            }
+        } else if !status.is_success() {
+            return Err(ByteStoreError::HttpStatus {
+                key: request.key.clone(),
+                operation: TransferOperation::Upload,
+                status: status.as_u16(),
+            });
+        }
+        self.record_streamed_peak();
+        Ok(PutOutcome::Uploaded(uploaded_metadata(request)))
+    }
 
-        Ok(metadata)
+    fn record_streamed_peak(&self) {
+        let mut metrics = self.metrics.borrow_mut();
+        metrics.peak_object_bytes_in_flight = metrics.peak_object_bytes_in_flight.max(64 * 1024);
+    }
+
+    fn create_upload_intent(
+        &self,
+        request: &PutObjectRequest<'_>,
+        checksum_sha256: Sha256Checksum,
+    ) -> Result<UploadIntentOutcome, ByteStoreError> {
+        self.metrics.borrow_mut().convex_action_count += 1;
+        self.control_plane
+            .create_upload_intent(
+                UploadIntentRequest::new(
+                    self.workspace_id.clone(),
+                    ControlObjectKind::from(request.kind),
+                    request.byte_len,
+                    checksum_sha256,
+                )
+                .with_content_id(request.content_id.as_str())
+                .with_object_key(request.key.as_str()),
+            )
+            .map_err(|error| map_control_error(TransferOperation::Upload, error))
     }
 
     fn overwrite_object_bytes(
         &self,
-        key: &ObjectKey,
-        kind: StorageObjectKind,
-        content_id: &str,
+        request: &PutObjectRequest<'_>,
         bytes: &[u8],
-    ) -> Result<(), ByteStoreError> {
+    ) -> Result<PutOutcome, ByteStoreError> {
         let checksum_sha256 = Sha256Checksum::for_bytes(bytes);
-        self.metrics.borrow_mut().convex_action_count += 1;
-        let intent = self
-            .control_plane
-            .create_upload_intent(
-                UploadIntentRequest::new(
-                    self.workspace_id.clone(),
-                    ControlObjectKind::from(kind),
-                    bytes.len() as u64,
-                    checksum_sha256.clone(),
-                )
-                .with_content_id(content_id)
-                .with_object_key(key.as_str()),
-            )
-            .map_err(|error| map_control_error(TransferOperation::Upload, error))?;
+        let intent = match self.create_upload_intent(request, checksum_sha256.clone())? {
+            UploadIntentOutcome::Reserved(intent) => intent,
+            // Another writer committed the object between the failed create-only
+            // PUT and this recovery. The commit verified R2's checksum against
+            // the reservation, so the stored bytes are the ones this key names
+            // and there is nothing left to overwrite.
+            UploadIntentOutcome::AlreadyCommitted(committed) => {
+                return Ok(PutOutcome::AlreadyCommitted(committed));
+            }
+        };
         let response = self
             .http
             .put(&intent.signed_url.url)
+            .timeout(signed_url_transfer_timeout(Some(request.byte_len)))
             .header("x-amz-checksum-sha256", checksum_sha256.as_str())
             .body(bytes.to_vec())
             .send()
             .map_err(|error| map_http_error(TransferOperation::Upload, error))?;
         if !response.status().is_success() {
             return Err(ByteStoreError::HttpStatus {
-                key: key.clone(),
+                key: request.key.clone(),
                 operation: TransferOperation::Upload,
                 status: response.status().as_u16(),
             });
         }
-        Ok(())
+        Ok(PutOutcome::Uploaded(uploaded_metadata(request)))
     }
 
     fn overwrite_object_reader(
         &self,
-        request: &PutObjectReaderRequest<'_>,
-    ) -> Result<(), ByteStoreError> {
-        let checksum_sha256 = sha256_checksum_reader(request.source.open()?.as_mut())?;
-        self.metrics.borrow_mut().convex_action_count += 1;
-        let intent = self
-            .control_plane
-            .create_upload_intent(
-                UploadIntentRequest::new(
-                    self.workspace_id.clone(),
-                    ControlObjectKind::from(request.kind),
-                    request.byte_len,
-                    checksum_sha256.clone(),
-                )
-                .with_content_id(request.content_id.as_str())
-                .with_object_key(request.key.as_str()),
-            )
-            .map_err(|error| map_control_error(TransferOperation::Upload, error))?;
+        request: &PutObjectRequest<'_>,
+        source: &dyn ReopenableObjectSource,
+    ) -> Result<PutOutcome, ByteStoreError> {
+        let checksum_sha256 = sha256_checksum_source(source)?;
+        let intent = match self.create_upload_intent(request, checksum_sha256.clone())? {
+            UploadIntentOutcome::Reserved(intent) => intent,
+            // Same race as the buffered overwrite path.
+            UploadIntentOutcome::AlreadyCommitted(committed) => {
+                return Ok(PutOutcome::AlreadyCommitted(committed));
+            }
+        };
         let response = send_streaming_put_with_create_only(
             &self.http,
             &intent.signed_url.url,
             StreamingPutRequest {
                 key: &request.key,
-                source: request.source,
+                source,
                 byte_len: request.byte_len,
                 expected_hash: request.expected_hash.as_str(),
                 checksum_sha256: checksum_sha256.as_str(),
@@ -262,39 +346,27 @@ impl<'a, C: ControlPlaneClient> SignedUrlByteStore<'a, C> {
                 status: response.status().as_u16(),
             });
         }
-        Ok(())
+        Ok(PutOutcome::Uploaded(uploaded_metadata(request)))
     }
 
     fn verify_existing_upload(
         &self,
-        key: &ObjectKey,
-        byte_len: u64,
-        content_id: &str,
+        request: &PutObjectRequest<'_>,
         expected_bytes: &[u8],
-        expected_hash: &str,
     ) -> Result<(), ByteStoreError> {
-        self.metrics.borrow_mut().convex_action_count += 1;
-        let intent = self
-            .control_plane
-            .create_upload_verification_intent(
-                UploadVerificationIntentRequest::new(
-                    self.workspace_id.clone(),
-                    key.as_str(),
-                    byte_len,
-                )
-                .with_content_id(content_id),
-            )
-            .map_err(|error| map_control_error(TransferOperation::Upload, error))?;
-        let existing = fetch_signed_url(&self.http, key, &intent.signed_url.url, None)?;
-        if existing.len() as u64 != byte_len || stable_object_hash(&existing) != expected_hash {
+        let intent = self.create_upload_verification_intent(request)?;
+        let existing = fetch_signed_url(&self.http, &request.key, &intent.signed_url.url, None)?;
+        if existing.len() as u64 != request.byte_len
+            || ObjectHash::of_bytes(&existing) != request.expected_hash
+        {
             return Err(ByteStoreError::CorruptObject {
-                key: key.clone(),
+                key: request.key.clone(),
                 reason: "existing upload does not match retry bytes",
             });
         }
         if existing != expected_bytes {
             return Err(ByteStoreError::CorruptObject {
-                key: key.clone(),
+                key: request.key.clone(),
                 reason: "existing upload differs from retry bytes",
             });
         }
@@ -303,23 +375,14 @@ impl<'a, C: ControlPlaneClient> SignedUrlByteStore<'a, C> {
 
     fn verify_existing_upload_source(
         &self,
-        request: &PutObjectReaderRequest<'_>,
+        request: &PutObjectRequest<'_>,
+        source: &dyn ReopenableObjectSource,
     ) -> Result<(), ByteStoreError> {
-        self.metrics.borrow_mut().convex_action_count += 1;
-        let intent = self
-            .control_plane
-            .create_upload_verification_intent(
-                UploadVerificationIntentRequest::new(
-                    self.workspace_id.clone(),
-                    request.key.as_str(),
-                    request.byte_len,
-                )
-                .with_content_id(request.content_id.as_str()),
-            )
-            .map_err(|error| map_control_error(TransferOperation::Upload, error))?;
+        let intent = self.create_upload_verification_intent(request)?;
         let mut response = self
             .http
             .get(&intent.signed_url.url)
+            .timeout(signed_url_transfer_timeout(Some(request.byte_len)))
             .send()
             .map_err(|error| map_http_error(TransferOperation::Upload, error))?;
         if !response.status().is_success() {
@@ -331,10 +394,44 @@ impl<'a, C: ControlPlaneClient> SignedUrlByteStore<'a, C> {
         verify_matching_readers(
             &request.key,
             &mut response,
-            request.source.open()?.as_mut(),
+            source.open()?.as_mut(),
             request.byte_len,
             request.expected_hash.as_str(),
         )
+    }
+
+    fn create_upload_verification_intent(
+        &self,
+        request: &PutObjectRequest<'_>,
+    ) -> Result<crate::DownloadIntent, ByteStoreError> {
+        self.metrics.borrow_mut().convex_action_count += 1;
+        self.control_plane
+            .create_upload_verification_intent(
+                UploadVerificationIntentRequest::new(
+                    self.workspace_id.clone(),
+                    request.key.as_str(),
+                    request.byte_len,
+                )
+                .with_content_id(request.content_id.as_str()),
+            )
+            .map_err(|error| map_control_error(TransferOperation::Upload, error))
+    }
+}
+
+/// The metadata a completed transfer establishes locally. Retention is
+/// `Pending` because only the hosted commit that follows can make the object
+/// current; an already-committed object carries the server's row instead.
+fn uploaded_metadata(request: &PutObjectRequest<'_>) -> ObjectMetadata {
+    ObjectMetadata {
+        key: request.key.clone(),
+        kind: request.kind,
+        byte_len: request.byte_len,
+        hash: request.expected_hash.as_str().to_string(),
+        key_epoch: request.key_epoch,
+        created_by_device_id: request.created_by_device_id.cloned(),
+        created_at_unix_ms: current_unix_ms(),
+        retention_state: RetentionState::Pending,
+        retain_until_unix_ms: None,
     }
 }
 
@@ -350,138 +447,8 @@ fn upload_verification_status_error(
 }
 
 impl<C: ControlPlaneClient> ByteStore for SignedUrlByteStore<'_, C> {
-    fn put_object_reader_with_content_id_at_epoch(
-        &self,
-        request: PutObjectReaderRequest<'_>,
-    ) -> Result<ObjectMetadata, ByteStoreError> {
-        let checksum_sha256 = sha256_checksum_reader(request.source.open()?.as_mut())?;
-        self.metrics.borrow_mut().convex_action_count += 1;
-        let intent = self
-            .control_plane
-            .create_upload_intent(
-                UploadIntentRequest::new(
-                    self.workspace_id.clone(),
-                    ControlObjectKind::from(request.kind),
-                    request.byte_len,
-                    checksum_sha256.clone(),
-                )
-                .with_content_id(request.content_id.as_str())
-                .with_object_key(request.key.as_str()),
-            )
-            .map_err(|error| map_control_error(TransferOperation::Upload, error))?;
-        let response = send_streaming_put(
-            &self.http,
-            &intent.signed_url.url,
-            &request.key,
-            request.source,
-            request.byte_len,
-            request.expected_hash.as_str(),
-            checksum_sha256.as_str(),
-        )?;
-        let status = response.status();
-        if status == reqwest::StatusCode::PRECONDITION_FAILED {
-            self.metrics.borrow_mut().conditional_write_conflict_count += 1;
-            if let Err(error) = self.verify_existing_upload_source(&request) {
-                let mut metrics = self.metrics.borrow_mut();
-                metrics.verification_failure_count += 1;
-                if matches!(
-                    error,
-                    ByteStoreError::Network { .. }
-                        | ByteStoreError::HttpStatus { .. }
-                        | ByteStoreError::IntentFailed { .. }
-                ) {
-                    metrics.retryable_failure_count += 1;
-                    return Err(error);
-                }
-                if !matches!(error, ByteStoreError::CorruptObject { .. }) {
-                    return Err(error);
-                }
-                // Same recovery as the buffered put path: re-seal / R2 residue
-                // under a content-id key must overwrite after hash mismatch.
-                self.overwrite_object_reader(&request)?;
-            }
-        } else if !status.is_success() {
-            return Err(ByteStoreError::HttpStatus {
-                key: request.key,
-                operation: TransferOperation::Upload,
-                status: status.as_u16(),
-            });
-        }
-        let metadata = ObjectMetadata {
-            key: request.key,
-            kind: request.kind,
-            byte_len: request.byte_len,
-            hash: request.expected_hash.as_str().to_string(),
-            key_epoch: request.key_epoch,
-            created_by_device_id: request.created_by_device_id.cloned(),
-            created_at_unix_ms: current_unix_ms(),
-            retention_state: RetentionState::Pending,
-            retain_until_unix_ms: None,
-        };
-        let mut metrics = self.metrics.borrow_mut();
-        metrics.put_count += 1;
-        metrics.bytes_uploaded += request.byte_len;
-        metrics.peak_object_bytes_in_flight = metrics.peak_object_bytes_in_flight.max(64 * 1024);
-        Ok(metadata)
-    }
-
-    fn supports_streaming_puts(&self) -> bool {
-        true
-    }
-
-    fn put_object_with_content_id(
-        &self,
-        key: ObjectKey,
-        kind: StorageObjectKind,
-        content_id: &str,
-        bytes: &[u8],
-        created_by_device_id: Option<&DeviceId>,
-    ) -> Result<ObjectMetadata, ByteStoreError> {
-        SignedUrlByteStore::put_object_with_content_id(
-            self,
-            key,
-            kind,
-            content_id.to_string(),
-            bytes,
-            created_by_device_id,
-        )
-    }
-
-    fn put_object_with_content_id_at_epoch(
-        &self,
-        key: ObjectKey,
-        kind: StorageObjectKind,
-        content_id: &str,
-        bytes: &[u8],
-        key_epoch: u32,
-        created_by_device_id: Option<&DeviceId>,
-    ) -> Result<ObjectMetadata, ByteStoreError> {
-        SignedUrlByteStore::put_object_with_content_id_at_epoch(
-            self,
-            key,
-            kind,
-            content_id.to_string(),
-            bytes,
-            key_epoch,
-            created_by_device_id,
-        )
-    }
-
-    fn put_object(
-        &self,
-        key: ObjectKey,
-        kind: StorageObjectKind,
-        bytes: &[u8],
-        created_by_device_id: Option<&DeviceId>,
-    ) -> Result<ObjectMetadata, ByteStoreError> {
-        SignedUrlByteStore::put_object_with_content_id(
-            self,
-            key,
-            kind,
-            stable_object_hash(bytes),
-            bytes,
-            created_by_device_id,
-        )
+    fn put(&self, request: PutObjectRequest<'_>) -> Result<ObjectMetadata, ByteStoreError> {
+        Ok(self.put_object(request)?.into_metadata())
     }
 
     fn get_object(&self, key: &ObjectKey) -> Result<Vec<u8>, ByteStoreError> {
@@ -500,6 +467,44 @@ impl<C: ControlPlaneClient> ByteStore for SignedUrlByteStore<'_, C> {
         metrics.bytes_downloaded += bytes.len() as u64;
 
         Ok(bytes)
+    }
+
+    /// Streams the object straight into `writer`, so a multi-gigabyte object
+    /// never has to be resident.
+    fn get_object_to_writer(
+        &self,
+        key: &ObjectKey,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<u64, ByteStoreError> {
+        self.metrics.borrow_mut().convex_action_count += 1;
+        let intent = self
+            .control_plane
+            .create_download_intent(DownloadIntentRequest::full(
+                self.workspace_id.clone(),
+                key.as_str(),
+            ))
+            .map_err(|error| map_control_error(TransferOperation::Download, error))?;
+        let mut response = self
+            .http
+            .get(&intent.signed_url.url)
+            .timeout(signed_url_transfer_timeout(None))
+            .send()
+            .map_err(|error| map_http_error(TransferOperation::Download, error))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(ByteStoreError::HttpStatus {
+                key: key.clone(),
+                operation: TransferOperation::Download,
+                status: status.as_u16(),
+            });
+        }
+        let byte_len = std::io::copy(&mut response, writer)?;
+
+        let mut metrics = self.metrics.borrow_mut();
+        metrics.full_read_count += 1;
+        metrics.bytes_downloaded += byte_len;
+
+        Ok(byte_len)
     }
 
     fn get_range(&self, key: &ObjectKey, range: ByteRange) -> Result<Vec<u8>, ByteStoreError> {
@@ -539,10 +544,16 @@ impl<C: ControlPlaneClient> ByteStore for SignedUrlByteStore<'_, C> {
 
     fn delete_object(&self, key: &ObjectKey) -> Result<(), ByteStoreError> {
         self.metrics.borrow_mut().convex_query_count += 1;
-        let metadata = self
+        let metadata = match self
             .control_plane
             .head_object_metadata(&WorkspaceId::new(self.workspace_id.clone()), key.as_str())
-            .map_err(|error| map_control_error(TransferOperation::Delete, error))?;
+        {
+            Ok(metadata) => metadata,
+            // Idempotent: an interrupted sweep that already removed the metadata
+            // row must not wedge the next sweep on the same key.
+            Err(ControlPlaneError::ObjectMissing { .. }) => return Ok(()),
+            Err(error) => return Err(map_control_error(TransferOperation::Delete, error)),
+        };
         self.metrics.borrow_mut().head_count += 1;
         if metadata.retention_state != RetentionState::DeleteEligible {
             return Err(ByteStoreError::UnsupportedOperation(
@@ -562,10 +573,13 @@ impl<C: ControlPlaneClient> ByteStore for SignedUrlByteStore<'_, C> {
         let response = self
             .http
             .delete(&intent.signed_url.url)
+            .timeout(signed_url_transfer_timeout(Some(0)))
             .send()
             .map_err(|error| map_http_error(TransferOperation::Delete, error))?;
         let status = response.status();
-        if !status.is_success() {
+        // R2 answers 204 for an absent key, but treat an explicit 404 the same
+        // way: the post-condition (no bytes at this key) already holds.
+        if !status.is_success() && status != reqwest::StatusCode::NOT_FOUND {
             self.metrics.borrow_mut().retryable_failure_count += 1;
             return Err(ByteStoreError::HttpStatus {
                 key: key.clone(),
@@ -575,10 +589,6 @@ impl<C: ControlPlaneClient> ByteStore for SignedUrlByteStore<'_, C> {
         }
         self.metrics.borrow_mut().delete_count += 1;
         Ok(())
-    }
-
-    fn creates_upload_intents(&self) -> bool {
-        true
     }
 
     fn metrics(&self) -> ByteStoreMetrics {
@@ -592,7 +602,9 @@ fn fetch_signed_url(
     url: &str,
     range: Option<ByteRange>,
 ) -> Result<Vec<u8>, ByteStoreError> {
-    let mut request = http.get(url);
+    let mut request = http
+        .get(url)
+        .timeout(signed_url_transfer_timeout(range.map(|range| range.length)));
     if let Some(range) = range {
         let end = range
             .offset
@@ -643,9 +655,24 @@ fn current_unix_ms() -> u64 {
 }
 
 fn map_control_error(operation: TransferOperation, error: ControlPlaneError) -> ByteStoreError {
-    let kind = match &error {
+    ByteStoreError::IntentFailed {
+        operation,
+        kind: intent_failure_kind(&error),
+        detail: error.to_string(),
+    }
+}
+
+/// Translate a control-plane failure into the storage layer's failure taxonomy.
+/// The arms are exhaustive on purpose: a new `ControlPlaneError` variant must
+/// be classified here rather than silently defaulting to `Other`.
+fn intent_failure_kind(error: &ControlPlaneError) -> IntentFailureKind {
+    match error {
         ControlPlaneError::Timeout { .. } => IntentFailureKind::Timeout,
-        ControlPlaneError::Transport { .. } => IntentFailureKind::Transport,
+        // A server exception is a remote fault the caller can retry, exactly
+        // like a dropped connection.
+        ControlPlaneError::Transport { .. } | ControlPlaneError::ServerError { .. } => {
+            IntentFailureKind::Transport
+        }
         ControlPlaneError::Rejected {
             code:
                 RejectionCode::DeviceNotTrusted
@@ -655,7 +682,7 @@ fn map_control_error(operation: TransferOperation, error: ControlPlaneError) -> 
             ..
         } => IntentFailureKind::DeviceNotTrusted,
         ControlPlaneError::Rejected {
-            code: RejectionCode::InvalidRequest | RejectionCode::Unknown,
+            code: RejectionCode::Conflict | RejectionCode::InvalidRequest | RejectionCode::Unknown,
             ..
         }
         | ControlPlaneError::WorkspaceMissing { .. }
@@ -663,15 +690,18 @@ fn map_control_error(operation: TransferOperation, error: ControlPlaneError) -> 
         | ControlPlaneError::InvalidObjectKey { .. }
         | ControlPlaneError::ObjectMissing { .. }
         | ControlPlaneError::DeviceRequestMissing { .. }
-        | ControlPlaneError::Limited { .. }
         | ControlPlaneError::Unsupported { .. }
         | ControlPlaneError::Conflict { .. }
-        | ControlPlaneError::Storage(_) => IntentFailureKind::Other,
-    };
-    ByteStoreError::IntentFailed {
-        operation,
-        kind,
-        detail: error.to_string(),
+        | ControlPlaneError::ContractViolation { .. }
+        | ControlPlaneError::ContractSkew { .. }
+        | ControlPlaneError::ResponseShape { .. }
+        // Not `DeviceNotTrusted`: that kind means the control plane refused this
+        // device, while an unknown signer is another device this host has not
+        // learned yet. No object intent is signed by a peer, so this cannot
+        // arise here; classifying it as a refusal of the local device would make
+        // the storage taxonomy lie if it ever did.
+        | ControlPlaneError::UnknownSigningDevice { .. }
+        | ControlPlaneError::Internal { .. } => IntentFailureKind::Other,
     }
 }
 

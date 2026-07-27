@@ -6,7 +6,9 @@ use super::*;
 use bowline_core::devices::display_matching_code;
 
 pub(crate) fn apply_device_status(output: &mut StatusCommandOutput, trust: &DeviceTrustSnapshot) {
-    let local_device_id = runtime::daemon_device_id(&output.workspace_id);
+    // Reduce the snapshot the caller already fetched. Resolving the id through
+    // `daemon_device_id` would re-fetch this very snapshot over the network.
+    let local_device_id = runtime::daemon_device_id_for_trust(&output.workspace_id, trust);
     apply_device_status_for_local_device(output, trust, &local_device_id);
 }
 
@@ -19,7 +21,7 @@ pub(crate) fn apply_device_status_for_local_device(
     if let Some(revoked) = trust
         .revoked_devices
         .iter()
-        .find(|device| device.device_id == local_id)
+        .find(|device| device.device_id == DeviceId::new(local_id))
     {
         append_status_fact(
             output,
@@ -38,7 +40,7 @@ pub(crate) fn apply_device_status_for_local_device(
             output,
             StatusSubjectKind::Device,
             revoked.device_id.as_str(),
-            Some(DeviceId::new(revoked.device_id.clone())),
+            Some(revoked.device_id.clone()),
             format!(
                 "This device is revoked; future sync and trust operations are blocked. Reason: {}",
                 revoked.reason
@@ -55,20 +57,20 @@ pub(crate) fn apply_device_status_for_local_device(
     if let Some(device) = trust
         .authorized_devices
         .iter()
-        .find(|device| device.device_id == local_id)
+        .find(|device| device.device_id == DeviceId::new(local_id))
     {
         let item = device_status_item(
             output,
             StatusSubjectKind::Device,
             device.device_id.as_str(),
-            Some(DeviceId::new(device.device_id.clone())),
+            Some(device.device_id.clone()),
             trusted_device_summary(device.device_id.as_str(), device.device_name.as_str()),
         );
         output.items.push(item);
     } else if let Some(request) = trust
         .pending_requests
         .iter()
-        .find(|request| request.device_id == local_id)
+        .find(|request| request.device_id == DeviceId::new(local_id))
     {
         append_status_fact(
             output,
@@ -87,7 +89,7 @@ pub(crate) fn apply_device_status_for_local_device(
             output,
             StatusSubjectKind::DeviceApprovalRequest,
             request.request_id.as_str(),
-            Some(DeviceId::new(request.device_id.clone())),
+            Some(request.device_id.clone()),
             "This device has a pending approval request.".to_string(),
         );
         output.items.push(item);
@@ -157,7 +159,7 @@ pub(crate) fn apply_device_status_for_local_device(
                     output,
                     StatusSubjectKind::DeviceApprovalRequest,
                     request.request_id.as_str(),
-                    Some(DeviceId::new(request.device_id.clone())),
+                    Some(request.device_id.clone()),
                     format!(
                         "{} is waiting for approval with matching code {}.",
                         request.device_name, display_code

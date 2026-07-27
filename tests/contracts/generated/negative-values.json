@@ -2467,6 +2467,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -2480,6 +2481,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -2493,6 +2495,7 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -2506,6 +2509,7 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -2519,6 +2523,21 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "expiresAt": "2026-06-23T12:00:01Z",
+    "matchingCode": "123456",
+    "platform": "macos",
+    "requestedAt": "2026-06-23T12:00:00Z",
+    "requestId": "request_1",
+    "state": "pending",
+    "workspaceId": "ws_code"
+  },
+  "HostedDeviceRequest.missing.devicePublicKeyProof": {
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "device_public_key_1",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -2533,6 +2552,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "requestedAt": "2026-06-23T12:00:00Z",
@@ -2546,6 +2566,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "platform": "macos",
     "requestedAt": "2026-06-23T12:00:00Z",
@@ -2559,6 +2580,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "requestedAt": "2026-06-23T12:00:00Z",
@@ -2572,6 +2594,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -2585,6 +2608,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -2598,6 +2622,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -2611,6 +2636,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -2625,6 +2651,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -2639,6 +2666,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "host": null,
     "matchingCode": "123456",
@@ -2654,6 +2682,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "leaseHandoffDigest": null,
     "matchingCode": "123456",
@@ -2669,6 +2698,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "leaseId": null,
     "matchingCode": "123456",
@@ -2684,6 +2714,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -2699,6 +2730,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -2714,6 +2746,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -2886,6 +2919,8 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -2894,6 +2929,8 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -2902,6 +2939,8 @@
     "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -2910,6 +2949,8 @@
     "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
     "deviceFingerprint": "fingerprint_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -2918,6 +2959,28 @@
     "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "platform": "macos",
+    "workspaceId": "ws_code"
+  },
+  "HostedDevicesCreateFirstAuthorizedDeviceRequest.missing.devicePublicKey": {
+    "accountSessionId": "acct_session",
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "platform": "macos",
+    "workspaceId": "ws_code"
+  },
+  "HostedDevicesCreateFirstAuthorizedDeviceRequest.missing.devicePublicKeyProof": {
+    "accountSessionId": "acct_session",
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -2927,6 +2990,8 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "workspaceId": "ws_code"
   },
   "HostedDevicesCreateFirstAuthorizedDeviceRequest.missing.workspaceId": {
@@ -2935,6 +3000,8 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos"
   },
   "HostedDevicesCreatePendingDeviceRequest.missing.accountSessionId": {
@@ -2943,6 +3010,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -2953,6 +3021,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -2963,6 +3032,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -2973,6 +3043,7 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -2983,6 +3054,7 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -2993,6 +3065,18 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "matchingCode": "123456",
+    "platform": "macos",
+    "workspaceId": "ws_code"
+  },
+  "HostedDevicesCreatePendingDeviceRequest.missing.devicePublicKeyProof": {
+    "accountSessionId": "acct_session",
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "device_public_key_1",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -3004,6 +3088,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -3014,6 +3099,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "workspaceId": "ws_code"
   },
@@ -3024,6 +3110,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos"
   },
@@ -3034,6 +3121,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": null,
     "matchingCode": "123456",
     "platform": "macos",
@@ -3046,6 +3134,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresInTicks": null,
     "matchingCode": "123456",
     "platform": "macos",
@@ -3058,6 +3147,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "host": null,
     "matchingCode": "123456",
     "platform": "macos",
@@ -3070,6 +3160,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "leaseHandoffDigest": null,
     "matchingCode": "123456",
     "platform": "macos",
@@ -3082,6 +3173,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "leaseId": null,
     "matchingCode": "123456",
     "platform": "macos",
@@ -3094,6 +3186,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "requestId": null,
@@ -3106,6 +3199,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "root": null,
@@ -3118,6 +3212,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "runtime": null,
@@ -3130,6 +3225,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "setupReceiptsDigest": null,
@@ -3141,6 +3237,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -3151,6 +3248,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -3161,6 +3259,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -3171,6 +3270,7 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -3181,6 +3281,7 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -3191,6 +3292,18 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "matchingCode": "123456",
+    "platform": "macos",
+    "workspaceId": "ws_code"
+  },
+  "HostedDevicesCreatePendingDeviceWithBootstrapRequest.missing.devicePublicKeyProof": {
+    "bootstrapToken": "bootstrap-token",
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "device_public_key_1",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -3202,6 +3315,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -3212,6 +3326,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "workspaceId": "ws_code"
   },
@@ -3222,6 +3337,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos"
   },
@@ -3232,6 +3348,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": null,
     "matchingCode": "123456",
     "platform": "macos",
@@ -3244,6 +3361,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresInTicks": null,
     "matchingCode": "123456",
     "platform": "macos",
@@ -3256,6 +3374,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "host": null,
     "matchingCode": "123456",
     "platform": "macos",
@@ -3268,6 +3387,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "leaseHandoffDigest": null,
     "matchingCode": "123456",
     "platform": "macos",
@@ -3280,6 +3400,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "leaseId": null,
     "matchingCode": "123456",
     "platform": "macos",
@@ -3292,6 +3413,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "requestId": null,
@@ -3304,6 +3426,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "root": null,
@@ -3316,6 +3439,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "runtime": null,
@@ -3328,6 +3452,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "setupReceiptsDigest": null,
@@ -3354,10 +3479,16 @@
     "reason": "not this machine"
   },
   "HostedDevicesGetEncryptedGrantRequest.missing.deviceId": {
+    "requestedByDeviceProof": "proof_fetch_grant",
+    "requestId": "request_1"
+  },
+  "HostedDevicesGetEncryptedGrantRequest.missing.requestedByDeviceProof": {
+    "deviceId": "device_1",
     "requestId": "request_1"
   },
   "HostedDevicesGetEncryptedGrantRequest.missing.requestId": {
-    "deviceId": "device_1"
+    "deviceId": "device_1",
+    "requestedByDeviceProof": "proof_fetch_grant"
   },
   "HostedDevicesGetEncryptedGrantWithBootstrapRequest.missing.bootstrapToken": {
     "deviceId": "device_1",
@@ -3425,16 +3556,14 @@
   "HostedDownloadIntentRange.missing.offset": {
     "length": 8
   },
-  "HostedEventsListCompactEventsRequest.missing.workspaceId": {},
-  "HostedEventsListCompactEventsRequest.null.accountSessionId": {
-    "accountSessionId": null,
+  "HostedEventsListCompactEventsRequest.missing.accountSessionId": {
     "workspaceId": "ws_code"
   },
-  "HostedEventsListCompactEventsRequest.null.authToken": {
-    "authToken": null,
-    "workspaceId": "ws_code"
+  "HostedEventsListCompactEventsRequest.missing.workspaceId": {
+    "accountSessionId": "acct_session"
   },
   "HostedEventsListCompactEventsRequest.null.limit": {
+    "accountSessionId": "acct_session",
     "limit": null,
     "workspaceId": "ws_code"
   },
@@ -3749,17 +3878,25 @@
     "signedUrl": "https://r2.example/get",
     "workspaceId": "ws_code"
   },
-  "HostedObjectsCreateStorageGcDeleteIntentRequest.missing.authToken": {
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+  "HostedObjectsCreateStorageGcDeleteIntentRequest.missing.objectKey": {
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_delete_intent",
     "workspaceId": "ws_code"
   },
-  "HostedObjectsCreateStorageGcDeleteIntentRequest.missing.objectKey": {
-    "authToken": "cp_token",
+  "HostedObjectsCreateStorageGcDeleteIntentRequest.missing.requestedByDeviceId": {
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "requestedByDeviceProof": "proof_gc_delete_intent",
+    "workspaceId": "ws_code"
+  },
+  "HostedObjectsCreateStorageGcDeleteIntentRequest.missing.requestedByDeviceProof": {
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "requestedByDeviceId": "device_1",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateStorageGcDeleteIntentRequest.missing.workspaceId": {
-    "authToken": "cp_token",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_delete_intent"
   },
   "HostedObjectsCreateStorageGcDeleteIntentResponse.missing.expiresAt": {
     "keyEpoch": 1,
@@ -3916,77 +4053,14 @@
     "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
     "workspaceId": "ws_code"
   },
-  "HostedObjectsCreateUploadIntentResponse.missing.byteLength": {
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
+  "HostedObjectsCreateUploadIntentResponse.missing.outcome": {},
+  "HostedObjectsCreateUploadIntentResponse.null.committed": {
+    "committed": null,
+    "outcome": "reserved"
   },
-  "HostedObjectsCreateUploadIntentResponse.missing.expiresAt": {
-    "byteLength": 256,
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.missing.intentId": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.missing.kind": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.missing.method": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.missing.objectKey": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.missing.signedUrl": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.missing.workspaceId": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put"
+  "HostedObjectsCreateUploadIntentResponse.null.reservation": {
+    "outcome": "reserved",
+    "reservation": null
   },
   "HostedObjectsCreateUploadVerificationIntentRequest.missing.byteLength": {
     "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
@@ -4764,63 +4838,70 @@
     "ok": true,
     "ref": null
   },
-  "HostedRefsCreateWorkspaceRefRequest.missing.workspaceId": {},
-  "HostedRefsCreateWorkspaceRefRequest.null.accountSessionId": {
-    "accountSessionId": null,
+  "HostedRefsCreateWorkspaceRefRequest.missing.accountSessionId": {
     "workspaceId": "ws_code"
   },
-  "HostedRefsCreateWorkspaceRefRequest.null.authToken": {
-    "authToken": null,
+  "HostedRefsCreateWorkspaceRefRequest.missing.workspaceId": {
+    "accountSessionId": "acct_session"
+  },
+  "HostedRefsGetWorkspaceRefRequest.missing.accountSessionId": {
     "workspaceId": "ws_code"
   },
-  "HostedRefsGetWorkspaceRefRequest.missing.workspaceId": {},
-  "HostedRefsGetWorkspaceRefRequest.null.accountSessionId": {
-    "accountSessionId": null,
+  "HostedRefsGetWorkspaceRefRequest.missing.workspaceId": {
+    "accountSessionId": "acct_session"
+  },
+  "HostedRefsListWorkspaceRefHistoryRequest.missing.accountSessionId": {
     "workspaceId": "ws_code"
   },
-  "HostedRefsGetWorkspaceRefRequest.null.authToken": {
-    "authToken": null,
-    "workspaceId": "ws_code"
-  },
-  "HostedRefsListWorkspaceRefHistoryRequest.missing.workspaceId": {},
-  "HostedRefsListWorkspaceRefHistoryRequest.null.accountSessionId": {
-    "accountSessionId": null,
-    "workspaceId": "ws_code"
-  },
-  "HostedRefsListWorkspaceRefHistoryRequest.null.authToken": {
-    "authToken": null,
-    "workspaceId": "ws_code"
+  "HostedRefsListWorkspaceRefHistoryRequest.missing.workspaceId": {
+    "accountSessionId": "acct_session"
   },
   "HostedRefsListWorkspaceRefHistoryRequest.null.limit": {
+    "accountSessionId": "acct_session",
     "limit": null,
     "workspaceId": "ws_code"
   },
-  "HostedRetentionDeleteObjectMetadataAfterGcRequest.missing.authToken": {
-    "objectKey": "obj_pack_fixture",
+  "HostedRetentionDeleteObjectMetadataAfterGcRequest.missing.objectKey": {
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_metadata_delete",
     "workspaceId": "ws_code"
   },
-  "HostedRetentionDeleteObjectMetadataAfterGcRequest.missing.objectKey": {
-    "authToken": "cp_token",
+  "HostedRetentionDeleteObjectMetadataAfterGcRequest.missing.requestedByDeviceId": {
+    "objectKey": "obj_pack_fixture",
+    "requestedByDeviceProof": "proof_gc_metadata_delete",
+    "workspaceId": "ws_code"
+  },
+  "HostedRetentionDeleteObjectMetadataAfterGcRequest.missing.requestedByDeviceProof": {
+    "objectKey": "obj_pack_fixture",
+    "requestedByDeviceId": "device_1",
     "workspaceId": "ws_code"
   },
   "HostedRetentionDeleteObjectMetadataAfterGcRequest.missing.workspaceId": {
-    "authToken": "cp_token",
-    "objectKey": "obj_pack_fixture"
+    "objectKey": "obj_pack_fixture",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_metadata_delete"
   },
   "HostedRetentionDeleteObjectMetadataAfterGcResponse.missing.deleted": {},
   "HostedRetentionDeleteObjectMetadataAfterGcResponse.null.reason": {
     "deleted": true,
     "reason": null
   },
-  "HostedRetentionListStorageGcObjectsRequest.missing.authToken": {
+  "HostedRetentionListStorageGcObjectsRequest.missing.requestedByDeviceId": {
+    "requestedByDeviceProof": "proof_gc_list",
+    "workspaceId": "ws_code"
+  },
+  "HostedRetentionListStorageGcObjectsRequest.missing.requestedByDeviceProof": {
+    "requestedByDeviceId": "device_1",
     "workspaceId": "ws_code"
   },
   "HostedRetentionListStorageGcObjectsRequest.missing.workspaceId": {
-    "authToken": "cp_token"
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_list"
   },
   "HostedRetentionListStorageGcObjectsRequest.null.cursor": {
-    "authToken": "cp_token",
     "cursor": null,
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_list",
     "workspaceId": "ws_code"
   },
   "HostedRetentionListStorageGcObjectsResponse.missing.continueCursor": {
@@ -5558,6 +5639,354 @@
     "completed": 0,
     "queued": 0,
     "reconciliationRequired": 0
+  },
+  "HostedUploadIntentOutcome.unknown": "unknown.HostedUploadIntentOutcome",
+  "HostedUploadReservation.missing.byteLength": {
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.missing.expiresAt": {
+    "byteLength": 256,
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.missing.intentId": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.missing.kind": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.missing.method": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.missing.objectKey": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.missing.signedUrl": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.missing.workspaceId": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put"
+  },
+  "HostedWorkspaceKeyRegrantAssignment.missing.keyEpoch": {
+    "state": "offered"
+  },
+  "HostedWorkspaceKeyRegrantAssignment.missing.state": {
+    "keyEpoch": 2
+  },
+  "HostedWorkspaceKeyRegrantAssignment.null.ciphertext": {
+    "ciphertext": null,
+    "keyEpoch": 2,
+    "state": "offered"
+  },
+  "HostedWorkspaceKeyRegrantAssignment.null.sealedByDeviceId": {
+    "keyEpoch": 2,
+    "sealedByDeviceId": null,
+    "state": "offered"
+  },
+  "HostedWorkspaceKeyRegrantOffer.missing.acceptanceProofVerifier": {
+    "ciphertext": "regrant_ciphertext",
+    "recipientDeviceId": "device_1"
+  },
+  "HostedWorkspaceKeyRegrantOffer.missing.ciphertext": {
+    "acceptanceProofVerifier": "gapv_verifier",
+    "recipientDeviceId": "device_1"
+  },
+  "HostedWorkspaceKeyRegrantOffer.missing.recipientDeviceId": {
+    "acceptanceProofVerifier": "gapv_verifier",
+    "ciphertext": "regrant_ciphertext"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.missing.deviceFingerprint": {
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.missing.deviceId": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.missing.deviceName": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.missing.devicePublicKey": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.missing.devicePublicKeyProof": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.missing.heldKeyEpoch": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.missing.keyEpoch": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.missing.platform": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.missing.state": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.null.deviceAuthorizationProofVerifier": {
+    "deviceAuthorizationProofVerifier": null,
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.null.sealedByDeviceId": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "sealedByDeviceId": null,
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantState.unknown": "unknown.HostedWorkspaceKeyRegrantState",
+  "HostedWorkspaceKeyRegrantWork.missing.currentKeyEpoch": {
+    "outstanding": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.missing.outstanding": {
+    "currentKeyEpoch": 2,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.missing.workspaceId": {
+    "currentKeyEpoch": 2,
+    "outstanding": []
+  },
+  "HostedWorkspaceKeyRegrantWork.null.ownRegrant": {
+    "currentKeyEpoch": 2,
+    "outstanding": [],
+    "ownRegrant": null,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.null.pendingKeyEpoch": {
+    "currentKeyEpoch": 2,
+    "outstanding": [],
+    "pendingKeyEpoch": null,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.null.pendingSeededByDeviceId": {
+    "currentKeyEpoch": 2,
+    "outstanding": [],
+    "pendingSeededByDeviceId": null,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.missing.deviceId": {
+    "deviceProof": "proof_accept_regrant",
+    "grantAcceptanceProof": "gap_proof",
+    "keyEpoch": 2,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.missing.deviceProof": {
+    "deviceId": "device_1",
+    "grantAcceptanceProof": "gap_proof",
+    "keyEpoch": 2,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.missing.grantAcceptanceProof": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_accept_regrant",
+    "keyEpoch": 2,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.missing.keyEpoch": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_accept_regrant",
+    "grantAcceptanceProof": "gap_proof",
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.missing.workspaceId": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_accept_regrant",
+    "grantAcceptanceProof": "gap_proof",
+    "keyEpoch": 2
+  },
+  "HostedWorkspaceKeysGetKeyRegrantWorkRequest.missing.deviceId": {
+    "deviceProof": "proof_regrant_work",
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysGetKeyRegrantWorkRequest.missing.deviceProof": {
+    "deviceId": "device_1",
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysGetKeyRegrantWorkRequest.missing.workspaceId": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_regrant_work"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.missing.deviceId": {
+    "deviceProof": "proof_offer_regrants",
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.missing.deviceProof": {
+    "deviceId": "device_owner",
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.missing.keyEpoch": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_offer_regrants",
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.missing.offers": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_offer_regrants",
+    "keyEpoch": 2,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.missing.workspaceId": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_offer_regrants",
+    "keyEpoch": 2,
+    "offers": []
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.missing.deviceId": {
+    "deviceProof": "proof_seed_epoch",
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.missing.deviceProof": {
+    "deviceId": "device_owner",
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.missing.keyEpoch": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_seed_epoch",
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.missing.offers": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_seed_epoch",
+    "keyEpoch": 2,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.missing.workspaceId": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_seed_epoch",
+    "keyEpoch": 2,
+    "offers": []
   },
   "HostedWorkspaceRef.missing.updatedAt": {
     "version": 7,

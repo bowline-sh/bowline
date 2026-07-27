@@ -16,6 +16,10 @@
     "device list",
     "device request",
     "device accept",
+    "device key-status",
+    "conflicts",
+    "resolve",
+    "deletions",
     "events",
     "tui",
     "forget-local",
@@ -298,6 +302,9 @@
     "member.joined",
     "member.removed",
     "workspace_key.rotated",
+    "workspace_key.seeded",
+    "workspace_key.regrant_offered",
+    "workspace_key.regrant_settled",
     "recovery_key.created",
     "recovery_key.verified",
     "recovery_key.rotated",
@@ -563,6 +570,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -606,6 +614,8 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -616,6 +626,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -627,6 +638,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -639,6 +651,7 @@
   },
   "HostedDevicesGetEncryptedGrantRequest": {
     "deviceId": "device_1",
+    "requestedByDeviceProof": "proof_fetch_grant",
     "requestId": "request_1"
   },
   "HostedDevicesGetEncryptedGrantWithBootstrapRequest": {
@@ -667,6 +680,7 @@
     "offset": 4
   },
   "HostedEventsListCompactEventsRequest": {
+    "accountSessionId": "acct_session",
     "workspaceId": "ws_code"
   },
   "HostedEventsListCompactEventsResponse": [],
@@ -738,8 +752,9 @@
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateStorageGcDeleteIntentRequest": {
-    "authToken": "cp_token",
     "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_delete_intent",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateStorageGcDeleteIntentResponse": {
@@ -763,14 +778,7 @@
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateUploadIntentResponse": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
+    "outcome": "reserved"
   },
   "HostedObjectsCreateUploadVerificationIntentRequest": {
     "byteLength": 256,
@@ -899,25 +907,30 @@
     "ok": true
   },
   "HostedRefsCreateWorkspaceRefRequest": {
+    "accountSessionId": "acct_session",
     "workspaceId": "ws_code"
   },
   "HostedRefsGetWorkspaceRefRequest": {
+    "accountSessionId": "acct_session",
     "workspaceId": "ws_code"
   },
   "HostedRefsListWorkspaceRefHistoryRequest": {
+    "accountSessionId": "acct_session",
     "workspaceId": "ws_code"
   },
   "HostedRefsListWorkspaceRefHistoryResponse": [],
   "HostedRetentionDeleteObjectMetadataAfterGcRequest": {
-    "authToken": "cp_token",
     "objectKey": "obj_pack_fixture",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_metadata_delete",
     "workspaceId": "ws_code"
   },
   "HostedRetentionDeleteObjectMetadataAfterGcResponse": {
     "deleted": true
   },
   "HostedRetentionListStorageGcObjectsRequest": {
-    "authToken": "cp_token",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_list",
     "workspaceId": "ws_code"
   },
   "HostedRetentionListStorageGcObjectsResponse": {
@@ -1035,6 +1048,77 @@
     "queued": 0,
     "reconciliationRequired": 0,
     "waitingRetry": 0
+  },
+  "HostedUploadIntentOutcome": [
+    "reserved",
+    "already-committed"
+  ],
+  "HostedUploadReservation": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantAssignment": {
+    "keyEpoch": 2,
+    "state": "offered"
+  },
+  "HostedWorkspaceKeyRegrantOffer": {
+    "acceptanceProofVerifier": "gapv_verifier",
+    "ciphertext": "regrant_ciphertext",
+    "recipientDeviceId": "device_1"
+  },
+  "HostedWorkspaceKeyRegrantRecipient": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantState": [
+    "pending",
+    "offered",
+    "fulfilled",
+    "superseded"
+  ],
+  "HostedWorkspaceKeyRegrantWork": {
+    "currentKeyEpoch": 2,
+    "outstanding": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_accept_regrant",
+    "grantAcceptanceProof": "gap_proof",
+    "keyEpoch": 2,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysGetKeyRegrantWorkRequest": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_regrant_work",
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_offer_regrants",
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_seed_epoch",
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": "ws_code"
   },
   "HostedWorkspaceRef": {
     "updatedAt": "2026-06-23T12:00:00Z",

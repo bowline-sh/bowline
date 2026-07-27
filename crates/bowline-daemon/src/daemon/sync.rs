@@ -1,11 +1,34 @@
-use super::*;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use bowline_core::ids::{DeviceId, WorkspaceId};
+use bowline_local::notifications::{
+    DesktopNotificationSender, NotificationDedupe, NotificationDispatchReport, NotificationSender,
+    dispatch_new_notifications_with_checkpoint, pending_device_payloads,
+};
+use time::OffsetDateTime;
+
+use bowline_daemon::manifest_transport::{
+    ReconnectAttempt, RefObserverFailureStage, RefObserverReadiness,
+};
+
+use crate::daemon::{
+    HostedContext, HostedContextCache, HostedContextResolver, NOTIFICATION_POLL_INTERVAL,
+    REMOTE_OBSERVER_REAUTH_RECONNECT_MAX, REMOTE_OBSERVER_RECONNECT_INITIAL,
+    REMOTE_OBSERVER_RECONNECT_MAX, REMOTE_OBSERVER_UNTRUSTED_SIGNER_RECONNECT_MAX,
+    StatusPublishOutcome, StatusPublishPayload, StatusPublisher, hosted_context_resolver,
+    hosted_status_publisher_with_context,
+};
 
 mod notification_status;
 mod policy_cache;
 mod status_publish;
+mod watcher_host;
 mod workspace_key;
 
 pub(in crate::daemon) use policy_cache::{drain_policy, invalidate_policy_cache_for_path};
+pub(in crate::daemon) use watcher_host::WatcherHost;
 pub(in crate::daemon) use workspace_key::require_local_workspace_key;
 
 /// The workspace identity and filesystem locations a daemon serves. Every
@@ -15,8 +38,8 @@ pub(in crate::daemon) use workspace_key::require_local_workspace_key;
 pub(super) struct SyncArgs {
     pub(super) root: PathBuf,
     pub(super) state_root: PathBuf,
-    pub(super) workspace_id: String,
-    pub(super) device_id: String,
+    pub(super) workspace_id: WorkspaceId,
+    pub(super) device_id: DeviceId,
 }
 
 pub(super) struct DaemonRuntime {
@@ -53,8 +76,10 @@ pub(super) struct StatusPublishCompletion {
 /// kernel feeding it, and the hosted status publisher.
 pub(super) struct ContinuousSyncRuntime {
     pub(super) args: SyncArgs,
-    pub(super) watcher: Option<super::watcher::SyncWatcher>,
-    pub(super) change_rx: Option<Receiver<WatcherSignal>>,
+    /// The filesystem watcher kernel. A watcher that fails to arm is a
+    /// degradation with a retry deadline, never a silent absence — nothing else
+    /// in the engine detects local edits.
+    pub(super) watcher: WatcherHost,
     pub(super) status_publisher: StatusPublisher,
     pub(super) next_status_publish: Instant,
     pub(super) last_status_publish_fingerprint: Option<String>,
@@ -128,11 +153,34 @@ const MANIFEST_ENGINE_RETRY_INITIAL: Duration = Duration::from_secs(1);
 /// Backoff ceiling: past this the daemon retries once per this interval forever.
 const MANIFEST_ENGINE_RETRY_MAX: Duration = Duration::from_secs(30);
 
+/// How far the exponential climb runs before the per-stage ceiling takes over.
+/// 250ms << 8 clears the re-authentication ceiling, so both stages reach their
+/// own ceiling from one curve rather than two hand-tuned schedules.
+const REMOTE_OBSERVER_RECONNECT_EXPONENT_CAP: u32 = 8;
+
 /// Shared reconnect backoff for the manifest transport's ref subscription.
-pub(in crate::daemon) fn remote_observer_reconnect_delay(failure_count: u32) -> Duration {
-    let exponent = failure_count.saturating_sub(1).min(5);
-    let multiplier = 1_u32 << exponent;
-    (REMOTE_OBSERVER_RECONNECT_INITIAL * multiplier).min(REMOTE_OBSERVER_RECONNECT_MAX)
+pub(in crate::daemon) fn remote_observer_reconnect_delay(attempt: ReconnectAttempt) -> Duration {
+    let ceiling = match attempt.stage {
+        RefObserverFailureStage::Authentication => REMOTE_OBSERVER_REAUTH_RECONNECT_MAX,
+        // A head this host is not allowed to verify does not heal on the
+        // transport schedule either: the workspace's device trust has to change
+        // first, and the observer re-reads that trust on its own bounded
+        // interval rather than on this one.
+        RefObserverFailureStage::UntrustedSigner(_) => {
+            REMOTE_OBSERVER_UNTRUSTED_SIGNER_RECONNECT_MAX
+        }
+        RefObserverFailureStage::Start
+        | RefObserverFailureStage::InitialValue
+        | RefObserverFailureStage::Stream
+        // Still learning: the next attempt is expected to succeed as soon as the
+        // trust read behind it lands, so this keeps the transport schedule.
+        | RefObserverFailureStage::UnknownSigner(_) => REMOTE_OBSERVER_RECONNECT_MAX,
+    };
+    let exponent = attempt
+        .consecutive_failures
+        .saturating_sub(1)
+        .min(REMOTE_OBSERVER_RECONNECT_EXPONENT_CAP);
+    (REMOTE_OBSERVER_RECONNECT_INITIAL * (1_u32 << exponent)).min(ceiling)
 }
 
 impl DaemonRuntime {
@@ -254,10 +302,11 @@ impl ContinuousSyncRuntime {
             std::process::id(),
             OffsetDateTime::now_utc().unix_timestamp_nanos()
         );
-        let (watcher, change_rx) = match start_sync_watcher(&args.root) {
-            Ok((watcher, change_rx)) => (Some(watcher), Some(change_rx)),
-            Err(_) => (None, None),
-        };
+        let now = Instant::now();
+        let mut watcher = WatcherHost::unarmed(now);
+        // A failure here logs and schedules a retry; it never leaves the daemon
+        // silently blind. The scheduler re-arms on every engine drive.
+        watcher.ensure_armed(&args.root, now);
         let hosted_context = Arc::new(HostedContextCache::new());
         let hosted_resolver = hosted_context_resolver(hosted_context);
         let manifest_snapshot = bowline_daemon::manifest_driver::shared_engine_snapshot();
@@ -270,7 +319,6 @@ impl ContinuousSyncRuntime {
             claimant_id,
             args,
             watcher,
-            change_rx,
             status_publisher: hosted_status_publisher_with_context(hosted_resolver.clone()),
             next_status_publish: Instant::now(),
             last_status_publish_fingerprint: None,
@@ -390,6 +438,22 @@ impl ContinuousSyncRuntime {
         };
     }
 
+    /// Arm the watcher kernel if it is down and its backoff has elapsed. Returns
+    /// `true` when signals are available for a bridge to consume.
+    pub(super) fn ensure_watcher_armed(&mut self, now: Instant) -> bool {
+        self.watcher.ensure_armed(&self.args.root, now)
+    }
+
+    /// The earliest instant at which any degraded part of this runtime wants to
+    /// be retried, so the coordinator wakes for it while otherwise idle. The
+    /// watcher and the manifest driver both retry forever on capped backoff.
+    pub(super) fn next_runtime_retry(&self) -> Option<Instant> {
+        match (self.next_manifest_retry(), self.watcher.next_retry()) {
+            (Some(engine), Some(watcher)) => Some(engine.min(watcher)),
+            (retry, None) | (None, retry) => retry,
+        }
+    }
+
     /// When the driver is waiting to rebuild, the instant of the next attempt, so
     /// the coordinator can wake the loop even while otherwise idle.
     pub(super) fn next_manifest_retry(&self) -> Option<Instant> {
@@ -424,15 +488,28 @@ impl ContinuousSyncRuntime {
         }
     }
 
-    /// Whether the hosted ref subscription has produced its initial reactive
-    /// value and is currently live. A running engine thread alone is not remote
-    /// observer readiness.
-    pub(super) fn manifest_observer_is_live(&self) -> bool {
+    /// What the hosted ref subscription currently contributes to status. A
+    /// running engine thread alone is not remote observer readiness: `Live`
+    /// requires a delivered initial reactive value.
+    pub(super) fn manifest_observer_readiness(&self) -> RefObserverReadiness {
         match &self.manifest_engine {
-            ManifestEngineHost::Active(driver) => driver.ref_observer_is_live(),
-            ManifestEngineHost::PendingRebuild { .. } => false,
+            ManifestEngineHost::Active(driver) => driver.ref_observer_readiness(),
+            ManifestEngineHost::PendingRebuild { .. } => RefObserverReadiness::Retrying,
         }
     }
+}
+
+/// How the ref observer learns a device that signed a head this host cannot
+/// verify. It reads device trust through the same client the observer watches —
+/// safe because the observer calls it between stream attempts, never from
+/// inside the verifier lookup that failed — and writes the result into the
+/// verifier set that client already resolves through.
+fn signer_trust_refresh(
+    hosted: &Arc<HostedContext>,
+) -> bowline_daemon::manifest_transport::SignerTrustRefresh {
+    let client = Arc::clone(&hosted.client);
+    let trust = Arc::clone(&hosted.trust);
+    Arc::new(move |device_id| trust.refresh_unknown_signer(&*client, device_id, Instant::now()))
 }
 
 /// Build the manifest-sync engine driver for a workspace. A missing
@@ -451,7 +528,7 @@ fn build_manifest_driver(
         MANIFEST_ENGINE_DB_FILE, ManifestDriver, ManifestDriverConfig,
     };
     use bowline_local::sync::manifest_engine::{
-        EngineConfig, EngineContext, KeyEpoch, WorkspaceCrypto,
+        EngineConfig, EngineContext, probe_name_folding, probe_timestamp_granularity,
     };
 
     let workspace_key = match require_local_workspace_key(args) {
@@ -468,16 +545,18 @@ fn build_manifest_driver(
             return Err(ManifestEngineUnavailableReason::HostedContextUnavailable);
         }
     };
+    let engine_state_dir = args
+        .root
+        .join(bowline_local::sync::manifest_engine::ENGINE_STATE_DIR);
     let context = EngineContext {
-        crypto: WorkspaceCrypto::new(
-            &args.workspace_id,
-            workspace_key.bytes,
-            KeyEpoch::new(workspace_key.key_epoch),
-        ),
-        device_id: DeviceId::new(args.device_id.clone()),
-        engine_state_dir: args
-            .root
-            .join(bowline_local::sync::manifest_engine::ENGINE_STATE_DIR),
+        crypto: workspace_key.workspace_crypto(&args.workspace_id),
+        device_id: args.device_id.clone(),
+        // Probed here, once, because this is where the daemon accepts the
+        // workspace volume; the verdict cannot change while the root stays
+        // mounted, and a root replacement rebuilds this context.
+        names: probe_name_folding(&engine_state_dir),
+        timestamps: probe_timestamp_granularity(&engine_state_dir),
+        engine_state_dir,
         workspace_root: args.root.clone(),
         config: EngineConfig::default(),
         project_view: false,
@@ -485,14 +564,16 @@ fn build_manifest_driver(
     };
     let reconnect_delay: bowline_daemon::manifest_transport::ReconnectDelay =
         Arc::new(remote_observer_reconnect_delay);
+    let trust_refresh = signer_trust_refresh(&hosted);
     let config = ManifestDriverConfig {
         store_path: args.state_root.join(MANIFEST_ENGINE_DB_FILE),
         context,
         client: Arc::clone(&hosted.client),
         http: hosted.http.clone(),
-        workspace_id: WorkspaceId::new(args.workspace_id.clone()),
-        device_id: DeviceId::new(args.device_id.clone()),
+        workspace_id: args.workspace_id.clone(),
+        device_id: args.device_id.clone(),
         reconnect_delay,
+        trust_refresh,
     };
     match ManifestDriver::spawn_production_with_sink(config, sink, handle) {
         Ok(driver) => Ok(driver),

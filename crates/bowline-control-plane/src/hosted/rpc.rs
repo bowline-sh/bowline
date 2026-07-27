@@ -1,3 +1,4 @@
+use super::retry::RpcAttempt;
 use super::wire_validation::validate_wire_value;
 use super::*;
 use serde_json::Value as JsonValue;
@@ -9,6 +10,7 @@ pub(super) type CachedRpcCallFuture =
 
 pub(super) async fn rpc_with_cached_client<C, Connect, ConnectFuture, Call>(
     cached_client: &TokioMutex<Option<C>>,
+    function: &'static str,
     retry_after_transport_failure: bool,
     connect: Connect,
     call: Call,
@@ -21,6 +23,7 @@ where
 {
     rpc_with_cached_client_after(
         cached_client,
+        function,
         retry_after_transport_failure,
         CONVEX_RPC_TIMEOUT,
         connect,
@@ -31,6 +34,7 @@ where
 
 pub(super) async fn rpc_with_cached_client_after<C, Connect, ConnectFuture, Call>(
     cached_client: &TokioMutex<Option<C>>,
+    function: &'static str,
     retry_after_transport_failure: bool,
     timeout: Duration,
     connect: Connect,
@@ -43,19 +47,19 @@ where
     Call: Fn(C) -> CachedRpcCallFuture,
 {
     let deadline = tokio::time::Instant::now() + timeout;
-    match call_cached_rpc_once(cached_client, deadline, &connect, &call).await {
-        Ok(result) => unwrap_function_result(result),
-        Err(error) => {
-            clear_cached_client(cached_client).await;
-            if !retry_after_transport_failure || is_rpc_timeout_error(&error) {
-                return Err(error);
-            }
-            match call_cached_rpc_once(cached_client, deadline, &connect, &call).await {
-                Ok(result) => unwrap_function_result(result),
-                Err(error) => {
-                    clear_cached_client(cached_client).await;
-                    Err(error)
+    let mut attempt = RpcAttempt::first(retry_after_transport_failure);
+    loop {
+        match call_cached_rpc_once(cached_client, deadline, &connect, &call).await {
+            Ok(result) => return unwrap_function_result(function, result),
+            Err(error) => {
+                clear_cached_client(cached_client).await;
+                let Some(backoff) = attempt.backoff_after(&error) else {
+                    return Err(error);
+                };
+                if backoff > remaining_rpc_timeout(deadline)? {
+                    return Err(rpc_timeout_error());
                 }
+                tokio::time::sleep(backoff).await;
             }
         }
     }
@@ -122,10 +126,6 @@ fn remaining_rpc_timeout(deadline: tokio::time::Instant) -> ControlPlaneResult<D
         .ok_or_else(rpc_timeout_error)
 }
 
-fn is_rpc_timeout_error(error: &ControlPlaneError) -> bool {
-    matches!(error, ControlPlaneError::Timeout { capability } if *capability == HOSTED_CAPABILITY)
-}
-
 pub(super) async fn call_convex_rpc(
     client: &mut ConvexClient,
     kind: ConvexRpcKind,
@@ -152,17 +152,17 @@ pub(super) fn encode_hosted_request<E: HostedEndpoint>(
     request: &E::Request,
 ) -> ControlPlaneResult<ConvexArgs> {
     let encoded = serde_json::to_value(request)
-        .map_err(|_| hosted_contract_error::<E>(HostedContractFailure::RequestEncoding, None))?;
+        .map_err(|_| hosted_contract_error::<E>(WireContractFailure::Request, None))?;
     // Enforce the declared contract on the outbound request before transport.
     if let Err(violation) = validate_wire_value(E::REQUEST_SCHEMA, &encoded) {
         return Err(hosted_contract_error::<E>(
-            HostedContractFailure::RequestEncoding,
+            WireContractFailure::Request,
             Some(violation.path()),
         ));
     }
     let serde_json::Value::Object(fields) = encoded else {
         return Err(hosted_contract_error::<E>(
-            HostedContractFailure::RequestEncoding,
+            WireContractFailure::Request,
             None,
         ));
     };
@@ -174,9 +174,7 @@ pub(super) fn encode_hosted_request<E: HostedEndpoint>(
             // hand-written `number_value` encoder.
             Value::try_from(integers_to_floats(value))
                 .map(|value| (name, value))
-                .map_err(|_| {
-                    hosted_contract_error::<E>(HostedContractFailure::RequestEncoding, None)
-                })
+                .map_err(|_| hosted_contract_error::<E>(WireContractFailure::Request, None))
         })
         .collect()
 }
@@ -210,12 +208,12 @@ pub(super) fn decode_hosted_response<E: HostedEndpoint>(
     // Serde only checks structure, not the semantic bounds/format constraints.
     if let Err(violation) = validate_wire_value(E::RESPONSE_SCHEMA, &json) {
         return Err(hosted_contract_error::<E>(
-            HostedContractFailure::ResponseDecoding,
+            WireContractFailure::Response,
             Some(violation.path()),
         ));
     }
     serde_json::from_value(json)
-        .map_err(|_| hosted_contract_error::<E>(HostedContractFailure::ResponseDecoding, None))
+        .map_err(|_| hosted_contract_error::<E>(WireContractFailure::Response, None))
 }
 
 // Convex represents every number as an f64, so an integer wire field arrives as
@@ -259,26 +257,26 @@ fn normalize_number(number: serde_json::Number) -> JsonValue {
 const SAFE_INTEGER_MAX: f64 = 9_007_199_254_740_991.0;
 
 fn hosted_contract_error<E: HostedEndpoint>(
-    failure: HostedContractFailure,
+    failure: WireContractFailure,
     field_path: Option<&str>,
 ) -> ControlPlaneError {
-    // The field path is a structural locator, never the offending value, so it
-    // is safe to surface and cannot leak a secret payload.
-    let detail = field_path.map_or(String::new(), |path| format!(" (field `{path}`)"));
-    ControlPlaneError::Storage(format!(
-        "hosted endpoint `{}` (`{}`): {}{detail}",
-        E::ID,
-        E::CONVEX_FUNCTION,
-        failure.message()
-    ))
+    ControlPlaneError::ContractViolation {
+        endpoint: E::ID,
+        function: E::CONVEX_FUNCTION,
+        failure,
+        field_path: field_path.map(str::to_string),
+    }
 }
 
-pub(super) fn unwrap_function_result(result: FunctionResult) -> ControlPlaneResult<Value> {
+pub(super) fn unwrap_function_result(
+    function: &'static str,
+    result: FunctionResult,
+) -> ControlPlaneResult<Value> {
     match result {
         FunctionResult::Value(value) => Ok(value),
-        FunctionResult::ErrorMessage(message) => Err(ControlPlaneError::Storage(format!(
-            "Convex function failed: {message}"
-        ))),
+        FunctionResult::ErrorMessage(message) => {
+            Err(ControlPlaneError::ServerError { function, message })
+        }
         FunctionResult::ConvexError(error) => Err(parse_convex_error(error)),
     }
 }
@@ -319,11 +317,22 @@ pub(super) fn add_field_context(
     field: &'static str,
 ) -> ControlPlaneError {
     match error {
-        ControlPlaneError::Storage(message) => shape_error(format!("field `{field}`: {message}")),
+        // Only the outermost decoder that knows the field name annotates; an
+        // inner annotation already located the failure more precisely.
+        ControlPlaneError::ResponseShape {
+            reason,
+            field: None,
+        } => ControlPlaneError::ResponseShape {
+            reason,
+            field: Some(field),
+        },
         error => error,
     }
 }
 
-pub(super) fn shape_error(message: impl Into<String>) -> ControlPlaneError {
-    ControlPlaneError::Storage(message.into())
+pub(super) fn shape_error(reason: &'static str) -> ControlPlaneError {
+    ControlPlaneError::ResponseShape {
+        reason,
+        field: None,
+    }
 }

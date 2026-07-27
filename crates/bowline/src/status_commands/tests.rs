@@ -52,16 +52,10 @@ fn revision_watch_fixture() -> (PathBuf, WorkspaceId) {
     (db_path, workspace_id)
 }
 
-fn watch_test_socket() -> PathBuf {
-    // A socket no daemon serves, so the sync fallback stays `None` and watch
-    // frames remain deterministic for byte-equality assertions.
-    PathBuf::from("/tmp/bowline-status-watch-test-unreachable.sock")
-}
-
 fn uncached_watch_frame(options: &StatusOptions, sequence: u64) -> WatchFrame {
     let mut output =
         bowline_local::status::compose_status(options.clone()).expect("uncached composition");
-    attach_update_status_if_available(&mut output, false);
+    attach_update_status_if_available(&mut output, UpdateCheckNetwork::CacheOnly);
     abbreviate_status_requested_path(&mut output);
     status_watch_frame(output, sequence)
 }
@@ -89,7 +83,7 @@ fn status_watch_sixty_unchanged_ticks_retain_one_store_and_frame_contract() {
     };
     let expected_frame = uncached_watch_frame(&options, 1);
     let expected_bytes = serde_json::to_vec(&expected_frame).expect("expected frame json");
-    let mut state = StatusWatchState::new(watch_test_socket());
+    let mut state = StatusWatchState::new();
 
     let WatchTick::Frame(first) = next_status_watch_tick(&mut state, &options) else {
         panic!("first tick must emit status");
@@ -208,7 +202,7 @@ fn status_watch_frame_carries_machine_introspection() {
         workspace_scope: true,
         generated_at: "2026-07-12T12:00:00Z".to_string(),
     };
-    let mut state = StatusWatchState::new(watch_test_socket());
+    let mut state = StatusWatchState::new();
     let WatchTick::Frame(WatchFrame::Status { status, .. }) =
         next_status_watch_tick(&mut state, &options)
     else {
@@ -243,7 +237,7 @@ fn status_watch_update_cache_revision_recomposes_immediately() {
         workspace_scope: true,
         generated_at: "2026-07-12T12:00:00Z".to_string(),
     };
-    let mut state = StatusWatchState::new(watch_test_socket());
+    let mut state = StatusWatchState::new();
     assert!(matches!(
         next_status_watch_tick(&mut state, &options),
         WatchTick::Frame(_)
@@ -278,7 +272,7 @@ fn status_watch_recoverable_error_frame_then_status_frame() {
         generated_at: "2026-07-02T12:00:00Z".to_string(),
     })
     .expect("missing metadata composes limited status");
-    let mut state = StatusWatchState::new(watch_test_socket());
+    let mut state = StatusWatchState::new();
     let mut calls = 0;
     let mut compose = || {
         calls += 1;
@@ -306,7 +300,7 @@ fn status_watch_recoverable_error_frame_then_status_frame() {
     assert_eq!(calls, 2);
 }
 
-fn status_output() -> StatusCommandOutput {
+pub(crate) fn status_output() -> StatusCommandOutput {
     StatusCommandOutput {
         contract_version: CONTRACT_VERSION,
         command: CommandName::Status,
@@ -345,28 +339,44 @@ fn status_output() -> StatusCommandOutput {
 }
 
 #[test]
-fn sync_introspection_prefers_local_queue_over_socket() {
+fn sync_introspection_prefers_local_queue_over_daemon_snapshot() {
     let mut output = status_output();
     output.sync_queue = Some(bowline_core::status::SyncQueueStatus {
         queued: 3,
         ..bowline_core::status::SyncQueueStatus::default()
     });
-    // With a local queue present, the unreachable override socket must not be
-    // consulted; the derived introspection comes straight from the queue.
-    let sync = sync_introspection_for(&output, &PathBuf::from("/tmp/bowline-r3-unreachable.sock"))
-        .expect("local queue yields introspection");
+    let mut daemon = status_output();
+    daemon.sync_queue = Some(bowline_core::status::SyncQueueStatus {
+        queued: 99,
+        ..bowline_core::status::SyncQueueStatus::default()
+    });
+
+    let sync =
+        sync_introspection_from(&output, Some(&daemon)).expect("local queue yields introspection");
+
     assert_eq!(sync.pending_uploads, 3);
 }
 
 #[test]
-fn sync_introspection_absent_without_queue_or_daemon() {
-    // No local queue and an unreachable socket: the sync field stays absent
-    // rather than fabricating a settled view.
+fn sync_introspection_falls_back_to_the_snapshot_already_fetched() {
     let output = status_output();
-    assert!(
-        sync_introspection_for(&output, &PathBuf::from("/tmp/bowline-r3-unreachable.sock"))
-            .is_none()
-    );
+    let mut daemon = status_output();
+    daemon.sync_queue = Some(bowline_core::status::SyncQueueStatus {
+        queued: 7,
+        ..bowline_core::status::SyncQueueStatus::default()
+    });
+
+    let sync = sync_introspection_from(&output, Some(&daemon)).expect("daemon queue yields view");
+
+    assert_eq!(sync.pending_uploads, 7);
+}
+
+#[test]
+fn sync_introspection_absent_without_queue_or_daemon() {
+    // No local queue and no daemon snapshot: the sync field stays absent rather
+    // than fabricating a settled view.
+    let output = status_output();
+    assert!(sync_introspection_from(&output, None).is_none());
 }
 
 #[test]
@@ -591,7 +601,7 @@ fn status_watch_cached_device_trust_survives_failed_refresh() {
             .expect("cached trust")
             .authorized_devices[0]
             .device_id,
-        "device_old"
+        DeviceId::new("device_old")
     );
     assert!(cached_device_trust_for_workspace(&cached, &other_workspace_id).is_none());
 
@@ -610,7 +620,7 @@ fn status_watch_cached_device_trust_survives_failed_refresh() {
             .expect("cached trust")
             .authorized_devices[0]
             .device_id,
-        "device_new"
+        DeviceId::new("device_new")
     );
     assert!(cached_device_trust_for_workspace(&cached, &workspace_id).is_none());
 }
@@ -623,6 +633,7 @@ fn pending_request(device_id: &str) -> bowline_control_plane::DeviceRequest {
         device_name: "dev laptop".to_string(),
         platform: "macos".to_string(),
         device_public_key: "public_key".to_string(),
+        device_public_key_proof: "dapp_test_attestation".to_string(),
         device_fingerprint: "fingerprint_1".to_string(),
         device_authorization_proof_verifier: "verifier".to_string(),
         matching_code: "123456".to_string(),

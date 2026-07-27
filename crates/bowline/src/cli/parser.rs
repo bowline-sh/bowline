@@ -16,13 +16,16 @@ pub(super) fn construct_command(
         CommandName::Approve => parse_approve_command(values),
         CommandName::Deny => parse_deny_command(values),
         CommandName::Revoke => parse_revoke_command(values),
-        CommandName::Recover => parse_recovery_command(values),
         CommandName::Setup => parse_setup_command(values),
         CommandName::Status => parse_status_command(values),
         CommandName::Devices | CommandName::DeviceRequest | CommandName::DeviceAccept => {
             parse_device_command(command, values)
         }
+        CommandName::DeviceKeyStatus => parse_device_key_status_command(values),
         CommandName::Events => parse_events_command(values),
+        CommandName::Conflicts => parse_conflicts_command(values),
+        CommandName::Resolve => parse_resolve_command(values),
+        CommandName::Deletions => parse_deletions_command(values),
         CommandName::Tui => parse_tui_command(values),
         CommandName::ForgetLocal => parse_forget_local_command(values),
         CommandName::Archive => parse_archive_command(values),
@@ -60,7 +63,11 @@ pub(super) fn construct_command(
         }
         CommandName::Doctor => parse_doctor_command(values),
         CommandName::Connect => parse_connect_command(values),
-        CommandName::Unknown => Err(ParseError::Unknown(command.token().to_string())),
+        // Every recovery path resolves to DefinitionTarget::Recovery, so the bare
+        // `recover` wire name never reaches command construction.
+        CommandName::Recover | CommandName::Unknown => {
+            Err(ParseError::Unknown(command.token().to_string()))
+        }
     }
 }
 

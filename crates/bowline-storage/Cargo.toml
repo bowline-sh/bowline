@@ -9,7 +9,6 @@ version.workspace = true
 blake3 = "1.8"
 chacha20poly1305 = "0.10"
 bowline-core = { path = "../bowline-core" }
-getrandom = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 zeroize = "1.8"

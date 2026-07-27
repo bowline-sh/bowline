@@ -6,6 +6,7 @@ use crate::bootstrap::{
         BootstrapSshError, BootstrapSshOptions, accept_remote_grant, daemon_status_remote,
         install_remote_daemon_service, list_remote_devices, prepare_remote_root, probe_remote,
         publish_default_metadata, remote_failure_detail, status_remote,
+        workspace_key_status_remote,
     },
 };
 
@@ -149,6 +150,61 @@ fn remote_device_list_uses_explicit_root() {
     let captured = args.borrow();
     let remote_command = captured.last().expect("ssh command is recorded");
     assert!(remote_command.contains("device list --root '~/Code' --json"));
+}
+
+#[test]
+fn remote_key_status_asks_the_cli_and_never_reads_a_secret_file() {
+    let args = Rc::new(RefCell::new(Vec::new()));
+    let stdin = Rc::new(RefCell::new(String::new()));
+    let runner = RecordingRunner {
+        args: args.clone(),
+        stdin,
+    };
+    let options = BootstrapSshOptions {
+        host: "linux-box".to_string(),
+        root: "~/Code".to_string(),
+        remote_binary: Some("~/.local/bin/bowline".to_string()),
+        remote_platform: Some("linux".to_string()),
+        remote_workspace_id: Some("ws_code".to_string()),
+        remote_env: Vec::new(),
+        remote_secret_env: Vec::new(),
+        bootstrap_token: None,
+    };
+
+    workspace_key_status_remote(&runner, &options, "ws_code").expect("key status succeeds");
+
+    let captured = args.borrow();
+    let remote_command = captured.last().expect("ssh command is recorded");
+    assert!(remote_command.contains("device key-status --workspace ws_code --json"));
+    assert!(!remote_command.contains("secrets.v1"));
+    assert!(!remote_command.contains("grep"));
+    assert!(!remote_command.contains("workspaceId"));
+}
+
+#[test]
+fn remote_key_status_refuses_a_workspace_id_that_cannot_address_remote_state() {
+    let args = Rc::new(RefCell::new(Vec::new()));
+    let stdin = Rc::new(RefCell::new(String::new()));
+    let runner = RecordingRunner {
+        args: args.clone(),
+        stdin,
+    };
+    let options = BootstrapSshOptions {
+        host: "linux-box".to_string(),
+        root: "~/Code".to_string(),
+        remote_binary: Some("~/.local/bin/bowline".to_string()),
+        remote_platform: Some("linux".to_string()),
+        remote_workspace_id: None,
+        remote_env: Vec::new(),
+        remote_secret_env: Vec::new(),
+        bootstrap_token: None,
+    };
+
+    let error = workspace_key_status_remote(&runner, &options, "ws_code; touch /tmp/pwn")
+        .expect_err("an unaddressable workspace id is refused");
+
+    assert!(matches!(error, BootstrapSshError::InvalidWorkspaceId(_)));
+    assert!(args.borrow().is_empty());
 }
 
 #[test]
@@ -303,9 +359,11 @@ fn remote_metadata_persists_daemon_credentials_with_the_workspace_state() {
             .contains("chmod 600 $HOME/.local/share/bowline/workspaces/ws_agent/daemon.env")
     );
     assert!(!remote_command.contains("cat > \"$dir/daemon.env\""));
+    // The shared `daemon_env` writer renders in sorted key order so the file is
+    // byte-stable regardless of how callers assembled the pairs.
     assert_eq!(
         stdin.borrow().as_str(),
-        "CONVEX_URL=https://example.convex.cloud\nBOWLINE_WORKSPACE_ID=ws_agent\nBOWLINE_ACCOUNT_SESSION_ID=bowline_session_fixture\nBOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN=bowline_revoke_fixture\n"
+        "BOWLINE_ACCOUNT_SESSION_ID=bowline_session_fixture\nBOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN=bowline_revoke_fixture\nBOWLINE_WORKSPACE_ID=ws_agent\nCONVEX_URL=https://example.convex.cloud\n"
     );
 }
 
@@ -336,5 +394,62 @@ fn remote_status_uses_explicit_root_without_requiring_root_cwd() {
     assert!(
         remote_command
             .contains("$HOME/.local/bin/bowline status --root '~/Code/new machine' --json")
+    );
+}
+
+/// The remote reads its credentials from stdin, one line per key. Run without a
+/// pipe — by hand from a terminal, or by a runner that dropped the payload —
+/// `read` either waits forever or leaves the variable unset and the CLI reports
+/// a configuration it cannot explain. Both are refused where the reason is known.
+#[test]
+fn the_accept_command_refuses_a_stdin_that_cannot_carry_credentials() {
+    let args = Rc::new(RefCell::new(Vec::new()));
+    let stdin = Rc::new(RefCell::new(String::new()));
+    let runner = RecordingRunner {
+        args: args.clone(),
+        stdin: stdin.clone(),
+    };
+    let options = BootstrapSshOptions {
+        host: "linux-box".to_string(),
+        root: "~/Code".to_string(),
+        remote_binary: Some("~/.local/bin/bowline".to_string()),
+        remote_platform: Some("linux".to_string()),
+        remote_workspace_id: Some("ws_code".to_string()),
+        remote_env: Vec::new(),
+        remote_secret_env: vec![
+            (
+                "BOWLINE_ACCOUNT_SESSION_ID".to_string(),
+                "bowline_session_fixture".to_string(),
+            ),
+            (
+                "BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN".to_string(),
+                "bowline_revoke_fixture".to_string(),
+            ),
+        ],
+        bootstrap_token: Some("scoped bootstrap token".to_string()),
+    };
+
+    accept_remote_grant(&runner, &options, "req_1").expect("accept succeeds");
+
+    let captured = args.borrow();
+    let remote_command = captured.last().expect("ssh command is recorded");
+    assert!(
+        remote_command.contains("if [ -t 0 ]; then"),
+        "{remote_command}"
+    );
+    assert!(remote_command.contains("exit 78"), "{remote_command}");
+    for key in [
+        "BOWLINE_BOOTSTRAP_TOKEN",
+        "BOWLINE_ACCOUNT_SESSION_ID",
+        "BOWLINE_ACCOUNT_SESSION_REVOCATION_TOKEN",
+    ] {
+        assert!(
+            remote_command.contains(&format!("IFS= read -r {key} || {{")),
+            "credential {key} must fail fast when its line never arrives: {remote_command}"
+        );
+    }
+    assert_eq!(
+        stdin.borrow().as_str(),
+        "scoped bootstrap token\nbowline_session_fixture\nbowline_revoke_fixture\n"
     );
 }

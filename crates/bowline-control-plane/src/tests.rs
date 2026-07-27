@@ -1,15 +1,16 @@
 use super::*;
 use bowline_core::ids::{DeviceId, SnapshotId, WorkspaceId};
+use bowline_core::status::{StatusAttention, StatusAvailability, StatusSnapshotFreshness};
 
 fn sample_snapshot() -> WorkspaceStatusSnapshot {
     WorkspaceStatusSnapshot {
         workspace_id: WorkspaceId::new("ws_code"),
         snapshot_id: SnapshotId::new("snap_abc123"),
-        availability: "ready".to_string(),
-        attention: "required".to_string(),
+        availability: StatusAvailability::Ready,
+        attention: StatusAttention::Required,
         primary_fact_id: None,
         facts: Vec::new(),
-        freshness: "fresh".to_string(),
+        freshness: StatusSnapshotFreshness::Fresh,
         schema_hash: bowline_core::wire::WIRE_SCHEMA_HASH.to_string(),
         snapshot_version: 1,
         producer_version: "0.1.1".to_string(),

@@ -101,6 +101,45 @@ cannot prove an action is safe, it must stop and explain the state.
   hydration, indexing, or agent progress. Device approval requests are the
   narrow trust exception.
 
+## What the hosted service can see
+
+"End-to-end encrypted" is a claim about content, not about metadata. Stating the
+residual metadata surface plainly is part of the trust contract: a user who
+cannot audit the leak cannot evaluate the promise. Every row below is what the
+hosted service and its object store observe _by design_, holding no workspace
+key.
+
+| The server observes                                         | Resolution                | Why it is unavoidable, or what bounds it                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ----------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Object count per workspace                                  | Exact                     | Objects are stored individually so unchanged content is not re-uploaded.                                                                                                                                                                                                                                                                                                                                                                               |
+| Sealed object length                                        | Rounded up a ~1.1x ladder | Padding (`envelope::padding`) turns exact sizes into ~O(log n) buckets, so neighbouring file sizes are indistinguishable.                                                                                                                                                                                                                                                                                                                              |
+| Aggregate stored bytes                                      | Padded sum                | Required for quota and billing.                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Byte-equality of two objects _within one workspace_         | Exact                     | Convergent sealing (`envelope::nonce`): the price of dedup. The workspace key is per workspace, so equality never crosses a workspace boundary.                                                                                                                                                                                                                                                                                                        |
+| Manifest node object count, and how many change per publish | Exact                     | The manifest is a per-directory Merkle tree, so one node object exists per directory and a publish rewrites only the nodes on the path from a changed file to the root. That count is a coarse proxy for how many directories a workspace has and how deep a change sat — the price of a publish that costs the change instead of the workspace. The server still cannot read a node, so it learns no name, no path, and no parent/child relationship. |
+| Push and pull timing                                        | Wall clock                | Sync is reactive; a delay-hiding cover-traffic scheme would defeat the product.                                                                                                                                                                                                                                                                                                                                                                        |
+| Which device wrote each ref version                         | Device id                 | Device attribution is what makes revocation and the approval audit trail meaningful.                                                                                                                                                                                                                                                                                                                                                                   |
+| Ref version history                                         | Full chain                | The CAS ref is the serialization point; its history is the durability record.                                                                                                                                                                                                                                                                                                                                                                          |
+
+Equally binding, the server does **not** observe: file contents, file names,
+directory names, the parent/child relationships between directories, file modes,
+which project a change belongs to, `.env` values, secrets, credentials, or agent
+context. Those are inside the sealed manifest nodes and sealed blobs, and no
+hosted code path can decrypt them. The one qualification is the row above: node
+object counts are a coarse, name-free proxy for how many directories exist and
+how many a publish touched.
+
+This is strictly less than mainstream E2EE sync services leak. The CCS '24
+analysis of Tresorit, Sync.com, pCloud, Icedrive, and Seafile found metadata
+that is unauthenticated, server-modifiable, or cross-tenant correlatable;
+Bowline authenticates every object's context under the workspace key, pads
+lengths, and confines content equality to a single workspace.
+
+Deliberately not adopted: content-defined chunking and rsync-style delta
+transfer. On a source tree they buy almost nothing (61% of files are under 10 KB
+and account for 1.2% of bytes) and they are a live side channel — CCS '25 shows
+chunk-boundary patterns leak plaintext structure through an E2EE boundary. Whole
+sealed objects stay the unit.
+
 ## Status obligations
 
 Status output is part of the trust boundary. A user must be able to inspect the

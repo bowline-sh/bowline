@@ -8,90 +8,46 @@ const DAEMON_TAKEOVER_STABLE_ABSENCE: Duration = Duration::from_secs(1);
 const DAEMON_TAKEOVER_PROBE_INTERVAL: Duration = Duration::from_millis(50);
 
 pub(crate) fn daemon_service_install(socket: &Path) -> Result<DaemonServiceOutcome, String> {
-    if linux_service::current_platform_supported() {
-        let options = daemon_linux_service_options(socket)?;
-        let service_was_active = daemon_service_was_active()?;
-        let previous_definition = required_previous_active_service_definition(
-            service_was_active,
-            &options.unit_dir.join(linux_service::SERVICE_NAME),
-            "systemd service has no unit to restore; refusing to stop it",
-        )?;
-        let previous_enablement = service_was_active
-            .then(|| linux_service::service_enablement(&SystemProcessRunner))
-            .transpose()
-            .map_err(|error| error.to_string())?;
-        return install_daemon_service_with_takeover(
-            socket,
-            service_was_active,
-            || {
-                linux_service::stop_service(&SystemProcessRunner, &options.unit_dir)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            },
-            || {
-                linux_service::install_or_update_service(&SystemProcessRunner, &options)
-                    .map(DaemonServiceOutcome::from)
-                    .map_err(|error| error.to_string())
-            },
-            || {
-                let Some(definition) = previous_definition.as_deref() else {
-                    return Err("previous systemd service is unavailable".to_string());
-                };
-                let Some(enablement) = previous_enablement else {
-                    return Err("previous systemd enablement is unavailable".to_string());
-                };
-                linux_service::restore_service(
-                    &SystemProcessRunner,
-                    &options.unit_dir,
-                    definition,
-                    enablement,
-                )
+    let supervisor = platform_supervisor()?;
+    let config = daemon_service_config(socket)?;
+    let service_was_active = daemon_service_was_active()?;
+    let previous_definition = required_previous_active_service_definition(
+        service_was_active,
+        &supervisor.definition_path(),
+        supervisor.missing_definition_error(),
+    )?;
+    // The registration has to be read before the takeover stops the service;
+    // afterwards the supervisor no longer reports what it used to be.
+    let previous_registration = service_was_active
+        .then(|| supervisor.registration())
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .flatten();
+    install_daemon_service_with_takeover(
+        socket,
+        service_was_active,
+        || {
+            supervisor
+                .stop()
                 .map(|_| ())
                 .map_err(|error| error.to_string())
-            },
-        );
-    }
-    if macos_service::current_platform_supported() {
-        let options = daemon_macos_service_options(socket)?;
-        let service_was_active = daemon_service_was_active()?;
-        let previous_definition = required_previous_active_service_definition(
-            service_was_active,
-            &options.launch_agents_dir.join(macos_service::PLIST_NAME),
-            "launchd service has no plist to restore; refusing to unload it",
-        )?;
-        return install_daemon_service_with_takeover(
-            socket,
-            service_was_active,
-            || {
-                macos_service::stop_service(
-                    &SystemProcessRunner,
-                    &options.launch_agents_dir,
-                    &options.launch_domain,
-                )
+        },
+        || {
+            supervisor
+                .install_or_update(&config)
+                .map(DaemonServiceOutcome::from)
+                .map_err(|error| error.to_string())
+        },
+        || {
+            let Some(definition) = previous_definition.as_deref() else {
+                return Err("the previously active service definition is unavailable".to_string());
+            };
+            supervisor
+                .restore(definition, previous_registration)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
-            },
-            || {
-                macos_service::install_or_update_service(&SystemProcessRunner, &options)
-                    .map(DaemonServiceOutcome::from)
-                    .map_err(|error| error.to_string())
-            },
-            || {
-                let Some(definition) = previous_definition.as_deref() else {
-                    return Err("previous launch agent is unavailable".to_string());
-                };
-                macos_service::restore_service(
-                    &SystemProcessRunner,
-                    &options.launch_agents_dir,
-                    &options.launch_domain,
-                    definition,
-                )
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-            },
-        );
-    }
-    Err("daemon service commands are available only on Linux and macOS".to_string())
+        },
+    )
 }
 
 fn required_previous_active_service_definition(
@@ -131,12 +87,22 @@ pub(crate) fn daemon_service_active_from_status(
 ) -> Result<bool, String> {
     let status =
         status.ok_or_else(|| "daemon service state is unavailable on this platform".to_string())?;
-    match status.state.as_str() {
-        "active" => Ok(true),
-        "inactive" => Ok(false),
-        state => Err(status.unavailable_because.unwrap_or_else(|| {
-            format!("daemon service state is {state}; refusing to replace an uncertain owner")
-        })),
+    match status.state {
+        ServiceSupervisorState::Active => Ok(true),
+        // Nothing is running under the supervisor, so there is no owner to
+        // preserve. `uninstalled` is as final as `inactive` here.
+        ServiceSupervisorState::Inactive | ServiceSupervisorState::Uninstalled => Ok(false),
+        // Installed/Restarted are mutation outcomes, never a queried state; an
+        // unavailable or unmodelled label means the owner is uncertain.
+        state @ (ServiceSupervisorState::Installed
+        | ServiceSupervisorState::Restarted
+        | ServiceSupervisorState::Unavailable
+        | ServiceSupervisorState::Unsupported
+        | ServiceSupervisorState::Unrecognized(_)) => {
+            Err(status.unavailable_because.unwrap_or_else(|| {
+                format!("daemon service state is {state}; refusing to replace an uncertain owner")
+            }))
+        }
     }
 }
 
@@ -194,15 +160,18 @@ pub(crate) fn stop_unmanaged_daemon(socket: &Path) -> Result<(), String> {
                 return Err("existing unmanaged daemon did not stop within 3 seconds".to_string());
             }
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            require_socket_path_absent(socket)?;
-        }
-        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+        // A refused connection is one flavour of "no daemon is running", so this
+        // arm must precede the broader absence check: it is the only one that
+        // reclaims the socket file the dead daemon left behind.
+        Err(error) if error.io_kind() == Some(io::ErrorKind::ConnectionRefused) => {
             remove_stale_daemon_socket_after_connect_error(socket, &error).map_err(
                 |remove_error| {
                     format!("could not remove the refused stale daemon socket: {remove_error}")
                 },
             )?;
+            require_socket_path_absent(socket)?;
+        }
+        Err(error) if error.daemon_is_absent() => {
             require_socket_path_absent(socket)?;
         }
         Err(error) => {

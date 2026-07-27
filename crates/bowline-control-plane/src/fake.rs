@@ -12,11 +12,11 @@ use bowline_storage::{
 use sha2::{Digest, Sha256};
 
 use crate::{
-    AuthorizedDeviceRecord, BootstrapSession, BootstrapSessionInput, ByteRange, Capability,
-    CapabilityReporting, CompactEvent, CompactEventKind, CompareAndSwapError, ControlPlaneError,
-    ControlPlaneResult, ControlPlaneTimestamp, DeleteIntent, DeterministicClock,
-    DeterministicIdGenerator, DeviceApproval, DeviceApprovalInput, DeviceApprovalRequestList,
-    DeviceDenial, DeviceDenialInput, DeviceRequest, DeviceRequestInput, DeviceRequestInputDraft,
+    AuthorizedDeviceRecord, BootstrapSession, BootstrapSessionInput, ByteRange, CompactEvent,
+    CompactEventKind, CompareAndSwapError, ControlPlaneError, ControlPlaneResult,
+    ControlPlaneTimestamp, DeleteIntent, DeterministicClock, DeterministicIdGenerator,
+    DeviceApproval, DeviceApprovalInput, DeviceApprovalRequestList, DeviceDenial,
+    DeviceDenialInput, DeviceRequest, DeviceRequestInput, DeviceRequestInputDraft,
     DeviceRequestState, DeviceRevocationInput, DownloadIntent, DownloadIntentRequest,
     FirstAuthorizedDeviceInput, GrantAcceptanceInput, ObjectKind, ObjectMetadataCommit,
     ObjectPointer, ObjectRetentionStateUpdate, RecoveryDeviceAuthorizationInput,
@@ -31,6 +31,9 @@ mod harness;
 mod objects;
 mod recovery;
 mod sync;
+mod workspace_keys;
+
+use workspace_keys::FakeKeyRegrant;
 
 #[derive(Debug, Clone)]
 pub struct FakeControlPlaneClient {
@@ -51,23 +54,6 @@ impl Default for FakeControlPlaneClient {
             DeterministicIdGenerator::default(),
         )
     }
-}
-
-impl CapabilityReporting for FakeControlPlaneClient {
-    fn capabilities(&self) -> BTreeSet<Capability> {
-        fake_supported_capabilities().iter().copied().collect()
-    }
-}
-
-fn fake_supported_capabilities() -> &'static [Capability] {
-    &[
-        Capability::WorkspaceRefHistory,
-        Capability::StorageGc,
-        Capability::ObjectMetadata,
-        Capability::DeviceBootstrap,
-        Capability::DeviceTrust,
-        Capability::RecoveryKey,
-    ]
 }
 
 fn device_not_trusted(message: &'static str) -> ControlPlaneError {
@@ -101,6 +87,12 @@ struct FakeControlPlaneState {
     recovery_envelopes: BTreeMap<(WorkspaceId, RecoveryEnvelopeId), RecoveryEnvelopeRecord>,
     recovery_proof_verifiers: BTreeMap<(WorkspaceId, RecoveryEnvelopeId), String>,
     workspace_key_epochs: BTreeMap<WorkspaceId, u32>,
+    pending_workspace_key_epochs: BTreeMap<WorkspaceId, u32>,
+    workspace_key_epoch_seeders: BTreeMap<WorkspaceId, DeviceId>,
+    workspace_key_regrants: BTreeMap<(WorkspaceId, u32, DeviceId), FakeKeyRegrant>,
+    device_public_keys: BTreeMap<(WorkspaceId, DeviceId), String>,
+    device_public_key_proofs: BTreeMap<(WorkspaceId, DeviceId), String>,
+    device_held_key_epochs: BTreeMap<(WorkspaceId, DeviceId), u32>,
     upload_intent_requests: Vec<UploadIntentRequest>,
     upload_reservations: BTreeMap<(WorkspaceId, String), UploadReservation>,
     upload_idempotency_keys: BTreeMap<String, String>,

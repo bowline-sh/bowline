@@ -17,7 +17,10 @@ use crate::{
     status::event_name_label,
 };
 
+mod conflicts;
 mod status_clear;
+
+pub use conflicts::ConflictEventSubject;
 use status_clear::scoped_status_signal_events_sql;
 
 #[derive(Debug)]

@@ -12,22 +12,6 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
-const ignoredDirectorySegments = new Set([
-  ".turbo",
-  ".wrangler",
-  "coverage",
-  "dist",
-  "node_modules",
-  "target",
-]);
-
-const ignoredFilePatterns = [
-  /\.tsbuildinfo$/u,
-  /(^|\/)examples\/merge-plugins\/[^/]+\/Cargo\.lock$/u,
-  /(^|\/)\.DS_Store$/u,
-  /(^|\/)(npm-debug|yarn-error|pnpm-debug)\.log$/u,
-];
-
 const publicRootScripts = ["build", "lint", "test", "typecheck"];
 
 function parseArgs(argv) {
@@ -59,8 +43,25 @@ function parseArgs(argv) {
 function git(root, args) {
   return execFileSync("git", ["-C", root, ...args], {
     encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
+}
+
+// Only tracked files are exportable. Walking the filesystem would carry
+// untracked scratch files — notes, keys, backups — out of the private repo the
+// moment they landed inside an allowlisted directory.
+function trackedFiles(root, entry) {
+  const listing = execFileSync(
+    "git",
+    ["-C", root, "ls-files", "-z", "--cached", "--", entry],
+    {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  return listing.split("\0").filter((line) => line.length > 0);
 }
 
 function isInside(child, parent) {
@@ -119,19 +120,11 @@ async function pruneTarget(targetRoot) {
 }
 
 async function copyPublicOverrides(sourceRoot, targetRoot) {
-  const overridesRoot = path.join(sourceRoot, "public-overrides");
-  let entries;
-  try {
-    entries = await readdir(overridesRoot);
-  } catch (error) {
-    if (error && error.code === "ENOENT") return;
-    throw error;
-  }
-
-  for (const entry of entries) {
-    await copyEntry(
-      path.join(overridesRoot, entry),
-      path.join(targetRoot, entry),
+  for (const file of trackedFiles(sourceRoot, "public-overrides")) {
+    const output = path.relative("public-overrides", file);
+    await copyTrackedFile(
+      path.join(sourceRoot, file),
+      path.join(targetRoot, output),
     );
   }
 }
@@ -158,10 +151,9 @@ async function rewritePublicRootPackage(targetRoot) {
     "pnpm --filter @bowline/contracts test",
     "pnpm --filter @bowline/contracts build",
     "pnpm --filter @bowline/control-plane typecheck",
-    "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-dev-target} CARGO_INCREMENTAL=0 cargo fmt --check",
-    "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-dev-target} CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets --all-features -- -D warnings",
-    "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-dev-target} CARGO_INCREMENTAL=0 cargo test --workspace",
-    "node scripts/check-examples.mjs",
+    "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-public-target} CARGO_INCREMENTAL=0 cargo fmt --check",
+    "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-public-target} CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets --all-features -- -D warnings",
+    "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/bowline-public-target} CARGO_INCREMENTAL=0 cargo test --workspace",
     "node scripts/check-generated-artifacts.mjs",
     "node scripts/check-architecture-imports.mjs",
     "node scripts/check-rust-boundaries.mjs",
@@ -171,61 +163,60 @@ async function rewritePublicRootPackage(targetRoot) {
     "pnpm lint",
     "pnpm typecheck",
   ].join(" && ");
+  await assertVerifyScriptsExist(targetRoot, scripts.verify);
   pkg.scripts = scripts;
   await writeFile(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
-async function copyEntry(sourcePath, targetPath) {
-  const normalizedSource = sourcePath.split(path.sep).join("/");
-  if (ignoredFilePatterns.some((pattern) => pattern.test(normalizedSource))) {
-    return;
+// The public tree gets its OWN cargo target directory. Both repos build crates
+// with the same names, but each bakes its own `CARGO_MANIFEST_DIR` into the test
+// binaries, so a fixture read relative to the manifest resolves against
+// whichever tree compiled last. Sharing `/tmp/bowline-dev-target` therefore does
+// not just cost rebuilds — it makes a private-repo test silently read the public
+// repo's fixtures and fail with a plausible wrong answer that looks exactly like
+// a contract regression.
+//
+// The verify line above is a hand-written list, so a script deleted from the
+// private repo leaves a command the exported repo cannot run. That is only
+// discovered by publishing, which is the most expensive place to find it:
+// `check-examples.mjs` was deleted in 84c286a2 and this list kept calling it
+// until a release failed at the deploy stage. Fail here, where the export is
+// still cheap to fix.
+async function assertVerifyScriptsExist(targetRoot, verify) {
+  const referenced = [...verify.matchAll(/node (scripts\/[\w.-]+\.mjs)/g)].map(
+    (match) => match[1],
+  );
+  const missing = [];
+  for (const script of referenced) {
+    try {
+      await lstat(path.join(targetRoot, script));
+    } catch {
+      missing.push(script);
+    }
   }
+  if (missing.length > 0) {
+    throw new Error(
+      `public verify references scripts the export does not contain: ${missing.join(", ")}`,
+    );
+  }
+}
 
+async function copyTrackedFile(sourcePath, targetPath) {
   const stat = await lstat(sourcePath);
-
   if (stat.isSymbolicLink()) {
     throw new Error(`Symlinks are not exported: ${sourcePath}`);
   }
-
-  if (stat.isDirectory()) {
-    if (ignoredDirectorySegments.has(path.basename(sourcePath))) return;
-    await mkdir(targetPath, { recursive: true });
-    const entries = await readdir(sourcePath);
-    for (const entry of entries) {
-      if (entry === ".git") continue;
-      await copyEntry(
-        path.join(sourcePath, entry),
-        path.join(targetPath, entry),
-      );
-    }
-    return;
-  }
-
-  await mkdir(path.dirname(targetPath), { recursive: true });
-
   if (!stat.isFile()) return;
 
+  await mkdir(path.dirname(targetPath), { recursive: true });
   await copyFile(sourcePath, targetPath);
   await chmod(targetPath, stat.mode);
 }
 
-async function validateEntry(sourcePath) {
-  const normalizedSource = sourcePath.split(path.sep).join("/");
-  if (ignoredFilePatterns.some((pattern) => pattern.test(normalizedSource))) {
-    return;
-  }
-
+async function assertExportable(sourcePath) {
   const stat = await lstat(sourcePath);
   if (stat.isSymbolicLink()) {
     throw new Error(`Symlinks are not exported: ${sourcePath}`);
-  }
-  if (!stat.isDirectory()) return;
-  if (ignoredDirectorySegments.has(path.basename(sourcePath))) return;
-
-  const entries = await readdir(sourcePath);
-  for (const entry of entries) {
-    if (entry === ".git") continue;
-    await validateEntry(path.join(sourcePath, entry));
   }
 }
 
@@ -243,20 +234,27 @@ async function main() {
     throw new Error("Target repo must not contain the private source repo");
   }
   assertCleanTarget(targetRoot);
+  await assertGitRepo(sourceRoot, "Source");
 
   const include = await readManifest(manifestPath);
+  const exports = new Map();
   for (const entry of include) {
-    try {
-      await validateEntry(path.join(sourceRoot, entry));
-    } catch (error) {
-      if (error && error.code !== "ENOENT") throw error;
-      throw new Error(`Allowlisted path does not exist: ${entry}`);
+    const files = trackedFiles(sourceRoot, entry);
+    if (files.length === 0) {
+      throw new Error(`Allowlisted path is not tracked by git: ${entry}`);
+    }
+    for (const file of files) {
+      await assertExportable(path.join(sourceRoot, file));
+      exports.set(file, file);
     }
   }
 
   await pruneTarget(targetRoot);
-  for (const entry of include) {
-    await copyEntry(path.join(sourceRoot, entry), path.join(targetRoot, entry));
+  for (const file of exports.keys()) {
+    await copyTrackedFile(
+      path.join(sourceRoot, file),
+      path.join(targetRoot, file),
+    );
   }
   await copyPublicOverrides(sourceRoot, targetRoot);
   await rewritePublicRootPackage(targetRoot);

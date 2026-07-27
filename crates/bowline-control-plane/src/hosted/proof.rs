@@ -3,14 +3,17 @@ use crate::Sha256Checksum;
 
 // Device-proof subjects are contract-tested against tests/contracts/proofs/device-proof-subjects.json.
 
-pub(super) fn workspace_ref_proof_subject(expected_version: u64, next_snapshot_id: &str) -> String {
+pub(super) fn workspace_ref_proof_subject(
+    expected_version: u64,
+    next_snapshot_id: &SnapshotId,
+) -> String {
     format!("expectedVersion={expected_version}\nnextSnapshotId={next_snapshot_id}")
 }
 
 pub(super) fn workspace_head_proof_subject(
-    workspace_id: &str,
+    workspace_id: &WorkspaceId,
     version: u64,
-    snapshot_id: &str,
+    snapshot_id: &SnapshotId,
 ) -> String {
     format!("workspaceId={workspace_id}\nversion={version}\nsnapshotId={snapshot_id}")
 }
@@ -20,13 +23,13 @@ pub(super) fn upload_intent_proof_subject(
     kind: ObjectKind,
     byte_len: u64,
     checksum_sha256: &Sha256Checksum,
-    content_id: Option<&str>,
+    content_id: Option<&ContentId>,
 ) -> String {
     format!(
         "authorityFormatVersion={CURRENT_SNAPSHOT_AUTHORITY_FORMAT_VERSION}\nobjectKey={object_key}\nkind={}\nbyteLength={byte_len}\nchecksumSha256={}\ncontentId={}",
         kind.as_str(),
         checksum_sha256.as_str(),
-        content_id.unwrap_or_default()
+        content_id.map(ContentId::as_str).unwrap_or_default()
     )
 }
 
@@ -46,11 +49,11 @@ pub(super) fn download_intent_proof_subject(
 pub(super) fn upload_verification_proof_subject(
     object_key: &str,
     byte_len: u64,
-    content_id: Option<&str>,
+    content_id: Option<&ContentId>,
 ) -> String {
     format!(
         "objectKey={object_key}\nbyteLength={byte_len}\ncontentId={}",
-        content_id.unwrap_or_default()
+        content_id.map(ContentId::as_str).unwrap_or_default()
     )
 }
 
@@ -62,6 +65,18 @@ pub(super) fn object_retention_proof_subject(
         "objectKey={object_key}\nretentionState={}",
         retention_state_value(retention_state)
     )
+}
+
+/// Binds a GC listing proof to the page it asks for, so a proof minted for one
+/// page cannot be replayed to walk the rest of the workspace. The first page has
+/// no cursor and signs the empty value.
+pub(super) fn storage_gc_list_proof_subject(cursor: Option<&str>) -> String {
+    format!("cursor={}", cursor.unwrap_or_default())
+}
+
+/// Shared subject for both halves of a GC delete: claim the intent, then drop the row.
+pub(super) fn storage_gc_object_proof_subject(object_key: &str) -> String {
+    format!("objectKey={object_key}")
 }
 
 pub(super) fn retention_state_value(state: RetentionState) -> &'static str {
@@ -136,6 +151,8 @@ pub(super) fn generated_object_key(kind: ObjectKind, seed: &str) -> String {
 
 pub(super) fn generate_bootstrap_token() -> ControlPlaneResult<String> {
     let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes).map_err(|error| ControlPlaneError::Storage(error.to_string()))?;
+    getrandom::fill(&mut bytes).map_err(|_| ControlPlaneError::Internal {
+        reason: "system randomness is unavailable",
+    })?;
     Ok(format!("bowline_bootstrap_{}", BASE64_URL.encode(bytes)))
 }

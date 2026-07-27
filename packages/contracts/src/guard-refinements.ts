@@ -89,7 +89,6 @@ const numericRefinements: Readonly<Record<string, readonly NumericPath[]>> = {
   SetupCommandOutput: [
     { path: ["login", "pollIntervalSeconds"], rule: NONNEGATIVE },
   ],
-  SnapshotManifest: [{ path: ["entryCount"], rule: NONNEGATIVE_INTEGER }],
   StatusCommandOutput: [
     ...syncQueuePaths(),
     { path: ["eventWatermarks", "eventLagMs"], rule: NONNEGATIVE },
@@ -232,124 +231,6 @@ function isHandoffOutcomeValid(value: unknown): boolean {
   }
 }
 
-function hasValidSnapshotRoot(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    typeof value.namespaceRootId === "string" &&
-    /^nsp_[a-f0-9]{64}$/u.test(value.namespaceRootId) &&
-    typeof value.semanticManifestDigest === "string" &&
-    /^[a-f0-9]{64}$/u.test(value.semanticManifestDigest) &&
-    !("entries" in value)
-  );
-}
-
-const CONTENT_LAYOUT_KEYS = new Set([
-  "kind",
-  "logicalContentId",
-  "logicalLength",
-  "segmentSize",
-  "segments",
-]);
-
-const CONTENT_SEGMENT_KEYS = new Set([
-  "ordinal",
-  "plaintextLength",
-  "segmentId",
-  "packId",
-  "offset",
-  "length",
-  "formatVersion",
-]);
-
-function hasValidContentLayout(value: unknown): boolean {
-  if (!isRecord(value) || !hasOnlyKeys(value, CONTENT_LAYOUT_KEYS))
-    return false;
-  const logicalLength = value.logicalLength;
-  const segmentSize = value.segmentSize;
-  const segments = value.segments;
-  if (
-    value.kind !== "segmented-v1" ||
-    typeof value.logicalContentId !== "string" ||
-    value.logicalContentId.length === 0 ||
-    !isNonnegativeSafeInteger(logicalLength) ||
-    !isPositiveSafeInteger(segmentSize) ||
-    !Array.isArray(segments)
-  ) {
-    return false;
-  }
-
-  if (logicalLength === 0) return segments.length === 0;
-  return hasValidContentSegments(segments, logicalLength, segmentSize);
-}
-
-function hasValidContentSegments(
-  segments: readonly unknown[],
-  logicalLength: number,
-  segmentSize: number,
-): boolean {
-  if (segments.length === 0) return false;
-
-  let total = 0;
-  for (const [index, segment] of segments.entries()) {
-    const plaintextLength = validSegmentPlaintextLength(
-      segment,
-      index,
-      segments.length,
-      segmentSize,
-    );
-    if (plaintextLength === undefined) return false;
-    total += plaintextLength;
-    if (!Number.isSafeInteger(total)) return false;
-  }
-  return total === logicalLength;
-}
-
-function validSegmentPlaintextLength(
-  value: unknown,
-  index: number,
-  segmentCount: number,
-  segmentSize: number,
-): number | undefined {
-  if (!isRecord(value) || !hasOnlyKeys(value, CONTENT_SEGMENT_KEYS)) return;
-  const plaintextLength = value.plaintextLength;
-  const offset = value.offset;
-  const length = value.length;
-  if (
-    value.ordinal !== index ||
-    !isPositiveSafeInteger(plaintextLength) ||
-    plaintextLength > segmentSize ||
-    (index + 1 < segmentCount && plaintextLength !== segmentSize) ||
-    !isNonemptyString(value.segmentId) ||
-    !isNonemptyString(value.packId) ||
-    !isNonnegativeSafeInteger(offset) ||
-    !isPositiveSafeInteger(length) ||
-    !isPositiveSafeInteger(value.formatVersion) ||
-    !Number.isSafeInteger(offset + length)
-  ) {
-    return;
-  }
-  return plaintextLength;
-}
-
-function hasOnlyKeys(
-  value: Readonly<Record<string, unknown>>,
-  allowedKeys: ReadonlySet<string>,
-): boolean {
-  return Object.keys(value).every((key) => allowedKeys.has(key));
-}
-
-function isNonemptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
-}
-
-function isNonnegativeSafeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isPositiveSafeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-
 function hasNonEmptyApprovalFields(value: unknown): boolean {
   return (
     isRecord(value) &&
@@ -397,8 +278,6 @@ export function guardRefinement(name: string, value: unknown): boolean {
       return hasValidAgentWriteTargets(value);
     case "DeviceApprovalAffordance":
       return hasNonEmptyApprovalFields(value);
-    case "ContentLayout":
-      return hasValidContentLayout(value);
     case "DeviceApprovalAffordances":
       return Array.isArray(value) && value.every(hasNonEmptyApprovalFields);
     case "HandoffCommandOutput":
@@ -407,8 +286,6 @@ export function guardRefinement(name: string, value: unknown): boolean {
       return hasValidHistoryCursor(value);
     case "RecoveryCommandOutput":
       return isRecord(value) && !("generatedWords" in value);
-    case "SnapshotManifest":
-      return hasValidSnapshotRoot(value);
     case "StatusCommandOutput":
       return isRecord(value) && typeof value.workspaceId === "string";
     case "WorkLifecycleCommandOutput":

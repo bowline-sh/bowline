@@ -30,7 +30,7 @@ use bowline_local::sync::manifest_engine::{
 
 use crate::manifest_transport::{
     ManifestTransport, ReconnectDelay, RefChangeSubscription, RefObserverHealth,
-    RefObserverHealthHandle,
+    RefObserverHealthHandle, RefObserverReadiness, SignerTrustRefresh,
 };
 
 /// The engine's own database file, kept at the daemon state root (never inside
@@ -38,10 +38,12 @@ use crate::manifest_transport::{
 /// outside user space).
 pub const MANIFEST_ENGINE_DB_FILE: &str = "manifest_engine.sqlite3";
 
-/// A thread-safe sink the engine thread publishes its latest snapshot into. The
-/// status projection reads the other end through [`EngineSnapshotHandle`].
+/// The live engine's inbox, registered while a driver thread is running.
+/// A status reader holds an [`EngineSnapshotHandle`] whether or not an engine
+/// exists, so every command it can send goes through this slot and reports
+/// `Unavailable` when the slot is empty.
 #[derive(Debug)]
-struct BarrierEndpoint {
+struct EngineEndpoint {
     generation: u64,
     events: Sender<EngineEvent>,
     pending: Arc<Mutex<BTreeMap<SyncBarrierId, Sender<EngineSnapshot>>>>,
@@ -50,7 +52,7 @@ struct BarrierEndpoint {
 #[derive(Debug)]
 struct EngineShared {
     snapshot: Mutex<EngineSnapshot>,
-    barrier: Mutex<Option<BarrierEndpoint>>,
+    endpoint: Mutex<Option<EngineEndpoint>>,
     next_barrier_id: AtomicU64,
     next_generation: AtomicU64,
 }
@@ -73,7 +75,7 @@ impl EngineSnapshotSink {
         completed: impl IntoIterator<Item = SyncBarrierId>,
         snapshot: &EngineSnapshot,
     ) {
-        let pending = self.0.barrier.lock().ok().and_then(|endpoint| {
+        let pending = self.0.endpoint.lock().ok().and_then(|endpoint| {
             endpoint
                 .as_ref()
                 .map(|endpoint| Arc::clone(&endpoint.pending))
@@ -96,14 +98,14 @@ impl EngineSnapshotSink {
         EngineSnapshotHandle(Arc::clone(&self.0))
     }
 
-    fn register_barrier_endpoint(
+    fn register_engine_endpoint(
         &self,
         events: Sender<EngineEvent>,
         pending: Arc<Mutex<BTreeMap<SyncBarrierId, Sender<EngineSnapshot>>>>,
     ) -> u64 {
         let generation = self.0.next_generation.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut endpoint) = self.0.barrier.lock() {
-            *endpoint = Some(BarrierEndpoint {
+        if let Ok(mut endpoint) = self.0.endpoint.lock() {
+            *endpoint = Some(EngineEndpoint {
                 generation,
                 events,
                 pending,
@@ -112,8 +114,8 @@ impl EngineSnapshotSink {
         generation
     }
 
-    fn unregister_barrier_endpoint(&self, generation: u64) {
-        if let Ok(mut endpoint) = self.0.barrier.lock()
+    fn unregister_engine_endpoint(&self, generation: u64) {
+        if let Ok(mut endpoint) = self.0.endpoint.lock()
             && endpoint
                 .as_ref()
                 .is_some_and(|endpoint| endpoint.generation == generation)
@@ -130,7 +132,7 @@ impl EngineSnapshotSink {
 pub fn shared_engine_snapshot() -> (EngineSnapshotSink, EngineSnapshotHandle) {
     let shared = Arc::new(EngineShared {
         snapshot: Mutex::new(starting_snapshot()),
-        barrier: Mutex::new(None),
+        endpoint: Mutex::new(None),
         next_barrier_id: AtomicU64::new(1),
         next_generation: AtomicU64::new(1),
     });
@@ -158,16 +160,18 @@ impl EngineSnapshotHandle {
     /// Request an exact convergence boundary from the active engine. The engine
     /// performs an on-demand disk scan and hosted-ref read, then wakes this
     /// waiter only after that specific request has settled.
-    pub fn request_sync_barrier(&self) -> io::Result<SyncBarrierWaiter> {
+    pub fn request_sync_barrier(&self) -> Result<SyncBarrierWaiter, SyncBarrierError> {
         let (id, events, pending) = {
             let endpoint = self
                 .0
-                .barrier
+                .endpoint
                 .lock()
-                .map_err(|_| io::Error::other("sync barrier state is unavailable"))?;
-            let endpoint = endpoint
-                .as_ref()
-                .ok_or_else(|| io::Error::other("manifest sync engine is unavailable"))?;
+                .map_err(|_| SyncBarrierError::Unavailable {
+                    reason: "sync barrier state is unavailable",
+                })?;
+            let endpoint = endpoint.as_ref().ok_or(SyncBarrierError::Unavailable {
+                reason: "manifest sync engine is unavailable",
+            })?;
             (
                 SyncBarrierId(self.0.next_barrier_id.fetch_add(1, Ordering::Relaxed)),
                 endpoint.events.clone(),
@@ -177,13 +181,15 @@ impl EngineSnapshotHandle {
         let (completion, receiver) = mpsc::channel();
         pending
             .lock()
-            .map_err(|_| io::Error::other("sync barrier state is unavailable"))?
+            .map_err(|_| SyncBarrierError::Unavailable {
+                reason: "sync barrier state is unavailable",
+            })?
             .insert(id, completion);
         if events.send(EngineEvent::SyncBarrier(id)).is_err() {
             if let Ok(mut pending) = pending.lock() {
                 pending.remove(&id);
             }
-            return Err(io::Error::other("manifest sync engine stopped"));
+            return Err(SyncBarrierError::EngineStopped);
         }
         Ok(SyncBarrierWaiter {
             id,
@@ -191,7 +197,107 @@ impl EngineSnapshotHandle {
             pending,
         })
     }
+
+    /// Authorise the removal batch the engine is currently refusing.
+    ///
+    /// Fire-and-forget by design: what gets authorised is whatever the engine is
+    /// refusing when it folds the event, so there is nothing for the caller to
+    /// pass and nothing it could usefully wait for. The caller reads the
+    /// resulting state from the snapshot it already polls.
+    pub fn confirm_mass_deletion(&self) -> Result<(), EngineCommandError> {
+        let events = {
+            let endpoint = self
+                .0
+                .endpoint
+                .lock()
+                .map_err(|_| EngineCommandError::Unavailable {
+                    reason: "manifest sync engine state is unavailable",
+                })?;
+            endpoint
+                .as_ref()
+                .ok_or(EngineCommandError::Unavailable {
+                    reason: "manifest sync engine is unavailable",
+                })?
+                .events
+                .clone()
+        };
+        events
+            .send(EngineEvent::ConfirmMassDeletion)
+            .map_err(|_| EngineCommandError::EngineStopped)
+    }
 }
+
+/// Why a command to the live engine could not be delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineCommandError {
+    /// No engine is attached to this snapshot slot.
+    Unavailable { reason: &'static str },
+    /// The engine thread stopped before the command reached it.
+    EngineStopped,
+}
+
+impl EngineCommandError {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unavailable { reason } => reason,
+            Self::EngineStopped => "manifest sync engine stopped before the command was applied",
+        }
+    }
+}
+
+impl std::fmt::Display for EngineCommandError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::error::Error for EngineCommandError {}
+
+/// Why an exact sync barrier produced no snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncBarrierError {
+    /// The engine slot exists but cannot answer right now — nothing has attached
+    /// to it yet, or its barrier state is momentarily unusable. Either way a
+    /// caller holding a deadline should ask again.
+    Unavailable { reason: &'static str },
+    /// This daemon serves no sync workspace at all. Waiting cannot change that,
+    /// so it must never be reported as a daemon that is still coming up.
+    WorkspaceNotServed,
+    /// The caller's cancellation predicate fired: the client disconnected, or
+    /// the request's deadline passed.
+    Cancelled,
+    /// The barrier did not converge before the caller's timeout.
+    TimedOut,
+    /// The engine stopped before completing the barrier.
+    EngineStopped,
+}
+
+impl SyncBarrierError {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unavailable { reason } => reason,
+            Self::WorkspaceNotServed => "daemon is not serving a sync workspace",
+            Self::Cancelled => "the sync barrier request was cancelled",
+            Self::TimedOut => "sync barrier did not converge before the deadline",
+            Self::EngineStopped => "manifest sync engine stopped before the barrier completed",
+        }
+    }
+}
+
+impl std::fmt::Display for SyncBarrierError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::error::Error for SyncBarrierError {}
+
+/// How often an interruptible barrier wait re-checks its cancellation
+/// predicate. Small enough that a disconnected or expired request frees its
+/// worker thread promptly, large enough to cost nothing while idle.
+const SYNC_BARRIER_POLL: Duration = Duration::from_millis(200);
 
 /// Reactive completion handle for one exact sync barrier.
 pub struct SyncBarrierWaiter {
@@ -201,18 +307,35 @@ pub struct SyncBarrierWaiter {
 }
 
 impl SyncBarrierWaiter {
-    pub fn wait(self, timeout: Duration) -> io::Result<EngineSnapshot> {
-        self.receiver
-            .recv_timeout(timeout)
-            .map_err(|error| match error {
-                mpsc::RecvTimeoutError::Timeout => io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "sync barrier did not converge before the deadline",
-                ),
-                mpsc::RecvTimeoutError::Disconnected => {
-                    io::Error::other("manifest sync engine stopped before the barrier completed")
+    /// Wait for the barrier, re-checking `cancelled` on a short poll interval.
+    ///
+    /// A barrier occupies a bounded RPC worker for its whole duration, so the
+    /// wait must never be an uninterruptible park: without this the executor's
+    /// cancellation machinery writes a `DeadlineExceeded` response to the client
+    /// while the worker stays blocked, and enough concurrent barriers starve the
+    /// lane that serves `daemon.info`.
+    pub fn wait(
+        self,
+        timeout: Duration,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<EngineSnapshot, SyncBarrierError> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if cancelled() {
+                return Err(SyncBarrierError::Cancelled);
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(SyncBarrierError::TimedOut);
+            }
+            match self.receiver.recv_timeout(remaining.min(SYNC_BARRIER_POLL)) {
+                Ok(snapshot) => return Ok(snapshot),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(SyncBarrierError::EngineStopped);
                 }
-            })
+            }
+        }
     }
 }
 
@@ -256,6 +379,8 @@ pub fn host_status_snapshot() -> EngineSnapshot {
         cycle_active: false,
         last_success_at: None,
         degradation: Degradation::Nominal,
+        unsyncable: Arc::new(BTreeMap::new()),
+        refused_removals: Arc::new(BTreeSet::new()),
     }
 }
 
@@ -276,6 +401,8 @@ fn starting_snapshot() -> EngineSnapshot {
         cycle_active: false,
         last_success_at: None,
         degradation: Degradation::Nominal,
+        unsyncable: Arc::new(BTreeMap::new()),
+        refused_removals: Arc::new(BTreeSet::new()),
     }
 }
 
@@ -283,8 +410,8 @@ fn starting_snapshot() -> EngineSnapshot {
 pub struct ManifestDriver {
     events: Sender<EngineEvent>,
     snapshot: EngineSnapshotHandle,
-    barrier_sink: EngineSnapshotSink,
-    barrier_generation: u64,
+    endpoint_sink: EngineSnapshotSink,
+    endpoint_generation: u64,
     barrier_pending: Arc<Mutex<BTreeMap<SyncBarrierId, Sender<EngineSnapshot>>>>,
     // The engine's shared cost meters (Plan 111 Step 5). The same `Arc` the
     // engine thread writes; the daemon metrics RPC reads it lock-free.
@@ -320,8 +447,8 @@ impl ManifestDriver {
     {
         let (events, inbox) = mpsc::channel();
         let barrier_pending = Arc::new(Mutex::new(BTreeMap::new()));
-        let barrier_generation =
-            sink.register_barrier_endpoint(events.clone(), Arc::clone(&barrier_pending));
+        let endpoint_generation =
+            sink.register_engine_endpoint(events.clone(), Arc::clone(&barrier_pending));
         let thread_sink = sink.clone();
         let thread = match thread::Builder::new()
             .name("bowline-manifest-engine".to_string())
@@ -329,15 +456,15 @@ impl ManifestDriver {
         {
             Ok(thread) => thread,
             Err(error) => {
-                sink.unregister_barrier_endpoint(barrier_generation);
+                sink.unregister_engine_endpoint(endpoint_generation);
                 return Err(error);
             }
         };
         Ok(Self {
             events,
             snapshot: handle,
-            barrier_sink: sink,
-            barrier_generation,
+            endpoint_sink: sink,
+            endpoint_generation,
             barrier_pending,
             // Replaced with the engine's own counters by the production path; a
             // generic `run` (tests) keeps this fresh set, harmlessly unread.
@@ -389,6 +516,7 @@ impl ManifestDriver {
             config.workspace_id.as_str().to_string(),
             driver.events.clone(),
             config.reconnect_delay,
+            config.trust_refresh,
         );
         driver.ref_observer_health = Some(subscription.health_handle());
         driver.ref_subscription = Some(subscription);
@@ -424,15 +552,26 @@ impl ManifestDriver {
             .map(RefObserverHealthHandle::current)
     }
 
-    /// Readiness requires Convex to have delivered the initial reactive value.
-    pub fn ref_observer_is_live(&self) -> bool {
-        self.ref_subscription
+    /// What the remote observer currently contributes to status. `Live` requires
+    /// Convex to have delivered the initial reactive value over a worker that is
+    /// still running; a credential the control plane refuses is reported apart
+    /// from ordinary retrying because no reconnect can clear it.
+    pub fn ref_observer_readiness(&self) -> RefObserverReadiness {
+        let Some(readiness) = self
+            .ref_observer_health
             .as_ref()
-            .is_some_and(|subscription| !subscription.is_finished())
-            && self
-                .ref_observer_health
-                .as_ref()
-                .is_some_and(RefObserverHealthHandle::is_live)
+            .map(RefObserverHealthHandle::readiness)
+        else {
+            return RefObserverReadiness::Retrying;
+        };
+        let worker_running = self
+            .ref_subscription
+            .as_ref()
+            .is_some_and(|subscription| !subscription.is_finished());
+        if readiness == RefObserverReadiness::Live && !worker_running {
+            return RefObserverReadiness::Retrying;
+        }
+        readiness
     }
 
     /// Whether either indispensable production worker has exited. The daemon
@@ -468,8 +607,8 @@ impl Drop for ManifestDriver {
         // Stop the ref subscription first so it stops feeding a dead channel,
         // then signal the engine and join its thread.
         self.ref_subscription = None;
-        self.barrier_sink
-            .unregister_barrier_endpoint(self.barrier_generation);
+        self.endpoint_sink
+            .unregister_engine_endpoint(self.endpoint_generation);
         if let Ok(mut pending) = self.barrier_pending.lock() {
             pending.clear();
         }
@@ -491,6 +630,9 @@ pub struct ManifestDriverConfig {
     pub workspace_id: WorkspaceId,
     pub device_id: DeviceId,
     pub reconnect_delay: ReconnectDelay,
+    /// How the observer learns a device whose signed head it cannot verify —
+    /// the workspace's shared device trust, refreshed between stream attempts.
+    pub trust_refresh: SignerTrustRefresh,
 }
 
 /// Run the engine loop, publishing a snapshot after startup and after every

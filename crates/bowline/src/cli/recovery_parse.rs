@@ -1,55 +1,51 @@
 use super::*;
 
+use bowline_core::commands::RecoveryCommandAction;
+use bowline_core::ids::RecoveryEnvelopeId;
+
+/// The action comes from the registry — one spec per `recover <action>` — so
+/// this only binds the envelope-id positional the spec already validated.
 pub(super) fn parse_recovery_command(
+    action: RecoveryCommandAction,
     values: &crate::registry::ParsedValues,
 ) -> Result<Command, ParseError> {
-    match values.positionals() {
-        [subcommand] if subcommand == "status" => {
-            Ok(Command::Recovery(recovery::RecoveryArgs::Status))
-        }
-        [subcommand] if subcommand == "create" => {
-            Ok(Command::Recovery(recovery::RecoveryArgs::Create))
-        }
-        [subcommand, envelope_id] if subcommand == "verify" => {
-            Ok(Command::Recovery(recovery::RecoveryArgs::Verify {
-                envelope_id: envelope_id.to_string(),
-            }))
-        }
-        [subcommand, _, words @ ..] if subcommand == "verify" && !words.is_empty() => {
-            command_usage_error(
-                CommandName::Recover,
-                "usage_error",
-                "Recovery Key words must be provided on stdin, not argv".to_string(),
-                recovery_usage_actions(),
-            )
-        }
-        [subcommand] if subcommand == "rotate" => {
-            Ok(Command::Recovery(recovery::RecoveryArgs::Rotate))
-        }
-        [subcommand, envelope_id] if subcommand == "revoke" => {
-            Ok(Command::Recovery(recovery::RecoveryArgs::Revoke {
-                envelope_id: envelope_id.to_string(),
-            }))
-        }
-        [subcommand, envelope_id] if subcommand == "use" => {
-            Ok(Command::Recovery(recovery::RecoveryArgs::Use {
-                envelope_id: envelope_id.to_string(),
-            }))
-        }
-        [subcommand, _, words @ ..] if subcommand == "use" && !words.is_empty() => {
-            command_usage_error(
-                CommandName::Recover,
-                "usage_error",
-                "Recovery Key words must be provided on stdin, not argv".to_string(),
-                recovery_usage_actions(),
-            )
-        }
-        _ => command_usage_error(
+    let envelope_id = |action: RecoveryCommandAction| match values.positionals() {
+        [envelope_id] => Ok(RecoveryEnvelopeId::new(envelope_id.clone())),
+        _ => Err(command_usage_parse_error(
             CommandName::Recover,
-            "usage_error",
-            "expected `bowline recover status|create|verify <envelope-id>|rotate|revoke <envelope-id>|use <envelope-id>`; Recovery Key words are read from stdin".to_string(),
+            "missing_envelope_id",
+            format!(
+                "bowline recover {} requires <envelope-id>; Recovery Key words are read from stdin",
+                action_token(action)
+            ),
             recovery_usage_actions(),
-        ),
+        )),
+    };
+    let args = match action {
+        RecoveryCommandAction::Status => recovery::RecoveryArgs::Status,
+        RecoveryCommandAction::Create => recovery::RecoveryArgs::Create,
+        RecoveryCommandAction::Rotate => recovery::RecoveryArgs::Rotate,
+        RecoveryCommandAction::Verify => recovery::RecoveryArgs::Verify {
+            envelope_id: envelope_id(action)?,
+        },
+        RecoveryCommandAction::Revoke => recovery::RecoveryArgs::Revoke {
+            envelope_id: envelope_id(action)?,
+        },
+        RecoveryCommandAction::Use => recovery::RecoveryArgs::Use {
+            envelope_id: envelope_id(action)?,
+        },
+    };
+    Ok(Command::Recovery(args))
+}
+
+fn action_token(action: RecoveryCommandAction) -> &'static str {
+    match action {
+        RecoveryCommandAction::Status => "status",
+        RecoveryCommandAction::Create => "create",
+        RecoveryCommandAction::Verify => "verify",
+        RecoveryCommandAction::Rotate => "rotate",
+        RecoveryCommandAction::Revoke => "revoke",
+        RecoveryCommandAction::Use => "use",
     }
 }
 

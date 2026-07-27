@@ -1,4 +1,13 @@
-use super::*;
+use std::time::Instant;
+
+#[cfg(test)]
+use bowline_local::notifications::{
+    NotificationDispatchReport, NotificationSender, dispatch_new_notifications,
+    pending_device_payloads,
+};
+
+use crate::daemon::DaemonRuntime;
+use crate::daemon::sync::NotificationPollCompletion;
 
 impl DaemonRuntime {
     pub(in crate::daemon) fn poll_notifications_for_projection(

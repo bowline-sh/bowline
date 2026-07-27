@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 
+import { SOURCE_ROOTS } from "./repo-roots.mjs";
+
 const generatedPathSegments = new Map([
   ["node_modules", "dependency install output"],
   [".turbo", "turbo cache output"],
@@ -18,17 +20,7 @@ const generatedFilePatterns = [
     reason: "package manager debug log",
   },
 ];
-const sourceRoots = [
-  "apps",
-  "packages",
-  "crates",
-  "scripts",
-  "infra",
-  "tests",
-  "docs",
-  "plans",
-  "examples",
-];
+const sourceRoots = SOURCE_ROOTS;
 
 function parseArgs(argv) {
   if (argv.length === 0) return { root: process.cwd() };

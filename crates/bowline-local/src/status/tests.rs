@@ -28,6 +28,7 @@ use super::{
 };
 
 mod compose;
+mod conflicts;
 mod events;
 mod sync;
 

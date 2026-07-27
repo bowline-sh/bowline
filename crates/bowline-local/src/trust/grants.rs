@@ -1,21 +1,30 @@
 use std::{error::Error, fmt, str::FromStr};
 
-use base64::{
-    Engine,
-    engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD as BASE64_URL},
+pub use super::device_proofs::{
+    DeviceAuthorizationProofCheck, device_authorization_proof, device_authorization_proof_verifier,
+    device_matching_code, verify_device_authorization_proof,
 };
-use bowline_control_plane::DeviceApproval;
+pub use super::recovery_envelopes::{
+    DecryptedRecoveryEnvelope, decrypt_recovery_envelope, encrypted_recovery_envelope,
+    recovery_fingerprint, recovery_proof, recovery_proof_verifier,
+    recovery_proof_verifier_from_proof, redacted_words_debug,
+};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 pub use bowline_control_plane::{
     device_authorization_message, device_request_proof_subject, device_revocation_proof_subject,
     recovery_envelope_payload_proof_subject_parts as recovery_envelope_payload_proof_subject,
     recovery_envelope_proof_subject,
 };
 use bowline_core::ids::{DeviceApprovalRequestId, DeviceId, WorkspaceId};
-use p256::ecdsa::{Signature, SigningKey, VerifyingKey, signature::Signer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::device_keys::{DeviceIdentity, WorkspaceKeyMaterial};
+
+/// Action label for the approver signature over a sealed device grant. Kept
+/// distinct from `approve-device-request` so a proof captured from the
+/// control-plane approval call cannot be replayed as a grant seal.
+const GRANT_SEAL_ACTION: &str = "seal-device-grant";
 
 #[derive(Debug)]
 pub enum GrantError {
@@ -25,18 +34,81 @@ pub enum GrantError {
     SigningKeyDerivation,
     WorkspaceMismatch,
     AuthorizerMismatch,
+    UnsealedGrant,
+    MalformedProofMaterial(&'static str),
+    GrantSealInvalid,
+    RequesterKeyMismatch,
+    KeyEpochMismatch,
+    EmptyKeyring,
+    DuplicateKeyEpoch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GrantPayload {
     workspace_id: WorkspaceId,
-    request_id: DeviceApprovalRequestId,
-    requester_device_id: DeviceId,
-    requester_device_fingerprint: String,
-    authorizing_device: Option<DeviceGrantAuthorizer>,
+    scope: GrantScope,
+    recipient_device_id: DeviceId,
+    recipient_device_fingerprint: String,
+    recipient_device_public_key: String,
+    authorization: GrantAuthorization,
+    /// The newest epoch carried. Redundant with `workspace_keys` and checked
+    /// against it on open, so a payload cannot claim one epoch and deliver
+    /// another.
     key_epoch: u32,
-    workspace_key: Vec<u8>,
+    /// Every epoch the sealer is handing over, ascending. A device that was
+    /// offline across several rotations needs more than the newest epoch: the
+    /// objects it has yet to open were sealed under the ones it missed.
+    workspace_keys: Vec<WorkspaceKeyMaterial>,
+}
+
+/// Why this payload exists. The two arms are sealed and opened by different
+/// code paths and must not be interchangeable: an enrollment payload is bound
+/// to the request a human compared a matching code for, while a re-grant is
+/// addressed to a device that is already trusted and has no request at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum GrantScope {
+    #[serde(rename_all = "camelCase")]
+    DeviceEnrollment {
+        request_id: DeviceApprovalRequestId,
+    },
+    KeyRegrant,
+}
+
+impl GrantScope {
+    fn tag(&self) -> &'static str {
+        match self {
+            Self::DeviceEnrollment { .. } => "device-enrollment",
+            Self::KeyRegrant => "key-regrant",
+        }
+    }
+
+    fn request_id(&self) -> &str {
+        match self {
+            Self::DeviceEnrollment { request_id } => request_id.as_str(),
+            Self::KeyRegrant => "",
+        }
+    }
+}
+
+/// How a grant's key material was authorized. The two arms have genuinely
+/// different trust roots, so they are not an `Option`: an approver-sealed grant
+/// carries a signature the requester verifies, while a recovery-sealed grant is
+/// minted by the recovering device itself out of an envelope it already opened
+/// and is never consumed by `open_approver_sealed_grant`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum GrantAuthorization {
+    #[serde(rename_all = "camelCase")]
+    ApproverSealed {
+        authorizing_device: DeviceGrantAuthorizer,
+        seal_proof: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    RecoverySelfSealed {
+        device_proof_verifiers: Vec<DeviceGrantAuthorizer>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,194 +118,294 @@ pub struct DeviceGrantAuthorizer {
     pub device_authorization_proof_verifier: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DecryptedWorkspaceGrant {
-    pub workspace_key: WorkspaceKeyMaterial,
-    pub authorizing_device: Option<DeviceGrantAuthorizer>,
+/// Who is sealing a grant, and with what authority.
+pub enum GrantSealSource<'a> {
+    Approver {
+        identity: &'a DeviceIdentity,
+        device_id: DeviceId,
+    },
+    RecoveryEnvelope {
+        device_proof_verifiers: Vec<DeviceGrantAuthorizer>,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RecoveryEnvelopePayload {
-    workspace_key: WorkspaceKeyMaterial,
-    device_proof_verifiers: Vec<DeviceGrantAuthorizer>,
+/// The device a payload is addressed to, as the sealer knows it.
+pub struct GrantRecipient<'a> {
+    pub device_id: &'a DeviceId,
+    pub device_fingerprint: &'a str,
+    pub device_public_key: &'a str,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DecryptedRecoveryEnvelope {
-    pub workspace_key: WorkspaceKeyMaterial,
-    pub device_proof_verifiers: Vec<DeviceGrantAuthorizer>,
+/// Everything the recipient needs to decide whether a sealed payload is an
+/// authenticated key transfer from a device it can name, rather than bytes the
+/// control plane chose.
+pub struct SealedGrantCheck<'a> {
+    pub identity: &'a DeviceIdentity,
+    pub ciphertext: &'a str,
+    pub expected_workspace_id: &'a WorkspaceId,
+    pub expected_scope: GrantScope,
+    pub expected_recipient_device_id: &'a DeviceId,
+    pub expected_recipient_fingerprint: &'a str,
+    pub expected_key_epoch: u32,
+    pub sealer_device_id: &'a DeviceId,
+    /// The sealer's proof verifier as published on the authenticated device
+    /// trust list — never the copy carried inside the payload.
+    pub published_sealer_proof_verifier: &'a str,
 }
 
-pub fn encrypt_workspace_key_for_request(
-    key: &WorkspaceKeyMaterial,
+pub fn encrypt_workspace_keys_for_request(
+    keys: &[WorkspaceKeyMaterial],
     request: &bowline_control_plane::DeviceRequest,
-    authorizing_device: Option<DeviceGrantAuthorizer>,
+    seal: GrantSealSource<'_>,
 ) -> Result<String, GrantError> {
-    let recipient = age::x25519::Recipient::from_str(&request.device_public_key)
+    encrypt_workspace_keys(
+        keys,
+        GrantScope::DeviceEnrollment {
+            request_id: request.request_id.clone(),
+        },
+        GrantRecipient {
+            device_id: &request.device_id,
+            device_fingerprint: &request.device_fingerprint,
+            device_public_key: &request.device_public_key,
+        },
+        seal,
+    )
+}
+
+pub fn encrypt_workspace_keys_for_regrant(
+    keys: &[WorkspaceKeyMaterial],
+    recipient: GrantRecipient<'_>,
+    seal: GrantSealSource<'_>,
+) -> Result<String, GrantError> {
+    encrypt_workspace_keys(keys, GrantScope::KeyRegrant, recipient, seal)
+}
+
+/// The one sealing path. Enrollment and re-grant differ only in scope, so they
+/// share the payload shape, the seal subject, and the signature check rather
+/// than growing a second, subtly different crypto path.
+fn encrypt_workspace_keys(
+    keys: &[WorkspaceKeyMaterial],
+    scope: GrantScope,
+    recipient: GrantRecipient<'_>,
+    seal: GrantSealSource<'_>,
+) -> Result<String, GrantError> {
+    let keys = normalized_keys(keys)?;
+    let workspace_id = keys
+        .first()
+        .map(|key| key.workspace_id.clone())
+        .ok_or(GrantError::EmptyKeyring)?;
+    let key_epoch = keys
+        .last()
+        .map(|key| key.key_epoch)
+        .ok_or(GrantError::EmptyKeyring)?;
+    let age_recipient = age::x25519::Recipient::from_str(recipient.device_public_key)
         .map_err(|error| GrantError::Age(error.to_string()))?;
+    let seal_subject = grant_seal_subject(GrantSealFields {
+        workspace_id: &workspace_id,
+        scope: &scope,
+        recipient_device_id: recipient.device_id,
+        recipient_device_fingerprint: recipient.device_fingerprint,
+        recipient_device_public_key: recipient.device_public_key,
+        key_epoch,
+        workspace_keys: &keys,
+    });
+    let authorization = match seal {
+        GrantSealSource::Approver {
+            identity,
+            device_id,
+        } => GrantAuthorization::ApproverSealed {
+            seal_proof: device_authorization_proof(
+                identity,
+                &workspace_id,
+                &device_id,
+                GRANT_SEAL_ACTION,
+                &seal_subject,
+            )?,
+            authorizing_device: DeviceGrantAuthorizer {
+                device_id,
+                device_authorization_proof_verifier: device_authorization_proof_verifier(identity)?,
+            },
+        },
+        GrantSealSource::RecoveryEnvelope {
+            device_proof_verifiers,
+        } => GrantAuthorization::RecoverySelfSealed {
+            device_proof_verifiers,
+        },
+    };
     let payload = GrantPayload {
-        workspace_id: key.workspace_id.clone(),
-        request_id: DeviceApprovalRequestId::new(request.request_id.clone()),
-        requester_device_id: DeviceId::new(request.device_id.clone()),
-        requester_device_fingerprint: request.device_fingerprint.clone(),
-        authorizing_device,
-        key_epoch: key.key_epoch,
-        workspace_key: key.key_bytes.clone(),
+        workspace_id,
+        scope,
+        recipient_device_id: recipient.device_id.clone(),
+        recipient_device_fingerprint: recipient.device_fingerprint.to_string(),
+        recipient_device_public_key: recipient.device_public_key.to_string(),
+        authorization,
+        key_epoch,
+        workspace_keys: keys,
     };
     let plaintext = serde_json::to_vec(&payload)?;
-    let ciphertext =
-        age::encrypt(&recipient, &plaintext).map_err(|error| GrantError::Age(error.to_string()))?;
+    let ciphertext = age::encrypt(&age_recipient, &plaintext)
+        .map_err(|error| GrantError::Age(error.to_string()))?;
     Ok(BASE64.encode(ciphertext))
 }
 
-pub fn decrypt_workspace_key_from_grant(
-    identity: &DeviceIdentity,
-    grant: &DeviceApproval,
-) -> Result<DecryptedWorkspaceGrant, GrantError> {
-    let ciphertext = BASE64.decode(&grant.encrypted_grant_ciphertext)?;
-    let age_identity = identity
+/// Opens a sealed payload only when it is an authenticated key transfer: sealed
+/// by the device the control plane names as sealer, signed under the verifier
+/// that device published on the trust list, bound to this device's own public
+/// key, and scoped to the operation the recipient thinks it is performing.
+/// Anything else is refused before the key material is returned.
+pub fn open_approver_sealed_grant(
+    check: SealedGrantCheck<'_>,
+) -> Result<Vec<WorkspaceKeyMaterial>, GrantError> {
+    let ciphertext = BASE64.decode(check.ciphertext)?;
+    let age_identity = check
+        .identity
         .age_identity()
         .map_err(|error| GrantError::Age(error.to_string()))?;
     let plaintext = age::decrypt(&age_identity, &ciphertext)
         .map_err(|error| GrantError::Age(error.to_string()))?;
     let payload: GrantPayload = serde_json::from_slice(&plaintext)?;
-    if payload.request_id.as_str() != grant.request_id
-        || payload.requester_device_id.as_str() != grant.device_id
-        || payload.requester_device_fingerprint != grant.device_fingerprint
+
+    if payload.scope != check.expected_scope
+        || payload.recipient_device_id.as_str() != check.expected_recipient_device_id.as_str()
+        || payload.recipient_device_fingerprint != check.expected_recipient_fingerprint
+        || &payload.workspace_id != check.expected_workspace_id
     {
         return Err(GrantError::WorkspaceMismatch);
     }
-    Ok(DecryptedWorkspaceGrant {
-        workspace_key: WorkspaceKeyMaterial {
-            workspace_id: payload.workspace_id,
-            key_epoch: payload.key_epoch,
-            key_bytes: payload.workspace_key,
-        },
-        authorizing_device: payload.authorizing_device,
-    })
-}
+    if payload.recipient_device_public_key != check.identity.public_key.as_str() {
+        return Err(GrantError::RequesterKeyMismatch);
+    }
+    let keys = normalized_keys(&payload.workspace_keys)?;
+    if keys != payload.workspace_keys
+        || keys
+            .iter()
+            .any(|key| &key.workspace_id != check.expected_workspace_id)
+        || keys.last().map(|key| key.key_epoch) != Some(payload.key_epoch)
+        || payload.key_epoch != check.expected_key_epoch
+    {
+        return Err(GrantError::KeyEpochMismatch);
+    }
 
-pub fn encrypted_recovery_envelope(
-    key: &WorkspaceKeyMaterial,
-    words: &str,
-    device_proof_verifiers: Vec<DeviceGrantAuthorizer>,
-) -> Result<String, GrantError> {
-    let passphrase = age::secrecy::SecretString::from(words.to_string());
-    let recipient = age::scrypt::Recipient::new(passphrase.clone());
-    let plaintext = serde_json::to_vec(&RecoveryEnvelopePayload {
-        workspace_key: key.clone(),
-        device_proof_verifiers,
+    let GrantAuthorization::ApproverSealed {
+        authorizing_device,
+        seal_proof,
+    } = &payload.authorization
+    else {
+        return Err(GrantError::UnsealedGrant);
+    };
+    if &authorizing_device.device_id != check.sealer_device_id
+        || authorizing_device.device_authorization_proof_verifier
+            != check.published_sealer_proof_verifier
+    {
+        return Err(GrantError::AuthorizerMismatch);
+    }
+
+    let seal_subject = grant_seal_subject(GrantSealFields {
+        workspace_id: &payload.workspace_id,
+        scope: &payload.scope,
+        recipient_device_id: &payload.recipient_device_id,
+        recipient_device_fingerprint: &payload.recipient_device_fingerprint,
+        recipient_device_public_key: &payload.recipient_device_public_key,
+        key_epoch: payload.key_epoch,
+        workspace_keys: &keys,
+    });
+    verify_device_authorization_proof(DeviceAuthorizationProofCheck {
+        proof_verifier: check.published_sealer_proof_verifier,
+        proof: seal_proof,
+        workspace_id: &payload.workspace_id,
+        device_id: &authorizing_device.device_id,
+        action: GRANT_SEAL_ACTION,
+        subject: &seal_subject,
     })?;
-    let ciphertext =
-        age::encrypt(&recipient, &plaintext).map_err(|error| GrantError::Age(error.to_string()))?;
-    Ok(BASE64.encode(ciphertext))
+
+    Ok(keys)
 }
 
-pub fn decrypt_recovery_envelope(
-    ciphertext: &str,
-    words: &str,
-) -> Result<DecryptedRecoveryEnvelope, GrantError> {
-    let ciphertext = BASE64.decode(ciphertext)?;
-    let passphrase = age::secrecy::SecretString::from(words.to_string());
-    let identity = age::scrypt::Identity::new(passphrase);
-    let plaintext =
-        age::decrypt(&identity, &ciphertext).map_err(|error| GrantError::Age(error.to_string()))?;
-    let payload: RecoveryEnvelopePayload = serde_json::from_slice(&plaintext)?;
-    Ok(DecryptedRecoveryEnvelope {
-        workspace_key: payload.workspace_key,
-        device_proof_verifiers: payload.device_proof_verifiers,
-    })
+/// Ascending by epoch with no duplicates. The order is hashed into the seal
+/// subject, so it is normalized in one place rather than trusted from either
+/// side of the wire.
+fn normalized_keys(keys: &[WorkspaceKeyMaterial]) -> Result<Vec<WorkspaceKeyMaterial>, GrantError> {
+    if keys.is_empty() {
+        return Err(GrantError::EmptyKeyring);
+    }
+    let mut sorted = keys.to_vec();
+    sorted.sort_by_key(|key| key.key_epoch);
+    if sorted
+        .windows(2)
+        .any(|pair| pair[0].key_epoch == pair[1].key_epoch)
+    {
+        return Err(GrantError::DuplicateKeyEpoch);
+    }
+    Ok(sorted)
 }
 
-pub fn recovery_fingerprint(words: &str) -> String {
-    let hash = blake3::hash(words.as_bytes());
-    format!("rk_{}", &hash.to_hex()[..16])
+struct GrantSealFields<'a> {
+    workspace_id: &'a WorkspaceId,
+    scope: &'a GrantScope,
+    recipient_device_id: &'a DeviceId,
+    recipient_device_fingerprint: &'a str,
+    recipient_device_public_key: &'a str,
+    key_epoch: u32,
+    workspace_keys: &'a [WorkspaceKeyMaterial],
 }
 
-pub fn recovery_proof_verifier(
-    words: &str,
-    workspace_id: &WorkspaceId,
-    envelope_id: &str,
-) -> String {
-    recovery_proof_verifier_from_proof(
-        &recovery_proof(words, workspace_id, envelope_id),
-        workspace_id,
-        envelope_id,
-    )
-}
-
-pub fn recovery_proof(words: &str, workspace_id: &WorkspaceId, envelope_id: &str) -> String {
-    let hash = sha256_proof_fields(&[
-        "bowline recovery proof v2",
-        workspace_id.as_str(),
-        envelope_id,
-        words,
-    ]);
-    format!("rkp_{}", &hash[..32])
-}
-
-pub fn recovery_proof_verifier_from_proof(
-    proof: &str,
-    workspace_id: &WorkspaceId,
-    envelope_id: &str,
-) -> String {
-    let hash = sha256_proof_fields(&[
-        "bowline recovery proof verifier v2",
-        workspace_id.as_str(),
-        envelope_id,
-        proof,
-    ]);
-    format!("rkpv_{}", &hash[..32])
-}
-
-pub fn device_authorization_proof_verifier(
-    identity: &DeviceIdentity,
-) -> Result<String, GrantError> {
-    let signing_key = device_signing_key(identity)?;
-    let verifying_key = VerifyingKey::from(&signing_key);
-    let public_key = verifying_key.to_encoded_point(false);
-    Ok(format!(
-        "dapv_p256_v1_{}",
-        BASE64_URL.encode(public_key.as_bytes())
-    ))
-}
-
-pub fn device_authorization_proof(
-    identity: &DeviceIdentity,
-    workspace_id: &WorkspaceId,
-    device_id: &DeviceId,
-    action: &str,
-    subject: &str,
-) -> Result<String, GrantError> {
-    let signing_key = device_signing_key(identity)?;
-    let signature: Signature = signing_key.sign(&device_authorization_message(&[
-        "bowline device authorization proof v2",
-        workspace_id.as_str(),
-        device_id.as_str(),
-        action,
-        subject,
-    ]));
-    Ok(format!(
-        "dapp_p256_v1_{}",
-        BASE64_URL.encode(signature.to_bytes())
-    ))
+/// Signing the sealed key material — not the age ciphertext — avoids the
+/// circularity of putting a signature over a blob inside that same blob, and
+/// binds strictly more: the scope, the epoch, and every key byte the recipient
+/// will adopt.
+fn grant_seal_subject(fields: GrantSealFields<'_>) -> String {
+    let key_epoch = fields.key_epoch.to_string();
+    let key_count = fields.workspace_keys.len().to_string();
+    let epochs = fields
+        .workspace_keys
+        .iter()
+        .map(|key| key.key_epoch.to_string())
+        .collect::<Vec<_>>();
+    let mut parts: Vec<&[u8]> = vec![
+        b"bowline device grant seal v2",
+        fields.workspace_id.as_str().as_bytes(),
+        fields.scope.tag().as_bytes(),
+        fields.scope.request_id().as_bytes(),
+        fields.recipient_device_id.as_str().as_bytes(),
+        fields.recipient_device_fingerprint.as_bytes(),
+        fields.recipient_device_public_key.as_bytes(),
+        key_epoch.as_bytes(),
+        key_count.as_bytes(),
+    ];
+    for (epoch, key) in epochs.iter().zip(fields.workspace_keys) {
+        parts.push(epoch.as_bytes());
+        parts.push(key.key_bytes.as_slice());
+    }
+    sha256_proof_parts(&parts)
 }
 
 pub fn grant_acceptance_proof(
-    key: &WorkspaceKeyMaterial,
-    request_id: &DeviceApprovalRequestId,
-    requester_device_id: &DeviceId,
+    keys: &[WorkspaceKeyMaterial],
+    scope: &GrantScope,
+    recipient_device_id: &DeviceId,
 ) -> String {
-    let key_epoch = key.key_epoch.to_string();
-    let hash = sha256_proof_parts(&[
-        b"bowline grant acceptance proof v1",
-        key.workspace_id.as_str().as_bytes(),
-        request_id.as_str().as_bytes(),
-        requester_device_id.as_str().as_bytes(),
-        key_epoch.as_bytes(),
-        key.key_bytes.as_slice(),
-    ]);
+    let workspace_id = keys
+        .first()
+        .map(|key| key.workspace_id.as_str().to_string())
+        .unwrap_or_default();
+    let key_count = keys.len().to_string();
+    let epochs = keys
+        .iter()
+        .map(|key| key.key_epoch.to_string())
+        .collect::<Vec<_>>();
+    let mut parts: Vec<&[u8]> = vec![
+        b"bowline grant acceptance proof v2",
+        workspace_id.as_bytes(),
+        scope.tag().as_bytes(),
+        scope.request_id().as_bytes(),
+        recipient_device_id.as_str().as_bytes(),
+        key_count.as_bytes(),
+    ];
+    for (epoch, key) in epochs.iter().zip(keys) {
+        parts.push(epoch.as_bytes());
+        parts.push(key.key_bytes.as_slice());
+    }
+    let hash = sha256_proof_parts(&parts);
     format!("gap_{}", &hash[..32])
 }
 
@@ -242,7 +414,7 @@ pub fn grant_acceptance_proof_verifier(proof: &str) -> String {
     format!("gapv_{}", &hash[..32])
 }
 
-fn sha256_proof_fields(fields: &[&str]) -> String {
+pub(super) fn sha256_proof_fields(fields: &[&str]) -> String {
     let mut hasher = Sha256::new();
     for field in fields {
         hasher.update((field.len() as u64).to_le_bytes());
@@ -262,25 +434,6 @@ fn sha256_proof_parts(fields: &[&[u8]]) -> String {
     format!("{digest:x}")
 }
 
-fn device_signing_key(identity: &DeviceIdentity) -> Result<SigningKey, GrantError> {
-    for counter in 0_u8..=u8::MAX {
-        let mut hasher = Sha256::new();
-        for field in [
-            b"bowline device signing key v2".as_slice(),
-            identity.signing_seed(),
-            &[counter],
-        ] {
-            hasher.update((field.len() as u64).to_le_bytes());
-            hasher.update(field);
-        }
-        let digest = hasher.finalize();
-        if let Ok(signing_key) = SigningKey::from_slice(&digest) {
-            return Ok(signing_key);
-        }
-    }
-    Err(GrantError::SigningKeyDerivation)
-}
-
 impl fmt::Display for GrantError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -298,6 +451,39 @@ impl fmt::Display for GrantError {
                     formatter,
                     "grant authorizer does not match the approved device"
                 )
+            }
+            Self::UnsealedGrant => {
+                write!(
+                    formatter,
+                    "grant carries no approver seal and cannot be trusted"
+                )
+            }
+            Self::MalformedProofMaterial(field) => {
+                write!(formatter, "device authorization {field} is malformed")
+            }
+            Self::GrantSealInvalid => {
+                write!(
+                    formatter,
+                    "grant seal was not signed by the approving device"
+                )
+            }
+            Self::RequesterKeyMismatch => {
+                write!(
+                    formatter,
+                    "grant was sealed to a different device public key"
+                )
+            }
+            Self::KeyEpochMismatch => {
+                write!(
+                    formatter,
+                    "grant key epoch does not match the sealed payload"
+                )
+            }
+            Self::EmptyKeyring => {
+                write!(formatter, "grant carries no workspace key material")
+            }
+            Self::DuplicateKeyEpoch => {
+                write!(formatter, "grant carries two keys for the same epoch")
             }
         }
     }
@@ -325,26 +511,19 @@ impl From<serde_json::Error> for GrantError {
     }
 }
 
-pub fn redacted_words_debug(words: &str) -> String {
-    let count = words.split_whitespace().count();
-    format!("[{count} recovery words redacted]")
-}
-
 #[cfg(test)]
 mod tests {
     use std::{fs, path::PathBuf};
 
-    use bowline_control_plane::{DeviceApproval, DeviceRequest, DeviceRequestState};
-    use bowline_core::ids::{
-        DeviceApprovalRequestId, DeviceId, EncryptedDeviceGrantId, WorkspaceId,
-    };
+    use bowline_control_plane::{DeviceRequest, DeviceRequestState};
+    use bowline_core::ids::{DeviceApprovalRequestId, DeviceId, WorkspaceId};
     use serde::Deserialize;
     use sha2::Digest;
 
     use super::{
-        DeviceGrantAuthorizer, decrypt_workspace_key_from_grant,
-        device_authorization_proof_verifier, encrypt_workspace_key_for_request, recovery_proof,
-        recovery_proof_verifier, recovery_proof_verifier_from_proof,
+        GrantError, GrantRecipient, GrantScope, GrantSealSource, SealedGrantCheck,
+        device_authorization_proof_verifier, encrypt_workspace_keys_for_regrant,
+        encrypt_workspace_keys_for_request, open_approver_sealed_grant,
     };
     use crate::device_keys::{DeviceIdentity, WorkspaceKeyMaterial};
 
@@ -362,18 +541,29 @@ mod tests {
         sha256_hex: String,
     }
 
-    #[test]
-    fn correct_device_key_decrypts_grant() {
-        let identity = DeviceIdentity::generate();
-        let request = DeviceRequest {
+    fn workspace_id() -> WorkspaceId {
+        WorkspaceId::new("workspace-1")
+    }
+
+    fn key(key_epoch: u32, fill: u8) -> WorkspaceKeyMaterial {
+        WorkspaceKeyMaterial {
+            workspace_id: workspace_id(),
+            key_epoch,
+            key_bytes: vec![fill; 32],
+        }
+    }
+
+    fn request_for(identity: &DeviceIdentity) -> DeviceRequest {
+        DeviceRequest {
             request_id: DeviceApprovalRequestId::new("request-1"),
-            workspace_id: WorkspaceId::new("workspace-1"),
+            workspace_id: workspace_id(),
             device_id: DeviceId::new("device-2"),
             device_name: "linux".to_string(),
             platform: "linux".to_string(),
             device_public_key: identity.public_key.as_str().to_string(),
+            device_public_key_proof: "dapp_p256_v1_attestation".to_string(),
             device_fingerprint: identity.fingerprint.as_str().to_string(),
-            device_authorization_proof_verifier: device_authorization_proof_verifier(&identity)
+            device_authorization_proof_verifier: device_authorization_proof_verifier(identity)
                 .expect("verifier"),
             matching_code: "bowline-abc123".to_string(),
             account_id: None,
@@ -384,107 +574,212 @@ mod tests {
             requested_at: bowline_control_plane::ControlPlaneTimestamp { tick: 1 },
             expires_at: bowline_control_plane::ControlPlaneTimestamp { tick: 2 },
             state: DeviceRequestState::Pending,
-        };
-        let key = WorkspaceKeyMaterial {
-            workspace_id: WorkspaceId::new("workspace-1"),
-            key_epoch: 1,
-            key_bytes: vec![9; 32],
-        };
-        let authorizer = DeviceGrantAuthorizer {
-            device_id: DeviceId::new("device-1"),
-            device_authorization_proof_verifier: "dapv_authorizer".to_string(),
-        };
-        let ciphertext =
-            encrypt_workspace_key_for_request(&key, &request, Some(authorizer.clone()))
-                .expect("encrypt");
-        let grant = DeviceApproval {
-            grant_id: EncryptedDeviceGrantId::new("grant-1"),
-            request_id: request.request_id,
-            workspace_id: request.workspace_id,
-            device_id: request.device_id,
-            device_name: request.device_name,
-            platform: request.platform,
-            device_fingerprint: request.device_fingerprint,
-            approved_by_device_id: DeviceId::new("device-1"),
-            encrypted_grant_ciphertext: ciphertext,
-            key_epoch: 1,
-            granted_at: bowline_control_plane::ControlPlaneTimestamp { tick: 3 },
-            expires_at: bowline_control_plane::ControlPlaneTimestamp { tick: 4 },
-            accepted_at: None,
-            harness_only: false,
-        };
+        }
+    }
 
-        let decrypted = decrypt_workspace_key_from_grant(&identity, &grant).expect("decrypt");
+    fn enrollment_check<'a>(
+        identity: &'a DeviceIdentity,
+        ciphertext: &'a str,
+        request: &'a DeviceRequest,
+        sealer_device_id: &'a DeviceId,
+        published_sealer_proof_verifier: &'a str,
+        expected_key_epoch: u32,
+    ) -> SealedGrantCheck<'a> {
+        SealedGrantCheck {
+            identity,
+            ciphertext,
+            expected_workspace_id: &request.workspace_id,
+            expected_scope: GrantScope::DeviceEnrollment {
+                request_id: request.request_id.clone(),
+            },
+            expected_recipient_device_id: &request.device_id,
+            expected_recipient_fingerprint: &request.device_fingerprint,
+            expected_key_epoch,
+            sealer_device_id,
+            published_sealer_proof_verifier,
+        }
+    }
 
-        assert_eq!(decrypted.workspace_key, key);
-        assert_eq!(decrypted.authorizing_device, Some(authorizer));
+    #[test]
+    fn correct_device_key_decrypts_grant() {
+        let identity = DeviceIdentity::generate();
+        let request = request_for(&identity);
+        let keys = vec![key(1, 9)];
+        let approver = DeviceIdentity::generate();
+        let approver_verifier =
+            device_authorization_proof_verifier(&approver).expect("approver verifier");
+        let approver_device_id = DeviceId::new("device-1");
+        let ciphertext = encrypt_workspace_keys_for_request(
+            &keys,
+            &request,
+            GrantSealSource::Approver {
+                identity: &approver,
+                device_id: approver_device_id.clone(),
+            },
+        )
+        .expect("encrypt");
+
+        let opened = open_approver_sealed_grant(enrollment_check(
+            &identity,
+            &ciphertext,
+            &request,
+            &approver_device_id,
+            &approver_verifier,
+            1,
+        ))
+        .expect("open");
+        assert_eq!(opened, keys);
+
+        let other_verifier =
+            device_authorization_proof_verifier(&DeviceIdentity::generate()).expect("other");
+        let forged = open_approver_sealed_grant(enrollment_check(
+            &identity,
+            &ciphertext,
+            &request,
+            &approver_device_id,
+            &other_verifier,
+            1,
+        ))
+        .expect_err("a grant sealed under another key is refused");
+        assert!(matches!(forged, GrantError::AuthorizerMismatch));
     }
 
     #[test]
     fn wrong_device_key_fails_to_decrypt_grant() {
         let identity = DeviceIdentity::generate();
         let wrong_identity = DeviceIdentity::generate();
-        let request = DeviceRequest {
-            request_id: DeviceApprovalRequestId::new("request-1"),
-            workspace_id: WorkspaceId::new("workspace-1"),
-            device_id: DeviceId::new("device-2"),
-            device_name: "linux".to_string(),
-            platform: "linux".to_string(),
-            device_public_key: identity.public_key.as_str().to_string(),
-            device_fingerprint: identity.fingerprint.as_str().to_string(),
-            device_authorization_proof_verifier: device_authorization_proof_verifier(&identity)
-                .expect("verifier"),
-            matching_code: "bowline-abc123".to_string(),
-            account_id: None,
-            host: None,
-            root: None,
-            runtime: None,
-            setup_receipts_digest: None,
-            requested_at: bowline_control_plane::ControlPlaneTimestamp { tick: 1 },
-            expires_at: bowline_control_plane::ControlPlaneTimestamp { tick: 2 },
-            state: DeviceRequestState::Pending,
-        };
-        let key = WorkspaceKeyMaterial {
-            workspace_id: WorkspaceId::new("workspace-1"),
-            key_epoch: 1,
-            key_bytes: vec![9; 32],
-        };
-        let ciphertext = encrypt_workspace_key_for_request(&key, &request, None).expect("encrypt");
-        let grant = DeviceApproval {
-            grant_id: EncryptedDeviceGrantId::new("grant-1"),
-            request_id: request.request_id,
-            workspace_id: request.workspace_id,
-            device_id: request.device_id,
-            device_name: request.device_name,
-            platform: request.platform,
-            device_fingerprint: request.device_fingerprint,
-            approved_by_device_id: DeviceId::new("device-1"),
-            encrypted_grant_ciphertext: ciphertext,
-            key_epoch: 1,
-            granted_at: bowline_control_plane::ControlPlaneTimestamp { tick: 3 },
-            expires_at: bowline_control_plane::ControlPlaneTimestamp { tick: 4 },
-            accepted_at: None,
-            harness_only: false,
-        };
+        let request = request_for(&identity);
+        let approver_device_id = DeviceId::new("device-1");
+        let ciphertext = encrypt_workspace_keys_for_request(
+            &[key(1, 9)],
+            &request,
+            GrantSealSource::Approver {
+                identity: &DeviceIdentity::generate(),
+                device_id: approver_device_id.clone(),
+            },
+        )
+        .expect("encrypt");
 
-        assert!(decrypt_workspace_key_from_grant(&wrong_identity, &grant).is_err());
+        assert!(
+            open_approver_sealed_grant(enrollment_check(
+                &wrong_identity,
+                &ciphertext,
+                &request,
+                &approver_device_id,
+                "dapv_p256_v1_unused",
+                1,
+            ))
+            .is_err()
+        );
     }
 
     #[test]
-    fn recovery_verifier_is_not_replayable_as_the_recovery_proof() {
-        let workspace_id = WorkspaceId::new("workspace-recovery-proof");
-        let proof = recovery_proof("correct horse battery staple", &workspace_id, "rk_1");
-        let verifier =
-            recovery_proof_verifier("correct horse battery staple", &workspace_id, "rk_1");
+    fn a_regrant_carries_every_epoch_the_sealer_holds() {
+        let recipient = DeviceIdentity::generate();
+        let sealer = DeviceIdentity::generate();
+        let sealer_device_id = DeviceId::new("device-sealer");
+        let recipient_device_id = DeviceId::new("device-recipient");
+        let keys = vec![key(1, 1), key(2, 2), key(3, 3)];
+        let ciphertext = encrypt_workspace_keys_for_regrant(
+            &keys,
+            GrantRecipient {
+                device_id: &recipient_device_id,
+                device_fingerprint: recipient.fingerprint.as_str(),
+                device_public_key: recipient.public_key.as_str(),
+            },
+            GrantSealSource::Approver {
+                identity: &sealer,
+                device_id: sealer_device_id.clone(),
+            },
+        )
+        .expect("encrypt regrant");
 
-        assert_ne!(proof, verifier);
-        assert_eq!(
-            recovery_proof_verifier_from_proof(&proof, &workspace_id, "rk_1"),
-            verifier
-        );
-        assert_ne!(
-            recovery_proof_verifier_from_proof(&verifier, &workspace_id, "rk_1"),
-            verifier
+        let opened = open_approver_sealed_grant(SealedGrantCheck {
+            identity: &recipient,
+            ciphertext: &ciphertext,
+            expected_workspace_id: &workspace_id(),
+            expected_scope: GrantScope::KeyRegrant,
+            expected_recipient_device_id: &recipient_device_id,
+            expected_recipient_fingerprint: recipient.fingerprint.as_str(),
+            expected_key_epoch: 3,
+            sealer_device_id: &sealer_device_id,
+            published_sealer_proof_verifier: &device_authorization_proof_verifier(&sealer)
+                .expect("sealer verifier"),
+        })
+        .expect("open regrant");
+
+        assert_eq!(opened, keys);
+    }
+
+    /// An enrollment payload replayed as a re-grant (or the reverse) would let a
+    /// grant issued for one trust decision satisfy a different one.
+    #[test]
+    fn a_regrant_payload_is_not_accepted_as_an_enrollment_grant() {
+        let recipient = DeviceIdentity::generate();
+        let sealer = DeviceIdentity::generate();
+        let sealer_device_id = DeviceId::new("device-sealer");
+        let request = request_for(&recipient);
+        let ciphertext = encrypt_workspace_keys_for_regrant(
+            &[key(1, 4)],
+            GrantRecipient {
+                device_id: &request.device_id,
+                device_fingerprint: &request.device_fingerprint,
+                device_public_key: &request.device_public_key,
+            },
+            GrantSealSource::Approver {
+                identity: &sealer,
+                device_id: sealer_device_id.clone(),
+            },
+        )
+        .expect("encrypt regrant");
+
+        let error = open_approver_sealed_grant(enrollment_check(
+            &recipient,
+            &ciphertext,
+            &request,
+            &sealer_device_id,
+            &device_authorization_proof_verifier(&sealer).expect("sealer verifier"),
+            1,
+        ))
+        .expect_err("scopes must not be interchangeable");
+        assert!(matches!(error, GrantError::WorkspaceMismatch));
+    }
+
+    #[test]
+    fn a_regrant_sealed_to_another_device_key_is_refused() {
+        let intended = DeviceIdentity::generate();
+        let attacker = DeviceIdentity::generate();
+        let sealer = DeviceIdentity::generate();
+        let sealer_device_id = DeviceId::new("device-sealer");
+        let recipient_device_id = DeviceId::new("device-recipient");
+        let ciphertext = encrypt_workspace_keys_for_regrant(
+            &[key(2, 7)],
+            GrantRecipient {
+                device_id: &recipient_device_id,
+                device_fingerprint: attacker.fingerprint.as_str(),
+                device_public_key: attacker.public_key.as_str(),
+            },
+            GrantSealSource::Approver {
+                identity: &sealer,
+                device_id: sealer_device_id.clone(),
+            },
+        )
+        .expect("encrypt regrant");
+
+        assert!(
+            open_approver_sealed_grant(SealedGrantCheck {
+                identity: &intended,
+                ciphertext: &ciphertext,
+                expected_workspace_id: &workspace_id(),
+                expected_scope: GrantScope::KeyRegrant,
+                expected_recipient_device_id: &recipient_device_id,
+                expected_recipient_fingerprint: intended.fingerprint.as_str(),
+                expected_key_epoch: 2,
+                sealer_device_id: &sealer_device_id,
+                published_sealer_proof_verifier: &device_authorization_proof_verifier(&sealer)
+                    .expect("sealer verifier"),
+            })
+            .is_err()
         );
     }
 

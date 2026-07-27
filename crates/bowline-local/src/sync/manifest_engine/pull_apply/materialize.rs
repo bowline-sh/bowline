@@ -15,14 +15,18 @@ use std::path::{Path, PathBuf};
 
 use bowline_core::ids::ContentId;
 
-use super::naming::{free_aside_path, materialized_aside_path, quarantine_leaf, temp_name};
-use super::{FsOp, FsOpKind, PullError, entry_mode, record_for_entry};
+use super::delta::{LocalRead, read_local_content};
+use super::naming::{
+    collision_aside_path, free_aside_path, materialized_aside_path, quarantine_leaf, temp_name,
+};
+use super::{FsOp, FsOpKind, PullError, entry_mode, observe_syncable, record_for_entry};
 use crate::sync::manifest_engine::fs_guard::{
-    ExpectedFile, FileRead, Observed, ParentChain, ParentChainMode, observe, prepare_parent_chain,
-    read_file_bounded, write_private_file,
+    ExpectedFile, Observed, ParentChain, ParentChainMode, prepare_parent_chain,
+    symlink_target_lands_in_workspace, write_private_file,
 };
 use crate::sync::manifest_engine::manifest::{
-    BlobKey, EntryKind, FileMode, ManifestEntry, WorkspacePath, open_file, physical_blob_key,
+    BlobKey, EntryKind, FileMode, KeyEpoch, ManifestEntry, WorkspacePath, open_file,
+    physical_blob_key,
 };
 use crate::sync::manifest_engine::push::{EngineContext, RemoteObjects};
 use crate::sync::manifest_engine::store::FileRecord;
@@ -33,12 +37,47 @@ pub struct TempFile {
     pub name: String,
 }
 
-/// The outcome of one filesystem materialization attempt. `ParentBlocked` is not
-/// an error — it is the type-conflict divergence the caller maps to keep-local,
-/// exactly as the merge matrix resolves a local symlink vs. a remote dir-tree.
+/// The outcome of one filesystem materialization attempt. Neither non-`Done`
+/// variant is an error.
+///
+/// `ParentBlocked` is the type-conflict divergence the caller maps to
+/// keep-local, exactly as the merge matrix resolves a local symlink vs. a remote
+/// dir-tree. `EscapingTarget` is the same keep-local answer for a symlink entry
+/// whose target lands OUTSIDE the root once the on-disk shape is resolved; the
+/// merge already refuses those, so reaching it here means the escaping component
+/// appeared between classification and this mutation. `Vanished` arises only
+/// where a materialization fingerprints its own result: the entry landed, then a
+/// concurrent actor removed it before `observe` could read the stat it must
+/// record. There is nothing to write into the ancestor, so the caller keeps local
+/// and the next scan classifies the deletion through the ordinary merge matrix —
+/// the alternative, calling a race a broken invariant, aborts the cycle and (from
+/// crash recovery, which replays a durable intent) the whole startup.
+/// `AsideRefused` is the aside-only answer for a path whose divergence may not be
+/// preserved as a second file at all (git-internal state, see
+/// [`naming::aside_is_permitted`]); like the others it settles as keep-local.
 pub(crate) enum Materialized<T> {
     Done(T),
     ParentBlocked,
+    EscapingTarget,
+    Vanished,
+    AsideRefused,
+}
+
+/// Refuse a symlink entry whose target does not land inside the workspace root.
+///
+/// The merge matrix runs the same gate and freezes the path there, which is where
+/// the refusal becomes visible (an `EscapingSymlinkTarget` unsyncable record).
+/// This is the last line before `symlink(2)`: it re-asks the question against the
+/// tree as it stands at the mutation boundary, so an escaping component created
+/// after classification — or replayed from a durable intent by crash recovery,
+/// which never re-runs the merge — still cannot reach disk.
+fn escapes_workspace(ctx: &EngineContext, path: &WorkspacePath, entry: &ManifestEntry) -> bool {
+    match entry {
+        ManifestEntry::Symlink { target, .. } => {
+            !symlink_target_lands_in_workspace(&ctx.workspace_root, path, target)
+        }
+        ManifestEntry::File { .. } | ManifestEntry::Directory { .. } => false,
+    }
 }
 
 /// Create the final directory component after its parent chain is verified.
@@ -46,11 +85,11 @@ pub(crate) enum Materialized<T> {
 /// and follow parents); an existing real directory is accepted, and a symlink or
 /// file already at the final name is left untouched so it is never written
 /// through — the manifest's children of it are blocked on their own descent.
-fn create_dir_no_follow(absolute: &Path) -> Result<(), PullError> {
+fn create_dir_no_follow(path: &WorkspacePath, absolute: &Path) -> Result<(), PullError> {
     match fs::create_dir(absolute) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
-        Err(error) => Err(PullError::Io(error)),
+        Err(error) => Err(PullError::path(path, &error)),
     }
 }
 
@@ -66,23 +105,25 @@ pub(crate) fn stage_write_temp<O: RemoteObjects>(
     let ManifestEntry::File {
         content_id,
         blob_key,
+        key_epoch,
         ..
     } = entry
     else {
         return Ok(None); // directories and symlinks carry no temp content
     };
-    let plaintext = download_file(ctx, objects, content_id, blob_key)?;
+    let plaintext = download_file(ctx, objects, *key_epoch, content_id, blob_key)?;
     let name = temp_name(&op.path, blob_key);
     let temp_dir = ctx.engine_dir().join("tmp");
-    fs::create_dir_all(&temp_dir).map_err(PullError::Io)?;
+    fs::create_dir_all(&temp_dir).map_err(PullError::engine_scratch)?;
     let path = temp_dir.join(&name);
-    write_private_file(&path, &plaintext).map_err(PullError::Io)?;
+    write_private_file(&path, &plaintext).map_err(PullError::engine_scratch)?;
     Ok(Some(TempFile { path, name }))
 }
 
 pub(crate) fn download_file<O: RemoteObjects>(
     ctx: &EngineContext,
     objects: &O,
+    key_epoch: KeyEpoch,
     content_id: &ContentId,
     blob_key: &BlobKey,
 ) -> Result<Vec<u8>, PullError> {
@@ -90,7 +131,7 @@ pub(crate) fn download_file<O: RemoteObjects>(
     if &physical_blob_key(&sealed) != blob_key {
         return Err(PullError::BlobKeyMismatch);
     }
-    open_file(&ctx.crypto, content_id, &sealed).map_err(PullError::Manifest)
+    open_file(&ctx.crypto, key_epoch, content_id, &sealed).map_err(PullError::Manifest)
 }
 
 /// Atomic no-replace install (create) or checked replace (preserve preimage to
@@ -104,10 +145,14 @@ pub(crate) fn install_entry<O: RemoteObjects>(
     temp: Option<TempFile>,
     preimage: Option<&Observed>,
 ) -> Result<Materialized<FileRecord>, PullError> {
+    // Before the preimage is displaced, so a refusal touches nothing at all.
+    if escapes_workspace(ctx, path, entry) {
+        return Ok(Materialized::EscapingTarget);
+    }
     // Verify the parent chain before consuming the temp or touching disk: a
     // symlinked intermediate must never be written through (workspace escape).
     if let ParentChain::Blocked =
-        prepare_parent_chain(&ctx.workspace_root, path, ParentChainMode::CreateMissing)?
+        prepare_parent_chain(&ctx.workspace_root, path, ParentChainMode::CreateMissing)
     {
         return Ok(Materialized::ParentBlocked);
     }
@@ -125,12 +170,12 @@ pub(crate) fn install_entry<O: RemoteObjects>(
         if observed.kind != entry.kind() {
             match observed.kind {
                 EntryKind::Directory => {
-                    if let DirRemoval::LocalContent = remove_empty_dir(&absolute)? {
+                    if let DirRemoval::LocalContent = remove_empty_dir(path, &absolute)? {
                         return Ok(Materialized::ParentBlocked);
                     }
                 }
                 EntryKind::File | EntryKind::Symlink => {
-                    fs::remove_file(&absolute).map_err(PullError::Io)?;
+                    fs::remove_file(&absolute).map_err(|error| PullError::path(path, &error))?;
                 }
             }
         }
@@ -146,10 +191,10 @@ pub(crate) fn install_entry<O: RemoteObjects>(
             // rather than 0600. Without this the next pull re-observes a spurious
             // mode change and conflict-asides a file it should have installed.
             chmod_temp(&temp.path, entry_mode(entry))?;
-            fs::rename(&temp.path, &absolute).map_err(PullError::Io)?;
+            fs::rename(&temp.path, &absolute).map_err(|error| PullError::path(path, &error))?;
         }
         ManifestEntry::Directory { mode } => {
-            create_dir_no_follow(&absolute)?;
+            create_dir_no_follow(path, &absolute)?;
             set_mode(&ctx.workspace_root, path, *mode)?;
         }
         ManifestEntry::Symlink { target, .. } => {
@@ -157,15 +202,13 @@ pub(crate) fn install_entry<O: RemoteObjects>(
             // symlink() (EEXIST otherwise); a different-kind target was cleared
             // above, and a fresh install has nothing to remove.
             let _ = fs::remove_file(&absolute);
-            symlink(target, &absolute).map_err(PullError::Io)?;
+            symlink(target, &absolute).map_err(|error| PullError::path(path, &error))?;
         }
     }
-    fsync_parent(&absolute)?;
-    let observed = observe(&ctx.workspace_root, path)
-        .map_err(PullError::Io)?
-        .ok_or(PullError::Internal {
-            reason: "installed target vanished",
-        })?;
+    fsync_parent(&absolute);
+    let Some(observed) = observe_syncable(&ctx.workspace_root, path)? else {
+        return Ok(Materialized::Vanished);
+    };
     Ok(Materialized::Done(record_for_entry(
         entry,
         observed.fingerprint,
@@ -190,13 +233,16 @@ pub(crate) enum DirRemoval {
     LocalContent,
 }
 
-pub(crate) fn remove_empty_dir(absolute: &Path) -> Result<DirRemoval, PullError> {
+pub(crate) fn remove_empty_dir(
+    path: &WorkspacePath,
+    absolute: &Path,
+) -> Result<DirRemoval, PullError> {
     match fs::remove_dir(absolute) {
         Ok(()) => Ok(DirRemoval::Removed),
         Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {
             Ok(DirRemoval::LocalContent)
         }
-        Err(error) => Err(PullError::Io(error)),
+        Err(error) => Err(PullError::path(path, &error)),
     }
 }
 
@@ -214,7 +260,7 @@ pub(crate) fn checked_delete(
     // a symlink would unlink a file OUTSIDE the workspace root. Verify (never
     // create) the chain before reading or unlinking anything.
     if let ParentChain::Blocked =
-        prepare_parent_chain(&ctx.workspace_root, path, ParentChainMode::RequireExisting)?
+        prepare_parent_chain(&ctx.workspace_root, path, ParentChainMode::RequireExisting)
     {
         return Ok(DeleteOutcome::KeptLocal);
     }
@@ -222,22 +268,22 @@ pub(crate) fn checked_delete(
     preserve_preimage(ctx, path, &absolute)?;
     match fs::symlink_metadata(&absolute) {
         Ok(metadata) if metadata.is_dir() => {
-            if let DirRemoval::LocalContent = remove_empty_dir(&absolute)? {
+            if let DirRemoval::LocalContent = remove_empty_dir(path, &absolute)? {
                 return Ok(DeleteOutcome::KeptLocal);
             }
         }
-        Ok(_) => fs::remove_file(&absolute).map_err(PullError::Io)?,
+        Ok(_) => fs::remove_file(&absolute).map_err(|error| PullError::path(path, &error))?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(PullError::Io(error)),
+        Err(error) => return Err(PullError::path(path, &error)),
     }
-    fsync_parent(&absolute)?;
+    fsync_parent(&absolute);
     Ok(DeleteOutcome::Deleted)
 }
 
 /// No-replace create of the remote bytes under a deterministic aside name
-/// (`<path> (conflict from <content-prefix>)`, see `naming::materialized_aside_path`),
-/// appending a collision suffix if that name is taken. Never touches the
-/// original path.
+/// (`<path>.bowline-conflict.<content-prefix>`, see
+/// `naming::materialized_aside_path`), appending a collision suffix if that name
+/// is taken. Never touches the original path.
 pub(crate) fn materialize_aside<O: RemoteObjects>(
     ctx: &EngineContext,
     objects: &O,
@@ -245,12 +291,19 @@ pub(crate) fn materialize_aside<O: RemoteObjects>(
     entry: &ManifestEntry,
     temp: Option<TempFile>,
 ) -> Result<Materialized<WorkspacePath>, PullError> {
-    let aside = free_aside_path(ctx, path, entry);
+    let Some(aside) = free_aside_path(ctx, path, entry) else {
+        return Ok(Materialized::AsideRefused);
+    };
+    // Resolved against the ASIDE's own location: an aside must never become the
+    // hatch that puts an escaping link on disk under a second name.
+    if escapes_workspace(ctx, &aside, entry) {
+        return Ok(Materialized::EscapingTarget);
+    }
     // The aside shares the incoming entry's parent; if that parent is a symlink
     // there is nowhere safe to place the aside without escaping the root, so keep
     // local and surface the path as a divergence (the caller maps ParentBlocked).
     if let ParentChain::Blocked =
-        prepare_parent_chain(&ctx.workspace_root, &aside, ParentChainMode::CreateMissing)?
+        prepare_parent_chain(&ctx.workspace_root, &aside, ParentChainMode::CreateMissing)
     {
         return Ok(Materialized::ParentBlocked);
     }
@@ -259,22 +312,23 @@ pub(crate) fn materialize_aside<O: RemoteObjects>(
         ManifestEntry::File {
             content_id,
             blob_key,
+            key_epoch,
             ..
         } => {
             let bytes = match temp {
-                Some(temp) => fs::read(&temp.path).map_err(PullError::Io)?,
-                None => download_file(ctx, objects, content_id, blob_key)?,
+                Some(temp) => fs::read(&temp.path).map_err(PullError::engine_scratch)?,
+                None => download_file(ctx, objects, *key_epoch, content_id, blob_key)?,
             };
-            create_no_replace(&absolute, &bytes)?;
+            create_no_replace(&aside, &absolute, &bytes)?;
         }
         ManifestEntry::Directory { .. } => {
-            create_dir_no_follow(&absolute)?;
+            create_dir_no_follow(&aside, &absolute)?;
         }
         ManifestEntry::Symlink { target, .. } => {
-            symlink(target, &absolute).map_err(PullError::Io)?;
+            symlink(target, &absolute).map_err(|error| PullError::path(&aside, &error))?;
         }
     }
-    fsync_parent(&absolute)?;
+    fsync_parent(&absolute);
     Ok(Materialized::Done(aside))
 }
 
@@ -291,8 +345,8 @@ pub(crate) fn aside_already_materialized(
     if aside_content_matches(ctx, &base, entry)? {
         return Ok(true);
     }
-    for suffix in 1..u32::MAX {
-        let candidate = WorkspacePath::new(format!("{} ({suffix})", base.as_str()));
+    for suffix in 2..u32::MAX {
+        let candidate = collision_aside_path(&base, suffix);
         if !ctx.workspace_root.join(candidate.as_str()).exists() {
             break; // first free slot: nothing materialized beyond here
         }
@@ -313,22 +367,26 @@ fn aside_content_matches(
         return Ok(false);
     };
     match entry {
-        ManifestEntry::File { content_id, .. } => {
+        ManifestEntry::File {
+            content_id,
+            key_epoch,
+            ..
+        } => {
             if !metadata.is_file() {
                 return Ok(false);
             }
             // Read no-follow, validated against the fingerprint just stat'd: an
-            // aside slot raced into a symlink must never be read through.
-            match read_file_bounded(
-                &ctx.workspace_root,
-                candidate,
-                ctx.config.max_seal_bytes,
-                &ExpectedFile::from_metadata(&metadata),
-            )
-            .map_err(PullError::Push)?
-            {
-                FileRead::Bytes(bytes) => Ok(ctx.crypto.content_id(&bytes) == *content_id),
-                FileRead::Diverged => Ok(false),
+            // aside slot raced into a symlink must never be read through. An
+            // unreadable slot is simply "not a content match" — it must never end
+            // the cycle, because recovery runs this on every startup.
+            let expected = ExpectedFile::from_metadata(&metadata);
+            match read_local_content(ctx, candidate, &expected)? {
+                LocalRead::Bytes(bytes) => {
+                    // A missing historical key means this content cannot be proven
+                    // equal to the entry, so recovery treats it as a non-match.
+                    Ok(ctx.crypto.content_id_at(*key_epoch, &bytes).as_ref() == Some(content_id))
+                }
+                LocalRead::Unverifiable => Ok(false),
             }
         }
         ManifestEntry::Directory { .. } => Ok(metadata.is_dir()),
@@ -341,13 +399,27 @@ fn aside_content_matches(
     }
 }
 
-pub(crate) fn create_no_replace(absolute: &Path, bytes: &[u8]) -> Result<(), PullError> {
+pub(crate) fn create_no_replace(
+    path: &WorkspacePath,
+    absolute: &Path,
+    bytes: &[u8],
+) -> Result<(), PullError> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true).mode(0o644);
-    let mut file = options.open(absolute).map_err(PullError::Io)?;
-    file.write_all(bytes).map_err(PullError::Io)?;
-    file.sync_all().map_err(PullError::Io)?;
+    let mut file = options
+        .open(absolute)
+        .map_err(|error| PullError::path(path, &error))?;
+    file.write_all(bytes)
+        .map_err(|error| PullError::path(path, &error))?;
+    file.sync_all()
+        .map_err(|error| PullError::path(path, &error))?;
     Ok(())
+}
+
+/// The quarantine subtree: full copies of bytes an apply is about to displace,
+/// held only until the intent that displaced them commits.
+pub(crate) fn quarantine_dir(ctx: &EngineContext) -> PathBuf {
+    ctx.engine_dir().join("quarantine")
 }
 
 pub(crate) fn preserve_preimage(
@@ -358,16 +430,54 @@ pub(crate) fn preserve_preimage(
     if !absolute.exists() {
         return Ok(());
     }
-    let dir = ctx.engine_dir().join("quarantine");
-    fs::create_dir_all(&dir).map_err(PullError::Io)?;
+    let dir = quarantine_dir(ctx);
+    fs::create_dir_all(&dir).map_err(PullError::engine_scratch)?;
     let target = dir.join(quarantine_leaf(path));
     if let Ok(metadata) = fs::symlink_metadata(absolute)
         && metadata.is_file()
     {
-        let bytes = fs::read(absolute).map_err(PullError::Io)?;
-        write_private_file(&target, &bytes).map_err(PullError::Io)?;
+        copy_private_file(path, absolute, &target)?;
     }
     Ok(())
+}
+
+/// Copy a displaced file into quarantine through a bounded buffer.
+///
+/// The previous `fs::read` + write held the WHOLE file in memory, so preserving a
+/// multi-gigabyte preimage cost that much resident memory on a machine that was
+/// only applying a pull.
+/// Failing to preserve the preimage is path-scoped: the caller must NOT proceed
+/// with a mutation whose rollback asset does not exist, and the honest reading of
+/// "this path's bytes could not be copied" is a refusal of that path, not of the
+/// workspace. The quarantine write itself is engine scratch.
+fn copy_private_file(path: &WorkspacePath, source: &Path, target: &Path) -> Result<(), PullError> {
+    let mut reader = fs::File::open(source).map_err(|error| PullError::path(path, &error))?;
+    let mut options = fs::OpenOptions::new();
+    options
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(crate::sync::manifest_engine::fs_guard::PRIVATE_FILE_MODE);
+    let mut writer = options.open(target).map_err(PullError::engine_scratch)?;
+    io::copy(&mut reader, &mut writer).map_err(|error| PullError::path(path, &error))?;
+    writer.sync_all().map_err(PullError::engine_scratch)?;
+    Ok(())
+}
+
+/// Drop the quarantined preimages for paths whose intents have just committed.
+///
+/// A quarantine entry is ONLY a kill-9 rollback asset: the moment the intent that
+/// created it is cleared, it is dead weight. Without this the subtree converged on
+/// a full second copy of the workspace and grew with every path a pull ever
+/// touched — a silent path to a full disk.
+pub(crate) fn release_quarantine(ctx: &EngineContext, paths: &[WorkspacePath]) {
+    let dir = quarantine_dir(ctx);
+    for path in paths {
+        // Best-effort by construction: the entry may never have existed (a create
+        // displaced nothing), and a failure to remove scratch must never fail a
+        // committed pull. The startup sweep is the backstop.
+        let _ = fs::remove_file(dir.join(quarantine_leaf(path)));
+    }
 }
 
 pub(crate) fn reinstall_from_download<O: RemoteObjects>(
@@ -379,28 +489,27 @@ pub(crate) fn reinstall_from_download<O: RemoteObjects>(
     if let ManifestEntry::File {
         content_id,
         blob_key,
+        key_epoch,
         ..
     } = entry
     {
         if let ParentChain::Blocked =
-            prepare_parent_chain(&ctx.workspace_root, path, ParentChainMode::CreateMissing)?
+            prepare_parent_chain(&ctx.workspace_root, path, ParentChainMode::CreateMissing)
         {
             return Ok(Materialized::ParentBlocked);
         }
-        let bytes = download_file(ctx, objects, content_id, blob_key)?;
+        let bytes = download_file(ctx, objects, *key_epoch, content_id, blob_key)?;
         let absolute = ctx.workspace_root.join(path.as_str());
         // Preserve the on-disk preimage before overwriting, so a reinstall (no
         // temp survived) still leaves a rollback asset like the rename path does.
         preserve_preimage(ctx, path, &absolute)?;
-        write_private_file(&absolute, &bytes).map_err(PullError::Io)?;
+        write_private_file(&absolute, &bytes).map_err(|error| PullError::path(path, &error))?;
         set_mode(&ctx.workspace_root, path, entry_mode(entry))?;
-        fsync_parent(&absolute)?;
+        fsync_parent(&absolute);
     }
-    let observed = observe(&ctx.workspace_root, path)
-        .map_err(PullError::Io)?
-        .ok_or(PullError::Internal {
-            reason: "reinstall target vanished",
-        })?;
+    let Some(observed) = observe_syncable(&ctx.workspace_root, path)? else {
+        return Ok(Materialized::Vanished);
+    };
     Ok(Materialized::Done(record_for_entry(
         entry,
         observed.fingerprint,
@@ -409,22 +518,25 @@ pub(crate) fn reinstall_from_download<O: RemoteObjects>(
 
 // ---- low-level filesystem helpers -------------------------------------------
 
-pub(crate) fn fsync_parent(absolute: &Path) -> Result<(), PullError> {
+/// Best-effort durability barrier for the directory a mutation just changed.
+/// Deliberately infallible: a filesystem that refuses to open or fsync a
+/// directory (network mounts, some container overlays) must not turn a completed
+/// mutation into a failed cycle.
+pub(crate) fn fsync_parent(absolute: &Path) {
     if let Some(parent) = absolute.parent()
         && let Ok(dir) = fs::File::open(parent)
     {
         let _ = dir.sync_all();
     }
-    Ok(())
 }
 
 /// Fchmod a staging temp to `mode` before it is atomically renamed into place.
 /// Operates on the file object (fchmod) rather than re-resolving the path, so a
 /// racing swap of the temp cannot redirect the chmod.
 pub(crate) fn chmod_temp(temp: &Path, mode: FileMode) -> Result<(), PullError> {
-    let file = fs::File::open(temp).map_err(PullError::Io)?;
+    let file = fs::File::open(temp).map_err(PullError::engine_scratch)?;
     file.set_permissions(fs::Permissions::from_mode(mode.get()))
-        .map_err(PullError::Io)?;
+        .map_err(PullError::engine_scratch)?;
     Ok(())
 }
 
@@ -451,11 +563,11 @@ pub(crate) fn set_mode(root: &Path, path: &WorkspacePath, mode: FileMode) -> Res
         // intermediate raced into a non-directory. All are keep-local divergences
         // that the follow-on pull re-derives, never a fatal or a followed chmod.
         Err(Errno::LOOP | Errno::NOENT | Errno::NOTDIR) => return Ok(()),
-        Err(errno) => return Err(PullError::Io(io::Error::from(errno))),
+        Err(errno) => return Err(PullError::path(path, &io::Error::from(errno))),
     };
     // fchmod the descriptor we hold — no path re-resolution — so the object chmod'd
     // is exactly the leaf opened no-follow.
     fs::File::from(fd)
         .set_permissions(fs::Permissions::from_mode(mode.get()))
-        .map_err(PullError::Io)
+        .map_err(|error| PullError::path(path, &error))
 }

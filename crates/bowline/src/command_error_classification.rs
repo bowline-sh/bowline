@@ -1,7 +1,7 @@
 use bowline_core::commands::{CommandExitCode, CommandName};
 use bowline_local::work_views::WorkViewError;
 
-use crate::errors::{print_runtime_error, print_user_action_error};
+use crate::errors::{print_daemon_unreachable_error, print_runtime_error, print_user_action_error};
 use crate::work::WorkCommandError;
 
 pub(super) fn print_work_error(
@@ -10,10 +10,11 @@ pub(super) fn print_work_error(
     error: &WorkCommandError,
     json: bool,
 ) -> CommandExitCode {
-    // A daemon RPC failure is a retryable runtime error (start the daemon and
-    // retry); workspace/selector-state errors keep the frozen classification.
+    // No amount of retrying starts the daemon, so a daemon RPC failure is a user
+    // action with the start command attached; workspace/selector-state errors
+    // keep the frozen classification.
     let WorkCommandError::View(error) = error else {
-        return print_runtime_error(command, generated_at, &error.to_string(), json);
+        return print_daemon_unreachable_error(command, generated_at, &error.to_string(), json);
     };
     if work_error_requires_user_action(error) {
         return print_user_action_error(

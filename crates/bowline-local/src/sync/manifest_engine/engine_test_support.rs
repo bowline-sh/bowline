@@ -4,27 +4,101 @@
 //! `crates/bowline-control-plane/src/transfer/tests.rs`, adding the
 //! metadata-commit-before-reference behavior the buffered fake lacks.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use bowline_core::ids::{ContentId, DeviceId};
 
-use super::fs_guard::{Observed, observe};
-use super::manifest::{
-    BlobKey, DecodeLimits, FileMode, KeyEpoch, Manifest, ManifestEntry, ManifestKey,
-    WorkspaceCrypto, WorkspacePath, open_manifest, physical_blob_key, physical_manifest_key,
-    seal_file, seal_manifest,
+use super::counters::EngineCounters;
+use super::endpoint::{
+    NameFolding, probe_name_folding, probe_timestamp_granularity, sample_endpoint_clock,
 };
-use super::pull_apply::{PullDeps, PullError, PullOutcome, pull};
+use super::fs_guard::{ObserveOutcome, Observed, observe_classified};
+use super::manifest::{
+    DecodeLimits, KeyEpoch, Manifest, ManifestEntry, ManifestKey, WorkspaceCrypto, WorkspacePath,
+};
+use super::pull_apply::{PullDeps, PullError, PullOutcome, PullScope, pull};
 use super::push::{
-    BlobReaderUpload, BlobUpload, CasOutcome, EngineConfig, EngineContext, ManifestUpload,
-    PushDeps, PushOutcome, RefObservation, RemoteObjects, RemoteRef, TransportError, push,
+    EngineConfig, EngineContext, PushDeps, PushOutcome, RemoteObjects, RemoteRef, push,
 };
 use super::store::{FileRecord, ManifestStore};
+use super::tree_transport::{
+    FetchTreeRequest, PublishTreeRequest, StoreNodeLedger, UnledgeredNodes, fetch_tree,
+    publish_tree,
+};
 use super::{Clock, EngineEvent, EngineIo, ManifestEngine};
 use crate::workspace::TempWorkspace;
+
+pub(crate) use super::engine_test_remotes::{CasMode, Event, FakeRemote, SharedRemote};
+
+/// Publish a flat manifest as a tree into any object sink, returning the root
+/// key. One helper so every double (in-memory, on-disk, per-test) shares the
+/// writer path the engine itself uses.
+pub(crate) fn publish_test_tree<O: RemoteObjects>(
+    objects: &O,
+    crypto: &WorkspaceCrypto,
+    manifest: &Manifest,
+) -> ManifestKey {
+    let counters = EngineCounters::default();
+    publish_tree(PublishTreeRequest {
+        objects,
+        crypto,
+        counters: &counters,
+        manifest,
+        ledger: &mut UnledgeredNodes,
+    })
+    .expect("publish manifest tree")
+}
+
+/// Publish a flat manifest through the REAL store-backed node ledger, so a
+/// second publish against the same store pays only for what changed. This is the
+/// path the engine itself takes; the unledgered helper above is for one-shot
+/// fixtures where dedup is beside the point.
+pub(crate) fn publish_test_tree_ledgered<O: RemoteObjects>(
+    objects: &O,
+    crypto: &WorkspaceCrypto,
+    manifest: &Manifest,
+    store: &mut ManifestStore,
+) -> ManifestKey {
+    let counters = EngineCounters::default();
+    let key_epoch = crypto.key_epoch();
+    let mut ledger = StoreNodeLedger::new(store, key_epoch);
+    let key = publish_tree(PublishTreeRequest {
+        objects,
+        crypto,
+        counters: &counters,
+        manifest,
+        ledger: &mut ledger,
+    })
+    .expect("publish manifest tree");
+    let recorded = ledger.into_recorded();
+    store
+        .record_tree_nodes(&recorded, key_epoch)
+        .expect("record tree nodes");
+    key
+}
+
+/// Flatten a manifest tree from any object sink, with no pruning.
+pub(crate) fn fetch_test_tree<O: RemoteObjects>(
+    objects: &O,
+    crypto: &WorkspaceCrypto,
+    root: &ManifestKey,
+    limits: &DecodeLimits,
+    names: NameFolding,
+) -> Result<super::tree_transport::FetchedTree, super::tree_transport::TreeError> {
+    let counters = EngineCounters::default();
+    fetch_tree(FetchTreeRequest {
+        objects,
+        crypto,
+        counters: &counters,
+        root,
+        limits,
+        names,
+        prune: None,
+    })
+}
 
 pub(crate) const KEY_BYTES: [u8; 32] = [9; 32];
 
@@ -68,282 +142,12 @@ pub(crate) fn test_context(root: PathBuf, device: &str) -> EngineContext {
         crypto: test_crypto(),
         device_id: DeviceId::new(device.to_string()),
         engine_state_dir: root.join(super::ENGINE_STATE_DIR),
+        names: probe_name_folding(&root.join(super::ENGINE_STATE_DIR)),
+        timestamps: probe_timestamp_granularity(&root.join(super::ENGINE_STATE_DIR)),
         workspace_root: root,
         config: EngineConfig::default(),
         project_view: false,
         counters: super::EngineCounters::shared(),
-    }
-}
-
-/// One recorded transport event, so tests can assert ordering (a blob's metadata
-/// commit always precedes the manifest that references it).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Event {
-    PutBlob(String),
-    PutBlobReader(String),
-    GetBlob(String),
-    PutManifest(String),
-    GetManifest(String),
-    Cas,
-}
-
-/// Injected CAS behavior for one push.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum CasMode {
-    #[default]
-    Normal,
-    /// Mutate the ref but drop the ack (the `AckAmbiguous` path).
-    AmbiguousAfterSwap,
-    /// Fail the CAS transport before any swap (crash-before-CAS).
-    FailBeforeSwap,
-}
-
-/// In-memory object store + CAS ref implementing both engine transport traits.
-pub(crate) struct FakeRemote {
-    blobs: RefCell<BTreeMap<String, Vec<u8>>>,
-    manifests: RefCell<BTreeMap<String, Vec<u8>>>,
-    reference: RefCell<Option<RefObservation>>,
-    version: RefCell<u64>,
-    events: RefCell<Vec<Event>>,
-    cas_mode: RefCell<CasMode>,
-    read_ref_count: Cell<u64>,
-    /// When set, every transport call fails — the offline condition the driver's
-    /// backoff loop is tested against.
-    offline: Cell<bool>,
-}
-
-impl FakeRemote {
-    pub(crate) fn new() -> Self {
-        Self {
-            blobs: RefCell::new(BTreeMap::new()),
-            manifests: RefCell::new(BTreeMap::new()),
-            reference: RefCell::new(None),
-            version: RefCell::new(0),
-            events: RefCell::new(Vec::new()),
-            cas_mode: RefCell::new(CasMode::Normal),
-            read_ref_count: Cell::new(0),
-            offline: Cell::new(false),
-        }
-    }
-
-    pub(crate) fn set_cas_mode(&self, mode: CasMode) {
-        *self.cas_mode.borrow_mut() = mode;
-    }
-
-    /// Drive the network up (`false`) or down (`true`) for the backoff tests.
-    pub(crate) fn set_offline(&self, offline: bool) {
-        self.offline.set(offline);
-    }
-
-    /// Override the OBSERVED head (`read_ref`) without touching the CAS version
-    /// counter, so a test can simulate a hosted rollback to a lower version or a
-    /// forged high-version ref while the real CAS sequence continues from its own
-    /// counter. Distinct from `publish_*`, which always advance monotonically.
-    pub(crate) fn force_ref(&self, version: u64, manifest_key: ManifestKey) {
-        *self.reference.borrow_mut() = Some(RefObservation {
-            version,
-            manifest_key,
-        });
-    }
-
-    fn guard(&self, operation: &'static str) -> Result<(), TransportError> {
-        if self.offline.get() {
-            return Err(TransportError::new(operation, "simulated offline"));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn events(&self) -> Vec<Event> {
-        self.events.borrow().clone()
-    }
-
-    pub(crate) fn blob_put_count(&self) -> usize {
-        self.events
-            .borrow()
-            .iter()
-            .filter(|event| matches!(event, Event::PutBlob(_) | Event::PutBlobReader(_)))
-            .count()
-    }
-
-    pub(crate) fn reader_put_count(&self) -> usize {
-        self.events
-            .borrow()
-            .iter()
-            .filter(|event| matches!(event, Event::PutBlobReader(_)))
-            .count()
-    }
-
-    pub(crate) fn current_ref(&self) -> Option<RefObservation> {
-        self.reference.borrow().clone()
-    }
-
-    pub(crate) fn read_ref_count(&self) -> u64 {
-        self.read_ref_count.get()
-    }
-
-    /// Decode the manifest the head currently points at, for asserting on the
-    /// exact entries a push produced (e.g. that a mode-only change preserved a
-    /// file's content identity).
-    pub(crate) fn decoded_manifest(&self, crypto: &WorkspaceCrypto) -> Option<Manifest> {
-        let key = self.current_ref()?.manifest_key;
-        let sealed = self.manifests.borrow().get(key.as_str()).cloned()?;
-        let decoded = open_manifest(crypto, &sealed, &DecodeLimits::default())
-            .expect("decode current manifest");
-        Some(decoded.manifest)
-    }
-
-    /// A fresh remote holding a snapshot of this one's objects + head, so a peer
-    /// `Harness` (which owns its own remote) can pull against the same state.
-    pub(crate) fn clone_state(&self) -> FakeRemote {
-        FakeRemote {
-            blobs: RefCell::new(self.blobs.borrow().clone()),
-            manifests: RefCell::new(self.manifests.borrow().clone()),
-            reference: RefCell::new(self.reference.borrow().clone()),
-            version: RefCell::new(*self.version.borrow()),
-            events: RefCell::new(Vec::new()),
-            cas_mode: RefCell::new(CasMode::Normal),
-            read_ref_count: Cell::new(0),
-            offline: Cell::new(false),
-        }
-    }
-
-    /// Publish a remote manifest directly (a simulated peer), advancing the ref.
-    pub(crate) fn publish_manifest(
-        &self,
-        crypto: &WorkspaceCrypto,
-        manifest: &Manifest,
-    ) -> ManifestKey {
-        let plaintext = manifest.to_canonical_bytes().expect("canonical");
-        let sealed = seal_manifest(crypto, &plaintext).expect("seal manifest");
-        let key = physical_manifest_key(sealed.as_bytes());
-        self.manifests
-            .borrow_mut()
-            .insert(key.as_str().to_string(), sealed.into_bytes());
-        let mut version = self.version.borrow_mut();
-        *version += 1;
-        *self.reference.borrow_mut() = Some(RefObservation {
-            version: *version,
-            manifest_key: key.clone(),
-        });
-        key
-    }
-
-    /// Seal + store a file blob so a published manifest can reference it.
-    pub(crate) fn publish_blob(&self, crypto: &WorkspaceCrypto, plaintext: &[u8]) -> ManifestEntry {
-        let content_id = crypto.content_id(plaintext);
-        let sealed = seal_file(crypto, &content_id, plaintext).expect("seal file");
-        let key = physical_blob_key(sealed.as_bytes());
-        self.blobs
-            .borrow_mut()
-            .insert(key.as_str().to_string(), sealed.into_bytes());
-        ManifestEntry::File {
-            size: plaintext.len() as u64,
-            mode: FileMode::new(0o644),
-            content_id,
-            blob_key: key,
-            key_epoch: crypto.key_epoch(),
-        }
-    }
-}
-
-impl RemoteObjects for FakeRemote {
-    fn put_blob(&self, upload: BlobUpload<'_>) -> Result<(), TransportError> {
-        self.guard("put_blob")?;
-        self.events
-            .borrow_mut()
-            .push(Event::PutBlob(upload.key.as_str().to_string()));
-        self.blobs
-            .borrow_mut()
-            .insert(upload.key.as_str().to_string(), upload.sealed.to_vec());
-        Ok(())
-    }
-
-    fn put_blob_reader(&self, upload: BlobReaderUpload<'_>) -> Result<(), TransportError> {
-        self.guard("put_blob_reader")?;
-        self.events
-            .borrow_mut()
-            .push(Event::PutBlobReader(upload.key.as_str().to_string()));
-        let bytes = fs::read(upload.spool_path)
-            .map_err(|error| TransportError::new("put_blob_reader", error.to_string()))?;
-        self.blobs
-            .borrow_mut()
-            .insert(upload.key.as_str().to_string(), bytes);
-        Ok(())
-    }
-
-    fn put_manifest(&self, upload: ManifestUpload<'_>) -> Result<(), TransportError> {
-        self.guard("put_manifest")?;
-        self.events
-            .borrow_mut()
-            .push(Event::PutManifest(upload.key.as_str().to_string()));
-        self.manifests
-            .borrow_mut()
-            .insert(upload.key.as_str().to_string(), upload.sealed.to_vec());
-        Ok(())
-    }
-
-    fn get_blob(&self, key: &BlobKey) -> Result<Vec<u8>, TransportError> {
-        self.guard("get_blob")?;
-        self.events
-            .borrow_mut()
-            .push(Event::GetBlob(key.as_str().to_string()));
-        self.blobs
-            .borrow()
-            .get(key.as_str())
-            .cloned()
-            .ok_or_else(|| TransportError::new("get_blob", "missing blob"))
-    }
-
-    fn get_manifest(&self, key: &ManifestKey) -> Result<Vec<u8>, TransportError> {
-        self.guard("get_manifest")?;
-        self.events
-            .borrow_mut()
-            .push(Event::GetManifest(key.as_str().to_string()));
-        self.manifests
-            .borrow()
-            .get(key.as_str())
-            .cloned()
-            .ok_or_else(|| TransportError::new("get_manifest", "missing manifest"))
-    }
-}
-
-impl RemoteRef for FakeRemote {
-    fn read_ref(&self) -> Result<Option<RefObservation>, TransportError> {
-        self.guard("read_ref")?;
-        self.read_ref_count
-            .set(self.read_ref_count.get().saturating_add(1));
-        Ok(self.reference.borrow().clone())
-    }
-
-    fn compare_and_swap(
-        &self,
-        expected_version: Option<u64>,
-        new_manifest_key: &ManifestKey,
-    ) -> Result<CasOutcome, TransportError> {
-        self.guard("compare_and_swap")?;
-        self.events.borrow_mut().push(Event::Cas);
-        let mode = *self.cas_mode.borrow();
-        if mode == CasMode::FailBeforeSwap {
-            return Err(TransportError::new("cas", "simulated crash before swap"));
-        }
-        let current = self.reference.borrow().clone();
-        let current_version = current.as_ref().map(|observed| observed.version);
-        if current_version != expected_version {
-            return Ok(CasOutcome::Lost(
-                current.expect("lost implies a current ref"),
-            ));
-        }
-        let mut version = self.version.borrow_mut();
-        *version += 1;
-        let observed = RefObservation {
-            version: *version,
-            manifest_key: new_manifest_key.clone(),
-        };
-        *self.reference.borrow_mut() = Some(observed.clone());
-        match mode {
-            CasMode::AmbiguousAfterSwap => Ok(CasOutcome::Ambiguous),
-            _ => Ok(CasOutcome::Advanced(observed)),
-        }
     }
 }
 
@@ -371,6 +175,8 @@ impl TestEngine {
             crypto: WorkspaceCrypto::new("ws_code", KEY_BYTES, KeyEpoch::new(1)),
             device_id: DeviceId::new(format!("device-{name}")),
             engine_state_dir: root.join(super::ENGINE_STATE_DIR),
+            names: probe_name_folding(&root.join(super::ENGINE_STATE_DIR)),
+            timestamps: probe_timestamp_granularity(&root.join(super::ENGINE_STATE_DIR)),
             workspace_root: root,
             config,
             project_view: false,
@@ -422,8 +228,69 @@ impl TestEngine {
         self.ctx.workspace_root.join(rel).exists()
     }
 
+    /// Run what follows inside ONE of this endpoint's timestamp buckets, by
+    /// waiting out the tail of the current one when too little of it remains.
+    ///
+    /// A test that writes twice and expects the endpoint to date both writes
+    /// alike is right almost always and wrong whenever the scenario straddles a
+    /// bucket boundary. "Almost always" is how a suite earns a failure nobody
+    /// can reproduce, so the scenario is placed rather than gambled.
+    ///
+    /// The budget is measured against the VOLUME's clock, not the process wall
+    /// clock: the two disagree by up to one tick, and that disagreement is the
+    /// bug this whole mechanism exists for. Nothing to do at nanosecond
+    /// granularity, where no two instants share a bucket anyway.
+    pub(crate) fn align_within_one_bucket(&self) {
+        /// Generous next to the scenarios that use it — a handful of writes and
+        /// pushes against a fake remote, microseconds of real work.
+        const SCENARIO_BUDGET_NS: i64 = 250_000_000;
+
+        let bucket = self.ctx.timestamps.nanos();
+        if bucket <= SCENARIO_BUDGET_NS {
+            return;
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            let now = sample_endpoint_clock(&self.ctx.engine_dir(), &self.ctx.workspace_root)
+                .expect("the endpoint clock is readable on the workspace volume");
+            let remaining = bucket - now.nanos().rem_euclid(bucket);
+            if remaining > SCENARIO_BUDGET_NS {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_nanos(
+                remaining as u64 + 1_000_000,
+            ));
+        }
+        panic!("the endpoint clock never reached a fresh bucket");
+    }
+
+    /// Wait until the endpoint volume's clock has moved past `rel`'s timestamp.
+    ///
+    /// A file is racily clean until the volume can date it before the reading
+    /// that verified it, so a stat can settle it only once the clock has moved
+    /// on. Real work clears that by itself — an apply installs thousands of
+    /// files, a push seals and uploads one — but a test that writes and pushes
+    /// inside a microsecond is asking for an optimization the endpoint has not
+    /// made available yet. Tests that assert the stat-only path say so here
+    /// instead of depending on how coarsely the CI volume happens to tick.
+    pub(crate) fn settle_endpoint_clock(&self, rel: &str) {
+        let granularity = self.ctx.timestamps;
+        let ctime = self.observe(rel).expect("observe").fingerprint.ctime_ns;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if let Some(now) =
+                sample_endpoint_clock(&self.ctx.engine_dir(), &self.ctx.workspace_root)
+                && granularity.bucket(ctime) < granularity.bucket(now.nanos())
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        panic!("the endpoint clock never moved past the write to {rel}");
+    }
+
     pub(crate) fn observe(&self, rel: &str) -> Option<Observed> {
-        observe(&self.ctx.workspace_root, &WorkspacePath::new(rel)).expect("observe")
+        observe_present(&self.ctx.workspace_root, &WorkspacePath::new(rel))
     }
 
     pub(crate) fn files(&self) -> BTreeMap<WorkspacePath, FileRecord> {
@@ -462,10 +329,31 @@ impl TestEngine {
     }
 
     pub(crate) fn try_pull(&mut self) -> Result<PullOutcome, PullError> {
+        // A bare `TestEngine` keeps no dirty set, so it stands in for a caller
+        // with no divergence tracking at all (the work-view materialize shape).
+        // `pull_dirty` is the narrowed driver shape.
+        self.try_pull_scoped(PullScope::WholeAncestor)
+    }
+
+    /// Pull with the driver's narrowed scope: only paths the remote moved plus
+    /// the named dirty paths are re-observed on disk.
+    pub(crate) fn pull_dirty(&mut self, paths: &[&str]) -> PullOutcome {
+        let dirty = self.dirty(paths);
         let deps = PullDeps {
             ctx: &self.ctx,
             objects: &self.remote,
             refs: &self.remote,
+            scope: PullScope::ChangedAndDirty(&dirty),
+        };
+        pull(&mut self.store, &deps).expect("pull")
+    }
+
+    fn try_pull_scoped(&mut self, scope: PullScope<'_>) -> Result<PullOutcome, PullError> {
+        let deps = PullDeps {
+            ctx: &self.ctx,
+            objects: &self.remote,
+            refs: &self.remote,
+            scope,
         };
         pull(&mut self.store, &deps)
     }
@@ -496,6 +384,55 @@ impl TestEngine {
     }
 }
 
+/// The `Present` observation of a path, or `None` for absent OR unsyncable.
+///
+/// Test-only, and deliberately not a production helper: collapsing "unsyncable"
+/// into "absent" is the confusion that lets an unreadable path be published as a
+/// deletion, so production reads the three-answer [`observe_classified`] and
+/// pull's `observe_syncable` instead. A fixture asserting on a file it just wrote
+/// has no such ambiguity.
+pub(crate) fn observe_present(root: &Path, path: &WorkspacePath) -> Option<Observed> {
+    match observe_classified(root, path) {
+        ObserveOutcome::Present(observed) => Some(observed),
+        ObserveOutcome::Absent | ObserveOutcome::Unsyncable(_) => None,
+    }
+}
+
+/// Plant a FIFO at a workspace-relative path: an object the engine can never
+/// represent, and the fixture the whole "one unsyncable object must not fail a
+/// cycle" family is built on. The single owner of it — the apply-race cases and
+/// the generative fault storm both call this.
+///
+/// Shells out to `mkfifo(1)` rather than calling the syscall. `rustix`'s
+/// `mkfifoat` is compiled out on Apple targets and this crate is
+/// `#![deny(unsafe_code)]`, so libc FFI is not available either; `mkfifo(1)` is
+/// POSIX and present on both platforms the engine is tested on. A path that is
+/// already a FIFO is the shape the caller asked for, so it is a no-op.
+pub(crate) fn plant_fifo(root: &Path, relative: &str) -> std::io::Result<()> {
+    let absolute = root.join(relative);
+    if let Some(parent) = absolute.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if fs::symlink_metadata(&absolute).is_ok_and(|metadata| {
+        use std::os::unix::fs::FileTypeExt;
+        metadata.file_type().is_fifo()
+    }) {
+        return Ok(());
+    }
+    let status = std::process::Command::new("mkfifo")
+        .arg("-m")
+        .arg("600")
+        .arg(&absolute)
+        .status()?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(std::io::Error::other(format!(
+        "mkfifo {} failed: {status}",
+        absolute.display()
+    )))
+}
+
 /// Open (creating) an engine store at `<root>/manifest_engine.sqlite3`.
 pub(crate) fn open_store(root: &Path) -> ManifestStore {
     ManifestStore::open(root.join("manifest_engine.sqlite3")).expect("open store")
@@ -508,150 +445,6 @@ pub(crate) fn open_engine_store(root: &Path) -> ManifestStore {
     let dir = root.join(".bowline");
     fs::create_dir_all(&dir).expect("engine state dir");
     ManifestStore::open(dir.join("manifest_engine.sqlite3")).expect("open engine store")
-}
-
-/// A disk-backed object store + CAS ref. Unlike [`FakeRemote`] (in-memory), this
-/// persists to a directory so a parent test process and a re-invoked child
-/// process (the kill-9 matrix, Step 6) share the SAME sealed bytes and CAS head:
-/// the physical keys `blake3(sealed)` match across processes only because both
-/// read identical persisted blobs.
-pub(crate) struct SharedRemote {
-    root: PathBuf,
-}
-
-impl SharedRemote {
-    pub(crate) fn open(root: PathBuf) -> Self {
-        fs::create_dir_all(root.join("blobs")).expect("blobs dir");
-        fs::create_dir_all(root.join("manifests")).expect("manifests dir");
-        Self { root }
-    }
-
-    fn blob_path(&self, key: &str) -> PathBuf {
-        self.root.join("blobs").join(key)
-    }
-
-    fn manifest_path(&self, key: &str) -> PathBuf {
-        self.root.join("manifests").join(key)
-    }
-
-    fn ref_path(&self) -> PathBuf {
-        self.root.join("ref.json")
-    }
-
-    fn write_ref(&self, observed: &RefObservation) {
-        let line = format!("{}\n{}\n", observed.version, observed.manifest_key.as_str());
-        fs::write(self.ref_path(), line).expect("write ref");
-    }
-
-    pub(crate) fn current_ref(&self) -> Option<RefObservation> {
-        let raw = fs::read_to_string(self.ref_path()).ok()?;
-        let mut lines = raw.lines();
-        let version = lines.next()?.parse().ok()?;
-        let manifest_key = ManifestKey::new(lines.next()?.to_string());
-        Some(RefObservation {
-            version,
-            manifest_key,
-        })
-    }
-
-    /// Seal + persist a file blob so a published manifest can reference it.
-    pub(crate) fn publish_blob(&self, crypto: &WorkspaceCrypto, plaintext: &[u8]) -> ManifestEntry {
-        let content_id = crypto.content_id(plaintext);
-        let sealed = seal_file(crypto, &content_id, plaintext).expect("seal file");
-        let key = physical_blob_key(sealed.as_bytes());
-        fs::write(self.blob_path(key.as_str()), sealed.into_bytes()).expect("write blob");
-        ManifestEntry::File {
-            size: plaintext.len() as u64,
-            mode: FileMode::new(0o644),
-            content_id,
-            blob_key: key,
-            key_epoch: crypto.key_epoch(),
-        }
-    }
-
-    /// Publish a head from `(path, entry)` pairs, advancing the ref.
-    pub(crate) fn publish(
-        &self,
-        crypto: &WorkspaceCrypto,
-        entries: &[(&str, ManifestEntry)],
-    ) -> ManifestKey {
-        let map: BTreeMap<WorkspacePath, ManifestEntry> = entries
-            .iter()
-            .map(|(path, entry)| (WorkspacePath::new(*path), entry.clone()))
-            .collect();
-        let manifest = Manifest::new(crypto.key_epoch(), map);
-        let plaintext = manifest.to_canonical_bytes().expect("canonical");
-        let sealed = seal_manifest(crypto, &plaintext).expect("seal manifest");
-        let key = physical_manifest_key(sealed.as_bytes());
-        fs::write(self.manifest_path(key.as_str()), sealed.into_bytes()).expect("write manifest");
-        let version = self
-            .current_ref()
-            .map(|observed| observed.version)
-            .unwrap_or(0)
-            + 1;
-        self.write_ref(&RefObservation {
-            version,
-            manifest_key: key.clone(),
-        });
-        key
-    }
-}
-
-impl RemoteObjects for SharedRemote {
-    fn put_blob(&self, upload: BlobUpload<'_>) -> Result<(), TransportError> {
-        fs::write(self.blob_path(upload.key.as_str()), upload.sealed)
-            .map_err(|error| TransportError::new("put_blob", error.to_string()))
-    }
-
-    fn put_blob_reader(&self, upload: BlobReaderUpload<'_>) -> Result<(), TransportError> {
-        let bytes = fs::read(upload.spool_path)
-            .map_err(|error| TransportError::new("put_blob_reader", error.to_string()))?;
-        fs::write(self.blob_path(upload.key.as_str()), bytes)
-            .map_err(|error| TransportError::new("put_blob_reader", error.to_string()))
-    }
-
-    fn put_manifest(&self, upload: ManifestUpload<'_>) -> Result<(), TransportError> {
-        fs::write(self.manifest_path(upload.key.as_str()), upload.sealed)
-            .map_err(|error| TransportError::new("put_manifest", error.to_string()))
-    }
-
-    fn get_blob(&self, key: &BlobKey) -> Result<Vec<u8>, TransportError> {
-        fs::read(self.blob_path(key.as_str()))
-            .map_err(|error| TransportError::new("get_blob", error.to_string()))
-    }
-
-    fn get_manifest(&self, key: &ManifestKey) -> Result<Vec<u8>, TransportError> {
-        fs::read(self.manifest_path(key.as_str()))
-            .map_err(|error| TransportError::new("get_manifest", error.to_string()))
-    }
-}
-
-impl RemoteRef for SharedRemote {
-    fn read_ref(&self) -> Result<Option<RefObservation>, TransportError> {
-        Ok(self.current_ref())
-    }
-
-    fn compare_and_swap(
-        &self,
-        expected_version: Option<u64>,
-        new_manifest_key: &ManifestKey,
-    ) -> Result<CasOutcome, TransportError> {
-        // The kill matrix drives one child then the parent — never concurrently —
-        // so a read-compare-write is sufficient (no cross-process lock needed).
-        let current = self.current_ref();
-        if current.as_ref().map(|observed| observed.version) != expected_version {
-            return Ok(CasOutcome::Lost(
-                current.expect("lost implies a current ref"),
-            ));
-        }
-        let version = current.map(|observed| observed.version).unwrap_or(0) + 1;
-        let observed = RefObservation {
-            version,
-            manifest_key: new_manifest_key.clone(),
-        };
-        self.write_ref(&observed);
-        Ok(CasOutcome::Advanced(observed))
-    }
 }
 
 /// Build the driver-cycle dependency bundle from a fake/shared remote and clock.
@@ -693,8 +486,14 @@ impl DriverHarness {
     }
 
     pub(crate) fn start(&mut self) {
+        self.try_start().expect("start");
+    }
+
+    /// Startup without the `expect`, so a test can assert that a hostile on-disk
+    /// state (a journalled intent whose target raced away) still comes up.
+    pub(crate) fn try_start(&mut self) -> Result<(), super::EngineError> {
         let io = engine_io(&self.remote, &self.clock);
-        self.engine.start(&io).expect("start");
+        self.engine.start(&io)
     }
 
     pub(crate) fn event(&mut self, event: EngineEvent) {
@@ -727,11 +526,19 @@ impl DriverHarness {
         fs::write(&path, bytes).expect("write");
     }
 
+    pub(crate) fn read(&self, rel: &str) -> Vec<u8> {
+        fs::read(self.root.join(rel)).expect("read")
+    }
+
     /// Replace the engine's store with a fresh connection to the SAME database and
     /// re-run [`ManifestEngine::start`] — the restart path (invariant C3).
     pub(crate) fn restart(&mut self) {
+        self.try_restart().expect("restart");
+    }
+
+    pub(crate) fn try_restart(&mut self) -> Result<(), super::EngineError> {
         let store = open_engine_store(&self.root);
         self.engine = ManifestEngine::new(store, test_context(self.root.clone(), "device-a"));
-        self.start();
+        self.try_start()
     }
 }

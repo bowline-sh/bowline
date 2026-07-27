@@ -33,20 +33,17 @@ pub(super) fn parse_deny_command(values: &ParsedValues) -> Result<Command, Parse
 
 pub(super) fn parse_revoke_command(values: &ParsedValues) -> Result<Command, ParseError> {
     reject_positionals(values, CommandName::Revoke, "device revoke")?;
-    let Some(device_id) = values.option("--device") else {
-        return command_usage_error(
-            CommandName::Revoke,
-            "usage_error",
-            "bowline device revoke requires --device <id>".to_string(),
-            trust_usage_actions("device revoke"),
-        );
-    };
+    // The registry declares --device required and rejects its absence before
+    // command construction runs, with the message and next actions to match.
+    let device_id = values
+        .option("--device")
+        .expect("registry enforces --device on device revoke");
     let selection = parsed_selection(values)
         .finish_for_trust(CommandName::Revoke, "device revoke")
         .map_err(|error| *error)?;
     Ok(Command::Revoke(RevokeArgs {
         selection,
-        device_id: device_id.to_string(),
+        device_id: DeviceId::new(device_id.to_string()),
     }))
 }
 
@@ -215,7 +212,9 @@ fn trust_selector(
     name: &str,
 ) -> Result<TrustRequestSelector, ParseError> {
     match (values.option("--request"), values.option("--code")) {
-        (Some(request), None) => Ok(TrustRequestSelector::Request(request.to_string())),
+        (Some(request), None) => Ok(TrustRequestSelector::Request(DeviceApprovalRequestId::new(
+            request,
+        ))),
         (None, Some(code)) => Ok(TrustRequestSelector::Code(code.to_string())),
         _ => Err(parse_error(trust_selector_error(command, name))),
     }
@@ -309,51 +308,6 @@ pub(super) fn parse_sync_wait_command(values: &ParsedValues) -> Result<Command, 
         target_state,
         timeout,
     }))
-}
-
-pub(super) fn parse_sync_retry_command(values: &ParsedValues) -> Result<Command, ParseError> {
-    use crate::sync_attention::RetrySelector;
-    if let Some(unexpected) = values.positionals().first() {
-        return usage_error(
-            CommandName::Unknown,
-            format!("unexpected bowline sync retry argument `{unexpected}`"),
-        );
-    }
-    let operation = values
-        .option("--operation")
-        .filter(|value| !value.is_empty());
-    let all = values.flag("--all");
-    // Require exactly one selector so a caller can never re-queue the whole lane
-    // by forgetting the operation id.
-    match (operation, all) {
-        (Some(incident), false) => Ok(Command::SyncRetry(RetrySelector::Incident(
-            incident.to_string(),
-        ))),
-        (None, true) => Ok(Command::SyncRetry(RetrySelector::All)),
-        _ => usage_error(
-            CommandName::Unknown,
-            "bowline sync retry requires exactly one of --operation <id> or --all",
-        ),
-    }
-}
-
-pub(super) fn parse_sync_dismiss_command(values: &ParsedValues) -> Result<Command, ParseError> {
-    if let Some(unexpected) = values.positionals().first() {
-        return usage_error(
-            CommandName::Unknown,
-            format!("unexpected bowline sync dismiss argument `{unexpected}`"),
-        );
-    }
-    let Some(operation) = values
-        .option("--operation")
-        .filter(|value| !value.is_empty())
-    else {
-        return usage_error(
-            CommandName::Unknown,
-            "bowline sync dismiss requires --operation <id>",
-        );
-    };
-    Ok(Command::SyncDismiss(operation.to_string()))
 }
 
 fn readiness_state_list() -> String {

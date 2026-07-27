@@ -1,8 +1,19 @@
-use super::*;
-
+use crate::daemon::SyncArgs;
 use crate::daemon::control_plane::{
     HostedSetupError, ResolvedHostedContext, build_hosted_control_plane, resolve_hosted_context,
 };
+use crate::daemon::key_store;
+use bowline_control_plane::HostedControlPlaneClient;
+use bowline_control_plane::SignedUrlByteStore;
+use bowline_control_plane::SignedUrlHttpClient;
+use bowline_core::ids::DeviceId;
+use bowline_core::ids::WorkspaceId;
+use bowline_daemon::device_trust::WorkspaceDeviceTrust;
+use bowline_local::device_keys::DeviceProofVerifier;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
+use std::time::Instant;
 
 pub(super) const HOSTED_CONTEXT_TRUST_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -12,6 +23,9 @@ struct HostedContextFingerprint(String);
 pub(super) struct HostedContext {
     pub(super) client: Arc<HostedControlPlaneClient>,
     pub(super) http: SignedUrlHttpClient,
+    /// The verifier set `client` resolves through, shared so the ref observer
+    /// can teach this client a device trusted after it was built.
+    pub(super) trust: Arc<WorkspaceDeviceTrust>,
 }
 
 pub(super) type HostedContextResolver =
@@ -42,7 +56,7 @@ struct ProductionHostedContextFactory;
 impl HostedContextFactory for ProductionHostedContextFactory {
     fn resolve(&self, args: &SyncArgs) -> Result<ResolvedHostedContext, HostedSetupError> {
         let key_store = key_store()?;
-        resolve_hosted_context(&*key_store, &WorkspaceId::new(args.workspace_id.clone()))
+        resolve_hosted_context(&*key_store, &args.workspace_id)
     }
 
     fn build(
@@ -57,19 +71,18 @@ impl HostedContextFactory for ProductionHostedContextFactory {
         ),
         HostedSetupError,
     > {
-        let key_store = key_store()?;
         let built = build_hosted_control_plane(
-            &*key_store,
-            WorkspaceId::new(args.workspace_id.clone()),
-            DeviceId::new(args.device_id.clone()),
+            args.workspace_id.clone(),
+            args.device_id.clone(),
             resolved,
         )?;
         let context = Arc::new(HostedContext {
             client: Arc::new(built.client),
             http: SignedUrlByteStore::<HostedControlPlaneClient>::build_http_client(),
+            trust: built.trust,
         });
-        let final_resolved =
-            resolve_hosted_context(&*key_store, &WorkspaceId::new(args.workspace_id.clone()))?;
+        let key_store = key_store()?;
+        let final_resolved = resolve_hosted_context(&*key_store, &args.workspace_id)?;
         Ok((context, final_resolved, built.installed_verifiers))
     }
 }
@@ -97,8 +110,8 @@ impl HostedContextCache {
         &self,
         args: &SyncArgs,
     ) -> Result<Arc<HostedContext>, HostedSetupError> {
-        let workspace_id = WorkspaceId::new(args.workspace_id.clone());
-        let device_id = DeviceId::new(args.device_id.clone());
+        let workspace_id = args.workspace_id.clone();
+        let device_id = args.device_id.clone();
         for _ in 0..3 {
             let resolved = self.factory.resolve(args)?;
             let result =
@@ -278,6 +291,14 @@ mod tests {
         }
     }
 
+    fn test_trust() -> Arc<WorkspaceDeviceTrust> {
+        WorkspaceDeviceTrust::new(
+            WorkspaceId::new("workspace_a"),
+            bowline_local::device_keys::DeviceProofVerifierCache::new(),
+            Arc::new(|_workspace_id, _verifiers| Ok(())),
+        )
+    }
+
     fn test_context() -> Arc<HostedContext> {
         Arc::new(HostedContext {
             client: Arc::new(
@@ -288,6 +309,7 @@ mod tests {
                 .expect("test hosted client"),
             ),
             http: SignedUrlByteStore::<HostedControlPlaneClient>::build_http_client(),
+            trust: test_trust(),
         })
     }
 
@@ -310,6 +332,7 @@ mod tests {
         Arc::new(HostedContext {
             client: Arc::new(client),
             http: SignedUrlByteStore::<HostedControlPlaneClient>::build_http_client(),
+            trust: test_trust(),
         })
     }
 

@@ -36,6 +36,22 @@ fn head_content_id(remote: &FakeRemote, crypto: &WorkspaceCrypto, rel: &str) -> 
     }
 }
 
+/// Assert the engine has no work pending: the only scheduled wakeup is the
+/// periodic audit, which is deliberately far in the future. "No deadline at all"
+/// stopped being the right assertion when the audit landed — a purely reactive
+/// engine converges only as well as the watcher, which silently drops events.
+fn assert_idle_but_for_audit(harness: &DriverHarness) {
+    let now = harness.clock.millis();
+    let timeout = harness
+        .engine
+        .next_timeout(now)
+        .expect("the periodic audit is always armed");
+    assert!(
+        timeout >= std::time::Duration::from_millis(super::AUDIT_INTERVAL_MIN_MS - 1),
+        "the only pending wakeup is the audit, not near-term work (got {timeout:?})"
+    );
+}
+
 fn path_set(paths: &[&str]) -> BTreeSet<WorkspacePath> {
     paths.iter().map(|path| WorkspacePath::new(*path)).collect()
 }
@@ -66,14 +82,22 @@ fn counters_meter_an_edit_and_stay_flat_when_idle() {
         "no content opens on a stat walk"
     );
 
-    // One edit costs the edit (invariant C2): one content open+hash, one blob and
-    // one manifest upload, one CAS attempt, and store write transactions.
+    // One edit costs the edit (invariant C2): one content open+hash, one blob,
+    // one manifest node per directory from the changed file to the root, one CAS
+    // attempt, and store write transactions.
     harness.write("src/a.txt", b"hello counters\n");
     harness.edit(&["src/a.txt"]);
     let after_edit = harness.counters();
     assert_eq!(after_edit.content_opens, 1, "opened the one changed file");
     assert_eq!(after_edit.blob_uploads, 1, "uploaded one blob");
-    assert_eq!(after_edit.manifest_uploads, 1, "uploaded one manifest");
+    assert_eq!(
+        after_edit.manifest_uploads, 2,
+        "published the `src` node and the root, and nothing else"
+    );
+    assert!(
+        after_edit.manifest_bytes_published > 0,
+        "the published nodes carried bytes"
+    );
     assert_eq!(after_edit.cas_attempts, 1, "one CAS attempt");
     assert_eq!(after_edit.cas_losses, 0, "the CAS won");
     assert!(after_edit.sqlite_mutations >= 1, "committed the push");
@@ -101,9 +125,9 @@ fn counters_meter_an_edit_and_stay_flat_when_idle() {
 fn idle_engine_blocks_with_no_deadline() {
     let mut harness = DriverHarness::new("driver-idle", "device-a");
     harness.start();
-    // Nothing pending: the engine has no scheduled wakeup, so the run loop blocks
-    // on the next event and performs no work (invariant C1).
-    assert_eq!(harness.engine.next_timeout(0), None);
+    // Nothing pending: the only scheduled wakeup is the far-future periodic
+    // audit, so the run loop blocks and performs no work (invariant C1).
+    assert_idle_but_for_audit(&harness);
     let revision = harness.engine.snapshot().revision;
     harness.run_due();
     harness.run_due();
@@ -532,11 +556,7 @@ fn skipped_path_is_retained_rescheduled_and_converges() {
         harness.engine.dirty_paths().is_empty(),
         "convergence clears the dirty set"
     );
-    assert_eq!(
-        harness.engine.next_timeout(harness.clock.millis()),
-        None,
-        "idle after convergence: no deadline armed"
-    );
+    assert_idle_but_for_audit(&harness);
 }
 
 #[test]
@@ -601,11 +621,7 @@ fn clean_push_skips_nothing_and_stays_idle() {
         harness.engine.dirty_paths().is_empty(),
         "dirty fully cleared"
     );
-    assert_eq!(
-        harness.engine.next_timeout(harness.clock.millis()),
-        None,
-        "no deadline armed when nothing was skipped"
-    );
+    assert_idle_but_for_audit(&harness);
 }
 
 // ---- two-engine simulation --------------------------------------------------
@@ -910,7 +926,7 @@ fn collect_asides(root: &Path, relative: &str, names: &mut Vec<String>) {
         let path = entry.path();
         if path.is_dir() {
             collect_asides(root, &child, names);
-        } else if name.contains("conflict from") {
+        } else if crate::sync::manifest_engine::is_conflict_aside(&child) {
             names.push(child);
         }
     }

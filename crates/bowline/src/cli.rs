@@ -7,6 +7,12 @@ pub(super) struct Cli {
     pub(super) quiet: bool,
     pub(super) socket: PathBuf,
     pub(super) dry_run: bool,
+    /// Declared by the registry spec this invocation matched; `None` only when
+    /// the argv never resolved to a spec.
+    pub(super) side_effect_level: Option<crate::registry::SideEffectLevel>,
+    /// The argv exactly as typed. The dry-run preview echoes it back with
+    /// `--dry-run` removed, so the apply line can never drift from the command.
+    pub(super) argv: Vec<String>,
     pub(super) command: Command,
 }
 
@@ -17,6 +23,8 @@ pub(super) struct ParsedInvocation {
     pub(super) quiet: bool,
     pub(super) socket: PathBuf,
     pub(super) dry_run: bool,
+    pub(super) side_effect_level: Option<crate::registry::SideEffectLevel>,
+    pub(super) argv: Vec<String>,
     pub(super) command: Result<Command, ParseError>,
 }
 
@@ -35,13 +43,14 @@ pub(super) enum Command {
     Status(StatusArgs),
     Tui(TuiArgs),
     SyncWait(SyncWaitArgs),
-    SyncAttention,
-    SyncRetry(crate::sync_attention::RetrySelector),
-    SyncDismiss(String),
     DebugClassify(DebugClassifyArgs),
     Devices(devices::DevicesArgs),
+    DeviceKeyStatus(devices::DeviceKeyStatusArgs),
     Recovery(recovery::RecoveryArgs),
     Events(EventsArgs),
+    Conflicts(conflict_commands::ConflictsArgs),
+    Resolve(conflict_commands::ResolveArgs),
+    Deletions(deletion_commands::DeletionsArgs),
     WorkCreate(work::WorkCreateArgs),
     Work(work::WorkListArgs),
     WorkDiff(work::WorkSelectorArgs),
@@ -97,7 +106,7 @@ pub(super) struct WorkspaceSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum TrustRequestSelector {
-    Request(String),
+    Request(DeviceApprovalRequestId),
     Code(String),
 }
 
@@ -111,7 +120,7 @@ pub(super) struct ApproveArgs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RevokeArgs {
     pub(super) selection: WorkspaceSelection,
-    pub(super) device_id: String,
+    pub(super) device_id: DeviceId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,12 +191,6 @@ pub(super) enum DaemonCommand {
     Uninstall,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Handshake {
-    pub(super) daemon_version: String,
-    pub(super) status_json: String,
-}
-
 pub(super) fn parse_args<I, S>(args: I) -> ParsedInvocation
 where
     I: IntoIterator<Item = S>,
@@ -201,27 +204,24 @@ where
                 crate::registry::DefinitionTarget::Public(command) => {
                     construct_command(command, &definition.values)
                 }
+                crate::registry::DefinitionTarget::Recovery(action) => {
+                    parse_recovery_command(action, &definition.values)
+                }
                 crate::registry::DefinitionTarget::DebugClassify => {
                     parse_debug_classify_command(&definition.values)
                 }
                 crate::registry::DefinitionTarget::SyncWait => {
                     parse_sync_wait_command(&definition.values)
                 }
-                crate::registry::DefinitionTarget::SyncAttention => Ok(Command::SyncAttention),
-                crate::registry::DefinitionTarget::SyncRetry => {
-                    parse_sync_retry_command(&definition.values)
-                }
-                crate::registry::DefinitionTarget::SyncDismiss => {
-                    parse_sync_dismiss_command(&definition.values)
-                }
-            }
-            .and_then(|command| validate_quiet(command, definition.quiet));
+            };
             ParsedInvocation {
                 json: definition.json,
                 human: definition.human,
                 quiet: definition.quiet,
                 socket: definition.socket,
                 dry_run: definition.dry_run,
+                side_effect_level: Some(definition.side_effect_level),
+                argv: args,
                 command,
             }
         }
@@ -236,26 +236,11 @@ where
             quiet,
             socket: default_socket_path(),
             dry_run: false,
+            side_effect_level: None,
+            argv: args,
             command: Err(error),
         },
     }
-}
-
-fn validate_quiet(command: Command, quiet: bool) -> Result<Command, ParseError> {
-    if !quiet || command_supports_quiet(&command) {
-        return Ok(command);
-    }
-    usage_error(
-        command.name(),
-        "--quiet is only available for work, events, and devices list",
-    )
-}
-
-fn command_supports_quiet(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::Work(_) | Command::Events(_) | Command::Devices(devices::DevicesArgs::List { .. })
-    )
 }
 
 impl Command {
@@ -274,14 +259,15 @@ impl Command {
             Command::Status(_) => CommandName::Status,
             Command::Tui(_) => CommandName::Tui,
             Command::SyncWait(_) => CommandName::Unknown,
-            Command::SyncAttention | Command::SyncRetry(_) | Command::SyncDismiss(_) => {
-                CommandName::Unknown
-            }
             Command::DebugClassify(_) => CommandName::Unknown,
             Command::Recovery(_) => CommandName::Recover,
             Command::Work(_) => CommandName::Work,
             Command::Events(_) => CommandName::Events,
+            Command::Conflicts(_) => CommandName::Conflicts,
+            Command::Resolve(_) => CommandName::Resolve,
+            Command::Deletions(_) => CommandName::Deletions,
             Command::Devices(args) => args.command_name(),
+            Command::DeviceKeyStatus(_) => CommandName::DeviceKeyStatus,
             Command::WorkCreate(_) => CommandName::WorkCreate,
             Command::WorkDiff(_) => CommandName::Diff,
             Command::Review(_) => CommandName::Review,
@@ -310,8 +296,10 @@ pub(super) fn default_socket_path() -> PathBuf {
 }
 
 mod args;
+mod conflicts;
 mod connect;
 mod context;
+mod deletions;
 mod device_parse;
 mod parser;
 mod prompt;
@@ -320,8 +308,10 @@ mod work_agent;
 mod workspace;
 
 use args::*;
+use conflicts::*;
 use connect::*;
 pub(crate) use context::current_dir_string;
+use deletions::*;
 use device_parse::*;
 use parser::*;
 pub(crate) use prompt::confirm_return;

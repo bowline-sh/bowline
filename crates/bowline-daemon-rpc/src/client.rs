@@ -19,7 +19,10 @@ use bowline_core::wire::generated::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::{CodecError, DAEMON_RPC_PROTOCOL, DAEMON_RPC_PROTOCOL_VERSION, FrameCodec};
+use crate::{
+    CodecError, DAEMON_RPC_PROTOCOL, DAEMON_RPC_PROTOCOL_VERSION, FrameCodec,
+    negotiation::{VersionDimension, VersionWindow},
+};
 
 type PendingResult = Result<DaemonRpcResponse, ClientError>;
 const MAX_ORPHAN_EVENT_SUBSCRIPTIONS: usize = 64;
@@ -68,13 +71,11 @@ pub enum ClientError {
     SerializeParams(serde_json::Error),
     DeserializeResult(serde_json::Error),
     InvalidHandshake(String),
-    ContractVersionMismatch {
-        received: u16,
-        supported: u16,
-    },
-    SchemaHashMismatch {
-        received: String,
-        supported: &'static str,
+    /// The daemon's selected generation falls outside this build's window.
+    IncompatibleVersion {
+        dimension: VersionDimension,
+        peer_version: u16,
+        window: VersionWindow,
     },
     InvalidResponse {
         request_id: String,
@@ -108,19 +109,13 @@ impl fmt::Display for ClientError {
             Self::InvalidHandshake(reason) => {
                 write!(formatter, "daemon RPC handshake is invalid: {reason}")
             }
-            Self::ContractVersionMismatch {
-                received,
-                supported,
+            Self::IncompatibleVersion {
+                dimension,
+                peer_version,
+                window,
             } => write!(
                 formatter,
-                "daemon contract version {received} does not equal required version {supported}"
-            ),
-            Self::SchemaHashMismatch {
-                received,
-                supported,
-            } => write!(
-                formatter,
-                "daemon schema hash {received} does not equal required hash {supported}"
+                "daemon {dimension} version {peer_version} is outside the supported range {window}"
             ),
             Self::InvalidResponse { request_id, reason } => write!(
                 formatter,
@@ -191,8 +186,38 @@ pub struct DaemonClient {
     request_timeout: Duration,
 }
 
+/// Whether `metadata` describes a Unix domain socket. A symlink is never
+/// followed to answer this: the check exists to refuse a path that cannot host a
+/// daemon, and following one would let a link decide the answer.
+#[cfg(unix)]
+fn is_socket(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    metadata.file_type().is_socket()
+}
+
+#[cfg(not(unix))]
+fn is_socket(_metadata: &std::fs::Metadata) -> bool {
+    true
+}
+
 impl DaemonClient {
     pub fn connect(path: &Path, options: ClientOptions) -> Result<Self, ClientError> {
+        // A path that exists but is not a socket can never host a daemon, and the
+        // kernel does not say so consistently: Linux answers ECONNREFUSED for a
+        // directory, which is indistinguishable from "socket present, nobody
+        // listening" and would be reported as `stopped`. A caller told `stopped`
+        // starts a daemon; it needs to be told the path itself is wrong.
+        if let Ok(metadata) = std::fs::symlink_metadata(path)
+            && !is_socket(&metadata)
+        {
+            return Err(ClientError::Io {
+                operation: "connect",
+                source: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "daemon socket path is not a socket",
+                ),
+            });
+        }
         let mut stream = UnixStream::connect(path).map_err(|source| ClientError::Io {
             operation: "connect",
             source,
@@ -308,10 +333,14 @@ impl DaemonClient {
         })
     }
 
-    pub fn register_events(
+    /// Register a latest-only mailbox for a subscription's events.
+    ///
+    /// Status events are level-triggered snapshots, so the mailbox deliberately
+    /// holds exactly one event and marks the replacement as a gap. There is no
+    /// queue and no capacity to choose.
+    pub fn register_latest_event(
         &self,
         subscription_id: impl Into<String>,
-        _capacity: usize,
     ) -> Result<EventReceiver, ClientError> {
         let subscription_id = subscription_id.into();
         let mailbox = Arc::new(EventMailbox::default());
@@ -564,26 +593,28 @@ fn decode_server_hello(value: serde_json::Value) -> Result<DaemonServerHello, Cl
     ))
 }
 
+/// Accept the daemon's selected generations if they sit inside this build's own
+/// compatibility windows. The daemon selects the lower of the two peers'
+/// supported versions; this is the client half of that agreement.
+///
+/// `schema_hash` is informational for the same reason it is on the server side:
+/// it digests the whole contract corpus, including hosted documents the daemon
+/// RPC surface never touches.
 fn validate_server_selection(hello: &DaemonServerHello) -> Result<(), ClientError> {
-    if hello.protocol_version != DAEMON_RPC_PROTOCOL_VERSION {
-        return Err(ClientError::InvalidHandshake(format!(
-            "daemon protocol version {} does not equal required version {}",
-            hello.protocol_version, DAEMON_RPC_PROTOCOL_VERSION
-        )));
-    }
-    if hello.contract_version != MACHINE_CONTRACT_VERSION {
-        return Err(ClientError::ContractVersionMismatch {
-            received: hello.contract_version,
-            supported: MACHINE_CONTRACT_VERSION,
-        });
-    }
-    if hello.schema_hash != WIRE_SCHEMA_HASH {
-        return Err(ClientError::SchemaHashMismatch {
-            received: hello.schema_hash.clone(),
-            supported: WIRE_SCHEMA_HASH,
-        });
-    }
-    Ok(())
+    check_window(VersionDimension::Protocol, hello.protocol_version)?;
+    check_window(VersionDimension::MachineContract, hello.contract_version)
+}
+
+fn check_window(dimension: VersionDimension, peer_version: u16) -> Result<(), ClientError> {
+    let window = dimension.window();
+    window
+        .select(peer_version)
+        .map(|_selected| ())
+        .ok_or(ClientError::IncompatibleVersion {
+            dimension,
+            peer_version,
+            window,
+        })
 }
 
 fn decode_response<R: DeserializeOwned>(response: DaemonRpcResponse) -> Result<R, ClientError> {

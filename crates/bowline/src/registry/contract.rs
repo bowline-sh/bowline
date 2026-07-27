@@ -113,8 +113,8 @@ fn command_summary(spec: &CommandSpec) -> CliCommandSummary {
         name: spec.name.to_string(),
         group: spec.group.to_string(),
         summary: spec.summary.to_string(),
-        side_effect_level: spec.side_effect_level.to_string(),
-        supports_json: spec.supports_json,
-        supports_dry_run: spec.supports_dry_run,
+        side_effect_level: spec.side_effect_level,
+        supports_json: spec.supports_json(),
+        supports_dry_run: spec.supports_dry_run(),
     }
 }

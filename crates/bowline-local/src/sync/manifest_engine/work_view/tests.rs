@@ -15,9 +15,10 @@ use crate::sync::manifest_engine::engine_test_support::{
     FakeRemote, open_engine_store, test_context,
 };
 use crate::sync::manifest_engine::manifest::{
-    FileMode, KeyEpoch, Manifest, ManifestEntry, ManifestKey, WorkspacePath,
+    FileMode, KeyEpoch, MAX_WORKSPACE_PATH_LEN, Manifest, ManifestEntry, ManifestKey,
+    WorkspacePath, publishable_workspace_path,
 };
-use crate::sync::manifest_engine::pull_apply::{PullDeps, pull};
+use crate::sync::manifest_engine::pull_apply::{PullDeps, PullScope, pull};
 use crate::sync::manifest_engine::push::{PushDeps, PushOutcome, push};
 use crate::sync::manifest_engine::store::ManifestStore;
 use crate::workspace::TempWorkspace;
@@ -142,6 +143,7 @@ fn pull_device(store: &mut ManifestStore, ctx: &EngineContext, remote: &FakeRemo
         ctx,
         objects: remote,
         refs: remote,
+        scope: PullScope::WholeAncestor,
     };
     pull(store, &deps).expect("device pull");
 }
@@ -315,7 +317,11 @@ fn accept_conflict_preserves_local_and_asides_the_overlay() {
         "the workspace's own edit stays at the canonical path",
     );
     let aside = &merge.conflict_asides[0];
-    assert!(aside.as_str().starts_with("shared.txt (overlay "));
+    assert_eq!(
+        crate::sync::manifest_engine::conflict_aside_origin(aside.as_str()),
+        Some("shared.txt"),
+        "an accept aside is recognizable by THE aside parser, like a pulled one",
+    );
     assert!(
         merge.merged.entries.contains_key(aside),
         "the overlay survives as an aside entry",
@@ -647,4 +653,89 @@ fn diff_reports_add_modify_delete() {
             ("new.txt", ChangeKind::Added),
         ]
     );
+}
+
+fn merge_test_file(content: &str) -> ManifestEntry {
+    ManifestEntry::File {
+        size: content.len() as u64,
+        mode: FileMode::new(0o644),
+        content_id: bowline_core::ids::ContentId::new(format!("c_{content}")),
+        blob_key: crate::sync::manifest_engine::manifest::BlobKey::new(format!("b_{content}")),
+        key_epoch: KeyEpoch::new(1),
+    }
+}
+
+/// Both aside refusals belong to the aside CONCEPT, so the writer that never
+/// touches the filesystem obeys them too.
+///
+/// An accept that asided `.git/refs/heads/main` would publish a manifest entry
+/// every device then materializes — `install_entry` never refuses on aside
+/// grounds — leaving a loose-ref-shaped file inside `.git/refs` that git reports
+/// as broken, and invisibly so, because the conflict scan skips `.git`. An aside
+/// name past the path budget fails differently but no better: the publish
+/// rejects it and the whole accept fails instead of one path.
+#[test]
+fn accept_refuses_an_aside_where_no_aside_may_be_written() {
+    let prefix = aside_prefix(&ManifestKey::new("mk_overlay"));
+    let git_ref = WorkspacePath::new("acme/web/.git/refs/heads/main");
+    let over_budget = WorkspacePath::new(format!(
+        "src/{}.ts",
+        "a".repeat(MAX_WORKSPACE_PATH_LEN as usize - 16)
+    ));
+    let ordinary = WorkspacePath::new("src/auth.ts");
+    let paths = [&git_ref, &over_budget, &ordinary];
+
+    let manifest = |content: &str| {
+        Manifest::new(
+            KeyEpoch::new(1),
+            paths
+                .iter()
+                .map(|path| ((*path).clone(), merge_test_file(content)))
+                .collect(),
+        )
+    };
+    // Every path diverged both ways, so every path is a genuine conflict.
+    let merge = three_way_merge(
+        &manifest("base"),
+        &manifest("workspace"),
+        &manifest("overlay"),
+        &prefix,
+    );
+
+    assert_eq!(
+        merge.aside_refused_paths,
+        vec![git_ref.clone(), over_budget.clone()],
+        "a refusal is reported, never silently dropped",
+    );
+    assert_eq!(
+        merge.conflict_asides.len(),
+        1,
+        "only the ordinary path may carry an aside, got {:?}",
+        merge.conflict_asides,
+    );
+    assert_eq!(
+        crate::sync::manifest_engine::conflict_aside_origin(merge.conflict_asides[0].as_str()),
+        Some(ordinary.as_str()),
+    );
+    for path in paths {
+        assert_eq!(
+            merge.merged.entries.get(path),
+            Some(&merge_test_file("workspace")),
+            "`{}` stays canonical whether or not an aside was written",
+            path.as_str(),
+        );
+    }
+    for path in merge.merged.entries.keys() {
+        assert!(
+            publishable_workspace_path(path.as_str(), MAX_WORKSPACE_PATH_LEN, false).is_ok(),
+            "`{}` would fail the publish accept performs",
+            path.as_str(),
+        );
+        assert!(
+            crate::sync::manifest_engine::conflict_aside_origin(path.as_str())
+                .is_none_or(|origin| !origin.contains("/.git/")),
+            "`{}` is an aside inside `.git/**`, which every device would materialize",
+            path.as_str(),
+        );
+    }
 }

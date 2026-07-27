@@ -1,8 +1,9 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL};
+use bowline_core::ids::{DeviceApprovalRequestId, DeviceId, RecoveryEnvelopeId, WorkspaceId};
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use sha2::{Digest, Sha256};
 
-use crate::RecoveryEnvelopeInput;
+use crate::{RecoveryEnvelopeInput, WorkspaceKeyRegrantOffer};
 
 const DEVICE_AUTHORIZATION_VERIFIER_PREFIX: &str = "dapv_p256_v1_";
 const DEVICE_AUTHORIZATION_PROOF_PREFIX: &str = "dapp_p256_v1_";
@@ -83,16 +84,70 @@ pub fn recovery_envelope_payload_proof_subject_parts(
     )
 }
 
-pub fn recovery_envelope_proof_subject(envelope_id: impl AsRef<str>) -> String {
-    format!("envelopeId={}", envelope_id.as_ref())
+pub fn recovery_envelope_proof_subject(envelope_id: &RecoveryEnvelopeId) -> String {
+    format!("envelopeId={}", envelope_id.as_str())
 }
 
-pub fn device_request_proof_subject(request_id: impl AsRef<str>) -> String {
-    format!("requestId={}", request_id.as_ref())
+/// Action a device signs when it fetches the grant sealed for its own pending
+/// request. Named separately from the approval action so a proof minted to
+/// approve someone else can never be replayed to read a grant.
+pub const FETCH_DEVICE_GRANT_ACTION: &str = "fetch-device-grant";
+
+pub fn device_request_proof_subject(request_id: &DeviceApprovalRequestId) -> String {
+    format!("requestId={}", request_id.as_str())
 }
 
-pub fn device_revocation_proof_subject(device_id: impl AsRef<str>) -> String {
-    format!("deviceId={}", device_id.as_ref())
+pub fn device_revocation_proof_subject(device_id: &DeviceId) -> String {
+    format!("deviceId={}", device_id.as_str())
+}
+
+/// A device signs its own age public key under the same key it publishes a
+/// proof verifier for. That is what lets a remaining device seal new key
+/// material to a recipient it has never met without trusting the control
+/// plane's copy of the recipient's public key.
+pub fn device_public_key_proof_subject(device_public_key: &str) -> String {
+    format!("devicePublicKey={device_public_key}")
+}
+
+pub fn key_regrant_work_proof_subject(workspace_id: &WorkspaceId) -> String {
+    format!("workspaceId={}", workspace_id.as_str())
+}
+
+pub fn key_regrant_accept_proof_subject(key_epoch: u32) -> String {
+    format!("keyEpoch={key_epoch}")
+}
+
+/// Seeding and offering sign the same subject under different actions: both
+/// publish a set of sealed payloads at one epoch, and the signature has to
+/// cover which ciphertext went to which recipient. Signing a digest rather than
+/// the ciphertexts keeps the subject bounded when a workspace fans out to many
+/// devices; the digest is order-independent because the offers are sorted by
+/// recipient before hashing.
+pub fn key_regrant_offer_proof_subject(
+    key_epoch: u32,
+    offers: &[WorkspaceKeyRegrantOffer],
+) -> String {
+    format!(
+        "keyEpoch={key_epoch}\nofferDigest={}",
+        key_regrant_offer_digest(offers)
+    )
+}
+
+pub fn key_regrant_offer_digest(offers: &[WorkspaceKeyRegrantOffer]) -> String {
+    let mut sorted = offers.iter().collect::<Vec<_>>();
+    sorted.sort_by(|left, right| left.recipient_device_id.cmp(&right.recipient_device_id));
+    let count = sorted.len().to_string();
+    let mut fields = vec![
+        "bowline workspace key regrant offer digest v1",
+        count.as_str(),
+    ];
+    for offer in &sorted {
+        fields.push(offer.recipient_device_id.as_str());
+        fields.push(offer.acceptance_proof_verifier.as_str());
+        fields.push(offer.ciphertext.as_str());
+    }
+    let digest = Sha256::digest(device_authorization_message(&fields));
+    format!("{digest:x}")
 }
 
 #[cfg(test)]

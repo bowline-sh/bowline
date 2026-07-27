@@ -1644,20 +1644,14 @@
     {
       "declaration": "HostedRefsListWorkspaceRefHistoryRequest",
       "expectation": "reject",
+      "id": "HostedRefsListWorkspaceRefHistoryRequest.missing.accountSessionId",
+      "missingField": "accountSessionId"
+    },
+    {
+      "declaration": "HostedRefsListWorkspaceRefHistoryRequest",
+      "expectation": "reject",
       "id": "HostedRefsListWorkspaceRefHistoryRequest.null.limit",
       "nullField": "limit"
-    },
-    {
-      "declaration": "HostedRefsListWorkspaceRefHistoryRequest",
-      "expectation": "reject",
-      "id": "HostedRefsListWorkspaceRefHistoryRequest.null.authToken",
-      "nullField": "authToken"
-    },
-    {
-      "declaration": "HostedRefsListWorkspaceRefHistoryRequest",
-      "expectation": "reject",
-      "id": "HostedRefsListWorkspaceRefHistoryRequest.null.accountSessionId",
-      "nullField": "accountSessionId"
     },
     {
       "declaration": "HostedWorkspaceRefHistoryRecord",
@@ -1774,8 +1768,14 @@
     {
       "declaration": "HostedRetentionListStorageGcObjectsRequest",
       "expectation": "reject",
-      "id": "HostedRetentionListStorageGcObjectsRequest.missing.authToken",
-      "missingField": "authToken"
+      "id": "HostedRetentionListStorageGcObjectsRequest.missing.requestedByDeviceId",
+      "missingField": "requestedByDeviceId"
+    },
+    {
+      "declaration": "HostedRetentionListStorageGcObjectsRequest",
+      "expectation": "reject",
+      "id": "HostedRetentionListStorageGcObjectsRequest.missing.requestedByDeviceProof",
+      "missingField": "requestedByDeviceProof"
     },
     {
       "declaration": "HostedRetentionListStorageGcObjectsRequest",
@@ -1810,14 +1810,20 @@
     {
       "declaration": "HostedRetentionDeleteObjectMetadataAfterGcRequest",
       "expectation": "reject",
-      "id": "HostedRetentionDeleteObjectMetadataAfterGcRequest.missing.authToken",
-      "missingField": "authToken"
+      "id": "HostedRetentionDeleteObjectMetadataAfterGcRequest.missing.objectKey",
+      "missingField": "objectKey"
     },
     {
       "declaration": "HostedRetentionDeleteObjectMetadataAfterGcRequest",
       "expectation": "reject",
-      "id": "HostedRetentionDeleteObjectMetadataAfterGcRequest.missing.objectKey",
-      "missingField": "objectKey"
+      "id": "HostedRetentionDeleteObjectMetadataAfterGcRequest.missing.requestedByDeviceId",
+      "missingField": "requestedByDeviceId"
+    },
+    {
+      "declaration": "HostedRetentionDeleteObjectMetadataAfterGcRequest",
+      "expectation": "reject",
+      "id": "HostedRetentionDeleteObjectMetadataAfterGcRequest.missing.requestedByDeviceProof",
+      "missingField": "requestedByDeviceProof"
     },
     {
       "declaration": "HostedRetentionDeleteObjectMetadataAfterGcRequest",
@@ -2224,6 +2230,12 @@
       "expectation": "reject",
       "id": "HostedDeviceRequest.missing.devicePublicKey",
       "missingField": "devicePublicKey"
+    },
+    {
+      "declaration": "HostedDeviceRequest",
+      "expectation": "reject",
+      "id": "HostedDeviceRequest.missing.devicePublicKeyProof",
+      "missingField": "devicePublicKeyProof"
     },
     {
       "declaration": "HostedDeviceRequest",
@@ -2780,6 +2792,18 @@
     {
       "declaration": "HostedDevicesCreateFirstAuthorizedDeviceRequest",
       "expectation": "reject",
+      "id": "HostedDevicesCreateFirstAuthorizedDeviceRequest.missing.devicePublicKey",
+      "missingField": "devicePublicKey"
+    },
+    {
+      "declaration": "HostedDevicesCreateFirstAuthorizedDeviceRequest",
+      "expectation": "reject",
+      "id": "HostedDevicesCreateFirstAuthorizedDeviceRequest.missing.devicePublicKeyProof",
+      "missingField": "devicePublicKeyProof"
+    },
+    {
+      "declaration": "HostedDevicesCreateFirstAuthorizedDeviceRequest",
+      "expectation": "reject",
       "id": "HostedDevicesCreateFirstAuthorizedDeviceRequest.missing.platform",
       "missingField": "platform"
     },
@@ -2824,6 +2848,12 @@
       "expectation": "reject",
       "id": "HostedDevicesCreatePendingDeviceRequest.missing.devicePublicKey",
       "missingField": "devicePublicKey"
+    },
+    {
+      "declaration": "HostedDevicesCreatePendingDeviceRequest",
+      "expectation": "reject",
+      "id": "HostedDevicesCreatePendingDeviceRequest.missing.devicePublicKeyProof",
+      "missingField": "devicePublicKeyProof"
     },
     {
       "declaration": "HostedDevicesCreatePendingDeviceRequest",
@@ -2936,6 +2966,12 @@
     {
       "declaration": "HostedDevicesCreatePendingDeviceWithBootstrapRequest",
       "expectation": "reject",
+      "id": "HostedDevicesCreatePendingDeviceWithBootstrapRequest.missing.devicePublicKeyProof",
+      "missingField": "devicePublicKeyProof"
+    },
+    {
+      "declaration": "HostedDevicesCreatePendingDeviceWithBootstrapRequest",
+      "expectation": "reject",
       "id": "HostedDevicesCreatePendingDeviceWithBootstrapRequest.missing.matchingCode",
       "missingField": "matchingCode"
     },
@@ -3038,6 +3074,12 @@
     {
       "declaration": "HostedDevicesGetEncryptedGrantRequest",
       "expectation": "reject",
+      "id": "HostedDevicesGetEncryptedGrantRequest.missing.requestedByDeviceProof",
+      "missingField": "requestedByDeviceProof"
+    },
+    {
+      "declaration": "HostedDevicesGetEncryptedGrantRequest",
+      "expectation": "reject",
       "id": "HostedDevicesGetEncryptedGrantRequest.missing.requestId",
       "missingField": "requestId"
     },
@@ -3099,6 +3141,263 @@
       "declaration": "HostedDevicesRevokeDeviceRequest",
       "expectation": "reject",
       "id": "HostedDevicesRevokeDeviceRequest.missing.workspaceId",
+      "missingField": "workspaceId"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantState",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantState.unknown"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantOffer",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantOffer.missing.acceptanceProofVerifier",
+      "missingField": "acceptanceProofVerifier"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantOffer",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantOffer.missing.ciphertext",
+      "missingField": "ciphertext"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantOffer",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantOffer.missing.recipientDeviceId",
+      "missingField": "recipientDeviceId"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.missing.deviceFingerprint",
+      "missingField": "deviceFingerprint"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.missing.deviceId",
+      "missingField": "deviceId"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.missing.deviceName",
+      "missingField": "deviceName"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.missing.devicePublicKey",
+      "missingField": "devicePublicKey"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.missing.devicePublicKeyProof",
+      "missingField": "devicePublicKeyProof"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.missing.heldKeyEpoch",
+      "missingField": "heldKeyEpoch"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.missing.keyEpoch",
+      "missingField": "keyEpoch"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.missing.platform",
+      "missingField": "platform"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.missing.state",
+      "missingField": "state"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.null.deviceAuthorizationProofVerifier",
+      "nullField": "deviceAuthorizationProofVerifier"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.null.sealedByDeviceId",
+      "nullField": "sealedByDeviceId"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantAssignment",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantAssignment.missing.keyEpoch",
+      "missingField": "keyEpoch"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantAssignment",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantAssignment.missing.state",
+      "missingField": "state"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantAssignment",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantAssignment.null.ciphertext",
+      "nullField": "ciphertext"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantAssignment",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantAssignment.null.sealedByDeviceId",
+      "nullField": "sealedByDeviceId"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantWork",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantWork.missing.currentKeyEpoch",
+      "missingField": "currentKeyEpoch"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantWork",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantWork.missing.outstanding",
+      "missingField": "outstanding"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantWork",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantWork.missing.workspaceId",
+      "missingField": "workspaceId"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantWork",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantWork.null.ownRegrant",
+      "nullField": "ownRegrant"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantWork",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantWork.null.pendingKeyEpoch",
+      "nullField": "pendingKeyEpoch"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantWork",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantWork.null.pendingSeededByDeviceId",
+      "nullField": "pendingSeededByDeviceId"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysGetKeyRegrantWorkRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysGetKeyRegrantWorkRequest.missing.deviceId",
+      "missingField": "deviceId"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysGetKeyRegrantWorkRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysGetKeyRegrantWorkRequest.missing.deviceProof",
+      "missingField": "deviceProof"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysGetKeyRegrantWorkRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysGetKeyRegrantWorkRequest.missing.workspaceId",
+      "missingField": "workspaceId"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysSeedKeyEpochRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysSeedKeyEpochRequest.missing.deviceId",
+      "missingField": "deviceId"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysSeedKeyEpochRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysSeedKeyEpochRequest.missing.deviceProof",
+      "missingField": "deviceProof"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysSeedKeyEpochRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysSeedKeyEpochRequest.missing.keyEpoch",
+      "missingField": "keyEpoch"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysSeedKeyEpochRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysSeedKeyEpochRequest.missing.offers",
+      "missingField": "offers"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysSeedKeyEpochRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysSeedKeyEpochRequest.missing.workspaceId",
+      "missingField": "workspaceId"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysOfferKeyRegrantsRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysOfferKeyRegrantsRequest.missing.deviceId",
+      "missingField": "deviceId"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysOfferKeyRegrantsRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysOfferKeyRegrantsRequest.missing.deviceProof",
+      "missingField": "deviceProof"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysOfferKeyRegrantsRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysOfferKeyRegrantsRequest.missing.keyEpoch",
+      "missingField": "keyEpoch"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysOfferKeyRegrantsRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysOfferKeyRegrantsRequest.missing.offers",
+      "missingField": "offers"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysOfferKeyRegrantsRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysOfferKeyRegrantsRequest.missing.workspaceId",
+      "missingField": "workspaceId"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysAcceptKeyRegrantRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysAcceptKeyRegrantRequest.missing.deviceId",
+      "missingField": "deviceId"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysAcceptKeyRegrantRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysAcceptKeyRegrantRequest.missing.deviceProof",
+      "missingField": "deviceProof"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysAcceptKeyRegrantRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysAcceptKeyRegrantRequest.missing.grantAcceptanceProof",
+      "missingField": "grantAcceptanceProof"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysAcceptKeyRegrantRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysAcceptKeyRegrantRequest.missing.keyEpoch",
+      "missingField": "keyEpoch"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysAcceptKeyRegrantRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysAcceptKeyRegrantRequest.missing.workspaceId",
       "missingField": "workspaceId"
     },
     {
@@ -3367,14 +3666,20 @@
     {
       "declaration": "HostedObjectsCreateStorageGcDeleteIntentRequest",
       "expectation": "reject",
-      "id": "HostedObjectsCreateStorageGcDeleteIntentRequest.missing.authToken",
-      "missingField": "authToken"
+      "id": "HostedObjectsCreateStorageGcDeleteIntentRequest.missing.objectKey",
+      "missingField": "objectKey"
     },
     {
       "declaration": "HostedObjectsCreateStorageGcDeleteIntentRequest",
       "expectation": "reject",
-      "id": "HostedObjectsCreateStorageGcDeleteIntentRequest.missing.objectKey",
-      "missingField": "objectKey"
+      "id": "HostedObjectsCreateStorageGcDeleteIntentRequest.missing.requestedByDeviceId",
+      "missingField": "requestedByDeviceId"
+    },
+    {
+      "declaration": "HostedObjectsCreateStorageGcDeleteIntentRequest",
+      "expectation": "reject",
+      "id": "HostedObjectsCreateStorageGcDeleteIntentRequest.missing.requestedByDeviceProof",
+      "missingField": "requestedByDeviceProof"
     },
     {
       "declaration": "HostedObjectsCreateStorageGcDeleteIntentRequest",
@@ -3431,52 +3736,75 @@
       "missingField": "workspaceId"
     },
     {
-      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "declaration": "HostedUploadIntentOutcome",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.missing.byteLength",
+      "id": "HostedUploadIntentOutcome.unknown"
+    },
+    {
+      "declaration": "HostedUploadReservation",
+      "expectation": "reject",
+      "id": "HostedUploadReservation.missing.byteLength",
       "missingField": "byteLength"
     },
     {
-      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "declaration": "HostedUploadReservation",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.missing.expiresAt",
+      "id": "HostedUploadReservation.missing.expiresAt",
       "missingField": "expiresAt"
     },
     {
-      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "declaration": "HostedUploadReservation",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.missing.intentId",
+      "id": "HostedUploadReservation.missing.intentId",
       "missingField": "intentId"
     },
     {
-      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "declaration": "HostedUploadReservation",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.missing.kind",
+      "id": "HostedUploadReservation.missing.kind",
       "missingField": "kind"
     },
     {
-      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "declaration": "HostedUploadReservation",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.missing.method",
+      "id": "HostedUploadReservation.missing.method",
       "missingField": "method"
     },
     {
-      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "declaration": "HostedUploadReservation",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.missing.objectKey",
+      "id": "HostedUploadReservation.missing.objectKey",
       "missingField": "objectKey"
     },
     {
-      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "declaration": "HostedUploadReservation",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.missing.signedUrl",
+      "id": "HostedUploadReservation.missing.signedUrl",
       "missingField": "signedUrl"
+    },
+    {
+      "declaration": "HostedUploadReservation",
+      "expectation": "reject",
+      "id": "HostedUploadReservation.missing.workspaceId",
+      "missingField": "workspaceId"
     },
     {
       "declaration": "HostedObjectsCreateUploadIntentResponse",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.missing.workspaceId",
-      "missingField": "workspaceId"
+      "id": "HostedObjectsCreateUploadIntentResponse.missing.outcome",
+      "missingField": "outcome"
+    },
+    {
+      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "expectation": "reject",
+      "id": "HostedObjectsCreateUploadIntentResponse.null.reservation",
+      "nullField": "reservation"
+    },
+    {
+      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "expectation": "reject",
+      "id": "HostedObjectsCreateUploadIntentResponse.null.committed",
+      "nullField": "committed"
     },
     {
       "declaration": "HostedObjectsCreateDownloadIntentResponse",
@@ -3696,32 +4024,20 @@
     {
       "declaration": "HostedRefsGetWorkspaceRefRequest",
       "expectation": "reject",
-      "id": "HostedRefsGetWorkspaceRefRequest.null.authToken",
-      "nullField": "authToken"
+      "id": "HostedRefsGetWorkspaceRefRequest.missing.accountSessionId",
+      "missingField": "accountSessionId"
     },
     {
-      "declaration": "HostedRefsGetWorkspaceRefRequest",
+      "declaration": "HostedRefsCreateWorkspaceRefRequest",
       "expectation": "reject",
-      "id": "HostedRefsGetWorkspaceRefRequest.null.accountSessionId",
-      "nullField": "accountSessionId"
+      "id": "HostedRefsCreateWorkspaceRefRequest.missing.accountSessionId",
+      "missingField": "accountSessionId"
     },
     {
       "declaration": "HostedRefsCreateWorkspaceRefRequest",
       "expectation": "reject",
       "id": "HostedRefsCreateWorkspaceRefRequest.missing.workspaceId",
       "missingField": "workspaceId"
-    },
-    {
-      "declaration": "HostedRefsCreateWorkspaceRefRequest",
-      "expectation": "reject",
-      "id": "HostedRefsCreateWorkspaceRefRequest.null.authToken",
-      "nullField": "authToken"
-    },
-    {
-      "declaration": "HostedRefsCreateWorkspaceRefRequest",
-      "expectation": "reject",
-      "id": "HostedRefsCreateWorkspaceRefRequest.null.accountSessionId",
-      "nullField": "accountSessionId"
     },
     {
       "declaration": "HostedRefsCompareAndSwapWorkspaceRefRequest",
@@ -3828,20 +4144,14 @@
     {
       "declaration": "HostedEventsListCompactEventsRequest",
       "expectation": "reject",
+      "id": "HostedEventsListCompactEventsRequest.missing.accountSessionId",
+      "missingField": "accountSessionId"
+    },
+    {
+      "declaration": "HostedEventsListCompactEventsRequest",
+      "expectation": "reject",
       "id": "HostedEventsListCompactEventsRequest.missing.workspaceId",
       "missingField": "workspaceId"
-    },
-    {
-      "declaration": "HostedEventsListCompactEventsRequest",
-      "expectation": "reject",
-      "id": "HostedEventsListCompactEventsRequest.null.accountSessionId",
-      "nullField": "accountSessionId"
-    },
-    {
-      "declaration": "HostedEventsListCompactEventsRequest",
-      "expectation": "reject",
-      "id": "HostedEventsListCompactEventsRequest.null.authToken",
-      "nullField": "authToken"
     },
     {
       "declaration": "HostedEventsListCompactEventsRequest",
@@ -6278,12 +6588,6 @@
     {
       "declaration": "HostedRefsListWorkspaceRefHistoryRequest",
       "expectation": "reject",
-      "id": "HostedRefsListWorkspaceRefHistoryRequest.authToken.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedRefsListWorkspaceRefHistoryRequest.authToken.maxLength.invalid"
-    },
-    {
-      "declaration": "HostedRefsListWorkspaceRefHistoryRequest",
-      "expectation": "reject",
       "id": "HostedRefsListWorkspaceRefHistoryRequest.accountSessionId.maxLength.invalid",
       "valuePath": "/boundary-values.json#/HostedRefsListWorkspaceRefHistoryRequest.accountSessionId.maxLength.invalid"
     },
@@ -6350,20 +6654,26 @@
     {
       "declaration": "HostedRetentionListStorageGcObjectsRequest",
       "expectation": "reject",
-      "id": "HostedRetentionListStorageGcObjectsRequest.authToken.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedRetentionListStorageGcObjectsRequest.authToken.maxLength.invalid"
+      "id": "HostedRetentionListStorageGcObjectsRequest.cursor.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedRetentionListStorageGcObjectsRequest.cursor.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedRetentionListStorageGcObjectsRequest",
+      "expectation": "reject",
+      "id": "HostedRetentionListStorageGcObjectsRequest.requestedByDeviceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedRetentionListStorageGcObjectsRequest.requestedByDeviceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedRetentionListStorageGcObjectsRequest",
+      "expectation": "reject",
+      "id": "HostedRetentionListStorageGcObjectsRequest.requestedByDeviceProof.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedRetentionListStorageGcObjectsRequest.requestedByDeviceProof.maxLength.invalid"
     },
     {
       "declaration": "HostedRetentionListStorageGcObjectsRequest",
       "expectation": "reject",
       "id": "HostedRetentionListStorageGcObjectsRequest.workspaceId.maxLength.invalid",
       "valuePath": "/boundary-values.json#/HostedRetentionListStorageGcObjectsRequest.workspaceId.maxLength.invalid"
-    },
-    {
-      "declaration": "HostedRetentionListStorageGcObjectsRequest",
-      "expectation": "reject",
-      "id": "HostedRetentionListStorageGcObjectsRequest.cursor.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedRetentionListStorageGcObjectsRequest.cursor.maxLength.invalid"
     },
     {
       "declaration": "HostedRetentionListStorageGcObjectsResponse",
@@ -6380,14 +6690,20 @@
     {
       "declaration": "HostedRetentionDeleteObjectMetadataAfterGcRequest",
       "expectation": "reject",
-      "id": "HostedRetentionDeleteObjectMetadataAfterGcRequest.authToken.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedRetentionDeleteObjectMetadataAfterGcRequest.authToken.maxLength.invalid"
+      "id": "HostedRetentionDeleteObjectMetadataAfterGcRequest.objectKey.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedRetentionDeleteObjectMetadataAfterGcRequest.objectKey.maxLength.invalid"
     },
     {
       "declaration": "HostedRetentionDeleteObjectMetadataAfterGcRequest",
       "expectation": "reject",
-      "id": "HostedRetentionDeleteObjectMetadataAfterGcRequest.objectKey.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedRetentionDeleteObjectMetadataAfterGcRequest.objectKey.maxLength.invalid"
+      "id": "HostedRetentionDeleteObjectMetadataAfterGcRequest.requestedByDeviceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedRetentionDeleteObjectMetadataAfterGcRequest.requestedByDeviceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedRetentionDeleteObjectMetadataAfterGcRequest",
+      "expectation": "reject",
+      "id": "HostedRetentionDeleteObjectMetadataAfterGcRequest.requestedByDeviceProof.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedRetentionDeleteObjectMetadataAfterGcRequest.requestedByDeviceProof.maxLength.invalid"
     },
     {
       "declaration": "HostedRetentionDeleteObjectMetadataAfterGcRequest",
@@ -6742,6 +7058,12 @@
       "expectation": "reject",
       "id": "HostedDeviceRequest.devicePublicKey.maxLength.invalid",
       "valuePath": "/boundary-values.json#/HostedDeviceRequest.devicePublicKey.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedDeviceRequest",
+      "expectation": "reject",
+      "id": "HostedDeviceRequest.devicePublicKeyProof.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedDeviceRequest.devicePublicKeyProof.maxLength.invalid"
     },
     {
       "declaration": "HostedDeviceRequest",
@@ -7256,6 +7578,18 @@
     {
       "declaration": "HostedDevicesCreateFirstAuthorizedDeviceRequest",
       "expectation": "reject",
+      "id": "HostedDevicesCreateFirstAuthorizedDeviceRequest.devicePublicKey.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedDevicesCreateFirstAuthorizedDeviceRequest.devicePublicKey.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedDevicesCreateFirstAuthorizedDeviceRequest",
+      "expectation": "reject",
+      "id": "HostedDevicesCreateFirstAuthorizedDeviceRequest.devicePublicKeyProof.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedDevicesCreateFirstAuthorizedDeviceRequest.devicePublicKeyProof.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedDevicesCreateFirstAuthorizedDeviceRequest",
+      "expectation": "reject",
       "id": "HostedDevicesCreateFirstAuthorizedDeviceRequest.platform.maxLength.invalid",
       "valuePath": "/boundary-values.json#/HostedDevicesCreateFirstAuthorizedDeviceRequest.platform.maxLength.invalid"
     },
@@ -7300,6 +7634,12 @@
       "expectation": "reject",
       "id": "HostedDevicesCreatePendingDeviceRequest.devicePublicKey.maxLength.invalid",
       "valuePath": "/boundary-values.json#/HostedDevicesCreatePendingDeviceRequest.devicePublicKey.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedDevicesCreatePendingDeviceRequest",
+      "expectation": "reject",
+      "id": "HostedDevicesCreatePendingDeviceRequest.devicePublicKeyProof.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedDevicesCreatePendingDeviceRequest.devicePublicKeyProof.maxLength.invalid"
     },
     {
       "declaration": "HostedDevicesCreatePendingDeviceRequest",
@@ -7418,6 +7758,12 @@
     {
       "declaration": "HostedDevicesCreatePendingDeviceWithBootstrapRequest",
       "expectation": "reject",
+      "id": "HostedDevicesCreatePendingDeviceWithBootstrapRequest.devicePublicKeyProof.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedDevicesCreatePendingDeviceWithBootstrapRequest.devicePublicKeyProof.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedDevicesCreatePendingDeviceWithBootstrapRequest",
+      "expectation": "reject",
       "id": "HostedDevicesCreatePendingDeviceWithBootstrapRequest.expiresAt.maxLength.invalid",
       "valuePath": "/boundary-values.json#/HostedDevicesCreatePendingDeviceWithBootstrapRequest.expiresAt.maxLength.invalid"
     },
@@ -7526,6 +7872,12 @@
     {
       "declaration": "HostedDevicesGetEncryptedGrantRequest",
       "expectation": "reject",
+      "id": "HostedDevicesGetEncryptedGrantRequest.requestedByDeviceProof.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedDevicesGetEncryptedGrantRequest.requestedByDeviceProof.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedDevicesGetEncryptedGrantRequest",
+      "expectation": "reject",
       "id": "HostedDevicesGetEncryptedGrantRequest.requestId.maxLength.invalid",
       "valuePath": "/boundary-values.json#/HostedDevicesGetEncryptedGrantRequest.requestId.maxLength.invalid"
     },
@@ -7588,6 +7940,288 @@
       "expectation": "reject",
       "id": "HostedDevicesRevokeDeviceRequest.workspaceId.maxLength.invalid",
       "valuePath": "/boundary-values.json#/HostedDevicesRevokeDeviceRequest.workspaceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantOffer",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantOffer.acceptanceProofVerifier.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantOffer.acceptanceProofVerifier.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantOffer",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantOffer.ciphertext.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantOffer.ciphertext.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantOffer",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantOffer.recipientDeviceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantOffer.recipientDeviceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.deviceAuthorizationProofVerifier.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantRecipient.deviceAuthorizationProofVerifier.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.deviceFingerprint.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantRecipient.deviceFingerprint.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.deviceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantRecipient.deviceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.deviceName.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantRecipient.deviceName.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.devicePublicKey.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantRecipient.devicePublicKey.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.devicePublicKeyProof.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantRecipient.devicePublicKeyProof.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.heldKeyEpoch.minimum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantRecipient.heldKeyEpoch.minimum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.heldKeyEpoch.maximum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantRecipient.heldKeyEpoch.maximum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.keyEpoch.minimum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantRecipient.keyEpoch.minimum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.keyEpoch.maximum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantRecipient.keyEpoch.maximum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.platform.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantRecipient.platform.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantRecipient",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantRecipient.sealedByDeviceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantRecipient.sealedByDeviceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantAssignment",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantAssignment.ciphertext.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantAssignment.ciphertext.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantAssignment",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantAssignment.keyEpoch.minimum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantAssignment.keyEpoch.minimum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantAssignment",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantAssignment.keyEpoch.maximum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantAssignment.keyEpoch.maximum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantAssignment",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantAssignment.sealedByDeviceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantAssignment.sealedByDeviceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantWork",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantWork.currentKeyEpoch.minimum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantWork.currentKeyEpoch.minimum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantWork",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantWork.currentKeyEpoch.maximum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantWork.currentKeyEpoch.maximum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantWork",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantWork.outstanding.maxItems.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantWork.outstanding.maxItems.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantWork",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantWork.pendingKeyEpoch.minimum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantWork.pendingKeyEpoch.minimum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantWork",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantWork.pendingKeyEpoch.maximum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantWork.pendingKeyEpoch.maximum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantWork",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantWork.pendingSeededByDeviceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantWork.pendingSeededByDeviceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeyRegrantWork",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeyRegrantWork.workspaceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeyRegrantWork.workspaceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysGetKeyRegrantWorkRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysGetKeyRegrantWorkRequest.deviceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysGetKeyRegrantWorkRequest.deviceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysGetKeyRegrantWorkRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysGetKeyRegrantWorkRequest.deviceProof.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysGetKeyRegrantWorkRequest.deviceProof.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysGetKeyRegrantWorkRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysGetKeyRegrantWorkRequest.workspaceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysGetKeyRegrantWorkRequest.workspaceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysSeedKeyEpochRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysSeedKeyEpochRequest.deviceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysSeedKeyEpochRequest.deviceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysSeedKeyEpochRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysSeedKeyEpochRequest.deviceProof.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysSeedKeyEpochRequest.deviceProof.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysSeedKeyEpochRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysSeedKeyEpochRequest.keyEpoch.minimum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysSeedKeyEpochRequest.keyEpoch.minimum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysSeedKeyEpochRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysSeedKeyEpochRequest.keyEpoch.maximum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysSeedKeyEpochRequest.keyEpoch.maximum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysSeedKeyEpochRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysSeedKeyEpochRequest.offers.maxItems.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysSeedKeyEpochRequest.offers.maxItems.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysSeedKeyEpochRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysSeedKeyEpochRequest.workspaceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysSeedKeyEpochRequest.workspaceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysOfferKeyRegrantsRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysOfferKeyRegrantsRequest.deviceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysOfferKeyRegrantsRequest.deviceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysOfferKeyRegrantsRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysOfferKeyRegrantsRequest.deviceProof.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysOfferKeyRegrantsRequest.deviceProof.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysOfferKeyRegrantsRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysOfferKeyRegrantsRequest.keyEpoch.minimum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysOfferKeyRegrantsRequest.keyEpoch.minimum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysOfferKeyRegrantsRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysOfferKeyRegrantsRequest.keyEpoch.maximum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysOfferKeyRegrantsRequest.keyEpoch.maximum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysOfferKeyRegrantsRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysOfferKeyRegrantsRequest.offers.maxItems.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysOfferKeyRegrantsRequest.offers.maxItems.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysOfferKeyRegrantsRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysOfferKeyRegrantsRequest.workspaceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysOfferKeyRegrantsRequest.workspaceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysAcceptKeyRegrantRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysAcceptKeyRegrantRequest.deviceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysAcceptKeyRegrantRequest.deviceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysAcceptKeyRegrantRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysAcceptKeyRegrantRequest.deviceProof.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysAcceptKeyRegrantRequest.deviceProof.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysAcceptKeyRegrantRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysAcceptKeyRegrantRequest.grantAcceptanceProof.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysAcceptKeyRegrantRequest.grantAcceptanceProof.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysAcceptKeyRegrantRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysAcceptKeyRegrantRequest.keyEpoch.minimum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysAcceptKeyRegrantRequest.keyEpoch.minimum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysAcceptKeyRegrantRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysAcceptKeyRegrantRequest.keyEpoch.maximum.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysAcceptKeyRegrantRequest.keyEpoch.maximum.invalid"
+    },
+    {
+      "declaration": "HostedWorkspaceKeysAcceptKeyRegrantRequest",
+      "expectation": "reject",
+      "id": "HostedWorkspaceKeysAcceptKeyRegrantRequest.workspaceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedWorkspaceKeysAcceptKeyRegrantRequest.workspaceId.maxLength.invalid"
     },
     {
       "declaration": "HostedObjectMetadata",
@@ -7868,14 +8502,20 @@
     {
       "declaration": "HostedObjectsCreateStorageGcDeleteIntentRequest",
       "expectation": "reject",
-      "id": "HostedObjectsCreateStorageGcDeleteIntentRequest.authToken.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCreateStorageGcDeleteIntentRequest.authToken.maxLength.invalid"
+      "id": "HostedObjectsCreateStorageGcDeleteIntentRequest.objectKey.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedObjectsCreateStorageGcDeleteIntentRequest.objectKey.maxLength.invalid"
     },
     {
       "declaration": "HostedObjectsCreateStorageGcDeleteIntentRequest",
       "expectation": "reject",
-      "id": "HostedObjectsCreateStorageGcDeleteIntentRequest.objectKey.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCreateStorageGcDeleteIntentRequest.objectKey.maxLength.invalid"
+      "id": "HostedObjectsCreateStorageGcDeleteIntentRequest.requestedByDeviceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedObjectsCreateStorageGcDeleteIntentRequest.requestedByDeviceId.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedObjectsCreateStorageGcDeleteIntentRequest",
+      "expectation": "reject",
+      "id": "HostedObjectsCreateStorageGcDeleteIntentRequest.requestedByDeviceProof.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedObjectsCreateStorageGcDeleteIntentRequest.requestedByDeviceProof.maxLength.invalid"
     },
     {
       "declaration": "HostedObjectsCreateStorageGcDeleteIntentRequest",
@@ -7926,46 +8566,46 @@
       "valuePath": "/boundary-values.json#/HostedObjectQueriesGetObjectMetadataRequest.workspaceId.maxLength.invalid"
     },
     {
-      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "declaration": "HostedUploadReservation",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.byteLength.minimum.invalid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCreateUploadIntentResponse.byteLength.minimum.invalid"
+      "id": "HostedUploadReservation.byteLength.minimum.invalid",
+      "valuePath": "/boundary-values.json#/HostedUploadReservation.byteLength.minimum.invalid"
     },
     {
-      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "declaration": "HostedUploadReservation",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.byteLength.maximum.invalid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCreateUploadIntentResponse.byteLength.maximum.invalid"
+      "id": "HostedUploadReservation.byteLength.maximum.invalid",
+      "valuePath": "/boundary-values.json#/HostedUploadReservation.byteLength.maximum.invalid"
     },
     {
-      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "declaration": "HostedUploadReservation",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.intentId.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCreateUploadIntentResponse.intentId.maxLength.invalid"
+      "id": "HostedUploadReservation.intentId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedUploadReservation.intentId.maxLength.invalid"
     },
     {
-      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "declaration": "HostedUploadReservation",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.method.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCreateUploadIntentResponse.method.maxLength.invalid"
+      "id": "HostedUploadReservation.method.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedUploadReservation.method.maxLength.invalid"
     },
     {
-      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "declaration": "HostedUploadReservation",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.objectKey.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCreateUploadIntentResponse.objectKey.maxLength.invalid"
+      "id": "HostedUploadReservation.objectKey.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedUploadReservation.objectKey.maxLength.invalid"
     },
     {
-      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "declaration": "HostedUploadReservation",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.signedUrl.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCreateUploadIntentResponse.signedUrl.maxLength.invalid"
+      "id": "HostedUploadReservation.signedUrl.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedUploadReservation.signedUrl.maxLength.invalid"
     },
     {
-      "declaration": "HostedObjectsCreateUploadIntentResponse",
+      "declaration": "HostedUploadReservation",
       "expectation": "reject",
-      "id": "HostedObjectsCreateUploadIntentResponse.workspaceId.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedObjectsCreateUploadIntentResponse.workspaceId.maxLength.invalid"
+      "id": "HostedUploadReservation.workspaceId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/HostedUploadReservation.workspaceId.maxLength.invalid"
     },
     {
       "declaration": "HostedObjectsCreateDownloadIntentResponse",
@@ -8126,20 +8766,8 @@
     {
       "declaration": "HostedRefsGetWorkspaceRefRequest",
       "expectation": "reject",
-      "id": "HostedRefsGetWorkspaceRefRequest.authToken.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedRefsGetWorkspaceRefRequest.authToken.maxLength.invalid"
-    },
-    {
-      "declaration": "HostedRefsGetWorkspaceRefRequest",
-      "expectation": "reject",
       "id": "HostedRefsGetWorkspaceRefRequest.accountSessionId.maxLength.invalid",
       "valuePath": "/boundary-values.json#/HostedRefsGetWorkspaceRefRequest.accountSessionId.maxLength.invalid"
-    },
-    {
-      "declaration": "HostedRefsCreateWorkspaceRefRequest",
-      "expectation": "reject",
-      "id": "HostedRefsCreateWorkspaceRefRequest.authToken.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedRefsCreateWorkspaceRefRequest.authToken.maxLength.invalid"
     },
     {
       "declaration": "HostedRefsCreateWorkspaceRefRequest",
@@ -8230,12 +8858,6 @@
       "expectation": "reject",
       "id": "HostedEventsListCompactEventsRequest.accountSessionId.maxLength.invalid",
       "valuePath": "/boundary-values.json#/HostedEventsListCompactEventsRequest.accountSessionId.maxLength.invalid"
-    },
-    {
-      "declaration": "HostedEventsListCompactEventsRequest",
-      "expectation": "reject",
-      "id": "HostedEventsListCompactEventsRequest.authToken.maxLength.invalid",
-      "valuePath": "/boundary-values.json#/HostedEventsListCompactEventsRequest.authToken.maxLength.invalid"
     },
     {
       "declaration": "HostedEventsListCompactEventsRequest",
@@ -9258,5 +9880,5 @@
       "valuePath": "/boundary-values.json#/HostedDashboardListDashboardRecoveryEnvelopesResponse.revision.maximum.invalid"
     }
   ],
-  "schemaHash": "4ba7588109ebc1681e45961ce7cfc67a1cfb121e39447807957b0f64adb3ab98"
+  "schemaHash": "7e3e3eb8a0f34e782f71fd39798c9575a48b8dbb14248a6108eabdb0deee8313"
 }

@@ -123,6 +123,15 @@
     "HostedDevicesGetEncryptedGrantWithBootstrapRequest",
     "HostedDevicesListDeviceTrustRequest",
     "HostedDevicesRevokeDeviceRequest",
+    "HostedWorkspaceKeyRegrantState",
+    "HostedWorkspaceKeyRegrantOffer",
+    "HostedWorkspaceKeyRegrantRecipient",
+    "HostedWorkspaceKeyRegrantAssignment",
+    "HostedWorkspaceKeyRegrantWork",
+    "HostedWorkspaceKeysGetKeyRegrantWorkRequest",
+    "HostedWorkspaceKeysSeedKeyEpochRequest",
+    "HostedWorkspaceKeysOfferKeyRegrantsRequest",
+    "HostedWorkspaceKeysAcceptKeyRegrantRequest",
     "HostedObjectKind",
     "HostedObjectMetadata",
     "HostedDownloadIntentRange",
@@ -135,6 +144,8 @@
     "HostedObjectsCreateStorageGcDeleteIntentRequest",
     "HostedObjectsCommitUploadedObjectMetadataRequest",
     "HostedObjectQueriesGetObjectMetadataRequest",
+    "HostedUploadIntentOutcome",
+    "HostedUploadReservation",
     "HostedObjectsCreateUploadIntentResponse",
     "HostedObjectsCreateDownloadIntentResponse",
     "HostedObjectsCreateUploadVerificationIntentResponse",
@@ -215,6 +226,10 @@
       "device list",
       "device request",
       "device accept",
+      "device key-status",
+      "conflicts",
+      "resolve",
+      "deletions",
       "events",
       "tui",
       "forget-local",
@@ -347,6 +362,9 @@
       "member.joined",
       "member.removed",
       "workspace_key.rotated",
+      "workspace_key.seeded",
+      "workspace_key.regrant_offered",
+      "workspace_key.regrant_settled",
       "recovery_key.created",
       "recovery_key.verified",
       "recovery_key.rotated",
@@ -467,6 +485,16 @@
       "fresh",
       "stale",
       "unknown"
+    ],
+    "HostedUploadIntentOutcome": [
+      "reserved",
+      "already-committed"
+    ],
+    "HostedWorkspaceKeyRegrantState": [
+      "pending",
+      "offered",
+      "fulfilled",
+      "superseded"
     ],
     "StatusAttention": [
       "none",
@@ -938,9 +966,37 @@
       "kind": "mutation",
       "request": "HostedStatusPublishWorkspaceStatusRequest",
       "response": "HostedStatusPublishWorkspaceStatusResponse"
+    },
+    {
+      "convex": "workspace_keys:acceptKeyRegrant",
+      "id": "workspace_keys.acceptKeyRegrant",
+      "kind": "mutation",
+      "request": "HostedWorkspaceKeysAcceptKeyRegrantRequest",
+      "response": "HostedWorkspaceKeyRegrantWork"
+    },
+    {
+      "convex": "workspace_keys:getKeyRegrantWork",
+      "id": "workspace_keys.getKeyRegrantWork",
+      "kind": "query",
+      "request": "HostedWorkspaceKeysGetKeyRegrantWorkRequest",
+      "response": "HostedWorkspaceKeyRegrantWork"
+    },
+    {
+      "convex": "workspace_keys:offerKeyRegrants",
+      "id": "workspace_keys.offerKeyRegrants",
+      "kind": "mutation",
+      "request": "HostedWorkspaceKeysOfferKeyRegrantsRequest",
+      "response": "HostedWorkspaceKeyRegrantWork"
+    },
+    {
+      "convex": "workspace_keys:seedKeyEpoch",
+      "id": "workspace_keys.seedKeyEpoch",
+      "kind": "mutation",
+      "request": "HostedWorkspaceKeysSeedKeyEpochRequest",
+      "response": "HostedWorkspaceKeyRegrantWork"
     }
   ],
   "machineContractVersion": 8,
   "registryVersion": 1,
-  "schemaHash": "4ba7588109ebc1681e45961ce7cfc67a1cfb121e39447807957b0f64adb3ab98"
+  "schemaHash": "7e3e3eb8a0f34e782f71fd39798c9575a48b8dbb14248a6108eabdb0deee8313"
 }

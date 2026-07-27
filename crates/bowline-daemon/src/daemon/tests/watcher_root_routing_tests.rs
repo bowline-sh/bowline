@@ -1,13 +1,23 @@
 //! Watcher-kernel to manifest-engine routing integration.
 
-use super::*;
-#[cfg(target_os = "linux")]
-use crate::daemon::protocol::WatcherBridge;
+use std::fs;
+use std::time::{Duration, Instant};
+
 #[cfg(target_os = "linux")]
 use crate::daemon::send_watcher_signal;
+#[cfg(target_os = "linux")]
+use crate::daemon::socket_server::{WatcherBridge, WatcherBridgeStart};
+#[cfg(target_os = "macos")]
 use crate::daemon::start_sync_watcher;
 #[cfg(target_os = "linux")]
+use crate::daemon::sync::{ContinuousSyncRuntime, DaemonRuntime};
+use crate::daemon::tests::watcher_fixture;
+#[cfg(target_os = "linux")]
+use crate::daemon::tests::watcher_test_runtime;
+#[cfg(target_os = "linux")]
 use crate::daemon::watcher::WatcherOverflowLane;
+#[cfg(target_os = "linux")]
+use bowline_local::notifications::NotificationDedupe;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use bowline_local::sync::manifest_engine::{EngineEvent, WorkspacePath};
 #[cfg(target_os = "linux")]
@@ -17,6 +27,8 @@ use notify::{
 };
 #[cfg(target_os = "linux")]
 use std::sync::mpsc;
+#[cfg(target_os = "linux")]
+use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "linux")]
 fn daemon_runtime_with_sync(sync: ContinuousSyncRuntime) -> DaemonRuntime {
@@ -82,21 +94,23 @@ fn linux_nested_edit_reaches_engine_through_watcher_bridge() {
     let project = root.join("project");
     fs::create_dir_all(project.join("src/deep")).expect("project subtree");
     fs::write(project.join("src/deep/lib.rs"), "pub fn before() {}\n").expect("seed file");
-    let (watcher, receiver) = start_sync_watcher(&root).expect("watcher starts");
-
     let mut sync = watcher_test_runtime(
-        root,
+        root.clone(),
         fixture.state_root.clone(),
         fixture.workspace_id.as_str(),
     );
-    sync.watcher = Some(watcher);
-    sync.change_rx = Some(receiver);
+    assert!(
+        sync.ensure_watcher_armed(Instant::now()),
+        "the native watcher arms on a real workspace root"
+    );
     let (driver, recorded) = recording_driver();
     sync.manifest_engine = crate::daemon::sync::ManifestEngineHost::Active(driver);
     let mut runtime = daemon_runtime_with_sync(sync);
-    let bridge = WatcherBridge::start(&mut runtime)
-        .expect("watcher bridge starts")
-        .expect("watcher receiver creates bridge");
+    let WatcherBridgeStart::Started(bridge) =
+        WatcherBridge::start(&mut runtime).expect("watcher bridge starts")
+    else {
+        panic!("watcher receiver creates bridge");
+    };
 
     fs::write(project.join("src/deep/lib.rs"), "pub fn after() {}\n").expect("nested user edit");
     await_recorded_paths(&recorded, "project/src/deep/lib.rs");
@@ -106,7 +120,7 @@ fn linux_nested_edit_reaches_engine_through_watcher_bridge() {
         .as_mut()
         .expect("sync runtime remains")
         .watcher
-        .take();
+        .disarm(Instant::now());
     bridge.join().expect("watcher bridge joins");
     drop(runtime);
     let _ = fs::remove_dir_all(fixture.temp);
@@ -132,13 +146,15 @@ fn linux_close_after_write_reaches_engine() {
         fixture.state_root.clone(),
         fixture.workspace_id.as_str(),
     );
-    sync.change_rx = Some(signal_rx);
+    sync.watcher = crate::daemon::sync::WatcherHost::armed_with_signals(signal_rx);
     let (driver, recorded) = recording_driver();
     sync.manifest_engine = crate::daemon::sync::ManifestEngineHost::Active(driver);
     let mut runtime = daemon_runtime_with_sync(sync);
-    let bridge = WatcherBridge::start(&mut runtime)
-        .expect("watcher bridge starts")
-        .expect("watcher receiver creates bridge");
+    let WatcherBridgeStart::Started(bridge) =
+        WatcherBridge::start(&mut runtime).expect("watcher bridge starts")
+    else {
+        panic!("watcher receiver creates bridge");
+    };
 
     await_recorded_paths(&recorded, ".env");
 

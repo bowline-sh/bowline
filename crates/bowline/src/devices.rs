@@ -5,11 +5,12 @@ use bowline_control_plane::{
 };
 use bowline_core::{
     commands::{
-        CONTRACT_VERSION, CommandRecoverability, DeviceCommandAction, DevicesCommandOutput,
+        CONTRACT_VERSION, CommandRecoverability, DeviceCommandAction, DeviceKeyStatusCommandOutput,
+        DevicesCommandOutput, WorkspaceKeyCustody,
     },
     devices::{
         DeviceApprovalRequestState, DeviceFingerprint, DeviceRecord, DeviceTrustState,
-        RecoveryKeyState, RevokedDevice, display_matching_code,
+        RevokedDevice, display_matching_code,
     },
     ids::{DeviceApprovalRequestId, DeviceId, WorkspaceId},
     status::RepairCommand,
@@ -30,6 +31,11 @@ pub enum DevicesArgs {
         selection: WorkspaceSelection,
         request_id: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceKeyStatusArgs {
+    pub workspace_id: WorkspaceId,
 }
 
 impl DevicesArgs {
@@ -67,6 +73,9 @@ pub enum DeviceCommandError {
     RequestRequiresAction(String),
     TrustRequiresAction(String),
     SafetyBlocked(String),
+    /// This build and the control plane were generated from different wire
+    /// contracts. Retrying cannot help; only replacing the client can.
+    ClientOutOfDate(String),
 }
 
 impl DeviceCommandError {
@@ -80,6 +89,7 @@ impl DeviceCommandError {
             Self::RequestRequiresAction(_) => "device_request_requires_action",
             Self::TrustRequiresAction(_) => "device_trust_requires_action",
             Self::SafetyBlocked(_) => "device_trust_blocked",
+            Self::ClientOutOfDate(_) => "client_out_of_date",
         }
     }
 
@@ -87,7 +97,10 @@ impl DeviceCommandError {
         match self {
             Self::Runtime(_) => CommandRecoverability::Retry,
             Self::SafetyBlocked(_) => CommandRecoverability::Unsupported,
-            _ => CommandRecoverability::UserAction,
+            Self::ClientOutOfDate(_)
+            | Self::Selector(_)
+            | Self::RequestRequiresAction(_)
+            | Self::TrustRequiresAction(_) => CommandRecoverability::UserAction,
         }
     }
 
@@ -102,6 +115,9 @@ impl DeviceCommandError {
             Self::SafetyBlocked(_) => Some(
                 "Inspect device trust and control-plane capabilities before retrying this action.",
             ),
+            Self::ClientOutOfDate(_) => {
+                Some("Run `bowline update` to install a client that matches this control plane.")
+            }
             Self::Runtime(_) => None,
         }
     }
@@ -113,7 +129,8 @@ impl fmt::Display for DeviceCommandError {
             Self::Runtime(message)
             | Self::RequestRequiresAction(message)
             | Self::TrustRequiresAction(message)
-            | Self::SafetyBlocked(message) => formatter.write_str(message),
+            | Self::SafetyBlocked(message)
+            | Self::ClientOutOfDate(message) => formatter.write_str(message),
             Self::Selector(error) => error.fmt(formatter),
         }
     }
@@ -162,7 +179,7 @@ fn request_is_awaiting_approval(state: DeviceApprovalRequestState) -> bool {
 pub fn request_id_for_selector(
     workspace_id: &WorkspaceId,
     selector: &TrustRequestSelector,
-) -> Result<String, DeviceCommandError> {
+) -> Result<DeviceApprovalRequestId, DeviceCommandError> {
     match selector {
         TrustRequestSelector::Request(request_id) => Ok(request_id.clone()),
         TrustRequestSelector::Code(code) => {
@@ -175,11 +192,31 @@ pub fn request_id_for_selector(
     }
 }
 
+/// The full pending record behind a selector. Approval grants the workspace key,
+/// so the operator has to see which device is asking before deciding.
+pub fn pending_request_for_selector(
+    workspace_id: &WorkspaceId,
+    selector: &TrustRequestSelector,
+) -> Result<bowline_core::devices::DeviceApprovalRequest, DeviceCommandError> {
+    let matches = pending_requests(workspace_id)?
+        .into_iter()
+        .filter(|request| match selector {
+            TrustRequestSelector::Request(request_id) => &request.request_id == request_id,
+            TrustRequestSelector::Code(code) => request_matches_selector_code(request, code),
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [_] => Ok(matches.into_iter().next().expect("one match is present")),
+        [] => Err(DeviceRequestSelectorError::NoMatch.into()),
+        _ => Err(DeviceRequestSelectorError::Ambiguous.into()),
+    }
+}
+
 fn request_id_for_code_matches(
     matches: &[bowline_core::devices::DeviceApprovalRequest],
-) -> Result<String, DeviceCommandError> {
+) -> Result<DeviceApprovalRequestId, DeviceCommandError> {
     match matches {
-        [request] => Ok(request.request_id.as_str().to_string()),
+        [request] => Ok(request.request_id.clone()),
         [] => Err(DeviceRequestSelectorError::NoMatch.into()),
         _ => Err(DeviceRequestSelectorError::Ambiguous.into()),
     }
@@ -194,7 +231,7 @@ fn request_matches_selector_code(
 
 pub fn approve(
     workspace_id: WorkspaceId,
-    request_id: String,
+    request_id: DeviceApprovalRequestId,
     generated_at: String,
 ) -> Result<DevicesCommandOutput, DeviceCommandError> {
     let control_plane = runtime::control_plane().map_err(DeviceCommandError::Runtime)?;
@@ -204,7 +241,7 @@ pub fn approve(
         &*key_store,
         ApproveDeviceOptions {
             workspace_id: workspace_id.clone(),
-            request_id: DeviceApprovalRequestId::new(request_id),
+            request_id,
             approver_device_id: runtime::daemon_device_id(&workspace_id),
             generated_at,
         },
@@ -214,7 +251,7 @@ pub fn approve(
 
 pub fn deny(
     workspace_id: WorkspaceId,
-    request_id: String,
+    request_id: DeviceApprovalRequestId,
     generated_at: String,
 ) -> Result<DevicesCommandOutput, DeviceCommandError> {
     let control_plane = runtime::control_plane().map_err(DeviceCommandError::Runtime)?;
@@ -233,7 +270,7 @@ pub fn deny(
     .map_err(|error| DeviceCommandError::Runtime(error.to_string()))?;
     let denial = control_plane
         .deny_device_request(DeviceDenialInput {
-            request_id: DeviceApprovalRequestId::new(request_id.clone()),
+            request_id: request_id.clone(),
             denied_by_device_id: local_device_id.clone(),
             denied_by_device_proof,
             reason: "denied by bowline device deny".to_string(),
@@ -253,7 +290,7 @@ pub fn deny(
         approved_device: None,
         denied_request: None,
         revoked_device: None,
-        recovery_key: Some(RecoveryKeyState::missing()),
+        recovery_key: None,
         next_actions: vec![RepairCommand::inspect(
             format!("Denied request {}", denial.request_id),
             None,
@@ -263,7 +300,7 @@ pub fn deny(
 
 pub fn revoke(
     workspace_id: WorkspaceId,
-    device_id: String,
+    device_id: DeviceId,
     generated_at: String,
 ) -> Result<DevicesCommandOutput, DeviceCommandError> {
     let control_plane = runtime::control_plane().map_err(DeviceCommandError::Runtime)?;
@@ -283,13 +320,13 @@ pub fn revoke(
     let revoked = control_plane
         .revoke_device(DeviceRevocationInput {
             workspace_id: workspace_id.clone(),
-            device_id: DeviceId::new(device_id),
+            device_id,
             revoked_by_device_id: local_device_id.clone(),
             revoked_by_device_proof,
             reason: "revoked by bowline device revoke".to_string(),
         })
         .map_err(classify_control_plane_error)?;
-    let revoked_device_id = DeviceId::new(revoked.device_id);
+    let revoked_device_id = revoked.device_id;
     let revoked_at = revoked.revoked_at.to_string();
     let revoked_device = RevokedDevice {
         id: revoked_device_id,
@@ -298,7 +335,7 @@ pub fn revoke(
         platform: platform_from_str(&revoked.platform),
         device_fingerprint: DeviceFingerprint::new(revoked.device_fingerprint),
         revoked_at,
-        revoked_by_device_id: DeviceId::new(revoked.revoked_by_device_id),
+        revoked_by_device_id: revoked.revoked_by_device_id,
         reason: revoked.reason,
     };
     Ok(DevicesCommandOutput {
@@ -315,9 +352,47 @@ pub fn revoke(
         approved_device: None,
         denied_request: None,
         revoked_device: Some(revoked_device),
-        recovery_key: Some(RecoveryKeyState::missing()),
+        recovery_key: None,
         next_actions: Vec::new(),
     })
+}
+
+/// Answers the workspace-key custody question from the configured secret store,
+/// whichever custody backend that is. This is the only supported way to ask a
+/// host whether it can already open a workspace: reading a backend's storage
+/// directly answers "no" for every host whose secrets live in the OS keychain,
+/// and puts secret-adjacent material into whatever command line does the asking.
+pub fn key_status(
+    args: DeviceKeyStatusArgs,
+    generated_at: String,
+) -> Result<DeviceKeyStatusCommandOutput, DeviceCommandError> {
+    let key_store = runtime::key_store().map_err(DeviceCommandError::Runtime)?;
+    let material = key_store
+        .load_workspace_key(&args.workspace_id)
+        .map_err(|error| DeviceCommandError::Runtime(error.to_string()))?;
+    let (workspace_key, key_epoch) = match material {
+        Some(material) => (WorkspaceKeyCustody::Held, Some(material.key_epoch)),
+        None => (WorkspaceKeyCustody::Absent, None),
+    };
+    Ok(DeviceKeyStatusCommandOutput {
+        contract_version: CONTRACT_VERSION,
+        command: bowline_core::commands::CommandName::DeviceKeyStatus,
+        generated_at,
+        workspace_id: args.workspace_id,
+        workspace_key,
+        key_epoch,
+        next_actions: key_status_next_actions(workspace_key),
+    })
+}
+
+fn key_status_next_actions(custody: WorkspaceKeyCustody) -> Vec<RepairCommand> {
+    match custody {
+        WorkspaceKeyCustody::Held => Vec::new(),
+        WorkspaceKeyCustody::Absent => vec![RepairCommand::mutating(
+            "Request workspace key access for this device".to_string(),
+            Some("bowline device request".to_string()),
+        )],
+    }
 }
 
 pub fn run(
@@ -335,6 +410,11 @@ pub fn run(
             let trust = control_plane
                 .list_device_trust(&workspace_id)
                 .map_err(classify_control_plane_error)?;
+            let recovery_key = crate::recovery::current_recovery_state(
+                control_plane
+                    .list_recovery_envelopes(&workspace_id)
+                    .map_err(classify_control_plane_error)?,
+            );
             Ok(DevicesCommandOutput {
                 contract_version: CONTRACT_VERSION,
                 command: bowline_core::commands::CommandName::Devices,
@@ -346,7 +426,7 @@ pub fn run(
                     .authorized_devices
                     .into_iter()
                     .map(|device| DeviceRecord {
-                        id: DeviceId::new(device.device_id.clone()),
+                        id: device.device_id.clone(),
                         name: device.device_name,
                         workspace_id: workspace_id.clone(),
                         platform: platform_from_str(&device.platform),
@@ -354,7 +434,8 @@ pub fn run(
                         device_fingerprint: DeviceFingerprint::new(device.device_fingerprint),
                         authorized_at: Some(device.authorized_at.to_string()),
                         updated_at: device.authorized_at.to_string(),
-                        is_current_device: device.device_id == local_device_id.as_str(),
+                        is_current_device: device.device_id
+                            == DeviceId::new(local_device_id.as_str()),
                         limitation_reason: None,
                     })
                     .collect(),
@@ -362,13 +443,13 @@ pub fn run(
                     .revoked_devices
                     .into_iter()
                     .map(|device| RevokedDevice {
-                        id: DeviceId::new(device.device_id),
+                        id: device.device_id,
                         name: device.device_name,
                         workspace_id: workspace_id.clone(),
                         platform: platform_from_str(&device.platform),
                         device_fingerprint: DeviceFingerprint::new(device.device_fingerprint),
                         revoked_at: device.revoked_at.to_string(),
-                        revoked_by_device_id: DeviceId::new(device.revoked_by_device_id),
+                        revoked_by_device_id: device.revoked_by_device_id,
                         reason: device.reason,
                     })
                     .collect(),
@@ -381,7 +462,7 @@ pub fn run(
                 approved_device: None,
                 denied_request: None,
                 revoked_device: None,
-                recovery_key: Some(RecoveryKeyState::missing()),
+                recovery_key: Some(recovery_key),
                 next_actions: Vec::new(),
             })
         }
@@ -450,7 +531,7 @@ pub fn run(
                 approved_device: Some(local_device),
                 denied_request: None,
                 revoked_device: None,
-                recovery_key: Some(RecoveryKeyState::missing()),
+                recovery_key: None,
                 next_actions: Vec::new(),
             })
         }
@@ -490,9 +571,8 @@ fn classify_control_plane_error(error: ControlPlaneError) -> DeviceCommandError 
         | ControlPlaneError::WorkspaceMissing { .. } => {
             DeviceCommandError::TrustRequiresAction(message)
         }
-        ControlPlaneError::Limited { .. } | ControlPlaneError::Unsupported { .. } => {
-            DeviceCommandError::SafetyBlocked(message)
-        }
+        ControlPlaneError::Unsupported { .. } => DeviceCommandError::SafetyBlocked(message),
+        ControlPlaneError::ContractSkew { .. } => DeviceCommandError::ClientOutOfDate(message),
         _ => DeviceCommandError::Runtime(message),
     }
 }
@@ -505,9 +585,9 @@ fn local_request(
     request: bowline_control_plane::DeviceRequest,
 ) -> bowline_core::devices::DeviceApprovalRequest {
     bowline_core::devices::DeviceApprovalRequest {
-        request_id: DeviceApprovalRequestId::new(request.request_id),
-        workspace_id: bowline_core::ids::WorkspaceId::new(request.workspace_id),
-        requester_device_id: DeviceId::new(request.device_id),
+        request_id: request.request_id,
+        workspace_id: request.workspace_id,
+        requester_device_id: request.device_id,
         device_name: request.device_name,
         platform: platform_from_str(&request.platform),
         device_public_key: bowline_core::devices::PublicDeviceKey::new(request.device_public_key),

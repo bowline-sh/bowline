@@ -549,3 +549,68 @@ impl Drop for TempDir {
         let _cleanup_attempt = fs::remove_dir_all(&self.path);
     }
 }
+
+const PINNED_RECOVERY_ASSOCIATED_DATA: &str = concat!(
+    "01000000000000001f626f776c696e652d6c6f63616c2d7265636f766572792d707265696d616765",
+    "0000000000000011776f726b73706163652d69642d6861736800000000000000447773685f316166",
+    "39346231343263353437616562656337383330666264336333333734303934646666393730323164",
+    "336165343035316535336235316261343035306665000000000000001966696c6573797374656d2d",
+    "65706f63682d6964656e74697479000000000000000c65706f63682d70696e6e6564000000000000",
+    "0017776f726b73706163652d706174682d6964656e74697479000000000000000c70726f6a656374",
+    "2f2e656e76000000000000001a65787065637465642d707265696d6167652d6964656e7469747900",
+    "00000000000009636f6e74656e742d6100000000000000076c6f6361746f7200000000000000b966",
+    "696c6573797374656d2d65706f6368732f656e637279707465642d71756172616e74696e652f6261",
+    "30363735353065643365616239363632643337333165623531356339656136653332653933383836",
+    "323835343933626666363538393835666230373238612f3634656634616466386665653563356530",
+    "31383736383161633830316239663664613736653265383137613238646631303332663031363030",
+    "393035393461302e626f776c696e652d656e76656c6f706500000000000000096b65792d65706f63",
+    "68000000000000000400000001000000000000000e666f726d61742d76657273696f6e0000000000",
+    "0000020001",
+);
+
+/// Pins the exact associated-data bytes guarding a sealed recovery preimage.
+///
+/// These envelopes hold `.env` contents whose plaintext has already been
+/// unlinked, so a change to this encoding is unrecoverable secret loss rather
+/// than a re-sync. If this fails, revert the encoding change; do not re-bless
+/// the literal.
+#[test]
+fn recovery_preimage_associated_data_bytes_are_pinned() {
+    let context = context("ws-pinned", "epoch-pinned", "project/.env", "content-a", 1);
+    let associated_data = context
+        .associated_data(context.sealed_locator())
+        .expect("associated data");
+
+    assert_eq!(hex(&associated_data), PINNED_RECOVERY_ASSOCIATED_DATA);
+    assert!(
+        !String::from_utf8_lossy(&associated_data).contains('{'),
+        "associated data must not be a JSON rendering"
+    );
+}
+
+#[test]
+fn recovery_preimage_associated_data_binds_every_context_field() {
+    let baseline = context("ws-a", "epoch-a", "project/.env", "content-a", 1);
+    let baseline_bytes = baseline
+        .associated_data(baseline.sealed_locator())
+        .expect("baseline associated data");
+
+    for variant in [
+        context("ws-b", "epoch-a", "project/.env", "content-a", 1),
+        context("ws-a", "epoch-b", "project/.env", "content-a", 1),
+        context("ws-a", "epoch-a", "project/other.env", "content-a", 1),
+        context("ws-a", "epoch-a", "project/.env", "content-b", 1),
+        context("ws-a", "epoch-a", "project/.env", "content-a", 2),
+    ] {
+        assert_ne!(
+            baseline_bytes,
+            variant
+                .associated_data(variant.sealed_locator())
+                .expect("variant associated data")
+        );
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}

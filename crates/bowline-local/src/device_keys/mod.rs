@@ -1,10 +1,9 @@
-use std::{error::Error, fmt, fs, io, path::PathBuf, str::FromStr};
+use std::{collections::BTreeMap, error::Error, fmt, io, path::PathBuf, str::FromStr};
 
 use age::secrecy::ExposeSecret;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use bowline_core::{
     devices::{DeviceFingerprint, PublicDeviceKey},
-    fs_atomic::{AtomicWriteOptions, write_atomic},
     ids::{AccountId, DeviceId, WorkspaceId},
 };
 use serde::{Deserialize, Serialize};
@@ -13,16 +12,16 @@ const SERVICE: &str = "bowline";
 const DEVICE_IDENTITY_SECRET: &str = "device-identity-v1";
 const ACCOUNT_TOKENS_SECRET: &str = "account-tokens-v1";
 const DEVICE_PROOF_VERIFIERS_SECRET: &str = "device-proof-verifiers-v1";
-const SECRET_FILE_NAME: &str = "secrets.v1";
-mod daemon_env;
 mod encoding;
 mod replacement;
+mod server_local_store;
 use encoding::{decode_signing_seed, fingerprint_for_public_key};
 #[cfg(test)]
 pub(crate) use replacement::transaction_entered;
-use replacement::{secret_temp_path, with_verifier_transaction};
+use replacement::with_verifier_transaction;
 #[cfg(test)]
 use replacement::{set_transaction_hook, verifier_replacement_lock};
+pub use server_local_store::ServerLocalSecretStore;
 
 #[cfg(test)]
 mod replacement_tests;
@@ -36,12 +35,38 @@ pub trait DeviceKeyStore {
 
     fn clear_account_tokens(&self) -> Result<bool, DeviceKeyError>;
 
-    fn store_workspace_key(&self, key: WorkspaceKeyMaterial) -> Result<(), DeviceKeyError>;
+    fn store_workspace_keyring(&self, keyring: WorkspaceKeyring) -> Result<(), DeviceKeyError>;
 
+    fn load_workspace_keyring(
+        &self,
+        workspace_id: &WorkspaceId,
+    ) -> Result<Option<WorkspaceKeyring>, DeviceKeyError>;
+
+    /// Adds one epoch's material without disturbing the epochs already held.
+    /// Prior epochs are custody, not history: objects sealed under them stay in
+    /// the manifest long after a rotation, and dropping the key would make
+    /// already-synced content unreadable on a device that did nothing wrong.
+    fn store_workspace_key(&self, key: WorkspaceKeyMaterial) -> Result<(), DeviceKeyError> {
+        let workspace_id = key.workspace_id.clone();
+        let mut keyring = self
+            .load_workspace_keyring(&workspace_id)?
+            .unwrap_or_else(|| WorkspaceKeyring::empty(workspace_id));
+        keyring.insert(key);
+        self.store_workspace_keyring(keyring)
+    }
+
+    /// The material new writes are sealed under: the epoch the control plane
+    /// has established, not simply the newest epoch this device holds. A device
+    /// that has just seeded a rotation holds material no other device has yet,
+    /// and writing under it would make its output unreadable everywhere else.
     fn load_workspace_key(
         &self,
         workspace_id: &WorkspaceId,
-    ) -> Result<Option<WorkspaceKeyMaterial>, DeviceKeyError>;
+    ) -> Result<Option<WorkspaceKeyMaterial>, DeviceKeyError> {
+        Ok(self
+            .load_workspace_keyring(workspace_id)?
+            .and_then(|keyring| keyring.established_material()))
+    }
 
     fn store_device_proof_verifier(
         &self,
@@ -55,45 +80,128 @@ pub trait DeviceKeyStore {
         workspace_id: &WorkspaceId,
         verifiers: Vec<DeviceProofVerifier>,
     ) -> Result<(), DeviceKeyError>;
+}
 
-    fn mark_secret_unavailable(
-        &self,
-        reason: SecretUnavailableReason,
-    ) -> Result<(), DeviceKeyError>;
+/// Which custody backend `default_device_key_store` selected for this process.
+///
+/// The workspace master key, the device identity and the WorkOS refresh token
+/// all live in the selected store, so the choice is user-visible security
+/// posture: anything other than `OsKeychain` means those secrets sit in a
+/// plaintext file and `bowline status` says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretStoreBackend {
+    /// macOS Keychain or the Linux Secret Service.
+    OsKeychain,
+    /// A private file the operator asked for by path or by
+    /// `BOWLINE_SECRET_STORE=server-local`.
+    RequestedFile,
+    /// The default: a private 0600 file in the state root. Named for what it is
+    /// rather than for a host type — it is what a laptop gets too, not only a
+    /// headless agent host.
+    DefaultFile,
+}
+
+impl SecretStoreBackend {
+    pub fn is_plaintext_file(self) -> bool {
+        matches!(self, Self::RequestedFile | Self::DefaultFile)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OsKeychain => "os-keychain",
+            Self::RequestedFile => "requested-file",
+            Self::DefaultFile => "server-local",
+        }
+    }
+}
+
+impl fmt::Display for SecretStoreBackend {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// Resolves the custody backend without constructing a store, so status and
+/// diagnostics report exactly what `default_device_key_store` will build.
+/// The private 0600 file is the default on every platform; the OS keychain is
+/// opt-in.
+///
+/// This was briefly inverted, and the inversion was wrong on three counts.
+///
+/// It did not raise the bar. A keychain item's ACL is bound to the creating
+/// binary's designated requirement, so it stops other *applications*, not other
+/// code running as this user — and this product's whole job is materializing
+/// `.env` files and API keys as ordinary plaintext into `~/Code`, which is not a
+/// protected location. Anything that can read `secrets.v1` at 0600 can read the
+/// secrets it protects, two directories away. Guarding the key while publishing
+/// the plaintext is theatre, not a threat model.
+///
+/// It cost the user dearly. Our binaries are ad-hoc signed, which yields no
+/// stable designated requirement, so every rebuild invalidates every "Always
+/// Allow" the user has ever clicked — around fifty prompts in two minutes, with
+/// no way to make them stop. A stable grant needs Developer ID signing, which is
+/// a prerequisite we do not have yet.
+///
+/// And it is not what this class of tool does: SSH, AWS, kubectl, npm, rclone,
+/// Syncthing and Tailscale all default to a private file. The one common
+/// counterexample, `gh`, reaches the keychain through `/usr/bin/security`, whose
+/// ACL any process running as the user satisfies — file-grade confidentiality
+/// with extra steps.
+///
+/// What genuinely protects this file is its permissions, which
+/// [`ServerLocalSecretStore`] enforces by writing atomically at 0600 and
+/// refusing a symlinked path. Beating that means hardware-bound encryption
+/// (Secure Enclave / TPM), not an ACL prompt.
+pub fn selected_secret_store_backend() -> SecretStoreBackend {
+    if configured_secret_store_path().is_some() {
+        return SecretStoreBackend::RequestedFile;
+    }
+    backend_for_env(std::env::var("BOWLINE_SECRET_STORE").ok().as_deref())
+}
+
+/// The selection rule, without reading the environment, so it is testable
+/// without mutating process state a parallel test also reads.
+fn backend_for_env(requested: Option<&str>) -> SecretStoreBackend {
+    match requested {
+        Some("keychain") => SecretStoreBackend::OsKeychain,
+        Some("server-local") => SecretStoreBackend::RequestedFile,
+        _ => SecretStoreBackend::DefaultFile,
+    }
 }
 
 pub fn default_device_key_store() -> Result<Box<dyn DeviceKeyStore>, DeviceKeyError> {
-    if let Some(path) = configured_secret_store_path() {
-        return Ok(Box::new(ServerLocalSecretStore::new(path)));
+    match selected_secret_store_backend() {
+        SecretStoreBackend::OsKeychain => Ok(Box::new(KeyringDeviceKeyStore::new("default"))),
+        SecretStoreBackend::RequestedFile | SecretStoreBackend::DefaultFile => {
+            let path = match configured_secret_store_path() {
+                Some(path) => PathBuf::from(path),
+                None => ServerLocalSecretStore::default_path()?,
+            };
+            Ok(Box::new(ServerLocalSecretStore::new(path)))
+        }
     }
-    if keychain_secret_store_allowed() {
-        return Ok(Box::new(KeyringDeviceKeyStore::new("default")));
-    }
-    Ok(Box::new(ServerLocalSecretStore::new(
-        ServerLocalSecretStore::default_path()?,
-    )))
 }
 
 pub fn clear_account_session_from_daemon_env(state_root: &std::path::Path) -> io::Result<bool> {
-    let path = state_root.join("daemon.env");
-    let contents = match fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error),
-    };
-    let Some(updated) = daemon_env::without_account_session(&contents) else {
-        return Ok(false);
-    };
-    write_atomic(
-        &path,
-        updated.as_bytes(),
-        AtomicWriteOptions {
-            unix_mode: Some(0o600),
-            reject_symlink: true,
-            replace_existing: true,
-        },
-    )?;
-    Ok(true)
+    crate::daemon_env::update(state_root, crate::daemon_env::without_account_session)
+}
+
+/// Records `session` in the daemon environment under `state_root`, replacing
+/// whatever pair was there.
+///
+/// A bootstrapped agent host has no `AccountTokens` record — only `bowline
+/// login` writes one — so the key store cannot be the only home for an account
+/// session. `daemon.env` is the copy every host has: it is where a bootstrapped
+/// host's session arrives, where the next daemon start reads one, and where
+/// `bowline logout` looks for a revocation token.
+pub fn store_account_session_in_daemon_env(
+    state_root: &std::path::Path,
+    session: &AccountSessionCredentials,
+) -> io::Result<()> {
+    crate::daemon_env::update(state_root, |contents| {
+        Some(crate::daemon_env::with_account_session(contents, session))
+    })?;
+    Ok(())
 }
 
 pub fn workspace_key_bytes(bytes: &[u8]) -> Result<[u8; 32], DeviceKeyError> {
@@ -106,14 +214,6 @@ fn configured_secret_store_path() -> Option<String> {
     std::env::var("BOWLINE_SECRET_STORE_PATH")
         .ok()
         .filter(|path| !path.is_empty())
-}
-
-fn keychain_secret_store_allowed() -> bool {
-    std::env::var("BOWLINE_SECRET_STORE").as_deref() == Ok("keychain")
-        && matches!(
-            std::env::var("BOWLINE_ALLOW_KEYCHAIN_PROBE").as_deref(),
-            Ok("1") | Ok("true") | Ok("yes")
-        )
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -273,6 +373,122 @@ impl WorkspaceKeyMaterial {
     }
 }
 
+/// Every workspace key epoch this device holds, plus which one the control
+/// plane says the workspace is currently writing at.
+///
+/// Two epochs are deliberately distinguished. `established_key_epoch` is the
+/// workspace's answer and governs sealing. The rest of the ring exists only to
+/// open what was sealed before, which is what keeps a rotation from making a
+/// remaining device's own history unreadable.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceKeyring {
+    pub workspace_id: WorkspaceId,
+    established_key_epoch: u32,
+    keys: BTreeMap<u32, Vec<u8>>,
+}
+
+impl WorkspaceKeyring {
+    pub fn empty(workspace_id: WorkspaceId) -> Self {
+        Self {
+            workspace_id,
+            established_key_epoch: 0,
+            keys: BTreeMap::new(),
+        }
+    }
+
+    pub fn from_material(key: WorkspaceKeyMaterial) -> Self {
+        let mut keyring = Self::empty(key.workspace_id.clone());
+        keyring.insert(key);
+        keyring
+    }
+
+    pub fn insert(&mut self, key: WorkspaceKeyMaterial) {
+        self.keys.insert(key.key_epoch, key.key_bytes);
+        // A ring that has never been told an epoch still has to be usable: the
+        // first material it receives is the workspace's epoch until the control
+        // plane says otherwise.
+        self.established_key_epoch = self.established_key_epoch.max(key.key_epoch);
+    }
+
+    pub fn remove(&mut self, key_epoch: u32) {
+        self.keys.remove(&key_epoch);
+        if self.established_key_epoch == key_epoch {
+            self.established_key_epoch = self.keys.keys().next_back().copied().unwrap_or(0);
+        }
+    }
+
+    /// Adopts the workspace's answer. Refuses to move to an epoch this device
+    /// does not hold, so a stale or hostile control-plane answer can never point
+    /// the write path at material that is not there.
+    pub fn set_established_key_epoch(&mut self, key_epoch: u32) -> bool {
+        if !self.keys.contains_key(&key_epoch) {
+            return false;
+        }
+        self.established_key_epoch = key_epoch;
+        true
+    }
+
+    pub fn established_key_epoch(&self) -> u32 {
+        self.established_key_epoch
+    }
+
+    pub fn highest_key_epoch(&self) -> Option<u32> {
+        self.keys.keys().next_back().copied()
+    }
+
+    pub fn holds(&self, key_epoch: u32) -> bool {
+        self.keys.contains_key(&key_epoch)
+    }
+
+    pub fn key_bytes(&self, key_epoch: u32) -> Option<&[u8]> {
+        self.keys.get(&key_epoch).map(Vec::as_slice)
+    }
+
+    pub fn established_material(&self) -> Option<WorkspaceKeyMaterial> {
+        self.material(self.established_key_epoch)
+    }
+
+    pub fn material(&self, key_epoch: u32) -> Option<WorkspaceKeyMaterial> {
+        self.keys
+            .get(&key_epoch)
+            .map(|key_bytes| WorkspaceKeyMaterial {
+                workspace_id: self.workspace_id.clone(),
+                key_epoch,
+                key_bytes: key_bytes.clone(),
+            })
+    }
+
+    /// Ascending by epoch: the order is part of the sealed re-grant payload, so
+    /// it is fixed here rather than left to map iteration order elsewhere.
+    pub fn materials(&self) -> Vec<WorkspaceKeyMaterial> {
+        self.keys
+            .iter()
+            .map(|(key_epoch, key_bytes)| WorkspaceKeyMaterial {
+                workspace_id: self.workspace_id.clone(),
+                key_epoch: *key_epoch,
+                key_bytes: key_bytes.clone(),
+            })
+            .collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
+
+impl fmt::Debug for WorkspaceKeyring {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorkspaceKeyring")
+            .field("workspace_id", &self.workspace_id)
+            .field("established_key_epoch", &self.established_key_epoch)
+            .field("epochs", &self.keys.keys().collect::<Vec<_>>())
+            .field("keys", &"[redacted]")
+            .finish()
+    }
+}
+
 impl fmt::Debug for WorkspaceKeyMaterial {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -292,6 +508,13 @@ pub struct DeviceProofVerifier {
     pub proof_verifier: String,
 }
 
+/// Device proof verifiers indexed for signature-verification lookup. A `None`
+/// workspace slot holds this device's own locally generated verifier, which
+/// must answer before any workspace-scoped verifier has been published; using
+/// an `Option` rather than an empty-string key keeps that case out of the
+/// workspace namespace entirely.
+pub type DeviceProofVerifierCache = BTreeMap<(Option<WorkspaceId>, DeviceId), String>;
+
 impl fmt::Debug for DeviceProofVerifier {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -301,14 +524,6 @@ impl fmt::Debug for DeviceProofVerifier {
             .field("proof_verifier", &"[redacted]")
             .finish()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SecretUnavailableReason {
-    KeychainUnavailable,
-    CorruptSecret,
-    ServerLocalStoreUnavailable,
 }
 
 #[derive(Debug)]
@@ -402,18 +617,18 @@ impl DeviceKeyStore for KeyringDeviceKeyStore {
         self.delete_bytes(ACCOUNT_TOKENS_SECRET)
     }
 
-    fn store_workspace_key(&self, key: WorkspaceKeyMaterial) -> Result<(), DeviceKeyError> {
+    fn store_workspace_keyring(&self, keyring: WorkspaceKeyring) -> Result<(), DeviceKeyError> {
         self.set_bytes(
-            &workspace_key_secret_name(&key.workspace_id),
-            &serde_json::to_vec(&key)?,
+            &workspace_keyring_secret_name(&keyring.workspace_id),
+            &serde_json::to_vec(&keyring)?,
         )
     }
 
-    fn load_workspace_key(
+    fn load_workspace_keyring(
         &self,
         workspace_id: &WorkspaceId,
-    ) -> Result<Option<WorkspaceKeyMaterial>, DeviceKeyError> {
-        self.get_bytes(&workspace_key_secret_name(workspace_id))?
+    ) -> Result<Option<WorkspaceKeyring>, DeviceKeyError> {
+        self.get_bytes(&workspace_keyring_secret_name(workspace_id))?
             .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
             .transpose()
     }
@@ -471,182 +686,6 @@ impl DeviceKeyStore for KeyringDeviceKeyStore {
             },
         )
     }
-
-    fn mark_secret_unavailable(
-        &self,
-        _reason: SecretUnavailableReason,
-    ) -> Result<(), DeviceKeyError> {
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ServerLocalSecretStore {
-    path: PathBuf,
-}
-
-impl ServerLocalSecretStore {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
-    }
-
-    pub fn default_path() -> Result<PathBuf, DeviceKeyError> {
-        let state_home = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
-            })
-            .ok_or_else(|| DeviceKeyError::Unavailable("HOME is not set".to_string()))?;
-        Ok(state_home.join("bowline").join(SECRET_FILE_NAME))
-    }
-}
-
-impl DeviceKeyStore for ServerLocalSecretStore {
-    fn load_or_create_device_identity(&self) -> Result<DeviceIdentity, DeviceKeyError> {
-        let mut document = self.read_document()?;
-        if let Some(secret) = document.device_identity.as_ref() {
-            return DeviceIdentity::parse(secret.clone());
-        }
-        let identity = DeviceIdentity::try_generate()?;
-        document.device_identity = Some(identity.persisted_secret()?);
-        self.write_document(&document)?;
-        Ok(identity)
-    }
-
-    fn store_account_tokens(&self, tokens: AccountTokens) -> Result<(), DeviceKeyError> {
-        let mut document = self.read_document()?;
-        document.account_tokens = Some(tokens);
-        self.write_document(&document)
-    }
-
-    fn load_account_tokens(&self) -> Result<Option<AccountTokens>, DeviceKeyError> {
-        Ok(self.read_document()?.account_tokens)
-    }
-
-    fn clear_account_tokens(&self) -> Result<bool, DeviceKeyError> {
-        let mut document = self.read_document()?;
-        let had_tokens = document.account_tokens.take().is_some();
-        if had_tokens {
-            self.write_document(&document)?;
-        }
-        Ok(had_tokens)
-    }
-
-    fn store_workspace_key(&self, key: WorkspaceKeyMaterial) -> Result<(), DeviceKeyError> {
-        let mut document = self.read_document()?;
-        document
-            .workspace_keys
-            .retain(|existing| existing.workspace_id != key.workspace_id);
-        document.workspace_keys.push(key);
-        self.write_document(&document)
-    }
-
-    fn load_workspace_key(
-        &self,
-        workspace_id: &WorkspaceId,
-    ) -> Result<Option<WorkspaceKeyMaterial>, DeviceKeyError> {
-        Ok(self
-            .read_document()?
-            .workspace_keys
-            .into_iter()
-            .find(|key| &key.workspace_id == workspace_id))
-    }
-
-    fn store_device_proof_verifier(
-        &self,
-        verifier: DeviceProofVerifier,
-    ) -> Result<(), DeviceKeyError> {
-        with_verifier_transaction(format!("file:{}", self.path.display()), || {
-            let mut document = self.read_document()?;
-            upsert_device_proof_verifier(&mut document.device_proof_verifiers, verifier);
-            self.write_document(&document)
-        })
-    }
-
-    fn load_device_proof_verifiers(&self) -> Result<Vec<DeviceProofVerifier>, DeviceKeyError> {
-        Ok(self.read_document()?.device_proof_verifiers)
-    }
-
-    fn replace_device_proof_verifiers_for_workspace(
-        &self,
-        workspace_id: &WorkspaceId,
-        verifiers: Vec<DeviceProofVerifier>,
-    ) -> Result<(), DeviceKeyError> {
-        with_verifier_transaction(format!("file:{}", self.path.display()), || {
-            let mut document = self.read_document()?;
-            document
-                .device_proof_verifiers
-                .retain(|verifier| &verifier.workspace_id != workspace_id);
-            document.device_proof_verifiers.extend(verifiers);
-            document.device_proof_verifiers.sort_by(|left, right| {
-                left.workspace_id
-                    .cmp(&right.workspace_id)
-                    .then_with(|| left.device_id.cmp(&right.device_id))
-            });
-            self.write_document(&document)
-        })
-    }
-
-    fn mark_secret_unavailable(
-        &self,
-        reason: SecretUnavailableReason,
-    ) -> Result<(), DeviceKeyError> {
-        let mut document = self.read_document()?;
-        document.unavailable_reason = Some(reason);
-        self.write_document(&document)
-    }
-}
-
-impl ServerLocalSecretStore {
-    fn read_document(&self) -> Result<SecretDocument, DeviceKeyError> {
-        match fs::read(&self.path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(Into::into),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(SecretDocument::default()),
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    fn write_document(&self, document: &SecretDocument) -> Result<(), DeviceKeyError> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-            set_private_directory_permissions(parent)?;
-        }
-        let bytes = serde_json::to_vec_pretty(document)?;
-        let temp_path = secret_temp_path(&self.path);
-        fs::write(&temp_path, bytes)?;
-        set_private_file_permissions(&temp_path)?;
-        fs::rename(&temp_path, &self.path)?;
-        set_private_file_permissions(&self.path)?;
-        Ok(())
-    }
-}
-
-#[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SecretDocument {
-    device_identity: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    account_tokens: Option<AccountTokens>,
-    #[serde(default)]
-    device_proof_verifiers: Vec<DeviceProofVerifier>,
-    workspace_keys: Vec<WorkspaceKeyMaterial>,
-    unavailable_reason: Option<SecretUnavailableReason>,
-}
-
-impl fmt::Debug for SecretDocument {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("SecretDocument")
-            .field(
-                "device_identity",
-                &self.device_identity.as_ref().map(|_| "[redacted]"),
-            )
-            .field("account_tokens", &self.account_tokens)
-            .field("device_proof_verifiers", &"[redacted]")
-            .field("workspace_keys", &self.workspace_keys)
-            .field("unavailable_reason", &self.unavailable_reason)
-            .finish()
-    }
 }
 
 impl fmt::Display for DeviceKeyError {
@@ -684,8 +723,8 @@ impl From<serde_json::Error> for DeviceKeyError {
     }
 }
 
-fn workspace_key_secret_name(workspace_id: &WorkspaceId) -> String {
-    format!("workspace-key-v1:{}", workspace_id.as_str())
+pub fn workspace_keyring_secret_name(workspace_id: &WorkspaceId) -> String {
+    format!("workspace-keyring-v1:{}", workspace_id.as_str())
 }
 
 fn upsert_device_proof_verifier(
@@ -698,37 +737,13 @@ fn upsert_device_proof_verifier(
     verifiers.push(verifier);
 }
 
-#[cfg(unix)]
-fn set_private_directory_permissions(path: &std::path::Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(not(unix))]
-fn set_private_directory_permissions(_path: &std::path::Path) -> io::Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_private_file_permissions(path: &std::path::Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn set_private_file_permissions(_path: &std::path::Path) -> io::Result<()> {
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountTokens, DeviceIdentity, DeviceKeyStore, DeviceProofVerifier, ServerLocalSecretStore,
-        WorkspaceKeyMaterial, keyring_secret_result_to_bytes,
+        DeviceIdentity, SecretStoreBackend, WorkspaceKeyMaterial, backend_for_env,
+        keyring_secret_result_to_bytes,
     };
-    use bowline_core::ids::{DeviceId, WorkspaceId};
+    use bowline_core::ids::WorkspaceId;
 
     #[test]
     fn generated_device_identity_has_public_fingerprint() {
@@ -780,113 +795,24 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    /// The default must stay the private file. Inverting it to the OS keychain
+    /// produced ~50 unstoppable password prompts in two minutes on an ad-hoc
+    /// signed build, and bought no confidentiality this product does not already
+    /// concede by writing `.env` files into `~/Code` in plaintext.
     #[test]
-    fn server_local_store_uses_private_file_permissions() {
-        use std::{fs, os::unix::fs::PermissionsExt};
-
-        let root = std::env::temp_dir().join(format!(
-            "bowline-server-local-secret-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        let path = root.join("state").join("bowline").join("secrets.v1");
-        let store = ServerLocalSecretStore::new(&path);
-
-        store
-            .store_account_tokens(AccountTokens {
-                account_id: bowline_core::ids::AccountId::new("acct_server_local"),
-                access_token: "access-secret".to_string(),
-                refresh_token: "refresh-secret".to_string(),
-                expires_at: "2026-06-24T12:00:00Z".to_string(),
-                account_session: None,
-            })
-            .expect("server-local write");
-
-        let parent_mode = fs::metadata(path.parent().expect("secret parent"))
-            .expect("secret parent metadata")
-            .permissions()
-            .mode()
-            & 0o777;
-        let file_mode = fs::metadata(&path)
-            .expect("secret file metadata")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(parent_mode, 0o700);
-        assert_eq!(file_mode, 0o600);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn server_local_store_clears_only_account_tokens() {
-        let root = std::env::temp_dir().join(format!(
-            "bowline-server-local-clear-account-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        let path = root.join("state").join("bowline").join("secrets.v1");
-        let store = ServerLocalSecretStore::new(&path);
-        let workspace_id = WorkspaceId::new("workspace-clear-account");
-
-        let identity = store
-            .load_or_create_device_identity()
-            .expect("device identity");
-        store
-            .store_account_tokens(AccountTokens {
-                account_id: bowline_core::ids::AccountId::new("acct_server_local"),
-                access_token: "access-secret".to_string(),
-                refresh_token: "refresh-secret".to_string(),
-                expires_at: "2026-06-24T12:00:00Z".to_string(),
-                account_session: Some(super::AccountSessionCredentials {
-                    session_id: "session-secret".to_string(),
-                    revocation_token: "revoke-secret".to_string(),
-                }),
-            })
-            .expect("account tokens");
-        store
-            .store_workspace_key(WorkspaceKeyMaterial {
-                workspace_id: workspace_id.clone(),
-                key_epoch: 7,
-                key_bytes: vec![9; 32],
-            })
-            .expect("workspace key");
-        store
-            .store_device_proof_verifier(DeviceProofVerifier {
-                workspace_id: workspace_id.clone(),
-                device_id: DeviceId::new("device-1"),
-                proof_verifier: "dapv_device_1".to_string(),
-            })
-            .expect("device proof verifier");
-
-        assert!(store.clear_account_tokens().expect("clear tokens"));
-        assert!(!store.clear_account_tokens().expect("idempotent clear"));
-        assert!(store.load_account_tokens().expect("load tokens").is_none());
+    fn the_default_backend_is_the_private_file_not_the_keychain() {
+        // Asserted through the pure mapping rather than the process environment,
+        // which a parallel test could be mutating.
+        assert_eq!(backend_for_env(None), SecretStoreBackend::DefaultFile);
         assert_eq!(
-            store
-                .load_or_create_device_identity()
-                .expect("device identity remains")
-                .fingerprint,
-            identity.fingerprint
+            backend_for_env(Some("keychain")),
+            SecretStoreBackend::OsKeychain,
+            "the keychain must stay reachable, just opt-in"
         );
         assert_eq!(
-            store
-                .load_workspace_key(&workspace_id)
-                .expect("workspace key load")
-                .expect("workspace key remains")
-                .key_epoch,
-            7
+            backend_for_env(Some("server-local")),
+            SecretStoreBackend::RequestedFile
         );
-        assert_eq!(
-            store
-                .load_device_proof_verifiers()
-                .expect("device proof verifier load")
-                .first()
-                .expect("device proof verifier remains")
-                .proof_verifier,
-            "dapv_device_1"
-        );
-
-        let _ = std::fs::remove_dir_all(root);
+        assert!(backend_for_env(None).is_plaintext_file());
     }
 }

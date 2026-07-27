@@ -1,9 +1,10 @@
-use super::*;
-
+use crate::daemon::{HostedContext, HostedContextResolver, SyncArgs, runtime_error};
 use bowline_control_plane::{
     StatusEventWatermarks, StatusItemSnapshot, StatusLimitSnapshot, StatusSyncQueueSnapshot,
     StatusWorkspaceSummarySnapshot, WorkspaceControlPlaneClient, WorkspaceStatusSnapshot,
 };
+use std::sync::Arc;
+use std::sync::Mutex;
 type StatusPublishFn = dyn FnMut(StatusPublishPayload) -> Result<StatusPublishOutcome, Box<dyn std::error::Error>>
     + Send
     + 'static;
@@ -59,13 +60,13 @@ impl StatusPublishPayload {
         // successful heartbeat without falsifying source observation times.
         let snapshot = bowline_local::status::redacted_status_snapshot(
             &projection.status,
-            &request.args.device_id,
+            request.args.device_id.as_str(),
         );
-        if snapshot.workspace_id.as_str() != request.args.workspace_id {
+        if snapshot.workspace_id != request.args.workspace_id {
             return Err(runtime_error(format!(
                 "status projection workspace does not match configured daemon workspace: projection={}, configured={}",
                 snapshot.workspace_id.as_str(),
-                request.args.workspace_id
+                request.args.workspace_id.as_str()
             )));
         }
         let fingerprint = status_snapshot_fingerprint(&snapshot)?;
@@ -125,7 +126,7 @@ fn publish_workspace_status_with_hosted(
     payload: StatusPublishPayload,
 ) -> Result<StatusPublishOutcome, Box<dyn std::error::Error>> {
     let (request, snapshot, fingerprint) = payload.into_snapshot()?;
-    if snapshot.workspace_id.as_str() != request.args.workspace_id {
+    if snapshot.workspace_id != request.args.workspace_id {
         return Err(runtime_error(
             "status snapshot workspace does not match configured daemon workspace",
         ));

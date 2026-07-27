@@ -7,13 +7,20 @@
 mod client;
 mod codec;
 mod negotiation;
+mod reachability;
+mod retry;
 
 pub use client::{ClientError, ClientOptions, DaemonClient, EventReceiver};
 pub use codec::{
     CONNECTION_MAGIC, CodecError, CodecPhase, DEFAULT_MAX_FRAME_BYTES, FrameCodec,
     IncrementalFrameDecoder,
 };
-pub use negotiation::{NegotiationError, ServerNegotiation, negotiate};
+pub use negotiation::{
+    DAEMON_RPC_PROTOCOL_WINDOW, MACHINE_CONTRACT_WINDOW, NegotiatedSession, NegotiationError,
+    ServerNegotiation, VersionDimension, VersionWindow, negotiate,
+};
+pub use reachability::{DaemonReachability, VersionSkew};
+pub use retry::RetryDisposition;
 
 pub const DAEMON_RPC_PROTOCOL: &str = "bowline-daemon-v2";
 pub const DAEMON_RPC_PROTOCOL_VERSION: u16 = 2;

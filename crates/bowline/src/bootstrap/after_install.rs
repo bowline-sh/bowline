@@ -334,7 +334,7 @@ where
     let Some(cloud_request) = trust
         .pending_requests
         .iter()
-        .find(|request| request.request_id == remote_request.request_id.as_str())
+        .find(|request| request.request_id == remote_request.request_id)
     else {
         context.steps.push(step(
             BootstrapStepName::Compare,
@@ -417,14 +417,36 @@ where
             Ok(())
         }
         Err(error) => {
+            let recovery = accept_recovery_hint(
+                &context.args.host,
+                &context.args.root,
+                remote_request.request_id.as_str(),
+            );
             context.steps.push(step(
                 BootstrapStepName::Accept,
                 BootstrapStepState::Blocked,
-                format!("Remote grant acceptance failed: {error}"),
+                format!("Remote grant acceptance failed: {error} {recovery}"),
             ));
             Err(context.output(Some(remote_request.clone()), None, false, None))
         }
     }
+}
+
+/// The grant is already uploaded and stays valid until it expires, so both ways
+/// forward are re-runs rather than cleanup. Naming them is what keeps a failed
+/// accept from leaving a half-joined device with no next step.
+pub(super) fn accept_recovery_hint(host: &str, root: &str, request_id: &str) -> String {
+    format!(
+        "The encrypted grant is uploaded and still valid; re-run `bowline connect {host}` \
+         to retry, or accept it on the host with `{}`.",
+        ssh_command(
+            host,
+            &format!(
+                "bowline device accept --root {} --request {request_id}",
+                remote_path_arg(root),
+            ),
+        )
+    )
 }
 
 fn verify_accepted_remote_device<R>(
@@ -591,26 +613,54 @@ where
     }
 }
 
+/// Classify the remote's sync step. Converging is `Pending`, not `Blocked`: the
+/// bootstrap succeeded and bytes are still moving, so the user gets a way to
+/// watch it finish instead of a failure verdict.
+fn remote_sync_step<R>(
+    context: &AfterInstallContext<'_, R>,
+    output: &StatusCommandOutput,
+) -> (BootstrapStepState, String)
+where
+    R: ProcessRunner,
+{
+    if remote_sync_is_ready(&output.status) {
+        return (
+            BootstrapStepState::Completed,
+            "Sync is ready for this real directory root.".to_string(),
+        );
+    }
+    if remote_status_is_converging(output) {
+        return (
+            BootstrapStepState::Pending,
+            format!(
+                "Sync is running on {}; watch it finish with `{}`.",
+                context.args.host,
+                ssh_command(
+                    &context.args.host,
+                    &format!(
+                        "bowline status --root {} --watch --json",
+                        remote_path_arg(&context.args.root)
+                    ),
+                )
+            ),
+        );
+    }
+    (
+        BootstrapStepState::Blocked,
+        remote_status_attention_summary(&output.status),
+    )
+}
+
 fn remote_status_from_stdout<R>(context: &mut AfterInstallContext<'_, R>, stdout: &str) -> SyncProbe
 where
     R: ProcessRunner,
 {
     match serde_json::from_str::<StatusCommandOutput>(stdout) {
         Ok(output) => {
-            let sync_ready = remote_sync_is_ready(&output.status);
-            context.steps.push(step(
-                BootstrapStepName::Sync,
-                if sync_ready {
-                    BootstrapStepState::Completed
-                } else {
-                    BootstrapStepState::Blocked
-                },
-                if sync_ready {
-                    "Sync is ready for this real directory root.".to_string()
-                } else {
-                    remote_status_attention_summary(&output.status)
-                },
-            ));
+            let (state, summary) = remote_sync_step(context, &output);
+            context
+                .steps
+                .push(step(BootstrapStepName::Sync, state, summary));
             SyncProbe {
                 remote_status: Some(output.status),
                 remote_status_items: output.items,

@@ -9,7 +9,6 @@ pub mod git_worktree_link;
 pub mod hosted;
 pub mod ids;
 pub mod introspection;
-pub mod namespace_snapshot;
 pub mod policy;
 pub mod retry;
 pub mod shell;

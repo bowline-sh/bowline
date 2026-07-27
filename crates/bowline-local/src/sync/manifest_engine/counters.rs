@@ -22,6 +22,13 @@ pub struct EngineCounters {
     pub stat_walks: AtomicU64,
     /// Paths stat-ed across all walks (the C5 "10k stat-walk" budget subject).
     pub stat_entries: AtomicU64,
+    /// Local paths re-observed (`symlink_metadata`) while classifying a pull's
+    /// three-way merge. This is the change-proportionality meter for pull: the
+    /// remote delta is derived from the ancestor and the decoded manifest with
+    /// zero filesystem access, so only paths the remote actually moved — plus
+    /// paths the driver already knows are dirty — may cost a syscall. A value
+    /// that tracks workspace size rather than change size is the regression.
+    pub merge_observations: AtomicU64,
     /// Files opened and read for content (the C1/C5 "zero content opens" meter).
     pub content_opens: AtomicU64,
     /// Content identities computed (BLAKE3 over plaintext).
@@ -33,8 +40,20 @@ pub struct EngineCounters {
     pub sqlite_mutations: AtomicU64,
     /// Blob objects PUT to the object store (skips on dedup do not count).
     pub blob_uploads: AtomicU64,
-    /// Manifest objects PUT to the object store.
+    /// Manifest tree nodes PUT to the object store. Under the Merkle manifest a
+    /// publish uploads the nodes from a changed file to the root and no others,
+    /// so this tracks change size; a value that tracks workspace size is the
+    /// regression the flat manifest used to guarantee.
     pub manifest_uploads: AtomicU64,
+    /// Sealed bytes PUT as manifest tree nodes. The honest cost meter for
+    /// publish: the flat form re-uploaded the whole manifest for a one-character
+    /// edit, so this number was proportional to the workspace.
+    pub manifest_bytes_published: AtomicU64,
+    /// Manifest tree nodes fetched from the object store. A subtree whose key a
+    /// device already holds is pruned and never fetched.
+    pub manifest_downloads: AtomicU64,
+    /// Sealed bytes fetched as manifest tree nodes.
+    pub manifest_bytes_fetched: AtomicU64,
     /// Ref compare-and-swap attempts.
     pub cas_attempts: AtomicU64,
     /// Ref compare-and-swap losses (a normal, non-attention outcome).
@@ -66,6 +85,10 @@ impl EngineCounters {
         self.content_hashes.fetch_add(hashes, Ordering::Relaxed);
     }
 
+    pub fn record_merge_observations(&self, paths: u64) {
+        self.merge_observations.fetch_add(paths, Ordering::Relaxed);
+    }
+
     pub fn record_content_open(&self, bytes: u64) {
         self.content_opens.fetch_add(1, Ordering::Relaxed);
         self.hashed_bytes.fetch_add(bytes, Ordering::Relaxed);
@@ -83,8 +106,16 @@ impl EngineCounters {
         self.blob_uploads.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn record_manifest_upload(&self) {
+    pub fn record_manifest_upload(&self, sealed_bytes: u64) {
         self.manifest_uploads.fetch_add(1, Ordering::Relaxed);
+        self.manifest_bytes_published
+            .fetch_add(sealed_bytes, Ordering::Relaxed);
+    }
+
+    pub fn record_manifest_download(&self, sealed_bytes: u64) {
+        self.manifest_downloads.fetch_add(1, Ordering::Relaxed);
+        self.manifest_bytes_fetched
+            .fetch_add(sealed_bytes, Ordering::Relaxed);
     }
 
     pub fn record_cas_attempt(&self) {
@@ -118,12 +149,16 @@ impl EngineCounters {
         CountersSnapshot {
             stat_walks: self.stat_walks.load(Ordering::Relaxed),
             stat_entries: self.stat_entries.load(Ordering::Relaxed),
+            merge_observations: self.merge_observations.load(Ordering::Relaxed),
             content_opens: self.content_opens.load(Ordering::Relaxed),
             content_hashes: self.content_hashes.load(Ordering::Relaxed),
             hashed_bytes: self.hashed_bytes.load(Ordering::Relaxed),
             sqlite_mutations: self.sqlite_mutations.load(Ordering::Relaxed),
             blob_uploads: self.blob_uploads.load(Ordering::Relaxed),
             manifest_uploads: self.manifest_uploads.load(Ordering::Relaxed),
+            manifest_bytes_published: self.manifest_bytes_published.load(Ordering::Relaxed),
+            manifest_downloads: self.manifest_downloads.load(Ordering::Relaxed),
+            manifest_bytes_fetched: self.manifest_bytes_fetched.load(Ordering::Relaxed),
             cas_attempts: self.cas_attempts.load(Ordering::Relaxed),
             cas_losses: self.cas_losses.load(Ordering::Relaxed),
             retries: self.retries.load(Ordering::Relaxed),
@@ -140,12 +175,16 @@ impl EngineCounters {
 pub struct CountersSnapshot {
     pub stat_walks: u64,
     pub stat_entries: u64,
+    pub merge_observations: u64,
     pub content_opens: u64,
     pub content_hashes: u64,
     pub hashed_bytes: u64,
     pub sqlite_mutations: u64,
     pub blob_uploads: u64,
     pub manifest_uploads: u64,
+    pub manifest_bytes_published: u64,
+    pub manifest_downloads: u64,
+    pub manifest_bytes_fetched: u64,
     pub cas_attempts: u64,
     pub cas_losses: u64,
     pub retries: u64,
@@ -161,12 +200,16 @@ impl CountersSnapshot {
         serde_json::json!({
             "statWalks": self.stat_walks,
             "statEntries": self.stat_entries,
+            "mergeObservations": self.merge_observations,
             "contentOpens": self.content_opens,
             "contentHashes": self.content_hashes,
             "hashedBytes": self.hashed_bytes,
             "sqliteMutations": self.sqlite_mutations,
             "blobUploads": self.blob_uploads,
             "manifestUploads": self.manifest_uploads,
+            "manifestBytesPublished": self.manifest_bytes_published,
+            "manifestDownloads": self.manifest_downloads,
+            "manifestBytesFetched": self.manifest_bytes_fetched,
             "casAttempts": self.cas_attempts,
             "casLosses": self.cas_losses,
             "retries": self.retries,

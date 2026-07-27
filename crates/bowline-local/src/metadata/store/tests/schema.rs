@@ -1,6 +1,8 @@
 use super::super::MetadataReadRole;
 use super::*;
 
+use bowline_core::status::SetupReceiptState;
+
 #[test]
 fn schema_initialization_is_idempotent_and_enables_wal() {
     let temp = TempWorkspace::new("metadata-idempotent").expect("temp workspace");
@@ -505,7 +507,7 @@ fn phase8_env_records_and_setup_receipts_round_trip_without_plaintext_values() {
             workspace_id: workspace_id.clone(),
             project_id: Some(project_id),
             command: "pnpm install --ignore-scripts".to_string(),
-            state: "completed".to_string(),
+            state: SetupReceiptState::Completed,
             recipe_hash: "blake3:recipe".to_string(),
             approval_state: "approved".to_string(),
             trigger: "setup".to_string(),
@@ -526,7 +528,7 @@ fn phase8_env_records_and_setup_receipts_round_trip_without_plaintext_values() {
 
     let receipts = store.setup_receipts(&workspace_id).expect("setup receipts");
     assert_eq!(receipts.len(), 1);
-    assert_eq!(receipts[0].state, "completed");
+    assert_eq!(receipts[0].state, SetupReceiptState::Completed);
     assert_eq!(receipts[0].setup_identity_hash, "setupid_phase8");
     assert_eq!(receipts[0].readiness_state, "runnable");
     assert!(receipts[0].redacted_summary.contains("[redacted]"));

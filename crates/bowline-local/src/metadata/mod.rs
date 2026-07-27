@@ -13,8 +13,9 @@ pub use paths::{
 };
 pub use store::{
     DatabaseInspection, DatabaseState, EnvRecord, LocalPathRecord, MetadataError, MetadataStore,
-    ObservedLocalPath, ProjectLifecycleState, ProjectLocalMaterializationState, ProjectRecord,
-    ProjectUpsert, SetupReceiptRecord, WorkViewRecord, WorkspaceRecord, all_accepted_roots,
+    ObservedLocalPath, ProjectHotState, ProjectLifecycleState, ProjectLocalMaterializationState,
+    ProjectRecord, ProjectUpsert, SetupReceiptRecord, WorkViewRecord, WorkspaceRecord,
+    all_accepted_roots,
 };
 
 pub const DEFAULT_DATABASE_FILE: &str = "local.sqlite3";

@@ -28,16 +28,19 @@ use std::error::Error;
 use std::fmt;
 
 use super::aux_index::{AuxIndex, WorkViewId, WorkViewLifecycle, WorkViewRecord};
+use super::counters::EngineCounters;
+use super::endpoint::NameFolding;
 use super::manifest::{
     DecodeLimits, Manifest, ManifestError, ManifestKey, WorkspaceCrypto, WorkspacePath,
-    open_manifest, physical_manifest_key,
 };
-use super::pull_apply::{PullDeps, PullError, PullOutcome, pull};
+use super::pull_apply::naming::{AsidePrefix, permitted_aside_path};
+use super::pull_apply::{PullDeps, PullError, PullOutcome, PullScope, pull};
 use super::push::{
-    CasOutcome, EngineContext, PushDeps, PushError, PushOutcome, RefObservation, RemoteObjects,
-    RemoteRef, TransportError, push_verifying_dirty_files,
+    CasOutcome, DeletionPolicy, EngineContext, PushDeps, PushError, PushOutcome, RefObservation,
+    RemoteObjects, RemoteRef, TransportError, WatcherEvidence, push_dirty_paths,
 };
 use super::store::{ManifestStore, ManifestStoreError};
+use super::tree_transport::{FetchTreeRequest, TreeError, fetch_tree};
 
 // ---- view-local ref ---------------------------------------------------------
 
@@ -170,6 +173,9 @@ pub fn materialize_view<O: RemoteObjects>(
         ctx: view_ctx,
         objects,
         refs: &refs,
+        // A view has no watcher and no driver dirty set, so there is nothing to
+        // narrow against; its ancestor is one project, not the workspace.
+        scope: PullScope::WholeAncestor,
     };
     pull(view_store, &deps).map_err(WorkViewError::Pull)
 }
@@ -195,7 +201,20 @@ pub fn capture_overlay<O: RemoteObjects>(
         objects,
         refs: &refs,
     };
-    match push_verifying_dirty_files(view_store, &deps, dirty).map_err(WorkViewError::Push)? {
+    // A work-view capture is a user-initiated operation over a project-scoped
+    // view the user is looking at, so it is its own confirmation: the autonomous
+    // mass-deletion breaker would only block a deliberate large change.
+    // A view directory has no watcher at all, so no stat is ever conclusive: a
+    // same-size rewrite since materialization must be caught by reading bytes.
+    match push_dirty_paths(
+        view_store,
+        &deps,
+        dirty,
+        DeletionPolicy::Confirmed,
+        WatcherEvidence::Gapped,
+    )
+    .map_err(WorkViewError::Push)?
+    {
         PushOutcome::Advanced { manifest_key, .. } => Ok(Some(manifest_key)),
         PushOutcome::NoChange { .. } => Ok(None),
         PushOutcome::RefLost { .. } => Err(WorkViewError::ViewRefLost),
@@ -297,21 +316,18 @@ pub fn lift_project_manifest(snapshot: &Manifest, project_path: &str) -> Manifes
     )
 }
 
-/// Fetch + verify + decode a manifest by key from the shared object store.
+/// Fetch + verify + flatten a manifest tree by its root key.
+///
+/// A work-view read has no comparable local ancestor to prune against — it may
+/// be reading any historical manifest — so it walks the whole tree. That is the
+/// honest cost of reviewing an arbitrary snapshot, and it is bounded by the
+/// project rather than the workspace.
 pub fn fetch_manifest<O: RemoteObjects>(
     objects: &O,
     crypto: &WorkspaceCrypto,
     key: &ManifestKey,
 ) -> Result<Manifest, WorkViewError> {
-    let sealed = objects
-        .get_manifest(key)
-        .map_err(WorkViewError::Transport)?;
-    if &physical_manifest_key(&sealed) != key {
-        return Err(WorkViewError::ManifestKeyMismatch);
-    }
-    let decoded = open_manifest(crypto, &sealed, &DecodeLimits::default())
-        .map_err(WorkViewError::Manifest)?;
-    Ok(decoded.manifest)
+    fetch_whole_tree(objects, crypto, key, DecodeLimits::default())
 }
 
 /// Fetch a project-scoped manifest, where workspace-reserved names are valid
@@ -321,15 +337,29 @@ pub fn fetch_project_manifest<O: RemoteObjects>(
     crypto: &WorkspaceCrypto,
     key: &ManifestKey,
 ) -> Result<Manifest, WorkViewError> {
-    let sealed = objects
-        .get_manifest(key)
-        .map_err(WorkViewError::Transport)?;
-    if &physical_manifest_key(&sealed) != key {
-        return Err(WorkViewError::ManifestKeyMismatch);
-    }
-    let decoded = open_manifest(crypto, &sealed, &DecodeLimits::project_view())
-        .map_err(WorkViewError::Manifest)?;
-    Ok(decoded.manifest)
+    fetch_whole_tree(objects, crypto, key, DecodeLimits::project_view())
+}
+
+fn fetch_whole_tree<O: RemoteObjects>(
+    objects: &O,
+    crypto: &WorkspaceCrypto,
+    key: &ManifestKey,
+    limits: DecodeLimits,
+) -> Result<Manifest, WorkViewError> {
+    // A work-view fetch reads the manifest's entries and discards its collision
+    // report, so every fold produces the same answer here; the materializing
+    // caller owns the endpoint verdict.
+    let counters = EngineCounters::shared();
+    let fetched = fetch_tree(FetchTreeRequest {
+        objects,
+        crypto,
+        counters: &counters,
+        root: key,
+        limits: &limits,
+        names: NameFolding::EXACT,
+        prune: None,
+    })?;
+    Ok(fetched.decoded.manifest)
 }
 
 /// Review a work view: fetch base + overlay and diff them.
@@ -363,6 +393,13 @@ pub struct AcceptMerge {
     /// content to materialize, so without this slot the discarded deletion would
     /// be invisible and accept would falsely report the path as landed.
     pub discarded_deletions: Vec<WorkspacePath>,
+    /// Paths that diverged both ways but may not carry an aside at all — `.git/**`
+    /// state, or an origin so long the aside name exceeds the path budget (see
+    /// [`permitted_aside_path`]). The workspace entry stays canonical and the
+    /// overlay's version is dropped, exactly as pull settles an `AsideRefused`
+    /// into a keep-local. Reported for the same reason as a discarded deletion:
+    /// the overlay's change did not land, so accept must not count it as accepted.
+    pub aside_refused_paths: Vec<WorkspacePath>,
 }
 
 /// Three-way merge the overlay into the current workspace manifest, ancestor =
@@ -376,7 +413,8 @@ pub struct AcceptMerge {
 /// - both changed identically → either (take overlay).
 /// - both changed differently, overlay kept content → keep the workspace entry
 ///   canonical; materialize the overlay entry at a deterministic conflict-aside
-///   path keyed by `prefix` so two overlays' asides for one path never collide.
+///   path keyed by `prefix` so two overlays' asides for one path never collide,
+///   unless the path may not carry an aside at all, which is a keep-local.
 /// - both changed differently, overlay deleted the path → keep the newer
 ///   workspace entry canonical and record the discarded deletion; there is no
 ///   overlay content to aside, so the deletion is surfaced, not silently lost.
@@ -384,11 +422,12 @@ pub fn three_way_merge(
     base: &Manifest,
     workspace: &Manifest,
     overlay: &Manifest,
-    prefix: &str,
+    prefix: &AsidePrefix,
 ) -> AcceptMerge {
     let mut merged = workspace.entries.clone();
     let mut conflict_asides = Vec::new();
     let mut discarded_deletions = Vec::new();
+    let mut aside_refused_paths = Vec::new();
 
     let mut paths: BTreeSet<&WorkspacePath> = base.entries.keys().collect();
     paths.extend(workspace.entries.keys());
@@ -420,12 +459,15 @@ pub fn three_way_merge(
         // Genuine conflict: the workspace bytes stay canonical either way.
         match t {
             // Overlay kept content: preserve it as a deterministic aside so no
-            // work is lost.
-            Some(entry) => {
-                let aside = conflict_aside_path(path, prefix);
-                merged.insert(aside.clone(), entry.clone());
-                conflict_asides.push(aside);
-            }
+            // work is lost — unless no aside may be written beside this path, in
+            // which case the workspace entry is all that survives.
+            Some(entry) => match permitted_aside_path(path, prefix) {
+                Some(aside) => {
+                    merged.insert(aside.clone(), entry.clone());
+                    conflict_asides.push(aside);
+                }
+                None => aside_refused_paths.push(path.clone()),
+            },
             // Overlay deleted a path the workspace modified after the base. The
             // live workspace edit is newer, so the deletion cannot silently win;
             // there is nothing to aside, so record the discarded deletion.
@@ -437,6 +479,7 @@ pub fn three_way_merge(
         merged: Manifest::new(workspace.key_epoch, merged),
         conflict_asides,
         discarded_deletions,
+        aside_refused_paths,
     }
 }
 
@@ -455,23 +498,14 @@ pub fn accept_view<O: RemoteObjects>(
     Ok(three_way_merge(&base, workspace, &overlay, &prefix))
 }
 
-/// Deterministic conflict-aside path for accept: `<path> (overlay <prefix>)`.
-/// No wall-clock component (Plan 108: conflict names are deterministic).
-fn conflict_aside_path(path: &WorkspacePath, prefix: &str) -> WorkspacePath {
-    WorkspacePath::new(format!("{} (overlay {prefix})", path.as_str()))
-}
-
-/// The first eight hex characters of the overlay manifest key, used to
-/// disambiguate conflict-asides from different overlays. Public so accept
-/// callers that pre-filter the overlay (partial accept) derive the same
-/// deterministic aside names as [`accept_view`].
-pub fn aside_prefix(key: &ManifestKey) -> String {
-    key.as_str()
-        .strip_prefix("m_")
-        .unwrap_or(key.as_str())
-        .chars()
-        .take(8)
-        .collect()
+/// The overlay manifest key's aside prefix, used to disambiguate
+/// conflict-asides from different overlays. Public so accept callers that
+/// pre-filter the overlay (partial accept) derive the same deterministic aside
+/// names as [`accept_view`]. Derived through [`AsidePrefix`] rather than sliced
+/// out of the key so an accept aside matches THE aside grammar exactly, like a
+/// pulled one.
+pub fn aside_prefix(key: &ManifestKey) -> AsidePrefix {
+    AsidePrefix::derive(key.as_str())
 }
 
 // ---- errors -----------------------------------------------------------------
@@ -505,6 +539,17 @@ impl fmt::Display for WorkViewError {
             }
             Self::UnknownView { id } => write!(formatter, "unknown work view: {id}"),
             Self::NotActive { id } => write!(formatter, "work view is not active: {id}"),
+        }
+    }
+}
+
+impl From<TreeError> for WorkViewError {
+    fn from(error: TreeError) -> Self {
+        match error {
+            TreeError::Manifest(error) => Self::Manifest(error),
+            TreeError::Store(error) => Self::Store(error),
+            TreeError::Transport(error) => Self::Transport(error),
+            TreeError::NodeKeyMismatch => Self::ManifestKeyMismatch,
         }
     }
 }

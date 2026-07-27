@@ -1,5 +1,8 @@
 use super::*;
-use crate::{DeviceControlPlaneClient, WorkspaceControlPlaneClient};
+use crate::{
+    DeviceControlPlaneClient, FETCH_DEVICE_GRANT_ACTION, WorkspaceControlPlaneClient,
+    device_request_proof_subject,
+};
 
 impl FakeControlPlaneClient {
     pub fn new(clock: DeterministicClock, ids: DeterministicIdGenerator) -> Self {
@@ -70,6 +73,7 @@ impl FakeControlPlaneClient {
             device_id: DeviceId::new(device_id),
             device_name: device_name.to_string(),
             device_public_key: format!("age1{device_id}"),
+            device_public_key_proof: format!("dapp_harness_{device_id}"),
             device_fingerprint: format!("fp_{device_id}"),
             device_authorization_proof_verifier: format!("dapv_harness_{device_id}"),
             matching_code: "phase4-smoke".to_string(),
@@ -188,7 +192,7 @@ impl FakeControlPlaneClient {
             .push(self.build_event(
                 &approval.workspace_id,
                 CompactEventKind::DeviceHarnessApproved,
-                &approval.grant_id,
+                approval.grant_id.as_str(),
             ));
 
         Ok(approval)
@@ -198,14 +202,14 @@ impl FakeControlPlaneClient {
         &self,
         workspace_id: &WorkspaceId,
         kind: CompactEventKind,
-        subject: impl AsRef<str>,
+        subject: &str,
     ) -> CompactEvent {
         CompactEvent {
             event_id: bowline_core::ids::EventId::new(self.ids.next_id("event")),
             workspace_id: workspace_id.clone(),
             at: self.clock.now(),
             kind,
-            subject: subject.as_ref().to_string(),
+            subject: subject.to_string(),
         }
     }
 
@@ -333,6 +337,38 @@ impl FakeControlPlaneClient {
                 "approver is not a trusted non-revoked device",
             )),
         }
+    }
+
+    /// Authenticate the device that opened a pending request. Every rejection
+    /// path returns the same error, matching the hosted control plane: request
+    /// ids are structured enough to guess, so a distinguishable "not found"
+    /// would confirm which ones exist.
+    pub(super) fn ensure_pending_request_proof(
+        state: &FakeControlPlaneState,
+        request_id: &DeviceApprovalRequestId,
+        device_id: &DeviceId,
+        proof: &str,
+    ) -> ControlPlaneResult<()> {
+        let rejected = || device_not_trusted("device request proof does not match");
+        let request = state.device_requests.get(request_id).ok_or_else(rejected)?;
+        let verifier = state
+            .pending_device_proof_verifiers
+            .get(request_id)
+            .ok_or_else(rejected)?;
+        if &request.device_id != device_id {
+            return Err(rejected());
+        }
+        if !device_authorization_proof_valid(
+            verifier,
+            proof,
+            &request.workspace_id,
+            device_id,
+            FETCH_DEVICE_GRANT_ACTION,
+            &device_request_proof_subject(request_id),
+        ) {
+            return Err(rejected());
+        }
+        Ok(())
     }
 
     pub(super) fn ensure_not_revoked(

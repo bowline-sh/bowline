@@ -1,83 +1,10 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 
-const scriptFiles = [
-  "apps/docs/scripts/check-agent-readiness.mjs",
-  "apps/docs/scripts/check-docs.mjs",
-  "apps/web/scripts/generate-agent-auth-jwk.mjs",
-  "eslint.config.js",
-  "packages/contracts/scripts/generate-guards.mjs",
-  "plans/oracle-scan/.author-workflow.js",
-  "plans/oracle-scan/.review-workflow.js",
-  "plans/oracle-scan/.verify-workflow.js",
-  "scripts/check-architecture-fixtures.mjs",
-  "scripts/check-architecture-imports.mjs",
-  "scripts/check-cli-docs.mjs",
-  "scripts/check-contracts-manifest.mjs",
-  "scripts/check-manifest-apply-authority.mjs",
-  "scripts/check-manifest-apply-authority.test.mjs",
-  "scripts/check-current-state-authorities.mjs",
-  "scripts/check-current-state-authorities.test.mjs",
-  "scripts/check-current-state-registry.mjs",
-  "scripts/current-state-authority-core.mjs",
-  "scripts/current-state-acceptance-proof.mjs",
-  "scripts/current-state-acceptance-proof.test.mjs",
-  "scripts/check-contracts-codegen.mjs",
-  "scripts/check-examples.mjs",
-  "scripts/check-file-lengths.mjs",
-  "scripts/check-generated-artifacts.mjs",
-  "scripts/check-hosted-config.mjs",
-  "scripts/check-install-script.mjs",
-  "scripts/check-hosted-endpoint-inventory.mjs",
-  "scripts/check-no-opaque-transport.mjs",
-  "scripts/check-package-scripts.mjs",
-  "scripts/check-public-export.mjs",
-  "scripts/check-runtime-toolchains.mjs",
-  "scripts/check-rust-boundaries.mjs",
-  "scripts/check-toolchain-declarations.mjs",
-  "scripts/check-whitespace.mjs",
-  "scripts/cutover/*.mjs",
-  "scripts/check-work-view-authorities.mjs",
-  "scripts/check-workspace-convergence-authority.mjs",
-  "scripts/check-workspace-convergence-authority.test.mjs",
-  "scripts/deploy-public.mjs",
-  "scripts/deploy.mjs",
-  "scripts/entrypoint.mjs",
-  "scripts/entrypoint.test.mjs",
-  "scripts/doctor/*.mjs",
-  "scripts/doctor/checks/*.mjs",
-  "scripts/e2e/*.mjs",
-  "scripts/e2e/steps/*.mjs",
-  "scripts/export-public.mjs",
-  "scripts/hosted-daemon-loop-smoke.mjs",
-  "scripts/lab/*.mjs",
-  "scripts/plans.mjs",
-  "scripts/plans.test.mjs",
-  "scripts/prod-smoke.mjs",
-  "scripts/release/*.mjs",
-  "scripts/release/stages/*.mjs",
-  "scripts/release-assets.mjs",
-  "scripts/release-assets.test.mjs",
-  "scripts/release-authenticity-smoke.mjs",
-  "scripts/release-doctor.mjs",
-  "scripts/release-doctor.test.mjs",
-  "scripts/release-signing.mjs",
-  "scripts/release-verify-remote.mjs",
-  "scripts/release-verify-remote.test.mjs",
-  "scripts/release-version.mjs",
-  "scripts/release.mjs",
-  "scripts/release.test.mjs",
-  "scripts/verify.mjs",
-  "scripts/verify.test.mjs",
-  "scripts/verify-receipt.mjs",
-  "scripts/verify-receipt.test.mjs",
-  "scripts/wire-contracts/*.mjs",
-  "scripts/sync-hosted-smoke.mjs",
-  "scripts/sync-remote-smoke.mjs",
-  "scripts/sync-two-device-smoke.mjs",
-  "scripts/watcher-wake-smoke.mjs",
-  "tests/cli-flows/cli-contract.test.mjs",
-];
+// Plain-JavaScript tooling is not part of a TypeScript project, so type-aware
+// rules cannot run against it. Keyed on file type, never a path list: adding a
+// script must not require a config edit.
+const scriptFiles = ["**/*.mjs", "**/*.cjs", "**/*.js"];
 
 export default tseslint.config(
   {
@@ -121,10 +48,6 @@ export default tseslint.config(
         "error",
         { allowBoolean: true, allowNumber: true },
       ],
-      "max-lines": [
-        "error",
-        { max: 2000, skipBlankLines: true, skipComments: true },
-      ],
       "no-restricted-imports": [
         "error",
         {
@@ -153,10 +76,6 @@ export default tseslint.config(
     ],
     rules: {
       complexity: ["error", { max: 24 }],
-      "max-lines": [
-        "error",
-        { max: 800, skipBlankLines: true, skipComments: true },
-      ],
       "max-lines-per-function": [
         "error",
         {
@@ -183,24 +102,7 @@ export default tseslint.config(
   },
   // Per-file overrides below are ratchets: they may only shrink or be deleted.
   // Never add a new one or raise an existing cap (see AGENTS.md quality rules).
-  {
-    files: ["packages/control-plane/convex/devices.ts"],
-    rules: {
-      "max-lines": [
-        "error",
-        { max: 1150, skipBlankLines: true, skipComments: true },
-      ],
-    },
-  },
-  {
-    files: ["packages/control-plane/convex/billing.ts"],
-    rules: {
-      "max-lines": [
-        "error",
-        { max: 1000, skipBlankLines: true, skipComments: true },
-      ],
-    },
-  },
+  // File length is not among them; scripts/check-file-lengths.mjs owns it.
   {
     files: ["packages/control-plane/convex/usage_rollups.ts"],
     rules: {

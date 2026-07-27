@@ -5139,6 +5139,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5159,6 +5160,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5178,6 +5180,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5197,6 +5200,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5216,6 +5220,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5235,6 +5240,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5254,6 +5260,7 @@
     },
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5273,6 +5280,7 @@
     },
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5292,6 +5300,7 @@
       }
     },
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5311,6 +5320,7 @@
       }
     },
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5330,6 +5340,7 @@
         "unit": "x"
       }
     },
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5349,6 +5360,47 @@
         "unit": "x"
       }
     },
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "expiresAt": "2026-06-23T12:00:01Z",
+    "matchingCode": "123456",
+    "platform": "macos",
+    "requestedAt": "2026-06-23T12:00:00Z",
+    "requestId": "request_1",
+    "state": "pending",
+    "workspaceId": "ws_code"
+  },
+  "HostedDeviceRequest.devicePublicKeyProof.maxLength.invalid": {
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": {
+      "$boundaryString": {
+        "count": 4097,
+        "unit": "x"
+      }
+    },
+    "expiresAt": "2026-06-23T12:00:01Z",
+    "matchingCode": "123456",
+    "platform": "macos",
+    "requestedAt": "2026-06-23T12:00:00Z",
+    "requestId": "request_1",
+    "state": "pending",
+    "workspaceId": "ws_code"
+  },
+  "HostedDeviceRequest.devicePublicKeyProof.maxLength.valid": {
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": {
+      "$boundaryString": {
+        "count": 4096,
+        "unit": "x"
+      }
+    },
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5363,6 +5415,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "host": {
       "$boundaryString": {
@@ -5383,6 +5436,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "host": {
       "$boundaryString": {
@@ -5403,6 +5457,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "leaseHandoffDigest": {
       "$boundaryString": {
@@ -5423,6 +5478,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "leaseHandoffDigest": {
       "$boundaryString": {
@@ -5443,6 +5499,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "leaseId": {
       "$boundaryString": {
@@ -5463,6 +5520,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "leaseId": {
       "$boundaryString": {
@@ -5483,6 +5541,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": {
       "$boundaryString": {
@@ -5502,6 +5561,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": {
       "$boundaryString": {
@@ -5521,6 +5581,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": {
@@ -5540,6 +5601,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": {
@@ -5559,6 +5621,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5578,6 +5641,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5597,6 +5661,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5617,6 +5682,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5637,6 +5703,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5657,6 +5724,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5677,6 +5745,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5697,6 +5766,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5717,6 +5787,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -5736,6 +5807,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": "2026-06-23T12:00:01Z",
     "matchingCode": "123456",
     "platform": "macos",
@@ -6398,6 +6470,8 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -6412,6 +6486,8 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -6426,6 +6502,8 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -6440,6 +6518,8 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -6454,6 +6534,8 @@
     },
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -6468,6 +6550,8 @@
     },
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -6482,6 +6566,8 @@
       }
     },
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -6496,6 +6582,8 @@
       }
     },
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -6510,6 +6598,8 @@
         "unit": "x"
       }
     },
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -6524,6 +6614,72 @@
         "unit": "x"
       }
     },
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "platform": "macos",
+    "workspaceId": "ws_code"
+  },
+  "HostedDevicesCreateFirstAuthorizedDeviceRequest.devicePublicKey.maxLength.invalid": {
+    "accountSessionId": "acct_session",
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "platform": "macos",
+    "workspaceId": "ws_code"
+  },
+  "HostedDevicesCreateFirstAuthorizedDeviceRequest.devicePublicKey.maxLength.valid": {
+    "accountSessionId": "acct_session",
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "platform": "macos",
+    "workspaceId": "ws_code"
+  },
+  "HostedDevicesCreateFirstAuthorizedDeviceRequest.devicePublicKeyProof.maxLength.invalid": {
+    "accountSessionId": "acct_session",
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": {
+      "$boundaryString": {
+        "count": 4097,
+        "unit": "x"
+      }
+    },
+    "platform": "macos",
+    "workspaceId": "ws_code"
+  },
+  "HostedDevicesCreateFirstAuthorizedDeviceRequest.devicePublicKeyProof.maxLength.valid": {
+    "accountSessionId": "acct_session",
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": {
+      "$boundaryString": {
+        "count": 4096,
+        "unit": "x"
+      }
+    },
     "platform": "macos",
     "workspaceId": "ws_code"
   },
@@ -6533,6 +6689,8 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": {
       "$boundaryString": {
         "count": 129,
@@ -6547,6 +6705,8 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": {
       "$boundaryString": {
         "count": 128,
@@ -6561,6 +6721,8 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": {
       "$boundaryString": {
@@ -6575,6 +6737,8 @@
     "deviceFingerprint": "fingerprint_1",
     "deviceId": "device_1",
     "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "platform": "macos",
     "workspaceId": {
       "$boundaryString": {
@@ -6595,6 +6759,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -6611,6 +6776,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -6627,6 +6793,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -6643,6 +6810,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -6659,6 +6827,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -6675,6 +6844,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -6691,6 +6861,7 @@
     },
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -6707,6 +6878,7 @@
     },
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -6723,6 +6895,7 @@
       }
     },
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -6739,6 +6912,7 @@
       }
     },
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -6755,6 +6929,7 @@
         "unit": "x"
       }
     },
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -6771,6 +6946,41 @@
         "unit": "x"
       }
     },
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "matchingCode": "123456",
+    "platform": "macos",
+    "workspaceId": "ws_code"
+  },
+  "HostedDevicesCreatePendingDeviceRequest.devicePublicKeyProof.maxLength.invalid": {
+    "accountSessionId": "acct_session",
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": {
+      "$boundaryString": {
+        "count": 4097,
+        "unit": "x"
+      }
+    },
+    "matchingCode": "123456",
+    "platform": "macos",
+    "workspaceId": "ws_code"
+  },
+  "HostedDevicesCreatePendingDeviceRequest.devicePublicKeyProof.maxLength.valid": {
+    "accountSessionId": "acct_session",
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": {
+      "$boundaryString": {
+        "count": 4096,
+        "unit": "x"
+      }
+    },
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -6782,6 +6992,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": {
       "$boundaryString": {
         "count": 65,
@@ -6799,6 +7010,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": {
       "$boundaryString": {
         "count": 64,
@@ -6816,6 +7028,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresInTicks": 9007199254740992,
     "matchingCode": "123456",
     "platform": "macos",
@@ -6828,6 +7041,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresInTicks": 9007199254740991,
     "matchingCode": "123456",
     "platform": "macos",
@@ -6840,6 +7054,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresInTicks": -1,
     "matchingCode": "123456",
     "platform": "macos",
@@ -6852,6 +7067,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresInTicks": 0,
     "matchingCode": "123456",
     "platform": "macos",
@@ -6864,6 +7080,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "host": {
       "$boundaryString": {
         "count": 513,
@@ -6881,6 +7098,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "host": {
       "$boundaryString": {
         "count": 512,
@@ -6898,6 +7116,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "leaseHandoffDigest": {
       "$boundaryString": {
         "count": 513,
@@ -6915,6 +7134,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "leaseHandoffDigest": {
       "$boundaryString": {
         "count": 512,
@@ -6932,6 +7152,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "leaseId": {
       "$boundaryString": {
         "count": 513,
@@ -6949,6 +7170,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "leaseId": {
       "$boundaryString": {
         "count": 512,
@@ -6966,6 +7188,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": {
       "$boundaryString": {
         "count": 513,
@@ -6982,6 +7205,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": {
       "$boundaryString": {
         "count": 512,
@@ -6998,6 +7222,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": {
       "$boundaryString": {
@@ -7014,6 +7239,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": {
       "$boundaryString": {
@@ -7030,6 +7256,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "requestId": {
@@ -7047,6 +7274,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "requestId": {
@@ -7064,6 +7292,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "root": {
@@ -7081,6 +7310,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "root": {
@@ -7098,6 +7328,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "runtime": {
@@ -7115,6 +7346,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "runtime": {
@@ -7132,6 +7364,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "setupReceiptsDigest": {
@@ -7149,6 +7382,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "setupReceiptsDigest": {
@@ -7166,6 +7400,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": {
@@ -7182,6 +7417,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": {
@@ -7203,6 +7439,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -7219,6 +7456,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -7235,6 +7473,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -7251,6 +7490,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -7267,6 +7507,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -7283,6 +7524,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -7299,6 +7541,7 @@
     },
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -7315,6 +7558,7 @@
     },
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -7331,6 +7575,7 @@
       }
     },
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -7347,6 +7592,7 @@
       }
     },
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -7363,6 +7609,7 @@
         "unit": "x"
       }
     },
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -7379,6 +7626,41 @@
         "unit": "x"
       }
     },
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "matchingCode": "123456",
+    "platform": "macos",
+    "workspaceId": "ws_code"
+  },
+  "HostedDevicesCreatePendingDeviceWithBootstrapRequest.devicePublicKeyProof.maxLength.invalid": {
+    "bootstrapToken": "bootstrap-token",
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": {
+      "$boundaryString": {
+        "count": 4097,
+        "unit": "x"
+      }
+    },
+    "matchingCode": "123456",
+    "platform": "macos",
+    "workspaceId": "ws_code"
+  },
+  "HostedDevicesCreatePendingDeviceWithBootstrapRequest.devicePublicKeyProof.maxLength.valid": {
+    "bootstrapToken": "bootstrap-token",
+    "deviceAuthorizationProofVerifier": "dapv_p256_v1_verifier",
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": {
+      "$boundaryString": {
+        "count": 4096,
+        "unit": "x"
+      }
+    },
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": "ws_code"
@@ -7390,6 +7672,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": {
       "$boundaryString": {
         "count": 65,
@@ -7407,6 +7690,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresAt": {
       "$boundaryString": {
         "count": 64,
@@ -7424,6 +7708,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresInTicks": 9007199254740992,
     "matchingCode": "123456",
     "platform": "macos",
@@ -7436,6 +7721,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresInTicks": 9007199254740991,
     "matchingCode": "123456",
     "platform": "macos",
@@ -7448,6 +7734,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresInTicks": -1,
     "matchingCode": "123456",
     "platform": "macos",
@@ -7460,6 +7747,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "expiresInTicks": 0,
     "matchingCode": "123456",
     "platform": "macos",
@@ -7472,6 +7760,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "host": {
       "$boundaryString": {
         "count": 513,
@@ -7489,6 +7778,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "host": {
       "$boundaryString": {
         "count": 512,
@@ -7506,6 +7796,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "leaseHandoffDigest": {
       "$boundaryString": {
         "count": 513,
@@ -7523,6 +7814,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "leaseHandoffDigest": {
       "$boundaryString": {
         "count": 512,
@@ -7540,6 +7832,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "leaseId": {
       "$boundaryString": {
         "count": 513,
@@ -7557,6 +7850,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "leaseId": {
       "$boundaryString": {
         "count": 512,
@@ -7574,6 +7868,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": {
       "$boundaryString": {
         "count": 513,
@@ -7590,6 +7885,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": {
       "$boundaryString": {
         "count": 512,
@@ -7606,6 +7902,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": {
       "$boundaryString": {
@@ -7622,6 +7919,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": {
       "$boundaryString": {
@@ -7638,6 +7936,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "requestId": {
@@ -7655,6 +7954,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "requestId": {
@@ -7672,6 +7972,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "root": {
@@ -7689,6 +7990,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "root": {
@@ -7706,6 +8008,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "runtime": {
@@ -7723,6 +8026,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "runtime": {
@@ -7740,6 +8044,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "setupReceiptsDigest": {
@@ -7757,6 +8062,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "setupReceiptsDigest": {
@@ -7774,6 +8080,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": {
@@ -7790,6 +8097,7 @@
     "deviceId": "device_1",
     "deviceName": "MacBook",
     "devicePublicKey": "device_public_key_1",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
     "matchingCode": "123456",
     "platform": "macos",
     "workspaceId": {
@@ -7894,6 +8202,7 @@
         "unit": "x"
       }
     },
+    "requestedByDeviceProof": "proof_fetch_grant",
     "requestId": "request_1"
   },
   "HostedDevicesGetEncryptedGrantRequest.deviceId.maxLength.valid": {
@@ -7903,10 +8212,32 @@
         "unit": "x"
       }
     },
+    "requestedByDeviceProof": "proof_fetch_grant",
+    "requestId": "request_1"
+  },
+  "HostedDevicesGetEncryptedGrantRequest.requestedByDeviceProof.maxLength.invalid": {
+    "deviceId": "device_1",
+    "requestedByDeviceProof": {
+      "$boundaryString": {
+        "count": 4097,
+        "unit": "x"
+      }
+    },
+    "requestId": "request_1"
+  },
+  "HostedDevicesGetEncryptedGrantRequest.requestedByDeviceProof.maxLength.valid": {
+    "deviceId": "device_1",
+    "requestedByDeviceProof": {
+      "$boundaryString": {
+        "count": 4096,
+        "unit": "x"
+      }
+    },
     "requestId": "request_1"
   },
   "HostedDevicesGetEncryptedGrantRequest.requestId.maxLength.invalid": {
     "deviceId": "device_1",
+    "requestedByDeviceProof": "proof_fetch_grant",
     "requestId": {
       "$boundaryString": {
         "count": 513,
@@ -7916,6 +8247,7 @@
   },
   "HostedDevicesGetEncryptedGrantRequest.requestId.maxLength.valid": {
     "deviceId": "device_1",
+    "requestedByDeviceProof": "proof_fetch_grant",
     "requestId": {
       "$boundaryString": {
         "count": 512,
@@ -8064,6 +8396,7 @@
           "deviceId": "device_1",
           "deviceName": "MacBook",
           "devicePublicKey": "device_public_key_1",
+          "devicePublicKeyProof": "dapp_p256_v1_attestation",
           "expiresAt": "2026-06-23T12:00:01Z",
           "matchingCode": "123456",
           "platform": "macos",
@@ -8087,6 +8420,7 @@
           "deviceId": "device_1",
           "deviceName": "MacBook",
           "devicePublicKey": "device_public_key_1",
+          "devicePublicKeyProof": "dapp_p256_v1_attestation",
           "expiresAt": "2026-06-23T12:00:01Z",
           "matchingCode": "123456",
           "platform": "macos",
@@ -8307,41 +8641,28 @@
     },
     "workspaceId": "ws_code"
   },
-  "HostedEventsListCompactEventsRequest.authToken.maxLength.invalid": {
-    "authToken": {
-      "$boundaryString": {
-        "count": 4097,
-        "unit": "x"
-      }
-    },
-    "workspaceId": "ws_code"
-  },
-  "HostedEventsListCompactEventsRequest.authToken.maxLength.valid": {
-    "authToken": {
-      "$boundaryString": {
-        "count": 4096,
-        "unit": "x"
-      }
-    },
-    "workspaceId": "ws_code"
-  },
   "HostedEventsListCompactEventsRequest.limit.maximum.invalid": {
+    "accountSessionId": "acct_session",
     "limit": 4294967296,
     "workspaceId": "ws_code"
   },
   "HostedEventsListCompactEventsRequest.limit.maximum.valid": {
+    "accountSessionId": "acct_session",
     "limit": 4294967295,
     "workspaceId": "ws_code"
   },
   "HostedEventsListCompactEventsRequest.limit.minimum.invalid": {
+    "accountSessionId": "acct_session",
     "limit": -1,
     "workspaceId": "ws_code"
   },
   "HostedEventsListCompactEventsRequest.limit.minimum.valid": {
+    "accountSessionId": "acct_session",
     "limit": 0,
     "workspaceId": "ws_code"
   },
   "HostedEventsListCompactEventsRequest.workspaceId.maxLength.invalid": {
+    "accountSessionId": "acct_session",
     "workspaceId": {
       "$boundaryString": {
         "count": 513,
@@ -8350,6 +8671,7 @@
     }
   },
   "HostedEventsListCompactEventsRequest.workspaceId.maxLength.valid": {
+    "accountSessionId": "acct_session",
     "workspaceId": {
       "$boundaryString": {
         "count": 512,
@@ -9323,49 +9645,76 @@
       }
     }
   },
-  "HostedObjectsCreateStorageGcDeleteIntentRequest.authToken.maxLength.invalid": {
-    "authToken": {
-      "$boundaryString": {
-        "count": 4097,
-        "unit": "x"
-      }
-    },
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateStorageGcDeleteIntentRequest.authToken.maxLength.valid": {
-    "authToken": {
-      "$boundaryString": {
-        "count": 4096,
-        "unit": "x"
-      }
-    },
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "workspaceId": "ws_code"
-  },
   "HostedObjectsCreateStorageGcDeleteIntentRequest.objectKey.maxLength.invalid": {
-    "authToken": "cp_token",
     "objectKey": {
       "$boundaryString": {
         "count": 513,
         "unit": "x"
       }
     },
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_delete_intent",
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateStorageGcDeleteIntentRequest.objectKey.maxLength.valid": {
-    "authToken": "cp_token",
     "objectKey": {
       "$boundaryString": {
         "count": 512,
         "unit": "x"
       }
     },
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_delete_intent",
+    "workspaceId": "ws_code"
+  },
+  "HostedObjectsCreateStorageGcDeleteIntentRequest.requestedByDeviceId.maxLength.invalid": {
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "requestedByDeviceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "requestedByDeviceProof": "proof_gc_delete_intent",
+    "workspaceId": "ws_code"
+  },
+  "HostedObjectsCreateStorageGcDeleteIntentRequest.requestedByDeviceId.maxLength.valid": {
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "requestedByDeviceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "requestedByDeviceProof": "proof_gc_delete_intent",
+    "workspaceId": "ws_code"
+  },
+  "HostedObjectsCreateStorageGcDeleteIntentRequest.requestedByDeviceProof.maxLength.invalid": {
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": {
+      "$boundaryString": {
+        "count": 4097,
+        "unit": "x"
+      }
+    },
+    "workspaceId": "ws_code"
+  },
+  "HostedObjectsCreateStorageGcDeleteIntentRequest.requestedByDeviceProof.maxLength.valid": {
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": {
+      "$boundaryString": {
+        "count": 4096,
+        "unit": "x"
+      }
+    },
     "workspaceId": "ws_code"
   },
   "HostedObjectsCreateStorageGcDeleteIntentRequest.workspaceId.maxLength.invalid": {
-    "authToken": "cp_token",
     "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_delete_intent",
     "workspaceId": {
       "$boundaryString": {
         "count": 513,
@@ -9374,8 +9723,9 @@
     }
   },
   "HostedObjectsCreateStorageGcDeleteIntentRequest.workspaceId.maxLength.valid": {
-    "authToken": "cp_token",
     "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_delete_intent",
     "workspaceId": {
       "$boundaryString": {
         "count": 512,
@@ -9758,196 +10108,6 @@
     "createdByDeviceProof": "proof_upload_intent",
     "kind": "blob",
     "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "workspaceId": {
-      "$boundaryString": {
-        "count": 512,
-        "unit": "x"
-      }
-    }
-  },
-  "HostedObjectsCreateUploadIntentResponse.byteLength.maximum.invalid": {
-    "byteLength": 9007199254740992,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.byteLength.maximum.valid": {
-    "byteLength": 9007199254740991,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.byteLength.minimum.invalid": {
-    "byteLength": -1,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.byteLength.minimum.valid": {
-    "byteLength": 0,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.intentId.maxLength.invalid": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": {
-      "$boundaryString": {
-        "count": 513,
-        "unit": "x"
-      }
-    },
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.intentId.maxLength.valid": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": {
-      "$boundaryString": {
-        "count": 512,
-        "unit": "x"
-      }
-    },
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.method.maxLength.invalid": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": {
-      "$boundaryString": {
-        "count": 17,
-        "unit": "x"
-      }
-    },
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.method.maxLength.valid": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": {
-      "$boundaryString": {
-        "count": 16,
-        "unit": "x"
-      }
-    },
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.objectKey.maxLength.invalid": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": {
-      "$boundaryString": {
-        "count": 513,
-        "unit": "x"
-      }
-    },
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.objectKey.maxLength.valid": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": {
-      "$boundaryString": {
-        "count": 512,
-        "unit": "x"
-      }
-    },
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.signedUrl.maxLength.invalid": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": {
-      "$boundaryString": {
-        "count": 8193,
-        "unit": "x"
-      }
-    },
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.signedUrl.maxLength.valid": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": {
-      "$boundaryString": {
-        "count": 8192,
-        "unit": "x"
-      }
-    },
-    "workspaceId": "ws_code"
-  },
-  "HostedObjectsCreateUploadIntentResponse.workspaceId.maxLength.invalid": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
-    "workspaceId": {
-      "$boundaryString": {
-        "count": 513,
-        "unit": "x"
-      }
-    }
-  },
-  "HostedObjectsCreateUploadIntentResponse.workspaceId.maxLength.valid": {
-    "byteLength": 256,
-    "expiresAt": "2026-06-23T12:00:00Z",
-    "intentId": "intent_1",
-    "kind": "blob",
-    "method": "PUT",
-    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
-    "signedUrl": "https://r2.example/put",
     "workspaceId": {
       "$boundaryString": {
         "count": 512,
@@ -12257,25 +12417,8 @@
     },
     "workspaceId": "ws_code"
   },
-  "HostedRefsCreateWorkspaceRefRequest.authToken.maxLength.invalid": {
-    "authToken": {
-      "$boundaryString": {
-        "count": 4097,
-        "unit": "x"
-      }
-    },
-    "workspaceId": "ws_code"
-  },
-  "HostedRefsCreateWorkspaceRefRequest.authToken.maxLength.valid": {
-    "authToken": {
-      "$boundaryString": {
-        "count": 4096,
-        "unit": "x"
-      }
-    },
-    "workspaceId": "ws_code"
-  },
   "HostedRefsCreateWorkspaceRefRequest.workspaceId.maxLength.invalid": {
+    "accountSessionId": "acct_session",
     "workspaceId": {
       "$boundaryString": {
         "count": 513,
@@ -12284,6 +12427,7 @@
     }
   },
   "HostedRefsCreateWorkspaceRefRequest.workspaceId.maxLength.valid": {
+    "accountSessionId": "acct_session",
     "workspaceId": {
       "$boundaryString": {
         "count": 512,
@@ -12309,25 +12453,8 @@
     },
     "workspaceId": "ws_code"
   },
-  "HostedRefsGetWorkspaceRefRequest.authToken.maxLength.invalid": {
-    "authToken": {
-      "$boundaryString": {
-        "count": 4097,
-        "unit": "x"
-      }
-    },
-    "workspaceId": "ws_code"
-  },
-  "HostedRefsGetWorkspaceRefRequest.authToken.maxLength.valid": {
-    "authToken": {
-      "$boundaryString": {
-        "count": 4096,
-        "unit": "x"
-      }
-    },
-    "workspaceId": "ws_code"
-  },
   "HostedRefsGetWorkspaceRefRequest.workspaceId.maxLength.invalid": {
+    "accountSessionId": "acct_session",
     "workspaceId": {
       "$boundaryString": {
         "count": 513,
@@ -12336,6 +12463,7 @@
     }
   },
   "HostedRefsGetWorkspaceRefRequest.workspaceId.maxLength.valid": {
+    "accountSessionId": "acct_session",
     "workspaceId": {
       "$boundaryString": {
         "count": 512,
@@ -12361,41 +12489,28 @@
     },
     "workspaceId": "ws_code"
   },
-  "HostedRefsListWorkspaceRefHistoryRequest.authToken.maxLength.invalid": {
-    "authToken": {
-      "$boundaryString": {
-        "count": 4097,
-        "unit": "x"
-      }
-    },
-    "workspaceId": "ws_code"
-  },
-  "HostedRefsListWorkspaceRefHistoryRequest.authToken.maxLength.valid": {
-    "authToken": {
-      "$boundaryString": {
-        "count": 4096,
-        "unit": "x"
-      }
-    },
-    "workspaceId": "ws_code"
-  },
   "HostedRefsListWorkspaceRefHistoryRequest.limit.maximum.invalid": {
+    "accountSessionId": "acct_session",
     "limit": 4294967296,
     "workspaceId": "ws_code"
   },
   "HostedRefsListWorkspaceRefHistoryRequest.limit.maximum.valid": {
+    "accountSessionId": "acct_session",
     "limit": 4294967295,
     "workspaceId": "ws_code"
   },
   "HostedRefsListWorkspaceRefHistoryRequest.limit.minimum.invalid": {
+    "accountSessionId": "acct_session",
     "limit": -1,
     "workspaceId": "ws_code"
   },
   "HostedRefsListWorkspaceRefHistoryRequest.limit.minimum.valid": {
+    "accountSessionId": "acct_session",
     "limit": 0,
     "workspaceId": "ws_code"
   },
   "HostedRefsListWorkspaceRefHistoryRequest.workspaceId.maxLength.invalid": {
+    "accountSessionId": "acct_session",
     "workspaceId": {
       "$boundaryString": {
         "count": 513,
@@ -12404,6 +12519,7 @@
     }
   },
   "HostedRefsListWorkspaceRefHistoryRequest.workspaceId.maxLength.valid": {
+    "accountSessionId": "acct_session",
     "workspaceId": {
       "$boundaryString": {
         "count": 512,
@@ -12411,49 +12527,76 @@
       }
     }
   },
-  "HostedRetentionDeleteObjectMetadataAfterGcRequest.authToken.maxLength.invalid": {
-    "authToken": {
-      "$boundaryString": {
-        "count": 4097,
-        "unit": "x"
-      }
-    },
-    "objectKey": "obj_pack_fixture",
-    "workspaceId": "ws_code"
-  },
-  "HostedRetentionDeleteObjectMetadataAfterGcRequest.authToken.maxLength.valid": {
-    "authToken": {
-      "$boundaryString": {
-        "count": 4096,
-        "unit": "x"
-      }
-    },
-    "objectKey": "obj_pack_fixture",
-    "workspaceId": "ws_code"
-  },
   "HostedRetentionDeleteObjectMetadataAfterGcRequest.objectKey.maxLength.invalid": {
-    "authToken": "cp_token",
     "objectKey": {
       "$boundaryString": {
         "count": 513,
         "unit": "x"
       }
     },
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_metadata_delete",
     "workspaceId": "ws_code"
   },
   "HostedRetentionDeleteObjectMetadataAfterGcRequest.objectKey.maxLength.valid": {
-    "authToken": "cp_token",
     "objectKey": {
       "$boundaryString": {
         "count": 512,
         "unit": "x"
       }
     },
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_metadata_delete",
+    "workspaceId": "ws_code"
+  },
+  "HostedRetentionDeleteObjectMetadataAfterGcRequest.requestedByDeviceId.maxLength.invalid": {
+    "objectKey": "obj_pack_fixture",
+    "requestedByDeviceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "requestedByDeviceProof": "proof_gc_metadata_delete",
+    "workspaceId": "ws_code"
+  },
+  "HostedRetentionDeleteObjectMetadataAfterGcRequest.requestedByDeviceId.maxLength.valid": {
+    "objectKey": "obj_pack_fixture",
+    "requestedByDeviceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "requestedByDeviceProof": "proof_gc_metadata_delete",
+    "workspaceId": "ws_code"
+  },
+  "HostedRetentionDeleteObjectMetadataAfterGcRequest.requestedByDeviceProof.maxLength.invalid": {
+    "objectKey": "obj_pack_fixture",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": {
+      "$boundaryString": {
+        "count": 4097,
+        "unit": "x"
+      }
+    },
+    "workspaceId": "ws_code"
+  },
+  "HostedRetentionDeleteObjectMetadataAfterGcRequest.requestedByDeviceProof.maxLength.valid": {
+    "objectKey": "obj_pack_fixture",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": {
+      "$boundaryString": {
+        "count": 4096,
+        "unit": "x"
+      }
+    },
     "workspaceId": "ws_code"
   },
   "HostedRetentionDeleteObjectMetadataAfterGcRequest.workspaceId.maxLength.invalid": {
-    "authToken": "cp_token",
     "objectKey": "obj_pack_fixture",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_metadata_delete",
     "workspaceId": {
       "$boundaryString": {
         "count": 513,
@@ -12462,8 +12605,9 @@
     }
   },
   "HostedRetentionDeleteObjectMetadataAfterGcRequest.workspaceId.maxLength.valid": {
-    "authToken": "cp_token",
     "objectKey": "obj_pack_fixture",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_metadata_delete",
     "workspaceId": {
       "$boundaryString": {
         "count": 512,
@@ -12471,27 +12615,51 @@
       }
     }
   },
-  "HostedRetentionListStorageGcObjectsRequest.authToken.maxLength.invalid": {
-    "authToken": {
+  "HostedRetentionListStorageGcObjectsRequest.cursor.maxLength.invalid": {
+    "cursor": {
       "$boundaryString": {
         "count": 4097,
         "unit": "x"
       }
     },
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_list",
     "workspaceId": "ws_code"
   },
-  "HostedRetentionListStorageGcObjectsRequest.authToken.maxLength.valid": {
-    "authToken": {
+  "HostedRetentionListStorageGcObjectsRequest.cursor.maxLength.valid": {
+    "cursor": {
       "$boundaryString": {
         "count": 4096,
         "unit": "x"
       }
     },
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_list",
     "workspaceId": "ws_code"
   },
-  "HostedRetentionListStorageGcObjectsRequest.cursor.maxLength.invalid": {
-    "authToken": "cp_token",
-    "cursor": {
+  "HostedRetentionListStorageGcObjectsRequest.requestedByDeviceId.maxLength.invalid": {
+    "requestedByDeviceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "requestedByDeviceProof": "proof_gc_list",
+    "workspaceId": "ws_code"
+  },
+  "HostedRetentionListStorageGcObjectsRequest.requestedByDeviceId.maxLength.valid": {
+    "requestedByDeviceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "requestedByDeviceProof": "proof_gc_list",
+    "workspaceId": "ws_code"
+  },
+  "HostedRetentionListStorageGcObjectsRequest.requestedByDeviceProof.maxLength.invalid": {
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": {
       "$boundaryString": {
         "count": 4097,
         "unit": "x"
@@ -12499,9 +12667,9 @@
     },
     "workspaceId": "ws_code"
   },
-  "HostedRetentionListStorageGcObjectsRequest.cursor.maxLength.valid": {
-    "authToken": "cp_token",
-    "cursor": {
+  "HostedRetentionListStorageGcObjectsRequest.requestedByDeviceProof.maxLength.valid": {
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": {
       "$boundaryString": {
         "count": 4096,
         "unit": "x"
@@ -12510,7 +12678,8 @@
     "workspaceId": "ws_code"
   },
   "HostedRetentionListStorageGcObjectsRequest.workspaceId.maxLength.invalid": {
-    "authToken": "cp_token",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_list",
     "workspaceId": {
       "$boundaryString": {
         "count": 513,
@@ -12519,7 +12688,8 @@
     }
   },
   "HostedRetentionListStorageGcObjectsRequest.workspaceId.maxLength.valid": {
-    "authToken": "cp_token",
+    "requestedByDeviceId": "device_1",
+    "requestedByDeviceProof": "proof_gc_list",
     "workspaceId": {
       "$boundaryString": {
         "count": 512,
@@ -14104,6 +14274,1234 @@
     "queued": 0,
     "reconciliationRequired": 0,
     "waitingRetry": 0
+  },
+  "HostedUploadReservation.byteLength.maximum.invalid": {
+    "byteLength": 9007199254740992,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.byteLength.maximum.valid": {
+    "byteLength": 9007199254740991,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.byteLength.minimum.invalid": {
+    "byteLength": -1,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.byteLength.minimum.valid": {
+    "byteLength": 0,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.intentId.maxLength.invalid": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.intentId.maxLength.valid": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.method.maxLength.invalid": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": {
+      "$boundaryString": {
+        "count": 17,
+        "unit": "x"
+      }
+    },
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.method.maxLength.valid": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": {
+      "$boundaryString": {
+        "count": 16,
+        "unit": "x"
+      }
+    },
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.objectKey.maxLength.invalid": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.objectKey.maxLength.valid": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.signedUrl.maxLength.invalid": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": {
+      "$boundaryString": {
+        "count": 8193,
+        "unit": "x"
+      }
+    },
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.signedUrl.maxLength.valid": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": {
+      "$boundaryString": {
+        "count": 8192,
+        "unit": "x"
+      }
+    },
+    "workspaceId": "ws_code"
+  },
+  "HostedUploadReservation.workspaceId.maxLength.invalid": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    }
+  },
+  "HostedUploadReservation.workspaceId.maxLength.valid": {
+    "byteLength": 256,
+    "expiresAt": "2026-06-23T12:00:00Z",
+    "intentId": "intent_1",
+    "kind": "blob",
+    "method": "PUT",
+    "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+    "signedUrl": "https://r2.example/put",
+    "workspaceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    }
+  },
+  "HostedWorkspaceKeyRegrantAssignment.ciphertext.maxLength.invalid": {
+    "ciphertext": {
+      "$boundaryString": {
+        "count": 262145,
+        "unit": "x"
+      }
+    },
+    "keyEpoch": 2,
+    "state": "offered"
+  },
+  "HostedWorkspaceKeyRegrantAssignment.ciphertext.maxLength.valid": {
+    "ciphertext": {
+      "$boundaryString": {
+        "count": 262144,
+        "unit": "x"
+      }
+    },
+    "keyEpoch": 2,
+    "state": "offered"
+  },
+  "HostedWorkspaceKeyRegrantAssignment.keyEpoch.maximum.invalid": {
+    "keyEpoch": 4294967296,
+    "state": "offered"
+  },
+  "HostedWorkspaceKeyRegrantAssignment.keyEpoch.maximum.valid": {
+    "keyEpoch": 4294967295,
+    "state": "offered"
+  },
+  "HostedWorkspaceKeyRegrantAssignment.keyEpoch.minimum.invalid": {
+    "keyEpoch": -1,
+    "state": "offered"
+  },
+  "HostedWorkspaceKeyRegrantAssignment.keyEpoch.minimum.valid": {
+    "keyEpoch": 0,
+    "state": "offered"
+  },
+  "HostedWorkspaceKeyRegrantAssignment.sealedByDeviceId.maxLength.invalid": {
+    "keyEpoch": 2,
+    "sealedByDeviceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "state": "offered"
+  },
+  "HostedWorkspaceKeyRegrantAssignment.sealedByDeviceId.maxLength.valid": {
+    "keyEpoch": 2,
+    "sealedByDeviceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "state": "offered"
+  },
+  "HostedWorkspaceKeyRegrantOffer.acceptanceProofVerifier.maxLength.invalid": {
+    "acceptanceProofVerifier": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "ciphertext": "regrant_ciphertext",
+    "recipientDeviceId": "device_1"
+  },
+  "HostedWorkspaceKeyRegrantOffer.acceptanceProofVerifier.maxLength.valid": {
+    "acceptanceProofVerifier": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "ciphertext": "regrant_ciphertext",
+    "recipientDeviceId": "device_1"
+  },
+  "HostedWorkspaceKeyRegrantOffer.ciphertext.maxLength.invalid": {
+    "acceptanceProofVerifier": "gapv_verifier",
+    "ciphertext": {
+      "$boundaryString": {
+        "count": 262145,
+        "unit": "x"
+      }
+    },
+    "recipientDeviceId": "device_1"
+  },
+  "HostedWorkspaceKeyRegrantOffer.ciphertext.maxLength.valid": {
+    "acceptanceProofVerifier": "gapv_verifier",
+    "ciphertext": {
+      "$boundaryString": {
+        "count": 262144,
+        "unit": "x"
+      }
+    },
+    "recipientDeviceId": "device_1"
+  },
+  "HostedWorkspaceKeyRegrantOffer.recipientDeviceId.maxLength.invalid": {
+    "acceptanceProofVerifier": "gapv_verifier",
+    "ciphertext": "regrant_ciphertext",
+    "recipientDeviceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    }
+  },
+  "HostedWorkspaceKeyRegrantOffer.recipientDeviceId.maxLength.valid": {
+    "acceptanceProofVerifier": "gapv_verifier",
+    "ciphertext": "regrant_ciphertext",
+    "recipientDeviceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    }
+  },
+  "HostedWorkspaceKeyRegrantRecipient.deviceAuthorizationProofVerifier.maxLength.invalid": {
+    "deviceAuthorizationProofVerifier": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.deviceAuthorizationProofVerifier.maxLength.valid": {
+    "deviceAuthorizationProofVerifier": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.deviceFingerprint.maxLength.invalid": {
+    "deviceFingerprint": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.deviceFingerprint.maxLength.valid": {
+    "deviceFingerprint": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.deviceId.maxLength.invalid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.deviceId.maxLength.valid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.deviceName.maxLength.invalid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.deviceName.maxLength.valid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.devicePublicKey.maxLength.invalid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.devicePublicKey.maxLength.valid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.devicePublicKeyProof.maxLength.invalid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": {
+      "$boundaryString": {
+        "count": 4097,
+        "unit": "x"
+      }
+    },
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.devicePublicKeyProof.maxLength.valid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": {
+      "$boundaryString": {
+        "count": 4096,
+        "unit": "x"
+      }
+    },
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.heldKeyEpoch.maximum.invalid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 4294967296,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.heldKeyEpoch.maximum.valid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 4294967295,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.heldKeyEpoch.minimum.invalid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": -1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.heldKeyEpoch.minimum.valid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 0,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.keyEpoch.maximum.invalid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 4294967296,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.keyEpoch.maximum.valid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 4294967295,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.keyEpoch.minimum.invalid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": -1,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.keyEpoch.minimum.valid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 0,
+    "platform": "macos",
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.platform.maxLength.invalid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": {
+      "$boundaryString": {
+        "count": 129,
+        "unit": "x"
+      }
+    },
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.platform.maxLength.valid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": {
+      "$boundaryString": {
+        "count": 128,
+        "unit": "x"
+      }
+    },
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.sealedByDeviceId.maxLength.invalid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "sealedByDeviceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantRecipient.sealedByDeviceId.maxLength.valid": {
+    "deviceFingerprint": "fingerprint_1",
+    "deviceId": "device_1",
+    "deviceName": "MacBook",
+    "devicePublicKey": "age1recipient",
+    "devicePublicKeyProof": "dapp_p256_v1_attestation",
+    "heldKeyEpoch": 1,
+    "keyEpoch": 2,
+    "platform": "macos",
+    "sealedByDeviceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "state": "pending"
+  },
+  "HostedWorkspaceKeyRegrantWork.currentKeyEpoch.maximum.invalid": {
+    "currentKeyEpoch": 4294967296,
+    "outstanding": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.currentKeyEpoch.maximum.valid": {
+    "currentKeyEpoch": 4294967295,
+    "outstanding": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.currentKeyEpoch.minimum.invalid": {
+    "currentKeyEpoch": -1,
+    "outstanding": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.currentKeyEpoch.minimum.valid": {
+    "currentKeyEpoch": 0,
+    "outstanding": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.outstanding.maxItems.invalid": {
+    "currentKeyEpoch": 2,
+    "outstanding": {
+      "$boundaryArray": {
+        "count": 501,
+        "item": {
+          "deviceFingerprint": "fingerprint_1",
+          "deviceId": "device_1",
+          "deviceName": "MacBook",
+          "devicePublicKey": "age1recipient",
+          "devicePublicKeyProof": "dapp_p256_v1_attestation",
+          "heldKeyEpoch": 1,
+          "keyEpoch": 2,
+          "platform": "macos",
+          "state": "pending"
+        }
+      }
+    },
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.outstanding.maxItems.valid": {
+    "currentKeyEpoch": 2,
+    "outstanding": {
+      "$boundaryArray": {
+        "count": 500,
+        "item": {
+          "deviceFingerprint": "fingerprint_1",
+          "deviceId": "device_1",
+          "deviceName": "MacBook",
+          "devicePublicKey": "age1recipient",
+          "devicePublicKeyProof": "dapp_p256_v1_attestation",
+          "heldKeyEpoch": 1,
+          "keyEpoch": 2,
+          "platform": "macos",
+          "state": "pending"
+        }
+      }
+    },
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.pendingKeyEpoch.maximum.invalid": {
+    "currentKeyEpoch": 2,
+    "outstanding": [],
+    "pendingKeyEpoch": 4294967296,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.pendingKeyEpoch.maximum.valid": {
+    "currentKeyEpoch": 2,
+    "outstanding": [],
+    "pendingKeyEpoch": 4294967295,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.pendingKeyEpoch.minimum.invalid": {
+    "currentKeyEpoch": 2,
+    "outstanding": [],
+    "pendingKeyEpoch": -1,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.pendingKeyEpoch.minimum.valid": {
+    "currentKeyEpoch": 2,
+    "outstanding": [],
+    "pendingKeyEpoch": 0,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.pendingSeededByDeviceId.maxLength.invalid": {
+    "currentKeyEpoch": 2,
+    "outstanding": [],
+    "pendingSeededByDeviceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.pendingSeededByDeviceId.maxLength.valid": {
+    "currentKeyEpoch": 2,
+    "outstanding": [],
+    "pendingSeededByDeviceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeyRegrantWork.workspaceId.maxLength.invalid": {
+    "currentKeyEpoch": 2,
+    "outstanding": [],
+    "workspaceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    }
+  },
+  "HostedWorkspaceKeyRegrantWork.workspaceId.maxLength.valid": {
+    "currentKeyEpoch": 2,
+    "outstanding": [],
+    "workspaceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    }
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.deviceId.maxLength.invalid": {
+    "deviceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "deviceProof": "proof_accept_regrant",
+    "grantAcceptanceProof": "gap_proof",
+    "keyEpoch": 2,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.deviceId.maxLength.valid": {
+    "deviceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "deviceProof": "proof_accept_regrant",
+    "grantAcceptanceProof": "gap_proof",
+    "keyEpoch": 2,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.deviceProof.maxLength.invalid": {
+    "deviceId": "device_1",
+    "deviceProof": {
+      "$boundaryString": {
+        "count": 4097,
+        "unit": "x"
+      }
+    },
+    "grantAcceptanceProof": "gap_proof",
+    "keyEpoch": 2,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.deviceProof.maxLength.valid": {
+    "deviceId": "device_1",
+    "deviceProof": {
+      "$boundaryString": {
+        "count": 4096,
+        "unit": "x"
+      }
+    },
+    "grantAcceptanceProof": "gap_proof",
+    "keyEpoch": 2,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.grantAcceptanceProof.maxLength.invalid": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_accept_regrant",
+    "grantAcceptanceProof": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "keyEpoch": 2,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.grantAcceptanceProof.maxLength.valid": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_accept_regrant",
+    "grantAcceptanceProof": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "keyEpoch": 2,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.keyEpoch.maximum.invalid": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_accept_regrant",
+    "grantAcceptanceProof": "gap_proof",
+    "keyEpoch": 4294967296,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.keyEpoch.maximum.valid": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_accept_regrant",
+    "grantAcceptanceProof": "gap_proof",
+    "keyEpoch": 4294967295,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.keyEpoch.minimum.invalid": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_accept_regrant",
+    "grantAcceptanceProof": "gap_proof",
+    "keyEpoch": -1,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.keyEpoch.minimum.valid": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_accept_regrant",
+    "grantAcceptanceProof": "gap_proof",
+    "keyEpoch": 0,
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.workspaceId.maxLength.invalid": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_accept_regrant",
+    "grantAcceptanceProof": "gap_proof",
+    "keyEpoch": 2,
+    "workspaceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    }
+  },
+  "HostedWorkspaceKeysAcceptKeyRegrantRequest.workspaceId.maxLength.valid": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_accept_regrant",
+    "grantAcceptanceProof": "gap_proof",
+    "keyEpoch": 2,
+    "workspaceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    }
+  },
+  "HostedWorkspaceKeysGetKeyRegrantWorkRequest.deviceId.maxLength.invalid": {
+    "deviceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "deviceProof": "proof_regrant_work",
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysGetKeyRegrantWorkRequest.deviceId.maxLength.valid": {
+    "deviceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "deviceProof": "proof_regrant_work",
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysGetKeyRegrantWorkRequest.deviceProof.maxLength.invalid": {
+    "deviceId": "device_1",
+    "deviceProof": {
+      "$boundaryString": {
+        "count": 4097,
+        "unit": "x"
+      }
+    },
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysGetKeyRegrantWorkRequest.deviceProof.maxLength.valid": {
+    "deviceId": "device_1",
+    "deviceProof": {
+      "$boundaryString": {
+        "count": 4096,
+        "unit": "x"
+      }
+    },
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysGetKeyRegrantWorkRequest.workspaceId.maxLength.invalid": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_regrant_work",
+    "workspaceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    }
+  },
+  "HostedWorkspaceKeysGetKeyRegrantWorkRequest.workspaceId.maxLength.valid": {
+    "deviceId": "device_1",
+    "deviceProof": "proof_regrant_work",
+    "workspaceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    }
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.deviceId.maxLength.invalid": {
+    "deviceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "deviceProof": "proof_offer_regrants",
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.deviceId.maxLength.valid": {
+    "deviceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "deviceProof": "proof_offer_regrants",
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.deviceProof.maxLength.invalid": {
+    "deviceId": "device_owner",
+    "deviceProof": {
+      "$boundaryString": {
+        "count": 4097,
+        "unit": "x"
+      }
+    },
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.deviceProof.maxLength.valid": {
+    "deviceId": "device_owner",
+    "deviceProof": {
+      "$boundaryString": {
+        "count": 4096,
+        "unit": "x"
+      }
+    },
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.keyEpoch.maximum.invalid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_offer_regrants",
+    "keyEpoch": 4294967296,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.keyEpoch.maximum.valid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_offer_regrants",
+    "keyEpoch": 4294967295,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.keyEpoch.minimum.invalid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_offer_regrants",
+    "keyEpoch": -1,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.keyEpoch.minimum.valid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_offer_regrants",
+    "keyEpoch": 0,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.offers.maxItems.invalid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_offer_regrants",
+    "keyEpoch": 2,
+    "offers": {
+      "$boundaryArray": {
+        "count": 501,
+        "item": {
+          "acceptanceProofVerifier": "gapv_verifier",
+          "ciphertext": "regrant_ciphertext",
+          "recipientDeviceId": "device_1"
+        }
+      }
+    },
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.offers.maxItems.valid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_offer_regrants",
+    "keyEpoch": 2,
+    "offers": {
+      "$boundaryArray": {
+        "count": 500,
+        "item": {
+          "acceptanceProofVerifier": "gapv_verifier",
+          "ciphertext": "regrant_ciphertext",
+          "recipientDeviceId": "device_1"
+        }
+      }
+    },
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.workspaceId.maxLength.invalid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_offer_regrants",
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    }
+  },
+  "HostedWorkspaceKeysOfferKeyRegrantsRequest.workspaceId.maxLength.valid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_offer_regrants",
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    }
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.deviceId.maxLength.invalid": {
+    "deviceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "deviceProof": "proof_seed_epoch",
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.deviceId.maxLength.valid": {
+    "deviceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "deviceProof": "proof_seed_epoch",
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.deviceProof.maxLength.invalid": {
+    "deviceId": "device_owner",
+    "deviceProof": {
+      "$boundaryString": {
+        "count": 4097,
+        "unit": "x"
+      }
+    },
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.deviceProof.maxLength.valid": {
+    "deviceId": "device_owner",
+    "deviceProof": {
+      "$boundaryString": {
+        "count": 4096,
+        "unit": "x"
+      }
+    },
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.keyEpoch.maximum.invalid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_seed_epoch",
+    "keyEpoch": 4294967296,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.keyEpoch.maximum.valid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_seed_epoch",
+    "keyEpoch": 4294967295,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.keyEpoch.minimum.invalid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_seed_epoch",
+    "keyEpoch": -1,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.keyEpoch.minimum.valid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_seed_epoch",
+    "keyEpoch": 0,
+    "offers": [],
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.offers.maxItems.invalid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_seed_epoch",
+    "keyEpoch": 2,
+    "offers": {
+      "$boundaryArray": {
+        "count": 501,
+        "item": {
+          "acceptanceProofVerifier": "gapv_verifier",
+          "ciphertext": "regrant_ciphertext",
+          "recipientDeviceId": "device_1"
+        }
+      }
+    },
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.offers.maxItems.valid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_seed_epoch",
+    "keyEpoch": 2,
+    "offers": {
+      "$boundaryArray": {
+        "count": 500,
+        "item": {
+          "acceptanceProofVerifier": "gapv_verifier",
+          "ciphertext": "regrant_ciphertext",
+          "recipientDeviceId": "device_1"
+        }
+      }
+    },
+    "workspaceId": "ws_code"
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.workspaceId.maxLength.invalid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_seed_epoch",
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    }
+  },
+  "HostedWorkspaceKeysSeedKeyEpochRequest.workspaceId.maxLength.valid": {
+    "deviceId": "device_owner",
+    "deviceProof": "proof_seed_epoch",
+    "keyEpoch": 2,
+    "offers": [],
+    "workspaceId": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    }
   },
   "HostedWorkspaceRef.headSignature.maxLength.invalid": {
     "headSignature": {

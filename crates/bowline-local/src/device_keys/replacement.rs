@@ -1,24 +1,11 @@
 use std::{
     collections::BTreeMap,
-    path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use super::DeviceKeyError;
 
 static LOCKS: OnceLock<Mutex<BTreeMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
-static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
-
-pub(super) fn secret_temp_path(path: &Path) -> PathBuf {
-    path.with_extension(format!(
-        "tmp-{}-{}",
-        std::process::id(),
-        NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
-    ))
-}
 
 pub(super) fn verifier_replacement_lock(key: String) -> Result<Arc<Mutex<()>>, DeviceKeyError> {
     let mut locks = LOCKS

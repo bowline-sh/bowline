@@ -15,7 +15,7 @@ use super::generated::{
     HostedDevicesListDeviceTrustResponse, HostedDevicesRevokeDeviceRequest, HostedRevokedDevice,
 };
 use super::*;
-use crate::DeviceControlPlaneClient;
+use crate::{DeviceControlPlaneClient, EncryptedGrantRequest};
 
 impl DeviceControlPlaneClient for HostedControlPlaneClient {
     fn create_device_request(
@@ -34,6 +34,7 @@ impl DeviceControlPlaneClient for HostedControlPlaneClient {
                 device_id: input.device_id.as_str().to_string(),
                 device_name: input.device_name.clone(),
                 device_public_key: input.device_public_key.clone(),
+                device_public_key_proof: input.device_public_key_proof.clone(),
                 expires_at: None,
                 expires_in_ticks: Some(input.expires_in_ticks),
                 host: input.host.clone(),
@@ -52,28 +53,36 @@ impl DeviceControlPlaneClient for HostedControlPlaneClient {
             );
         }
 
-        let request = HostedDevicesCreatePendingDeviceRequest {
-            account_session_id: self
-                .verified_account_session_id(Some(input.workspace_id.as_str()))?,
-            device_authorization_proof_verifier: input.device_authorization_proof_verifier.clone(),
-            device_fingerprint: input.device_fingerprint.clone(),
-            device_id: input.device_id.as_str().to_string(),
-            device_name: input.device_name.clone(),
-            device_public_key: input.device_public_key.clone(),
-            expires_at: None,
-            expires_in_ticks: Some(input.expires_in_ticks),
-            host: input.host.clone(),
-            lease_handoff_digest: None,
-            lease_id: None,
-            matching_code: input.matching_code.clone(),
-            platform: input.platform.clone(),
-            request_id: None,
-            root: input.root.clone(),
-            runtime: input.runtime.clone(),
-            setup_receipts_digest: input.setup_receipts_digest.clone(),
-            workspace_id: input.workspace_id.as_str().to_string(),
+        let build_request = || {
+            Ok(HostedDevicesCreatePendingDeviceRequest {
+                account_session_id: self
+                    .verified_account_session_id(Some(input.workspace_id.as_str()))?,
+                device_authorization_proof_verifier: input
+                    .device_authorization_proof_verifier
+                    .clone(),
+                device_fingerprint: input.device_fingerprint.clone(),
+                device_id: input.device_id.as_str().to_string(),
+                device_name: input.device_name.clone(),
+                device_public_key: input.device_public_key.clone(),
+                device_public_key_proof: input.device_public_key_proof.clone(),
+                expires_at: None,
+                expires_in_ticks: Some(input.expires_in_ticks),
+                host: input.host.clone(),
+                lease_handoff_digest: None,
+                lease_id: None,
+                matching_code: input.matching_code.clone(),
+                platform: input.platform.clone(),
+                request_id: None,
+                root: input.root.clone(),
+                runtime: input.runtime.clone(),
+                setup_receipts_digest: input.setup_receipts_digest.clone(),
+                workspace_id: input.workspace_id.as_str().to_string(),
+            })
         };
-        DeviceRequest::try_from(self.call::<DevicesCreatePendingDevice>(&request)?)
+        DeviceRequest::try_from(self.call_reauthenticating::<DevicesCreatePendingDevice, _>(
+            Some(input.workspace_id.as_str()),
+            build_request,
+        )?)
     }
 
     fn create_bootstrap_session(
@@ -83,65 +92,88 @@ impl DeviceControlPlaneClient for HostedControlPlaneClient {
         let token = generate_bootstrap_token()?;
         let token_hash = sha256_token_hash(token.as_bytes());
         let proof_subject = bootstrap_session_proof_subject(&input, &token_hash);
-        let mut account_session_id = None;
-        let mut created_by_device_id = None;
-        let mut created_by_device_proof = None;
-        if self.account_session_auth_available() {
-            account_session_id =
-                Some(self.verified_account_session_id(Some(input.workspace_id.as_str()))?);
-        } else {
-            // The device proof is signed over the hand-assembled bootstrap
-            // session proof subject and rides the typed request unchanged.
-            created_by_device_proof = Some(self.device_proof(
-                &input.workspace_id,
-                "create-bootstrap-session",
-                &proof_subject,
-            )?);
-            created_by_device_id = Some(self.device_id.clone());
-        }
-        let request = HostedDevicesCreateBootstrapSessionRequest {
-            account_session_id,
-            bootstrap_token: token.clone(),
-            created_by_device_id,
-            created_by_device_proof,
-            expires_in_ticks: Some(input.expires_in_ticks),
-            host: input.host.clone(),
-            lease_handoff_digest: None,
-            lease_id: None,
-            root: input.root.clone(),
-            runtime: input.runtime.clone(),
-            setup_receipts_digest: input.setup_receipts_digest.clone(),
-            workspace_id: input.workspace_id.as_str().to_string(),
+        let build_request = || {
+            let mut account_session_id = None;
+            let mut created_by_device_id = None;
+            let mut created_by_device_proof = None;
+            if self.account_session_auth_available() {
+                account_session_id =
+                    Some(self.verified_account_session_id(Some(input.workspace_id.as_str()))?);
+            } else {
+                // The device proof is signed over the hand-assembled bootstrap
+                // session proof subject and rides the typed request unchanged.
+                created_by_device_proof = Some(self.device_proof(
+                    &input.workspace_id,
+                    "create-bootstrap-session",
+                    &proof_subject,
+                )?);
+                created_by_device_id = Some(self.device_id.as_str().to_string());
+            }
+            Ok(HostedDevicesCreateBootstrapSessionRequest {
+                account_session_id,
+                bootstrap_token: token.clone(),
+                created_by_device_id,
+                created_by_device_proof,
+                expires_in_ticks: Some(input.expires_in_ticks),
+                host: input.host.clone(),
+                lease_handoff_digest: None,
+                lease_id: None,
+                root: input.root.clone(),
+                runtime: input.runtime.clone(),
+                setup_receipts_digest: input.setup_receipts_digest.clone(),
+                workspace_id: input.workspace_id.as_str().to_string(),
+            })
         };
-        bootstrap_session_from_dto(self.call::<DevicesCreateBootstrapSession>(&request)?, token)
+        let dto = self.call_reauthenticating::<DevicesCreateBootstrapSession, _>(
+            Some(input.workspace_id.as_str()),
+            build_request,
+        )?;
+        bootstrap_session_from_dto(dto, token)
     }
 
     fn create_first_authorized_device(
         &self,
         input: FirstAuthorizedDeviceInput,
     ) -> ControlPlaneResult<AuthorizedDeviceRecord> {
-        let request = HostedDevicesCreateFirstAuthorizedDeviceRequest {
-            account_session_id: self
-                .verified_account_session_id(Some(input.workspace_id.as_str()))?,
-            device_authorization_proof_verifier: input.device_authorization_proof_verifier,
-            device_fingerprint: input.device_fingerprint,
-            device_id: input.device_id.as_str().to_string(),
-            device_name: input.device_name,
-            platform: input.platform,
-            workspace_id: input.workspace_id.as_str().to_string(),
-        };
-        AuthorizedDeviceRecord::try_from(self.call::<DevicesCreateFirstAuthorizedDevice>(&request)?)
+        AuthorizedDeviceRecord::try_from(
+            self.call_reauthenticating::<DevicesCreateFirstAuthorizedDevice, _>(
+                Some(input.workspace_id.as_str()),
+                || {
+                    Ok(HostedDevicesCreateFirstAuthorizedDeviceRequest {
+                        account_session_id: self
+                            .verified_account_session_id(Some(input.workspace_id.as_str()))?,
+                        device_authorization_proof_verifier: input
+                            .device_authorization_proof_verifier
+                            .clone(),
+                        device_fingerprint: input.device_fingerprint.clone(),
+                        device_id: input.device_id.as_str().to_string(),
+                        device_name: input.device_name.clone(),
+                        device_public_key: input.device_public_key.clone(),
+                        device_public_key_proof: input.device_public_key_proof.clone(),
+                        platform: input.platform.clone(),
+                        workspace_id: input.workspace_id.as_str().to_string(),
+                    })
+                },
+            )?,
+        )
     }
 
     fn list_device_trust(
         &self,
         workspace_id: &WorkspaceId,
     ) -> ControlPlaneResult<DeviceApprovalRequestList> {
-        let request = HostedDevicesListDeviceTrustRequest {
-            account_session_id: self.verified_account_session_id(Some(workspace_id.as_str()))?,
-            workspace_id: workspace_id.as_str().to_string(),
-        };
-        DeviceApprovalRequestList::try_from(self.call::<DevicesListDeviceTrust>(&request)?)
+        DeviceApprovalRequestList::try_from(
+            self.call_reauthenticating::<DevicesListDeviceTrust, _>(
+                Some(workspace_id.as_str()),
+                || {
+                    Ok(HostedDevicesListDeviceTrustRequest {
+                        account_session_id: self
+                            .verified_account_session_id(Some(workspace_id.as_str()))?,
+                        workspace_id: workspace_id.as_str().to_string(),
+                    })
+                },
+            )?,
+        )
     }
 
     fn approve_device_request(
@@ -188,14 +220,13 @@ impl DeviceControlPlaneClient for HostedControlPlaneClient {
 
     fn get_encrypted_device_grant(
         &self,
-        request_id: &DeviceApprovalRequestId,
-        device_id: &DeviceId,
+        input: EncryptedGrantRequest,
     ) -> ControlPlaneResult<Option<DeviceApproval>> {
         if let Some(bootstrap_token) = &self.bootstrap_token {
             let request = HostedDevicesGetEncryptedGrantWithBootstrapRequest {
                 bootstrap_token: bootstrap_token.clone(),
-                device_id: device_id.as_str().to_string(),
-                request_id: request_id.as_str().to_string(),
+                device_id: input.device_id.as_str().to_string(),
+                request_id: input.request_id.as_str().to_string(),
             };
             return self
                 .call::<DevicesGetEncryptedGrantWithBootstrap>(&request)?
@@ -204,8 +235,9 @@ impl DeviceControlPlaneClient for HostedControlPlaneClient {
         }
 
         let request = HostedDevicesGetEncryptedGrantRequest {
-            device_id: device_id.as_str().to_string(),
-            request_id: request_id.as_str().to_string(),
+            device_id: input.device_id.as_str().to_string(),
+            requested_by_device_proof: input.requested_by_device_proof,
+            request_id: input.request_id.as_str().to_string(),
         };
         self.call::<DevicesGetEncryptedGrant>(&request)?
             .map(DeviceApproval::try_from)
@@ -252,6 +284,7 @@ impl TryFrom<HostedDeviceRequest> for DeviceRequest {
             device_name: dto.device_name,
             platform: dto.platform,
             device_public_key: dto.device_public_key,
+            device_public_key_proof: dto.device_public_key_proof,
             device_fingerprint: dto.device_fingerprint,
             device_authorization_proof_verifier: dto.device_authorization_proof_verifier,
             matching_code: dto.matching_code,
@@ -260,9 +293,9 @@ impl TryFrom<HostedDeviceRequest> for DeviceRequest {
             root: dto.root,
             runtime: dto.runtime,
             setup_receipts_digest: dto.setup_receipts_digest,
-            requested_at: parse_control_timestamp(&dto.requested_at)
+            requested_at: parse_control_timestamp(dto.requested_at.as_str())
                 .map_err(|error| add_field_context(error, "requestedAt"))?,
-            expires_at: parse_control_timestamp(&dto.expires_at)
+            expires_at: parse_control_timestamp(dto.expires_at.as_str())
                 .map_err(|error| add_field_context(error, "expiresAt"))?,
             state: device_request_state_from_dto(dto.state),
         })
@@ -280,7 +313,7 @@ impl TryFrom<HostedAuthorizedDevice> for AuthorizedDeviceRecord {
             device_name: dto.device_name,
             platform: dto.platform,
             device_fingerprint: dto.device_fingerprint,
-            authorized_at: parse_control_timestamp(&dto.authorized_at)
+            authorized_at: parse_control_timestamp(dto.authorized_at.as_str())
                 .map_err(|error| add_field_context(error, "authorizedAt"))?,
             authorized_by_device_id: dto.authorized_by_device_id.map(DeviceId::new),
             device_authorization_proof_verifier: dto.device_authorization_proof_verifier,
@@ -300,7 +333,7 @@ impl TryFrom<HostedRevokedDevice> for RevokedDeviceRecord {
             device_name: dto.device_name,
             platform: dto.platform,
             device_fingerprint: dto.device_fingerprint,
-            revoked_at: parse_control_timestamp(&dto.revoked_at)
+            revoked_at: parse_control_timestamp(dto.revoked_at.as_str())
                 .map_err(|error| add_field_context(error, "revokedAt"))?,
             revoked_by_device_id: DeviceId::new(dto.revoked_by_device_id),
             reason: dto.reason,
@@ -326,9 +359,9 @@ impl TryFrom<HostedDeviceApproval> for DeviceApproval {
             approved_by_device_id: DeviceId::new(dto.approver_device_id),
             encrypted_grant_ciphertext: dto.ciphertext,
             key_epoch: dto.key_epoch,
-            granted_at: parse_control_timestamp(&dto.created_at)
+            granted_at: parse_control_timestamp(dto.created_at.as_str())
                 .map_err(|error| add_field_context(error, "createdAt"))?,
-            expires_at: parse_control_timestamp(&dto.expires_at)
+            expires_at: parse_control_timestamp(dto.expires_at.as_str())
                 .map_err(|error| add_field_context(error, "expiresAt"))?,
             accepted_at: optional_timestamp_from_dto(dto.accepted_at, "acceptedAt")?,
             harness_only: false,
@@ -346,7 +379,7 @@ impl TryFrom<HostedDeviceDenial> for DeviceDenial {
             workspace_id: WorkspaceId::new(dto.workspace_id),
             device_id: DeviceId::new(dto.device_id),
             denied_by_device_id: DeviceId::new(dto.denied_by_device_id),
-            denied_at: parse_control_timestamp(&dto.denied_at)
+            denied_at: parse_control_timestamp(dto.denied_at.as_str())
                 .map_err(|error| add_field_context(error, "deniedAt"))?,
             reason: dto.reason,
         })
@@ -391,7 +424,7 @@ fn bootstrap_session_from_dto(
         token,
         runtime: dto.runtime,
         setup_receipts_digest: dto.setup_receipts_digest,
-        expires_at: parse_control_timestamp(&dto.expires_at)
+        expires_at: parse_control_timestamp(dto.expires_at.as_str())
             .map_err(|error| add_field_context(error, "expiresAt"))?,
     })
 }
@@ -417,6 +450,7 @@ mod tests {
             device_name: "MacBook".to_string(),
             platform: "macos".to_string(),
             device_public_key: "device_public_key_1".to_string(),
+            device_public_key_proof: "dapp_p256_v1_attestation".to_string(),
             device_fingerprint: "fingerprint_1".to_string(),
             device_authorization_proof_verifier: "dapv_p256_v1_verifier".to_string(),
             matching_code: "123456".to_string(),
@@ -427,8 +461,8 @@ mod tests {
             root: None,
             runtime: Some("codex-cloud".to_string()),
             setup_receipts_digest: None,
-            requested_at: "t1730000000000".to_string(),
-            expires_at: "t1730000001000".to_string(),
+            requested_at: wire_timestamp("2024-10-27T03:33:20Z"),
+            expires_at: wire_timestamp("2024-10-27T03:33:21Z"),
             state: HostedDeviceRequestState::Pending,
         }
     }
@@ -445,8 +479,8 @@ mod tests {
             approver_device_id: "device_owner".to_string(),
             ciphertext: "grant_ciphertext".to_string(),
             key_epoch: 3,
-            created_at: "t1730000004000".to_string(),
-            expires_at: "t1730000005000".to_string(),
+            created_at: wire_timestamp("2024-10-27T03:33:24Z"),
+            expires_at: wire_timestamp("2024-10-27T03:33:25Z"),
             accepted_at: None,
         }
     }
@@ -467,14 +501,16 @@ mod tests {
     }
 
     #[test]
-    fn device_request_dto_reports_malformed_timestamp_field() {
-        let mut dto = request_dto();
-        dto.expires_at = "not-a-timestamp".to_string();
-        assert_parse_error_field(DeviceRequest::try_from(dto), "expiresAt");
-
-        let mut requested = request_dto();
-        requested.requested_at = "bad".to_string();
-        assert_parse_error_field(DeviceRequest::try_from(requested), "requestedAt");
+    fn device_request_dto_rejects_malformed_timestamp_field() {
+        for field in ["expiresAt", "requestedAt"] {
+            let error = decode_dto_with_field::<_, HostedDeviceRequest>(
+                &request_dto(),
+                field,
+                serde_json::json!("not-a-timestamp"),
+            )
+            .expect_err("malformed timestamp must reject");
+            assert!(error.contains("RFC 3339"), "field {field}: {error}");
+        }
     }
 
     #[test]
@@ -510,9 +546,13 @@ mod tests {
         assert!(!approval.harness_only);
         assert_eq!(approval.granted_at.tick, 1_730_000_004_000);
 
-        let mut dto = approval_dto();
-        dto.created_at = "nope".to_string();
-        assert_parse_error_field(DeviceApproval::try_from(dto), "createdAt");
+        let error = decode_dto_with_field::<_, HostedDeviceApproval>(
+            &approval_dto(),
+            "createdAt",
+            serde_json::json!("nope"),
+        )
+        .expect_err("malformed timestamp must reject");
+        assert!(error.contains("RFC 3339"), "{error}");
     }
 
     #[test]
@@ -523,7 +563,7 @@ mod tests {
             device_name: "MacBook".to_string(),
             platform: "linux".to_string(),
             device_fingerprint: "fingerprint_1".to_string(),
-            authorized_at: "t1730000002000".to_string(),
+            authorized_at: wire_timestamp("2024-10-27T03:33:22Z"),
             authorized_by_device_id: Some("device_owner".to_string()),
             device_authorization_proof_verifier: Some("dapv_p256_v1_verifier".to_string()),
             revoked_at: None,
@@ -545,7 +585,7 @@ mod tests {
             device_name: "MacBook".to_string(),
             platform: "macos".to_string(),
             device_fingerprint: "fingerprint_1".to_string(),
-            revoked_at: "t1730000003000".to_string(),
+            revoked_at: wire_timestamp("2024-10-27T03:33:23Z"),
             revoked_by_device_id: "device_owner".to_string(),
             reason: "rotated".to_string(),
         })
@@ -561,7 +601,7 @@ mod tests {
             workspace_id: "ws_code".to_string(),
             device_id: "device_1".to_string(),
             denied_by_device_id: "device_owner".to_string(),
-            denied_at: "t1730000000000".to_string(),
+            denied_at: wire_timestamp("2024-10-27T03:33:20Z"),
             reason: "unrecognized host".to_string(),
         })
         .expect("denial");
@@ -580,7 +620,7 @@ mod tests {
                 lease_handoff_digest: Some("lease_handoff_blake3:def456".to_string()),
                 runtime: Some("codex-cloud".to_string()),
                 setup_receipts_digest: Some("setup_receipts_blake3:abc123".to_string()),
-                expires_at: "2026-07-02T12:00:00Z".to_string(),
+                expires_at: wire_timestamp("2026-07-02T12:00:00Z"),
             },
             "token-secret".to_string(),
         )
@@ -600,7 +640,7 @@ mod tests {
                 device_name: "MacBook".to_string(),
                 platform: "macos".to_string(),
                 device_fingerprint: "fingerprint_auth".to_string(),
-                authorized_at: "t1730000002000".to_string(),
+                authorized_at: wire_timestamp("2024-10-27T03:33:22Z"),
                 authorized_by_device_id: None,
                 device_authorization_proof_verifier: None,
                 revoked_at: None,
@@ -613,13 +653,5 @@ mod tests {
         assert!(list.revoked_devices.is_empty());
         assert_eq!(list.pending_requests[0].device_id.as_str(), "device_1");
         assert_eq!(list.authorized_devices[0].device_id.as_str(), "device_auth");
-    }
-
-    fn assert_parse_error_field<T: std::fmt::Debug>(result: ControlPlaneResult<T>, field: &str) {
-        let error = result.expect_err("malformed value must reject");
-        assert!(
-            error.to_string().contains(&format!("`{field}`")),
-            "error must identify field `{field}`, got: {error}"
-        );
     }
 }

@@ -2,23 +2,24 @@ use super::generated::{
     HostedObjectKind, HostedObjectMetadata, HostedObjectPointerInput,
     HostedObjectQueriesGetObjectMetadataRequest, HostedObjectsCommitUploadedObjectMetadataRequest,
     HostedObjectsCreateDownloadIntentRequest, HostedObjectsCreateStorageGcDeleteIntentRequest,
-    HostedObjectsCreateUploadIntentRequest, HostedObjectsCreateUploadVerificationIntentRequest,
+    HostedObjectsCreateUploadIntentRequest, HostedObjectsCreateUploadIntentResponse,
+    HostedObjectsCreateUploadVerificationIntentRequest,
     HostedObjectsMarkObjectRetentionStateRequest,
     HostedRetentionDeleteObjectMetadataAfterGcRequest, HostedRetentionListStorageGcObjectsRequest,
-    HostedRetentionState, HostedStorageGcObjectRef, ObjectQueriesGetObjectMetadata,
-    ObjectsCommitUploadedObjectMetadata, ObjectsCreateDownloadIntent,
-    ObjectsCreateStorageGcDeleteIntent, ObjectsCreateUploadIntent,
+    HostedRetentionState, HostedStorageGcObjectRef, HostedUploadIntentOutcome,
+    ObjectQueriesGetObjectMetadata, ObjectsCommitUploadedObjectMetadata,
+    ObjectsCreateDownloadIntent, ObjectsCreateStorageGcDeleteIntent, ObjectsCreateUploadIntent,
     ObjectsCreateUploadVerificationIntent, ObjectsMarkObjectRetentionState,
     RetentionDeleteObjectMetadataAfterGc, RetentionListStorageGcObjects,
 };
 use super::*;
-use crate::ObjectControlPlaneClient;
+use crate::{ObjectControlPlaneClient, UploadIntentOutcome};
 
 impl ObjectControlPlaneClient for HostedControlPlaneClient {
     fn create_upload_intent(
         &self,
         request: UploadIntentRequest,
-    ) -> ControlPlaneResult<UploadIntent> {
+    ) -> ControlPlaneResult<UploadIntentOutcome> {
         let object_key = request.object_key.clone().unwrap_or_else(|| {
             self.generated_object_key(request.object_kind, &request.workspace_id)
         });
@@ -27,10 +28,7 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
             request.object_kind,
             request.byte_len,
             &request.checksum_sha256,
-            request
-                .content_id
-                .as_ref()
-                .map(|content_id| content_id.as_str()),
+            request.content_id.as_ref(),
         );
         let created_by_device_proof = self.device_proof(
             &request.workspace_id,
@@ -44,20 +42,14 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
             content_id: request
                 .content_id
                 .map(|content_id| content_id.as_str().to_string()),
-            created_by_device_id: self.device_id.clone(),
+            created_by_device_id: self.device_id.as_str().to_string(),
             created_by_device_proof,
             kind: object_kind_to_dto(request.object_kind),
             object_key,
             workspace_id: request.workspace_id.as_str().to_string(),
         };
         let response = self.call::<ObjectsCreateUploadIntent>(&typed_request)?;
-        Ok(UploadIntent {
-            workspace_id: WorkspaceId::new(response.workspace_id),
-            object_key: response.object_key,
-            object_kind: object_kind_from_dto(response.kind),
-            byte_len: response.byte_length,
-            signed_url: signed_url_from_dto(response.signed_url, &response.expires_at)?,
-        })
+        upload_intent_outcome_from_dto(response)
     }
 
     fn create_download_intent(
@@ -74,7 +66,7 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
             length: request.range.map(|range| range.length),
             object_key: request.object_key.clone(),
             offset: request.range.map(|range| range.offset),
-            requested_by_device_id: self.device_id.clone(),
+            requested_by_device_id: self.device_id.as_str().to_string(),
             requested_by_device_proof,
             workspace_id: request.workspace_id.as_str().to_string(),
         };
@@ -83,7 +75,7 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
             workspace_id: WorkspaceId::new(response.workspace_id),
             object_key: response.object_key,
             range: request.range,
-            signed_url: signed_url_from_dto(response.signed_url, &response.expires_at)?,
+            signed_url: signed_url_from_dto(response.signed_url, response.expires_at.as_str())?,
         })
     }
 
@@ -94,10 +86,7 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
         let proof_subject = upload_verification_proof_subject(
             &request.object_key,
             request.byte_len,
-            request
-                .content_id
-                .as_ref()
-                .map(|content_id| content_id.as_str()),
+            request.content_id.as_ref(),
         );
         let requested_by_device_proof = self.device_proof(
             &request.workspace_id,
@@ -110,7 +99,7 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
                 .content_id
                 .map(|content_id| content_id.as_str().to_string()),
             object_key: request.object_key.clone(),
-            requested_by_device_id: self.device_id.clone(),
+            requested_by_device_id: self.device_id.as_str().to_string(),
             requested_by_device_proof,
             workspace_id: request.workspace_id.as_str().to_string(),
         };
@@ -119,7 +108,7 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
             workspace_id: WorkspaceId::new(response.workspace_id),
             object_key: response.object_key,
             range: None,
-            signed_url: signed_url_from_dto(response.signed_url, &response.expires_at)?,
+            signed_url: signed_url_from_dto(response.signed_url, response.expires_at.as_str())?,
         })
     }
 
@@ -142,7 +131,7 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
         )?;
         let typed_request = HostedObjectsMarkObjectRetentionStateRequest {
             object_key: update.object_key,
-            requested_by_device_id: self.device_id.clone(),
+            requested_by_device_id: self.device_id.as_str().to_string(),
             requested_by_device_proof,
             retention_state: retention_state_to_dto(update.retention_state),
             workspace_id: update.workspace_id.as_str().to_string(),
@@ -155,9 +144,15 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
         workspace_id: &WorkspaceId,
         object_key: &str,
     ) -> ControlPlaneResult<DeleteIntent> {
+        let requested_by_device_proof = self.device_proof(
+            workspace_id,
+            "create-storage-gc-delete-intent",
+            &storage_gc_object_proof_subject(object_key),
+        )?;
         let typed_request = HostedObjectsCreateStorageGcDeleteIntentRequest {
-            auth_token: self.control_plane_token.clone(),
             object_key: object_key.to_string(),
+            requested_by_device_id: self.device_id.as_str().to_string(),
+            requested_by_device_proof,
             workspace_id: workspace_id.as_str().to_string(),
         };
         let response = self.call::<ObjectsCreateStorageGcDeleteIntent>(&typed_request)?;
@@ -166,7 +161,7 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
             object_key: response.object_key,
             object_kind: object_kind_from_dto(response.kind),
             key_epoch: response.key_epoch,
-            signed_url: signed_url_from_dto(response.signed_url, &response.expires_at)?,
+            signed_url: signed_url_from_dto(response.signed_url, response.expires_at.as_str())?,
         })
     }
 
@@ -179,7 +174,7 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
             self.device_proof(workspace_id, "head-object-metadata", object_key)?;
         let typed_request = HostedObjectQueriesGetObjectMetadataRequest {
             object_key: object_key.to_string(),
-            requested_by_device_id: self.device_id.clone(),
+            requested_by_device_id: self.device_id.as_str().to_string(),
             requested_by_device_proof,
             workspace_id: workspace_id.as_str().to_string(),
         };
@@ -199,10 +194,18 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
         let mut objects = Vec::new();
 
         loop {
+            // Each page carries its own proof: the subject is the cursor, so a
+            // page proof cannot be replayed against a different page.
+            let requested_by_device_proof = self.device_proof(
+                workspace_id,
+                "list-storage-gc-objects",
+                &storage_gc_list_proof_subject(cursor.as_deref()),
+            )?;
             let request = HostedRetentionListStorageGcObjectsRequest {
-                auth_token: self.control_plane_token.clone(),
-                workspace_id: workspace_id.as_str().to_string(),
                 cursor: cursor.clone(),
+                requested_by_device_id: self.device_id.as_str().to_string(),
+                requested_by_device_proof,
+                workspace_id: workspace_id.as_str().to_string(),
             };
             let page = self.call::<RetentionListStorageGcObjects>(&request)?;
             for object in page.objects {
@@ -222,9 +225,15 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
         workspace_id: &WorkspaceId,
         object_key: &str,
     ) -> ControlPlaneResult<bool> {
+        let requested_by_device_proof = self.device_proof(
+            workspace_id,
+            "delete-object-metadata-after-gc",
+            &storage_gc_object_proof_subject(object_key),
+        )?;
         let request = HostedRetentionDeleteObjectMetadataAfterGcRequest {
-            auth_token: self.control_plane_token.clone(),
             object_key: object_key.to_string(),
+            requested_by_device_id: self.device_id.as_str().to_string(),
+            requested_by_device_proof,
             workspace_id: workspace_id.as_str().to_string(),
         };
         Ok(self
@@ -315,6 +324,43 @@ fn signed_url_from_dto(url: String, expires_at: &str) -> ControlPlaneResult<Sign
     })
 }
 
+/// Split the upload-intent response into the two things it can mean. The wire
+/// record carries the payloads as optional siblings, so the outcome tag is the
+/// only authority on which one must be there; a payload missing under its own
+/// tag is a server that did not honour the contract, never a silent fallback.
+fn upload_intent_outcome_from_dto(
+    dto: HostedObjectsCreateUploadIntentResponse,
+) -> ControlPlaneResult<UploadIntentOutcome> {
+    match dto.outcome {
+        HostedUploadIntentOutcome::Reserved => {
+            let reservation = dto.reservation.ok_or(ControlPlaneError::ResponseShape {
+                reason: "reserved upload intent carried no reservation",
+                field: Some("reservation"),
+            })?;
+            Ok(UploadIntentOutcome::Reserved(UploadIntent {
+                workspace_id: WorkspaceId::new(reservation.workspace_id),
+                object_key: reservation.object_key,
+                object_kind: object_kind_from_dto(reservation.kind),
+                byte_len: reservation.byte_length,
+                signed_url: signed_url_from_dto(
+                    reservation.signed_url,
+                    reservation.expires_at.as_str(),
+                )?,
+            }))
+        }
+        HostedUploadIntentOutcome::AlreadyCommitted => {
+            let committed = dto.committed.ok_or(ControlPlaneError::ResponseShape {
+                reason: "already-committed upload intent carried no metadata",
+                field: Some("committed"),
+            })?;
+            Ok(UploadIntentOutcome::AlreadyCommitted(
+                object_metadata_from_dto(committed)
+                    .map_err(|error| add_field_context(error, "committed"))?,
+            ))
+        }
+    }
+}
+
 /// Convert a decoded object-metadata DTO into the storage domain type,
 /// re-validating the opaque object key and canonical timestamp at the boundary
 /// just as the former `parse_storage_metadata` did.
@@ -330,7 +376,7 @@ fn object_metadata_from_dto(dto: HostedObjectMetadata) -> ControlPlaneResult<Obj
         hash: dto.hash,
         key_epoch: dto.key_epoch,
         created_by_device_id: None,
-        created_at_unix_ms: parse_control_timestamp(&dto.created_at)
+        created_at_unix_ms: parse_control_timestamp(dto.created_at.as_str())
             .map_err(|error| add_field_context(error, "createdAt"))?
             .tick,
         retention_state: retention_state_from_dto(dto.retention_state),

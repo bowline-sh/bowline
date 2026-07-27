@@ -1,5 +1,8 @@
 use super::*;
-use bowline_storage::{ObjectContentId, ObjectHash, ReopenableObjectSource};
+use bowline_storage::{
+    ObjectContentId, ObjectHash, ObjectKind as StorageObjectKind, PutObjectRequest,
+    PutObjectSource, ReopenableObjectSource,
+};
 use std::{
     io::{Cursor, Read, Write},
     net::TcpListener,
@@ -8,6 +11,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     thread,
+    time::Duration,
 };
 
 struct ConditionalRetryTestSource {
@@ -208,7 +212,7 @@ fn owned_signed_url_response(status: &str, body: Arc<Vec<u8>>) -> String {
 fn streaming_precondition_response_verifies_without_consuming_put_body() {
     let bytes = Arc::new(vec![0x5a; 8 * 1024 * 1024]);
     let key = ObjectKey::new(format!("b_{}", "d5".repeat(32))).expect("object key");
-    let hash = stable_object_hash(&bytes);
+    let hash = ObjectHash::of_bytes(&bytes);
     let source = ConditionalRetryTestSource {
         bytes: bytes.clone(),
         first_upload_bytes: Some(Arc::new(vec![0xa5; bytes.len()])),
@@ -227,20 +231,20 @@ fn streaming_precondition_response_verifies_without_consuming_put_body() {
     let store = SignedUrlByteStore::new(&control_plane, "ws_streaming_412");
 
     let metadata = store
-        .put_object_reader_with_content_id_at_epoch(PutObjectReaderRequest {
+        .put(PutObjectRequest {
             key: key.clone(),
             kind: StorageObjectKind::WorkspaceFileV1,
             content_id: ObjectContentId::new("cid_streaming_412"),
-            source: &source,
+            source: PutObjectSource::Reader(&source),
             byte_len: bytes.len() as u64,
-            expected_hash: ObjectHash::from_stable_hash(hash.clone()),
+            expected_hash: hash.clone(),
             key_epoch: 1,
             created_by_device_id: None,
         })
         .expect("matching existing object should verify");
 
     assert_eq!(metadata.key, key);
-    assert_eq!(metadata.hash, hash);
+    assert_eq!(metadata.hash, hash.as_str());
     assert_eq!(source.opens.load(Ordering::Relaxed), 3);
     let metrics = store.metrics();
     assert_eq!(metrics.conditional_write_conflict_count, 1);
@@ -268,18 +272,20 @@ fn buffered_put_overwrites_when_existing_object_hash_mismatches() {
     let store = SignedUrlByteStore::new(&control_plane, "ws_put_412_mismatch");
 
     let metadata = store
-        .put_object_with_content_id_at_epoch(
-            key.clone(),
-            StorageObjectKind::WorkspaceFileV1,
-            ObjectContentId::new("cid_put_412_mismatch").as_str(),
-            &desired,
-            1,
-            None,
-        )
+        .put(PutObjectRequest {
+            key: key.clone(),
+            kind: StorageObjectKind::WorkspaceFileV1,
+            content_id: ObjectContentId::new("cid_put_412_mismatch"),
+            source: PutObjectSource::Bytes(&desired),
+            byte_len: desired.len() as u64,
+            expected_hash: ObjectHash::of_bytes(&desired),
+            key_epoch: 1,
+            created_by_device_id: None,
+        })
         .expect("hash mismatch must recover via overwrite");
 
     assert_eq!(metadata.key, key);
-    assert_eq!(metadata.hash, stable_object_hash(&desired));
+    assert_eq!(metadata.hash, ObjectHash::of_bytes(&desired).as_str());
     let metrics = store.metrics();
     assert_eq!(metrics.conditional_write_conflict_count, 1);
     assert_eq!(metrics.verification_failure_count, 1);

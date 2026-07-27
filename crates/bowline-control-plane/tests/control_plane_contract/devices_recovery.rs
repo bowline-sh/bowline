@@ -40,6 +40,8 @@ fn fake_device_approval_creates_encrypted_grant_and_authorized_device() {
             device_name: "macbook".to_string(),
             platform: "macos".to_string(),
             device_fingerprint: "fp_device_1".to_string(),
+            device_public_key: "age1test".to_string(),
+            device_public_key_proof: "dapp_p256_v1_test".to_string(),
             device_authorization_proof_verifier: device_verifier("device-1"),
         })
         .expect("first device trust root");
@@ -50,6 +52,7 @@ fn fake_device_approval_creates_encrypted_grant_and_authorized_device() {
                 device_id: DeviceId::new("device-2"),
                 device_name: "laptop".to_string(),
                 device_public_key: "age1device2".to_string(),
+                device_public_key_proof: "dapp_p256_v1_test".to_string(),
                 device_fingerprint: "fp_device_2".to_string(),
                 device_authorization_proof_verifier: device_verifier("device-2"),
                 matching_code: "maple-river-4821".to_string(),
@@ -70,7 +73,7 @@ fn fake_device_approval_creates_encrypted_grant_and_authorized_device() {
         encrypted_grant_ciphertext: "age-encrypted-workspace-key".to_string(),
         grant_acceptance_proof_verifier: grant_acceptance_proof_verifier(
             "workspace-1",
-            &request.request_id,
+            request.request_id.as_str(),
             "device-2",
         ),
         key_epoch: 1,
@@ -81,7 +84,7 @@ fn fake_device_approval_creates_encrypted_grant_and_authorized_device() {
         .expect("trusted device can approve");
 
     assert!(!approval.harness_only);
-    assert_eq!(approval.device_id, "device-2");
+    assert_eq!(approval.device_id, DeviceId::new("device-2"));
     assert_eq!(
         approval.encrypted_grant_ciphertext,
         "age-encrypted-workspace-key"
@@ -98,7 +101,16 @@ fn fake_device_approval_creates_encrypted_grant_and_authorized_device() {
     );
 
     let fetched = control_plane
-        .get_encrypted_device_grant(&request.request_id, &DeviceId::new("device-2"))
+        .get_encrypted_device_grant(EncryptedGrantRequest {
+            request_id: request.request_id.clone(),
+            device_id: DeviceId::new("device-2"),
+            requested_by_device_proof: device_proof(
+                "workspace-1",
+                "device-2",
+                FETCH_DEVICE_GRANT_ACTION,
+                &device_request_proof_subject(&request.request_id),
+            ),
+        })
         .expect("grant lookup")
         .expect("approved grant");
     assert_eq!(fetched.grant_id, approval.grant_id);
@@ -109,7 +121,7 @@ fn fake_device_approval_creates_encrypted_grant_and_authorized_device() {
             device_id: DeviceId::new("device-2"),
             grant_acceptance_proof: grant_acceptance_proof(
                 "workspace-1",
-                &request.request_id,
+                request.request_id.as_str(),
                 "device-2",
             ),
         })
@@ -147,6 +159,7 @@ fn authorized_device_id_cannot_create_pending_request_with_new_key() {
                 device_id: DeviceId::new("device-1"),
                 device_name: "attacker".to_string(),
                 device_public_key: "age1attacker".to_string(),
+                device_public_key_proof: "dapp_p256_v1_test".to_string(),
                 device_fingerprint: "fp_attacker".to_string(),
                 device_authorization_proof_verifier: device_verifier("attacker"),
                 matching_code: "maple-river-4821".to_string(),
@@ -170,6 +183,7 @@ fn spoofed_approver_device_id_cannot_approve_without_device_proof() {
                 device_id: DeviceId::new("device-2"),
                 device_name: "linux".to_string(),
                 device_public_key: "age1device2".to_string(),
+                device_public_key_proof: "dapp_p256_v1_test".to_string(),
                 device_fingerprint: "fp_device_2".to_string(),
                 device_authorization_proof_verifier: device_verifier("device-2"),
                 matching_code: "maple-river-4821".to_string(),
@@ -191,7 +205,7 @@ fn spoofed_approver_device_id_cannot_approve_without_device_proof() {
             encrypted_grant_ciphertext: "age-encrypted-workspace-key".to_string(),
             grant_acceptance_proof_verifier: grant_acceptance_proof_verifier(
                 "workspace-spoofed-approver",
-                &request.request_id,
+                request.request_id.as_str(),
                 "device-2",
             ),
             key_epoch: 1,
@@ -209,7 +223,7 @@ fn spoofed_approver_device_id_cannot_approve_without_device_proof() {
             encrypted_grant_ciphertext: "age-encrypted-workspace-key".to_string(),
             grant_acceptance_proof_verifier: grant_acceptance_proof_verifier(
                 "workspace-spoofed-approver",
-                &request.request_id,
+                request.request_id.as_str(),
                 "device-2",
             ),
             key_epoch: 1,
@@ -231,6 +245,7 @@ fn accepted_grant_cannot_reauthorize_a_revoked_device() {
                 device_id: DeviceId::new("device-2"),
                 device_name: "linux".to_string(),
                 device_public_key: "age1device2".to_string(),
+                device_public_key_proof: "dapp_p256_v1_test".to_string(),
                 device_fingerprint: "fp_device_2".to_string(),
                 device_authorization_proof_verifier: device_verifier("device-2"),
                 matching_code: "maple-river-4821".to_string(),
@@ -251,7 +266,7 @@ fn accepted_grant_cannot_reauthorize_a_revoked_device() {
             encrypted_grant_ciphertext: "age-encrypted-workspace-key".to_string(),
             grant_acceptance_proof_verifier: grant_acceptance_proof_verifier(
                 "workspace-revoked-grant",
-                &request.request_id,
+                request.request_id.as_str(),
                 "device-2",
             ),
             key_epoch: 1,
@@ -264,7 +279,7 @@ fn accepted_grant_cannot_reauthorize_a_revoked_device() {
             device_id: DeviceId::new("device-2"),
             grant_acceptance_proof: grant_acceptance_proof(
                 "workspace-revoked-grant",
-                &request.request_id,
+                request.request_id.as_str(),
                 "device-2",
             ),
         })
@@ -278,7 +293,7 @@ fn accepted_grant_cannot_reauthorize_a_revoked_device() {
                 "workspace-revoked-grant",
                 "device-1",
                 "revoke-device",
-                &device_revocation_proof_subject("device-2"),
+                &device_revocation_proof_subject(&DeviceId::new("device-2")),
             ),
             reason: "lost device".to_string(),
         })
@@ -290,7 +305,7 @@ fn accepted_grant_cannot_reauthorize_a_revoked_device() {
             device_id: DeviceId::new("device-2"),
             grant_acceptance_proof: grant_acceptance_proof(
                 "workspace-revoked-grant",
-                &request.request_id,
+                request.request_id.as_str(),
                 "device-2",
             ),
         })
@@ -304,13 +319,13 @@ fn accepted_grant_cannot_reauthorize_a_revoked_device() {
         !trust
             .authorized_devices
             .iter()
-            .any(|device| device.device_id == "device-2")
+            .any(|device| device.device_id == DeviceId::new("device-2"))
     );
     assert!(
         trust
             .revoked_devices
             .iter()
-            .any(|device| device.device_id == "device-2")
+            .any(|device| device.device_id == DeviceId::new("device-2"))
     );
 }
 
@@ -329,7 +344,7 @@ fn revoking_last_trusted_device_requires_recovery_or_another_device() {
                 "workspace-last-device",
                 "device-1",
                 "revoke-device",
-                &device_revocation_proof_subject("device-1"),
+                &device_revocation_proof_subject(&DeviceId::new("device-1")),
             ),
             reason: "self revoke without recovery".to_string(),
         })
@@ -360,7 +375,7 @@ fn revoking_last_trusted_device_requires_recovery_or_another_device() {
                 "workspace-last-device",
                 "device-1",
                 "verify-recovery-envelope",
-                &recovery_envelope_proof_subject("rk_last_device"),
+                &recovery_envelope_proof_subject(&RecoveryEnvelopeId::new("rk_last_device")),
             ),
             &recovery_proof(
                 "workspace-last-device",
@@ -379,12 +394,12 @@ fn revoking_last_trusted_device_requires_recovery_or_another_device() {
                 "workspace-last-device",
                 "device-1",
                 "revoke-device",
-                &device_revocation_proof_subject("device-1"),
+                &device_revocation_proof_subject(&DeviceId::new("device-1")),
             ),
             reason: "recovery key exists".to_string(),
         })
         .expect("active recovery key preserves a trust path");
-    assert_eq!(revoked.device_id, "device-1");
+    assert_eq!(revoked.device_id, DeviceId::new("device-1"));
 
     let recreate = control_plane
         .create_first_authorized_device(FirstAuthorizedDeviceInput {
@@ -393,6 +408,8 @@ fn revoking_last_trusted_device_requires_recovery_or_another_device() {
             device_name: "new macbook".to_string(),
             platform: "macos".to_string(),
             device_fingerprint: "fp_device_2".to_string(),
+            device_public_key: "age1test".to_string(),
+            device_public_key_proof: "dapp_p256_v1_test".to_string(),
             device_authorization_proof_verifier: device_verifier("device-2"),
         })
         .expect_err("trust history must use recovery instead of first-device init");
@@ -410,6 +427,8 @@ fn expired_device_request_cannot_be_approved() {
             device_name: "macbook".to_string(),
             platform: "macos".to_string(),
             device_fingerprint: "fp_device_1".to_string(),
+            device_public_key: "age1test".to_string(),
+            device_public_key_proof: "dapp_p256_v1_test".to_string(),
             device_authorization_proof_verifier: device_verifier("device-1"),
         })
         .expect("first device trust root");
@@ -418,6 +437,7 @@ fn expired_device_request_cannot_be_approved() {
         device_id: DeviceId::new("device-2"),
         device_name: "laptop".to_string(),
         device_public_key: "age1device2".to_string(),
+        device_public_key_proof: "dapp_p256_v1_test".to_string(),
         device_fingerprint: "fp_device_2".to_string(),
         device_authorization_proof_verifier: device_verifier("device-2"),
         matching_code: "maple-river-4821".to_string(),
@@ -440,7 +460,7 @@ fn expired_device_request_cannot_be_approved() {
             encrypted_grant_ciphertext: "age-encrypted-workspace-key".to_string(),
             grant_acceptance_proof_verifier: grant_acceptance_proof_verifier(
                 "workspace-expired-request",
-                &request.request_id,
+                request.request_id.as_str(),
                 "device-2",
             ),
             key_epoch: 1,
@@ -462,6 +482,8 @@ fn expired_device_grant_cannot_be_accepted() {
             device_name: "macbook".to_string(),
             platform: "macos".to_string(),
             device_fingerprint: "fp_device_1".to_string(),
+            device_public_key: "age1test".to_string(),
+            device_public_key_proof: "dapp_p256_v1_test".to_string(),
             device_authorization_proof_verifier: device_verifier("device-1"),
         })
         .expect("first device trust root");
@@ -472,6 +494,7 @@ fn expired_device_grant_cannot_be_accepted() {
                 device_id: DeviceId::new("device-2"),
                 device_name: "laptop".to_string(),
                 device_public_key: "age1device2".to_string(),
+                device_public_key_proof: "dapp_p256_v1_test".to_string(),
                 device_fingerprint: "fp_device_2".to_string(),
                 device_authorization_proof_verifier: device_verifier("device-2"),
                 matching_code: "maple-river-4821".to_string(),
@@ -492,7 +515,7 @@ fn expired_device_grant_cannot_be_accepted() {
             encrypted_grant_ciphertext: "age-encrypted-workspace-key".to_string(),
             grant_acceptance_proof_verifier: grant_acceptance_proof_verifier(
                 "workspace-expired-grant",
-                &request.request_id,
+                request.request_id.as_str(),
                 "device-2",
             ),
             key_epoch: 1,
@@ -501,7 +524,16 @@ fn expired_device_grant_cannot_be_accepted() {
         .expect("trusted device approves");
 
     let fetch_error = control_plane
-        .get_encrypted_device_grant(&request.request_id, &DeviceId::new("device-2"))
+        .get_encrypted_device_grant(EncryptedGrantRequest {
+            request_id: request.request_id.clone(),
+            device_id: DeviceId::new("device-2"),
+            requested_by_device_proof: device_proof(
+                "workspace-expired-grant",
+                "device-2",
+                FETCH_DEVICE_GRANT_ACTION,
+                &device_request_proof_subject(&request.request_id),
+            ),
+        })
         .expect_err("expired grant ciphertext is not returned");
     assert!(matches!(
         fetch_error,
@@ -517,7 +549,7 @@ fn expired_device_grant_cannot_be_accepted() {
             device_id: DeviceId::new("device-2"),
             grant_acceptance_proof: grant_acceptance_proof(
                 "workspace-expired-grant",
-                &request.request_id,
+                request.request_id.as_str(),
                 "device-2",
             ),
         })
@@ -571,7 +603,7 @@ fn recovery_authorization_requires_private_proof_not_public_fingerprint() {
                 "workspace-recovery-proof",
                 "device-1",
                 "verify-recovery-envelope",
-                &recovery_envelope_proof_subject("rk_public"),
+                &recovery_envelope_proof_subject(&RecoveryEnvelopeId::new("rk_public")),
             ),
             "rkp_wrong",
         )
@@ -581,7 +613,7 @@ fn recovery_authorization_requires_private_proof_not_public_fingerprint() {
         .list_recovery_envelopes(&WorkspaceId::new("workspace-recovery-proof"))
         .expect("recovery envelopes")
         .into_iter()
-        .find(|envelope| envelope.envelope_id == "rk_public")
+        .find(|envelope| envelope.envelope_id == RecoveryEnvelopeId::new("rk_public"))
         .expect("created envelope");
     assert_eq!(envelope.state, RecoveryEnvelopeState::GeneratedUnverified);
 
@@ -594,7 +626,7 @@ fn recovery_authorization_requires_private_proof_not_public_fingerprint() {
                 "workspace-recovery-proof",
                 "device-1",
                 "verify-recovery-envelope",
-                &recovery_envelope_proof_subject("rk_public"),
+                &recovery_envelope_proof_subject(&RecoveryEnvelopeId::new("rk_public")),
             ),
             &recovery_proof,
         )
@@ -606,6 +638,7 @@ fn recovery_authorization_requires_private_proof_not_public_fingerprint() {
                 device_id: DeviceId::new("device-2"),
                 device_name: "linux".to_string(),
                 device_public_key: "age1device2".to_string(),
+                device_public_key_proof: "dapp_p256_v1_test".to_string(),
                 device_fingerprint: "fp_device_2".to_string(),
                 device_authorization_proof_verifier: device_verifier("device-2"),
                 matching_code: "maple-river-4821".to_string(),
@@ -623,7 +656,7 @@ fn recovery_authorization_requires_private_proof_not_public_fingerprint() {
                 encrypted_grant_ciphertext: "grant-ciphertext".to_string(),
                 grant_acceptance_proof_verifier: grant_acceptance_proof_verifier(
                     "workspace-recovery-proof",
-                    &request.request_id,
+                    request.request_id.as_str(),
                     "device-2",
                 ),
                 key_epoch: invalid_key_epoch,
@@ -639,6 +672,7 @@ fn recovery_authorization_requires_private_proof_not_public_fingerprint() {
         device_id: DeviceId::new("device-expired"),
         device_name: "expired linux".to_string(),
         device_public_key: "age1expired".to_string(),
+        device_public_key_proof: "dapp_p256_v1_test".to_string(),
         device_fingerprint: "fp_expired".to_string(),
         device_authorization_proof_verifier: device_verifier("device-expired"),
         matching_code: "expired-code".to_string(),
@@ -681,7 +715,7 @@ fn recovery_authorization_requires_private_proof_not_public_fingerprint() {
             encrypted_grant_ciphertext: "grant-ciphertext".to_string(),
             grant_acceptance_proof_verifier: grant_acceptance_proof_verifier(
                 "workspace-recovery-proof",
-                &request.request_id,
+                request.request_id.as_str(),
                 "device-2",
             ),
             key_epoch: 1,
@@ -702,7 +736,7 @@ fn recovery_authorization_requires_private_proof_not_public_fingerprint() {
             encrypted_grant_ciphertext: "grant-ciphertext".to_string(),
             grant_acceptance_proof_verifier: grant_acceptance_proof_verifier(
                 "workspace-recovery-proof",
-                &request.request_id,
+                request.request_id.as_str(),
                 "device-2",
             ),
             key_epoch: 1,
@@ -723,7 +757,7 @@ fn recovery_authorization_requires_private_proof_not_public_fingerprint() {
             encrypted_grant_ciphertext: "grant-ciphertext".to_string(),
             grant_acceptance_proof_verifier: grant_acceptance_proof_verifier(
                 "workspace-recovery-proof",
-                &request.request_id,
+                request.request_id.as_str(),
                 "device-2",
             ),
             key_epoch: 1,
@@ -731,7 +765,10 @@ fn recovery_authorization_requires_private_proof_not_public_fingerprint() {
             expires_in_ticks: 600,
         })
         .expect("private recovery proof authorizes the pending device");
-    assert_eq!(recovered.approved_by_device_id, "recovery:rk_public");
+    assert_eq!(
+        recovered.approved_by_device_id,
+        DeviceId::new("recovery:rk_public")
+    );
     assert_eq!(
         recovered.grant_id.as_str(),
         format!("recovery-grant:{}", request.request_id.as_str())
@@ -814,7 +851,7 @@ fn revoked_recovery_envelope_cannot_be_reactivated_or_used() {
                 "workspace-recovery-revoked",
                 "device-1",
                 "revoke-recovery-envelope",
-                &recovery_envelope_proof_subject("rk_revoked"),
+                &recovery_envelope_proof_subject(&RecoveryEnvelopeId::new("rk_revoked")),
             ),
         )
         .expect("trusted device revokes recovery envelope");
@@ -827,7 +864,7 @@ fn revoked_recovery_envelope_cannot_be_reactivated_or_used() {
                 "workspace-recovery-revoked",
                 "device-1",
                 "revoke-recovery-envelope",
-                &recovery_envelope_proof_subject("rk_revoked"),
+                &recovery_envelope_proof_subject(&RecoveryEnvelopeId::new("rk_revoked")),
             ),
         )
         .expect("settled recovery revocation is replay-safe");
@@ -842,7 +879,7 @@ fn revoked_recovery_envelope_cannot_be_reactivated_or_used() {
                 "workspace-recovery-revoked",
                 "device-1",
                 "verify-recovery-envelope",
-                &recovery_envelope_proof_subject("rk_revoked"),
+                &recovery_envelope_proof_subject(&RecoveryEnvelopeId::new("rk_revoked")),
             ),
             &recovery_proof,
         )
@@ -852,7 +889,7 @@ fn revoked_recovery_envelope_cannot_be_reactivated_or_used() {
         .list_recovery_envelopes(&WorkspaceId::new("workspace-recovery-revoked"))
         .expect("envelopes")
         .into_iter()
-        .find(|envelope| envelope.envelope_id == "rk_revoked")
+        .find(|envelope| envelope.envelope_id == RecoveryEnvelopeId::new("rk_revoked"))
         .expect("revoked envelope remains listed");
     assert_eq!(envelope.state, RecoveryEnvelopeState::Revoked);
 
@@ -863,6 +900,7 @@ fn revoked_recovery_envelope_cannot_be_reactivated_or_used() {
                 device_id: DeviceId::new("device-2"),
                 device_name: "linux".to_string(),
                 device_public_key: "age1device2".to_string(),
+                device_public_key_proof: "dapp_p256_v1_test".to_string(),
                 device_fingerprint: "fp_device_2".to_string(),
                 device_authorization_proof_verifier: device_verifier("device-2"),
                 matching_code: "maple-river-4821".to_string(),
@@ -878,7 +916,7 @@ fn revoked_recovery_envelope_cannot_be_reactivated_or_used() {
             encrypted_grant_ciphertext: "grant-ciphertext".to_string(),
             grant_acceptance_proof_verifier: grant_acceptance_proof_verifier(
                 "workspace-recovery-revoked",
-                &request.request_id,
+                request.request_id.as_str(),
                 "device-2",
             ),
             key_epoch: 1,
@@ -918,7 +956,7 @@ fn recovery_rotation_uses_rotate_proof_and_does_not_corrupt_on_conflict() {
                 "workspace-recovery-rotate",
                 "device-1",
                 "verify-recovery-envelope",
-                &recovery_envelope_proof_subject("rk_current"),
+                &recovery_envelope_proof_subject(&RecoveryEnvelopeId::new("rk_current")),
             ),
             &recovery_proof(
                 "workspace-recovery-rotate",
@@ -948,7 +986,7 @@ fn recovery_rotation_uses_rotate_proof_and_does_not_corrupt_on_conflict() {
         .list_recovery_envelopes(&WorkspaceId::new("workspace-recovery-rotate"))
         .expect("envelopes")
         .into_iter()
-        .find(|envelope| envelope.envelope_id == "rk_current")
+        .find(|envelope| envelope.envelope_id == RecoveryEnvelopeId::new("rk_current"))
         .expect("current envelope remains");
     assert_eq!(current_after_conflict.state, RecoveryEnvelopeState::Active);
 
@@ -975,7 +1013,7 @@ fn recovery_rotation_uses_rotate_proof_and_does_not_corrupt_on_conflict() {
     assert_eq!(
         envelopes
             .iter()
-            .find(|envelope| envelope.envelope_id == "rk_current")
+            .find(|envelope| envelope.envelope_id == RecoveryEnvelopeId::new("rk_current"))
             .expect("current envelope")
             .state,
         RecoveryEnvelopeState::Rotated
@@ -983,7 +1021,7 @@ fn recovery_rotation_uses_rotate_proof_and_does_not_corrupt_on_conflict() {
     assert!(
         envelopes
             .iter()
-            .any(|envelope| envelope.envelope_id == "rk_next")
+            .any(|envelope| envelope.envelope_id == RecoveryEnvelopeId::new("rk_next"))
     );
 }
 
@@ -1018,7 +1056,7 @@ fn recovery_envelope_idempotency_is_scoped_to_workspace() {
             "proof-b".to_string(),
         ))
         .expect("same envelope id in another workspace does not return workspace a metadata");
-    assert_eq!(workspace_b.workspace_id, "workspace-b");
+    assert_eq!(workspace_b.workspace_id, WorkspaceId::new("workspace-b"));
     assert_eq!(workspace_b.ciphertext, "ciphertext-b");
 
     let conflicting_retry = control_plane

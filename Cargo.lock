@@ -307,6 +307,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomic-polyfill"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cf2bce30dfe09ef0bfaef228b9d414faaf7e563035494d7fe092dba54b300f4"
+dependencies = [
+ "critical-section",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -490,7 +499,7 @@ dependencies = [
 
 [[package]]
 name = "bowline"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "blake3",
  "bowline-control-plane",
@@ -503,12 +512,13 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2",
  "time",
 ]
 
 [[package]]
 name = "bowline-control-plane"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -528,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "bowline-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "blake3",
  "serde",
@@ -538,7 +548,7 @@ dependencies = [
 
 [[package]]
 name = "bowline-daemon"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "blake3",
  "bowline-control-plane",
@@ -558,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "bowline-daemon-rpc"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "bowline-core",
  "serde",
@@ -567,7 +577,7 @@ dependencies = [
 
 [[package]]
 name = "bowline-local"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "age",
  "base64 0.22.1",
@@ -582,6 +592,7 @@ dependencies = [
  "keyring",
  "notify-rust",
  "p256",
+ "postcard",
  "proptest",
  "reqwest",
  "roxmltree",
@@ -593,18 +604,18 @@ dependencies = [
  "sha2",
  "time",
  "toml 1.1.2+spec-1.1.0",
+ "unicode-normalization",
  "wasmtime",
  "wat",
 ]
 
 [[package]]
 name = "bowline-storage"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "blake3",
  "bowline-core",
  "chacha20poly1305",
- "getrandom 0.3.4",
  "serde",
  "serde_json",
  "zeroize",
@@ -1024,6 +1035,12 @@ checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
 dependencies = [
  "cfg-if",
 ]
+
+[[package]]
+name = "critical-section"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
 
 [[package]]
 name = "crossbeam-channel"
@@ -1731,6 +1748,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0c35f58762feb77d74ebe43bdbc3210f09be9fe6742234d573bacc26ed92b67"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1779,6 +1805,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54b4a22553d4242c49fddb9ba998a99962b5cc6f22cb5a3482bec22522403ce4"
 dependencies = [
  "http",
+]
+
+[[package]]
+name = "heapless"
+version = "0.7.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdc6457c0eb62c71aac4bc17216026d8410337c4126773b9c5daba343f17964f"
+dependencies = [
+ "atomic-polyfill",
+ "hash32",
+ "rustc_version",
+ "serde",
+ "spin",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -2956,6 +2996,7 @@ dependencies = [
  "cobs",
  "embedded-io 0.4.0",
  "embedded-io 0.6.1",
+ "heapless",
  "serde",
 ]
 
@@ -3925,6 +3966,15 @@ checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "spin"
+version = "0.9.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+dependencies = [
+ "lock_api",
 ]
 
 [[package]]
