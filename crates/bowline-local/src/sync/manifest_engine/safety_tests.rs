@@ -121,6 +121,55 @@ fn a_fresh_workspace_claims_its_root_without_ceremony() {
     assert_eq!(harness.engine.snapshot().degradation, Degradation::Nominal);
 }
 
+// ---- hosted-ref integrity recovery ------------------------------------------
+
+fn engine_stalled_on_hosted_rollback(name: &str) -> (DriverHarness, RefObservation) {
+    let mut harness = DriverHarness::new(name, "device-a");
+    harness.start();
+    harness.write("file.txt", b"v1");
+    harness.edit(&["file.txt"]);
+    let v1 = harness.remote.current_ref().expect("v1").clone();
+    harness.write("file.txt", b"v2");
+    harness.edit(&["file.txt"]);
+    let v2 = harness.remote.current_ref().expect("v2").clone();
+
+    harness.remote.force_ref(v1.version, v1.manifest_key);
+    harness.event(EngineEvent::RefChanged);
+    harness.run_due();
+    assert_eq!(
+        harness.engine.snapshot().degradation,
+        Degradation::IntegrityStalled
+    );
+    assert_eq!(harness.engine.snapshot().phase, EnginePhase::Stalled);
+    (harness, v2)
+}
+
+#[test]
+fn integrity_stall_clears_after_a_verified_head_advances_past_the_ratchet() {
+    let (mut harness, v2) = engine_stalled_on_hosted_rollback("integrity-recovers");
+
+    harness.remote.force_ref(v2.version + 1, v2.manifest_key);
+    harness.event(EngineEvent::RefChanged);
+    harness.run_due();
+
+    assert_eq!(harness.engine.snapshot().degradation, Degradation::Nominal);
+    assert_eq!(harness.engine.snapshot().phase, EnginePhase::Idle);
+}
+
+#[test]
+fn restart_rederives_an_integrity_stall_from_the_durable_ratchet() {
+    let (mut harness, _) = engine_stalled_on_hosted_rollback("integrity-restart");
+
+    harness.restart();
+
+    assert_eq!(
+        harness.engine.snapshot().degradation,
+        Degradation::IntegrityStalled,
+        "startup must reject the still-regressed hosted ref against the persisted ratchet"
+    );
+    assert_eq!(harness.engine.snapshot().phase, EnginePhase::Stalled);
+}
+
 // ---- the mass-deletion circuit breaker ---------------------------------------
 
 /// Enough entries that the 25% rule, not the 64-entry floor, is the binding one.

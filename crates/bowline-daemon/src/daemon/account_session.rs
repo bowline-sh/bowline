@@ -5,11 +5,12 @@
 //! provisioned with, and the key store's `AccountTokens` record. This module
 //! owns that precedence and the writes that keep it true.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::io;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use bowline_control_plane::HostedControlPlaneClient;
 use bowline_control_plane::hosted::RegisteredAccountSession;
@@ -30,6 +31,8 @@ use crate::daemon::{daemon_env_var, daemon_state_root};
 /// in-process outranks both while the durable copy lands in `daemon.env` for the
 /// next start.
 static REGISTERED_ACCOUNT_SESSION: Mutex<Option<AccountSessionCredentials>> = Mutex::new(None);
+static ACCOUNT_SESSION_REGISTRATION_LOCKS: LazyLock<Mutex<BTreeMap<WorkspaceId, Weak<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
 const SESSION_ID_PREFIX: &str = "bowline_session_";
 const REVOCATION_TOKEN_PREFIX: &str = "bowline_revoke_";
@@ -92,18 +95,55 @@ pub(super) fn ensure_persistent_account_session(
     if let Some(session_id) = account_session_id(key_store) {
         return Ok(Some(session_id));
     }
-    // No stored `AccountTokens` is not a reason to stop: a bootstrapped agent
-    // host is handed a WorkOS access token and nothing else, and registering a
-    // session from it is exactly how it gets a durable credential.
-    let Some(access_token) = workos_access_token(key_store) else {
-        return Ok(None);
-    };
-    let client =
-        HostedControlPlaneClient::try_new_with_token(require_convex_url()?, String::new())?;
-    let registration =
-        client.register_account_session(access_token, Some(workspace_id.as_str()))?;
-    store_account_session(key_store, &credentials(&registration))?;
-    Ok(Some(registration.session_id))
+    serialize_account_session_registration(
+        workspace_id,
+        || account_session_id(key_store),
+        || {
+            // No stored `AccountTokens` is not a reason to stop: a bootstrapped
+            // agent host is handed a WorkOS access token and nothing else, and
+            // registering a session from it is exactly how it gets a durable
+            // credential.
+            let Some(access_token) = workos_access_token(key_store) else {
+                return Ok(None);
+            };
+            let client =
+                HostedControlPlaneClient::try_new_with_token(require_convex_url()?, String::new())?;
+            let registration =
+                client.register_account_session(access_token, Some(workspace_id.as_str()))?;
+            store_account_session(key_store, &credentials(&registration))?;
+            Ok(Some(registration.session_id))
+        },
+    )
+}
+
+fn serialize_account_session_registration(
+    workspace_id: &WorkspaceId,
+    current_session: impl FnOnce() -> Option<String>,
+    register: impl FnOnce() -> Result<Option<String>, Box<dyn Error>>,
+) -> Result<Option<String>, Box<dyn Error>> {
+    let registration_lock = account_session_registration_lock(workspace_id)?;
+    let _registration = registration_lock
+        .lock()
+        .map_err(|_| AccountSessionError::RegistrationLockPoisoned)?;
+    if let Some(session_id) = current_session() {
+        return Ok(Some(session_id));
+    }
+    register()
+}
+
+fn account_session_registration_lock(
+    workspace_id: &WorkspaceId,
+) -> Result<Arc<Mutex<()>>, AccountSessionError> {
+    let mut locks = ACCOUNT_SESSION_REGISTRATION_LOCKS
+        .lock()
+        .map_err(|_| AccountSessionError::RegistrationLockPoisoned)?;
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(workspace_id).and_then(Weak::upgrade) {
+        return Ok(lock);
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(workspace_id.clone(), Arc::downgrade(&lock));
+    Ok(lock)
 }
 
 /// Records a session the client registered, so the rest of this process stops
@@ -198,6 +238,7 @@ pub(super) enum AccountSessionError {
     DaemonEnv(io::Error),
     KeyStore(DeviceKeyError),
     RegisteredSessionLockPoisoned,
+    RegistrationLockPoisoned,
     NoDurableHome,
 }
 
@@ -211,6 +252,9 @@ impl fmt::Display for AccountSessionError {
             Self::RegisteredSessionLockPoisoned => {
                 formatter.write_str("registered account session lock poisoned")
             }
+            Self::RegistrationLockPoisoned => {
+                formatter.write_str("account session registration lock poisoned")
+            }
             Self::NoDurableHome => formatter.write_str(
                 "this host has nowhere to keep an account session: no daemon state root and no stored account tokens",
             ),
@@ -223,7 +267,9 @@ impl Error for AccountSessionError {
         match self {
             Self::DaemonEnv(error) => Some(error),
             Self::KeyStore(error) => Some(error),
-            Self::RegisteredSessionLockPoisoned | Self::NoDurableHome => None,
+            Self::RegisteredSessionLockPoisoned
+            | Self::RegistrationLockPoisoned
+            | Self::NoDurableHome => None,
         }
     }
 }
@@ -235,6 +281,9 @@ mod tests {
     use bowline_local::device_keys::AccountTokens;
     use bowline_local::fakes::FakeKeychain;
     use std::fs;
+    use std::sync::Barrier;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
 
     fn session(suffix: &str) -> AccountSessionCredentials {
         AccountSessionCredentials {
@@ -251,6 +300,50 @@ mod tests {
             expires_at: "later".to_string(),
             account_session,
         }
+    }
+
+    #[test]
+    fn concurrent_registration_for_one_workspace_runs_once() {
+        let workspace_id = WorkspaceId::new("workspace_registration_race");
+        let session = Arc::new(Mutex::new(None::<String>));
+        let registrations = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+
+        for _ in 0..2 {
+            let workspace_id = workspace_id.clone();
+            let session = Arc::clone(&session);
+            let registrations = Arc::clone(&registrations);
+            let start = Arc::clone(&start);
+            workers.push(thread::spawn(move || {
+                start.wait();
+                serialize_account_session_registration(
+                    &workspace_id,
+                    || session.lock().expect("session").clone(),
+                    || {
+                        registrations.fetch_add(1, Ordering::SeqCst);
+                        let registered = "bowline_session_once".to_string();
+                        *session.lock().expect("session") = Some(registered.clone());
+                        Ok(Some(registered))
+                    },
+                )
+                .expect("registration")
+            }));
+        }
+
+        start.wait();
+        let results = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("worker"))
+            .collect::<Vec<_>>();
+        assert_eq!(registrations.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            results,
+            vec![
+                Some("bowline_session_once".to_string()),
+                Some("bowline_session_once".to_string()),
+            ]
+        );
     }
 
     fn temp_state_root(name: &str) -> std::path::PathBuf {

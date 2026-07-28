@@ -175,14 +175,35 @@ fn resume_authenticated_seal(
     let plaintext_path = request
         .plaintext_root
         .join(request.context.plaintext_locator().as_path());
-    sync_parent_for_path(&plaintext_path).map_err(|source| LocalRecoveryPreimageError::Io {
-        operation: "fsync_plaintext_parent_on_resume",
-        source,
-    })?;
+    sync_nearest_existing_parent(&plaintext_path)?;
     Ok(SealedLocalRecoveryPreimage {
         locator: sealed_locator.clone(),
         key_epoch: request.context.key_epoch(),
     })
+}
+
+fn sync_nearest_existing_parent(path: &Path) -> Result<(), LocalRecoveryPreimageError> {
+    let mut child = path;
+    loop {
+        match sync_parent_for_path(child) {
+            Ok(()) => return Ok(()),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                let Some(parent) = child.parent() else {
+                    return Err(LocalRecoveryPreimageError::Io {
+                        operation: "fsync_plaintext_ancestor_on_resume",
+                        source,
+                    });
+                };
+                child = parent;
+            }
+            Err(source) => {
+                return Err(LocalRecoveryPreimageError::Io {
+                    operation: "fsync_plaintext_ancestor_on_resume",
+                    source,
+                });
+            }
+        }
+    }
 }
 
 pub fn open_local_recovery_preimage(

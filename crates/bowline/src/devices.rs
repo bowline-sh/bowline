@@ -267,7 +267,7 @@ pub fn deny(
         "deny-device-request",
         &grants::device_request_proof_subject(&request_id),
     )
-    .map_err(|error| DeviceCommandError::Runtime(error.to_string()))?;
+    .map_err(classify_grant_error)?;
     let denial = control_plane
         .deny_device_request(DeviceDenialInput {
             request_id: request_id.clone(),
@@ -316,7 +316,7 @@ pub fn revoke(
         "revoke-device",
         &grants::device_revocation_proof_subject(&device_id),
     )
-    .map_err(|error| DeviceCommandError::Runtime(error.to_string()))?;
+    .map_err(classify_grant_error)?;
     let revoked = control_plane
         .revoke_device(DeviceRevocationInput {
             workspace_id: workspace_id.clone(),
@@ -548,8 +548,12 @@ fn classify_trust_error(error: trust::TrustError) -> DeviceCommandError {
         }
         trust::TrustError::ControlPlane(error) => classify_control_plane_error(error),
         error @ trust::TrustError::DeviceKeys(_) => DeviceCommandError::Runtime(error.to_string()),
-        error @ trust::TrustError::Grant(_) => DeviceCommandError::SafetyBlocked(error.to_string()),
+        trust::TrustError::Grant(error) => classify_grant_error(error),
     }
+}
+
+fn classify_grant_error(error: grants::GrantError) -> DeviceCommandError {
+    DeviceCommandError::SafetyBlocked(error.to_string())
 }
 
 fn classify_control_plane_error(error: ControlPlaneError) -> DeviceCommandError {
@@ -720,6 +724,41 @@ mod tests {
             CommandExitCode::for_error(CommandErrorStatus::Failed, blocked.recoverability()),
             CommandExitCode::BlockedOrDegradedBySafety
         );
+    }
+
+    #[test]
+    fn deterministic_grant_failures_are_non_retryable_for_every_device_command() {
+        let error = classify_trust_error(trust::TrustError::Grant(
+            grants::GrantError::SigningKeyDerivation,
+        ));
+
+        assert_eq!(error.recoverability(), CommandRecoverability::Unsupported);
+        assert_eq!(
+            CommandExitCode::for_error(CommandErrorStatus::Failed, error.recoverability()),
+            CommandExitCode::BlockedOrDegradedBySafety
+        );
+    }
+
+    #[test]
+    fn grant_integrity_failures_remain_safety_blocked() {
+        let error = classify_trust_error(trust::TrustError::Grant(
+            grants::GrantError::GrantSealInvalid,
+        ));
+
+        assert_eq!(error.recoverability(), CommandRecoverability::Unsupported);
+        assert_eq!(
+            CommandExitCode::for_error(CommandErrorStatus::Failed, error.recoverability()),
+            CommandExitCode::BlockedOrDegradedBySafety
+        );
+    }
+
+    #[test]
+    fn ambiguous_grant_crypto_failures_remain_safety_blocked() {
+        let error = classify_trust_error(trust::TrustError::Grant(grants::GrantError::Age(
+            "grant key or ciphertext could not be opened".to_string(),
+        )));
+
+        assert_eq!(error.recoverability(), CommandRecoverability::Unsupported);
     }
 
     fn device_request(request_id: &str) -> DeviceApprovalRequest {

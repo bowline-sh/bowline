@@ -185,6 +185,7 @@ impl ManifestEngine {
             self.degradation,
             Degradation::OfflineRetrying { .. }
                 | Degradation::FullScanRequired(_)
+                | Degradation::IntegrityStalled
                 // A push that published is proof the batch is no longer refused,
                 // whether the user confirmed it or restored the missing files.
                 | Degradation::MassDeletionBlocked { .. }

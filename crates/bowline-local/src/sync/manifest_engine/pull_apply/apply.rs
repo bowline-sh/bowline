@@ -92,6 +92,12 @@ pub(crate) fn apply_plan<O: RemoteObjects, R: RemoteRef>(
     for op in fs_ops {
         if git_locks.is_active(&deps.ctx.workspace_root, &op.path) {
             outcome.deferred.insert(op.path.clone());
+            // Deferral means this path has not settled against the incoming
+            // head. Keep its three-way base unchanged so the retry derives the
+            // same merge row instead of misclassifying the remote entry as a
+            // fresh creation.
+            commit.upserts.remove(&op.path);
+            commit.removals.remove(&op.path);
             continue;
         }
         // The id is listed BEFORE the op runs, so a path-scoped refusal retires

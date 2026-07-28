@@ -298,6 +298,39 @@ fn authenticated_envelope_resumes_after_plaintext_unlink_before_receipt() {
 }
 
 #[test]
+fn authenticated_envelope_resumes_after_plaintext_root_disappears() {
+    let temp = TempDir::new("resume-after-plaintext-root");
+    let plaintext_root = temp.path().join("plaintext");
+    let sealed_root = temp.path().join("sealed");
+    fs::create_dir(&plaintext_root).expect("plaintext root");
+    fs::create_dir(&sealed_root).expect("sealed root");
+    seed_plaintext(&plaintext_root, "epoch", "src/a.txt", b"recoverable");
+    let context = context("ws", "epoch", "src/a.txt", "content", 1);
+    let request = || SealLocalRecoveryPreimageRequest {
+        plaintext_root: &plaintext_root,
+        sealed_state_root: &sealed_root,
+        key: StorageKey::deterministic(1),
+        context: &context,
+    };
+    let first = seal_local_recovery_preimage(request()).expect("initial seal");
+    fs::remove_dir_all(&plaintext_root).expect("plaintext root disappears");
+
+    let resumed =
+        seal_local_recovery_preimage(request()).expect("sealed envelope is sufficient to resume");
+
+    assert_eq!(resumed, first);
+    assert_eq!(
+        open(
+            &sealed_root,
+            first.locator(),
+            StorageKey::deterministic(1),
+            &context,
+        ),
+        b"recoverable"
+    );
+}
+
+#[test]
 fn absent_plaintext_never_accepts_tampered_envelope() {
     let temp = TempDir::new("resume-tamper");
     seed_plaintext(temp.path(), "epoch", "src/a.txt", b"recoverable");

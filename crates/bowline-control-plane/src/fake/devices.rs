@@ -52,21 +52,56 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             });
         }
         let request_key = (input.workspace_id.clone(), input.device_id.clone());
-        if let Some(existing) = state.device_request_by_device.get(&request_key)
-            && let Some(request) = state.device_requests.get(existing)
+        if let Some(existing) = state.device_request_by_device.get(&request_key).cloned()
+            && let Some(request) = state.device_requests.get(&existing).cloned()
         {
-            if request.device_public_key == input.device_public_key
+            let still_pending = request.state == DeviceRequestState::Pending
+                && request.expires_at > self.clock.peek();
+            if still_pending
+                && request.device_public_key == input.device_public_key
                 && request.device_fingerprint == input.device_fingerprint
-                && state.pending_device_proof_verifiers.get(existing)
+                && state.pending_device_proof_verifiers.get(&existing)
                     == Some(&input.device_authorization_proof_verifier)
-                && request.state == DeviceRequestState::Pending
             {
-                return Ok(request.clone());
+                return Ok(request);
             }
-            return Err(ControlPlaneError::Conflict {
-                resource: "device request",
-                reason: "pending device conflicts with existing metadata",
-            });
+            if still_pending {
+                return Err(ControlPlaneError::Conflict {
+                    resource: "device request",
+                    reason: "pending device conflicts with existing metadata",
+                });
+            }
+            match request.state {
+                DeviceRequestState::Pending => {
+                    state
+                        .device_requests
+                        .get_mut(&existing)
+                        .expect("indexed request exists")
+                        .state = DeviceRequestState::Expired;
+                }
+                DeviceRequestState::Denied | DeviceRequestState::Expired => {}
+                DeviceRequestState::Approved => {
+                    let grant_is_live = state
+                        .grants
+                        .get(&existing)
+                        .is_some_and(|grant| grant.expires_at > self.clock.peek());
+                    if grant_is_live {
+                        return Err(ControlPlaneError::Conflict {
+                            resource: "device request",
+                            reason: "approved device request is awaiting grant acceptance",
+                        });
+                    }
+                    state
+                        .device_requests
+                        .get_mut(&existing)
+                        .expect("indexed request exists")
+                        .state = DeviceRequestState::Expired;
+                    state.grants.remove(&existing);
+                    state.grant_acceptance_proof_verifiers.remove(&existing);
+                }
+            }
+            state.device_request_by_device.remove(&request_key);
+            state.pending_device_proof_verifiers.remove(&existing);
         }
 
         let requested_at = self.clock.now();
@@ -193,7 +228,32 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
         workspace_id: &WorkspaceId,
     ) -> ControlPlaneResult<DeviceApprovalRequestList> {
         self.ensure_workspace(workspace_id)?;
-        let state = self.state.lock().expect("fake control plane poisoned");
+        let mut state = self.state.lock().expect("fake control plane poisoned");
+        let now = self.clock.peek();
+        let expired_requests = state
+            .device_requests
+            .values()
+            .filter(|request| {
+                &request.workspace_id == workspace_id
+                    && request.state == DeviceRequestState::Pending
+                    && request.expires_at <= now
+                    && !state.grants.contains_key(&request.request_id)
+            })
+            .map(|request| {
+                (
+                    request.request_id.clone(),
+                    (request.workspace_id.clone(), request.device_id.clone()),
+                )
+            })
+            .collect::<Vec<_>>();
+        for (request_id, request_key) in expired_requests {
+            state
+                .device_requests
+                .get_mut(&request_id)
+                .expect("collected request exists")
+                .state = DeviceRequestState::Expired;
+            state.device_request_by_device.remove(&request_key);
+        }
         let mut pending_requests = state
             .device_requests
             .values()
@@ -271,6 +331,9 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
                 .get_mut(&input.request_id)
                 .expect("request exists");
             request_mut.state = DeviceRequestState::Expired;
+            state
+                .device_request_by_device
+                .remove(&(request.workspace_id.clone(), request.device_id.clone()));
             return Err(ControlPlaneError::Conflict {
                 resource: "device request",
                 reason: "device request has expired",
@@ -332,6 +395,9 @@ impl DeviceControlPlaneClient for FakeControlPlaneClient {
             .get_mut(&input.request_id)
             .expect("request exists");
         request_mut.state = DeviceRequestState::Denied;
+        state
+            .device_request_by_device
+            .remove(&(request.workspace_id.clone(), request.device_id.clone()));
         let denial = DeviceDenial {
             request_id: input.request_id,
             workspace_id: request.workspace_id,

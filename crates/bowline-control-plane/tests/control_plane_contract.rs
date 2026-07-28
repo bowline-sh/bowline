@@ -1,15 +1,16 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL};
 use bowline_control_plane::{
     ByteRange, CompactEventKind, CompareAndSwapError, ControlPlaneClient, ControlPlaneError,
-    ControlPlaneTimestamp, DeviceApprovalInput, DeviceControlPlaneClient, DeviceRequestInput,
-    DeviceRequestInputDraft, DeviceRevocationInput, DownloadIntentRequest, EncryptedGrantRequest,
-    FETCH_DEVICE_GRANT_ACTION, FakeControlPlaneClient, FirstAuthorizedDeviceInput,
-    GrantAcceptanceInput, ObjectControlPlaneClient, ObjectKind, ObjectMetadataCommit,
-    ObjectPointer, ObjectRetentionStateUpdate, RecoveryControlPlaneClient,
-    RecoveryDeviceAuthorizationInput, RecoveryEnvelopeInput, RecoveryEnvelopeState, RejectionCode,
-    Sha256Checksum, UploadIntent, UploadIntentOutcome, UploadIntentRequest,
-    WorkspaceControlPlaneClient, device_request_proof_subject, device_revocation_proof_subject,
-    is_opaque_object_key, recovery_envelope_payload_proof_subject, recovery_envelope_proof_subject,
+    ControlPlaneTimestamp, DeviceApprovalInput, DeviceControlPlaneClient, DeviceDenialInput,
+    DeviceRequestInput, DeviceRequestInputDraft, DeviceRequestState, DeviceRevocationInput,
+    DownloadIntentRequest, EncryptedGrantRequest, FETCH_DEVICE_GRANT_ACTION,
+    FakeControlPlaneClient, FirstAuthorizedDeviceInput, GrantAcceptanceInput,
+    ObjectControlPlaneClient, ObjectKind, ObjectMetadataCommit, ObjectPointer,
+    ObjectRetentionStateUpdate, RecoveryControlPlaneClient, RecoveryDeviceAuthorizationInput,
+    RecoveryEnvelopeInput, RecoveryEnvelopeState, RejectionCode, Sha256Checksum, UploadIntent,
+    UploadIntentOutcome, UploadIntentRequest, WorkspaceControlPlaneClient,
+    device_request_proof_subject, device_revocation_proof_subject, is_opaque_object_key,
+    recovery_envelope_payload_proof_subject, recovery_envelope_proof_subject,
 };
 use bowline_core::ids::*;
 use bowline_storage::RetentionState;

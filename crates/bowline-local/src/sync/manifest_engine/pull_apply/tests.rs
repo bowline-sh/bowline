@@ -1088,6 +1088,42 @@ fn kill9_with_index_lock_present() {
     assert!(!engine.exists(".git/refs/heads/main"));
 }
 
+#[test]
+fn deferred_deleted_git_ref_keeps_its_ancestor_until_retry() {
+    let mut engine = TestEngine::new("git-lock-deleted-ref");
+    let path = ".git/refs/heads/main";
+    engine.write(path, b"old ref bytes");
+    engine.push(&[path]);
+
+    let remote = engine.remote_file(b"remote ref bytes");
+    engine.publish(&[(path, remote)]);
+    engine.remove(path);
+    engine.write(".git/index.lock", b"");
+
+    let deferred = engine.pull();
+    assert!(deferred.deferred.contains(&wp(path)));
+    assert!(!engine.exists(path), "the local deletion remains in place");
+    assert!(
+        engine.files().contains_key(&wp(path)),
+        "a deferred operation cannot mutate its three-way ancestor"
+    );
+
+    engine.remove(".git/index.lock");
+    let retried = engine.pull();
+    assert!(
+        retried.push_again.contains(&wp(path)),
+        "the retry keeps the local deletion authoritative"
+    );
+    assert!(
+        !engine.exists(path),
+        "retry must not resurrect the remote ref"
+    );
+    assert!(
+        !engine.files().contains_key(&wp(path)),
+        "the ancestor removal commits only after the retry settles"
+    );
+}
+
 // ---- symlinked-parent workspace escape (P1 security guard) -----------------
 
 // A sealed manifest from an authorized peer can name `dir/file` while local

@@ -147,6 +147,57 @@ fn fake_device_approval_creates_encrypted_grant_and_authorized_device() {
 }
 
 #[test]
+fn approved_device_request_cannot_be_replaced_before_grant_acceptance() {
+    let control_plane = FakeControlPlaneClient::default();
+    control_plane.create_workspace("workspace-approved-request");
+    create_first_device(&control_plane, "workspace-approved-request", "device-1");
+    let request_input = DeviceRequestInput::new(DeviceRequestInputDraft {
+        workspace_id: WorkspaceId::new("workspace-approved-request"),
+        device_id: DeviceId::new("device-2"),
+        device_name: "laptop".to_string(),
+        device_public_key: "age1device2".to_string(),
+        device_public_key_proof: "dapp_p256_v1_test".to_string(),
+        device_fingerprint: "fp_device_2".to_string(),
+        device_authorization_proof_verifier: device_verifier("device-2"),
+        matching_code: "maple-river-4821".to_string(),
+    })
+    .with_device_proof_verifier("device-2");
+    let request = control_plane
+        .create_device_request(request_input.clone())
+        .expect("device request");
+    control_plane
+        .approve_device_request(DeviceApprovalInput {
+            request_id: request.request_id.clone(),
+            approved_by_device_id: DeviceId::new("device-1"),
+            approved_by_device_proof: device_proof(
+                "workspace-approved-request",
+                "device-1",
+                "approve-device-request",
+                &device_request_proof_subject(&request.request_id),
+            ),
+            encrypted_grant_ciphertext: "age-encrypted-workspace-key".to_string(),
+            grant_acceptance_proof_verifier: grant_acceptance_proof_verifier(
+                "workspace-approved-request",
+                request.request_id.as_str(),
+                "device-2",
+            ),
+            key_epoch: 1,
+            expires_in_ticks: 600,
+        })
+        .expect("trusted device approves request");
+
+    let error = control_plane
+        .create_device_request(request_input)
+        .expect_err("approved request cannot be replaced");
+    assert!(matches!(error, ControlPlaneError::Conflict { .. }));
+    let trust = control_plane
+        .list_device_trust(&WorkspaceId::new("workspace-approved-request"))
+        .expect("trust list");
+    assert_eq!(trust.pending_requests.len(), 1);
+    assert_eq!(trust.pending_requests[0].request_id, request.request_id);
+}
+
+#[test]
 fn authorized_device_id_cannot_create_pending_request_with_new_key() {
     let control_plane = FakeControlPlaneClient::default();
     control_plane.create_workspace("workspace-duplicate-device");
@@ -469,6 +520,132 @@ fn expired_device_request_cannot_be_approved() {
         .expect_err("expired request is rejected");
 
     assert!(matches!(error, ControlPlaneError::Conflict { .. }));
+
+    let replacement = control_plane
+        .create_device_request(
+            DeviceRequestInput::new(DeviceRequestInputDraft {
+                workspace_id: WorkspaceId::new("workspace-expired-request"),
+                device_id: DeviceId::new("device-2"),
+                device_name: "laptop".to_string(),
+                device_public_key: "age1device2".to_string(),
+                device_public_key_proof: "dapp_p256_v1_test".to_string(),
+                device_fingerprint: "fp_device_2".to_string(),
+                device_authorization_proof_verifier: device_verifier("device-2"),
+                matching_code: "maple-river-4821".to_string(),
+            })
+            .with_device_proof_verifier("device-2"),
+        )
+        .expect("expired request can be replaced");
+    assert_ne!(replacement.request_id, request.request_id);
+    assert_eq!(replacement.state, DeviceRequestState::Pending);
+}
+
+#[test]
+fn unattended_expired_device_request_can_be_replaced() {
+    let control_plane = FakeControlPlaneClient::default();
+    control_plane.create_workspace("workspace-unattended-expired-request");
+    let mut request_input = DeviceRequestInput::new(DeviceRequestInputDraft {
+        workspace_id: WorkspaceId::new("workspace-unattended-expired-request"),
+        device_id: DeviceId::new("device-2"),
+        device_name: "laptop".to_string(),
+        device_public_key: "age1device2".to_string(),
+        device_public_key_proof: "dapp_p256_v1_test".to_string(),
+        device_fingerprint: "fp_device_2".to_string(),
+        device_authorization_proof_verifier: device_verifier("device-2"),
+        matching_code: "maple-river-4821".to_string(),
+    });
+    request_input.expires_in_ticks = 0;
+    let expired = control_plane
+        .create_device_request(request_input)
+        .expect("device request");
+    let trust = control_plane
+        .list_device_trust(&WorkspaceId::new("workspace-unattended-expired-request"))
+        .expect("trust list");
+    assert!(trust.pending_requests.is_empty());
+    let grant_after_listing = control_plane
+        .get_encrypted_device_grant(EncryptedGrantRequest {
+            request_id: expired.request_id.clone(),
+            device_id: DeviceId::new("device-2"),
+            requested_by_device_proof: device_proof(
+                "workspace-unattended-expired-request",
+                "device-2",
+                FETCH_DEVICE_GRANT_ACTION,
+                &device_request_proof_subject(&expired.request_id),
+            ),
+        })
+        .expect("listing preserves the expired request proof");
+    assert!(grant_after_listing.is_none());
+
+    let replacement = control_plane
+        .create_device_request(
+            DeviceRequestInput::new(DeviceRequestInputDraft {
+                workspace_id: WorkspaceId::new("workspace-unattended-expired-request"),
+                device_id: DeviceId::new("device-2"),
+                device_name: "laptop".to_string(),
+                device_public_key: "age1device2".to_string(),
+                device_public_key_proof: "dapp_p256_v1_test".to_string(),
+                device_fingerprint: "fp_device_2".to_string(),
+                device_authorization_proof_verifier: device_verifier("device-2"),
+                matching_code: "maple-river-4821".to_string(),
+            })
+            .with_device_proof_verifier("device-2"),
+        )
+        .expect("unattended expired request can be replaced");
+    assert_ne!(replacement.request_id, expired.request_id);
+    assert_eq!(replacement.state, DeviceRequestState::Pending);
+}
+
+#[test]
+fn denied_device_request_can_be_replaced() {
+    let control_plane = FakeControlPlaneClient::default();
+    control_plane.create_workspace("workspace-denied-request");
+    create_first_device(&control_plane, "workspace-denied-request", "device-1");
+    let request = control_plane
+        .create_device_request(
+            DeviceRequestInput::new(DeviceRequestInputDraft {
+                workspace_id: WorkspaceId::new("workspace-denied-request"),
+                device_id: DeviceId::new("device-2"),
+                device_name: "laptop".to_string(),
+                device_public_key: "age1device2".to_string(),
+                device_public_key_proof: "dapp_p256_v1_test".to_string(),
+                device_fingerprint: "fp_device_2".to_string(),
+                device_authorization_proof_verifier: device_verifier("device-2"),
+                matching_code: "maple-river-4821".to_string(),
+            })
+            .with_device_proof_verifier("device-2"),
+        )
+        .expect("device request");
+    control_plane
+        .deny_device_request(DeviceDenialInput {
+            request_id: request.request_id.clone(),
+            denied_by_device_id: DeviceId::new("device-1"),
+            denied_by_device_proof: device_proof(
+                "workspace-denied-request",
+                "device-1",
+                "deny-device-request",
+                &device_request_proof_subject(&request.request_id),
+            ),
+            reason: "not this device".to_string(),
+        })
+        .expect("trusted device denies request");
+
+    let replacement = control_plane
+        .create_device_request(
+            DeviceRequestInput::new(DeviceRequestInputDraft {
+                workspace_id: WorkspaceId::new("workspace-denied-request"),
+                device_id: DeviceId::new("device-2"),
+                device_name: "laptop".to_string(),
+                device_public_key: "age1device2".to_string(),
+                device_public_key_proof: "dapp_p256_v1_test".to_string(),
+                device_fingerprint: "fp_device_2".to_string(),
+                device_authorization_proof_verifier: device_verifier("device-2"),
+                matching_code: "maple-river-4821".to_string(),
+            })
+            .with_device_proof_verifier("device-2"),
+        )
+        .expect("denied request can be replaced");
+    assert_ne!(replacement.request_id, request.request_id);
+    assert_eq!(replacement.state, DeviceRequestState::Pending);
 }
 
 #[test]
@@ -562,6 +739,23 @@ fn expired_device_grant_cannot_be_accepted() {
             ..
         }
     ));
+
+    let replacement = control_plane
+        .create_device_request(
+            DeviceRequestInput::new(DeviceRequestInputDraft {
+                workspace_id: WorkspaceId::new("workspace-expired-grant"),
+                device_id: DeviceId::new("device-2"),
+                device_name: "laptop".to_string(),
+                device_public_key: "age1device2".to_string(),
+                device_public_key_proof: "dapp_p256_v1_test".to_string(),
+                device_fingerprint: "fp_device_2".to_string(),
+                device_authorization_proof_verifier: device_verifier("device-2"),
+                matching_code: "maple-river-4821".to_string(),
+            })
+            .with_device_proof_verifier("device-2"),
+        )
+        .expect("expired approved request can be replaced");
+    assert_ne!(replacement.request_id, request.request_id);
 }
 
 #[test]
@@ -667,45 +861,7 @@ fn recovery_authorization_requires_private_proof_not_public_fingerprint() {
         assert!(matches!(invalid_epoch, ControlPlaneError::Conflict { .. }));
     }
 
-    let mut expired_input = DeviceRequestInput::new(DeviceRequestInputDraft {
-        workspace_id: WorkspaceId::new("workspace-recovery-proof"),
-        device_id: DeviceId::new("device-expired"),
-        device_name: "expired linux".to_string(),
-        device_public_key: "age1expired".to_string(),
-        device_public_key_proof: "dapp_p256_v1_test".to_string(),
-        device_fingerprint: "fp_expired".to_string(),
-        device_authorization_proof_verifier: device_verifier("device-expired"),
-        matching_code: "expired-code".to_string(),
-    });
-    expired_input.expires_in_ticks = 1;
-    let expired_request = control_plane
-        .create_device_request(expired_input)
-        .expect("expired recovery request seed");
-    clock.now();
-    let expired = control_plane
-        .authorize_device_with_recovery(RecoveryDeviceAuthorizationInput {
-            workspace_id: WorkspaceId::new("workspace-recovery-proof"),
-            envelope_id: RecoveryEnvelopeId::new("rk_public"),
-            request_id: expired_request.request_id.clone(),
-            encrypted_grant_ciphertext: "grant-ciphertext".to_string(),
-            grant_acceptance_proof_verifier: "expired-verifier".to_string(),
-            key_epoch: 1,
-            recovery_proof: recovery_proof.clone(),
-            expires_in_ticks: 600,
-        })
-        .expect_err("expired recovery requests fail without mutation");
-    assert!(matches!(expired, ControlPlaneError::Conflict { .. }));
-    let expired_after = control_plane
-        .list_device_trust(&WorkspaceId::new("workspace-recovery-proof"))
-        .expect("trust list after expired recovery attempt")
-        .pending_requests
-        .into_iter()
-        .find(|candidate| candidate.request_id == expired_request.request_id)
-        .expect("expired request remains represented");
-    assert_eq!(
-        expired_after.state,
-        bowline_control_plane::DeviceRequestState::Pending
-    );
+    assert_expired_recovery_request_is_rejected(&control_plane, &clock, &recovery_proof);
 
     let public_fingerprint = control_plane
         .authorize_device_with_recovery(RecoveryDeviceAuthorizationInput {
@@ -815,6 +971,67 @@ fn recovery_authorization_requires_private_proof_not_public_fingerprint() {
         })
         .expect_err("revoked settled recovery grants are rejected");
     assert!(matches!(revoked_replay, ControlPlaneError::Conflict { .. }));
+}
+
+fn assert_expired_recovery_request_is_rejected(
+    control_plane: &FakeControlPlaneClient,
+    clock: &bowline_control_plane::DeterministicClock,
+    recovery_proof: &str,
+) {
+    let mut expired_input = DeviceRequestInput::new(DeviceRequestInputDraft {
+        workspace_id: WorkspaceId::new("workspace-recovery-proof"),
+        device_id: DeviceId::new("device-expired"),
+        device_name: "expired linux".to_string(),
+        device_public_key: "age1expired".to_string(),
+        device_public_key_proof: "dapp_p256_v1_test".to_string(),
+        device_fingerprint: "fp_expired".to_string(),
+        device_authorization_proof_verifier: device_verifier("device-expired"),
+        matching_code: "expired-code".to_string(),
+    });
+    expired_input.expires_in_ticks = 1;
+    let expired_request = control_plane
+        .create_device_request(expired_input)
+        .expect("expired recovery request seed");
+    clock.now();
+    let expired = control_plane
+        .authorize_device_with_recovery(RecoveryDeviceAuthorizationInput {
+            workspace_id: WorkspaceId::new("workspace-recovery-proof"),
+            envelope_id: RecoveryEnvelopeId::new("rk_public"),
+            request_id: expired_request.request_id.clone(),
+            encrypted_grant_ciphertext: "grant-ciphertext".to_string(),
+            grant_acceptance_proof_verifier: "expired-verifier".to_string(),
+            key_epoch: 1,
+            recovery_proof: recovery_proof.to_string(),
+            expires_in_ticks: 600,
+        })
+        .expect_err("expired recovery requests are rejected");
+    assert!(matches!(expired, ControlPlaneError::Conflict { .. }));
+    let grant_after_rejection = control_plane
+        .get_encrypted_device_grant(EncryptedGrantRequest {
+            request_id: expired_request.request_id.clone(),
+            device_id: DeviceId::new("device-expired"),
+            requested_by_device_proof: device_proof(
+                "workspace-recovery-proof",
+                "device-expired",
+                FETCH_DEVICE_GRANT_ACTION,
+                &device_request_proof_subject(&expired_request.request_id),
+            ),
+        })
+        .expect("rejected recovery leaves the request proof intact");
+    assert!(
+        grant_after_rejection.is_none(),
+        "rejected recovery creates no grant"
+    );
+    let expired_after = control_plane
+        .list_device_trust(&WorkspaceId::new("workspace-recovery-proof"))
+        .expect("trust list after expired recovery attempt")
+        .pending_requests
+        .into_iter()
+        .find(|candidate| candidate.request_id == expired_request.request_id);
+    assert!(
+        expired_after.is_none(),
+        "expired request is no longer actionable"
+    );
 }
 
 #[test]
