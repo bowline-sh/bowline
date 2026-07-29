@@ -194,6 +194,32 @@ fn macos_dense_git_init_emits_recursive_engine_roots() {
     let fixture = watcher_fixture("bowline-daemon-watch-macos-dense-git", "ws_watch_macos_git");
     let (watcher, receiver) = start_sync_watcher(&fixture.root).expect("watcher starts");
 
+    // `start_sync_watcher` returns before FSEvents has finished arming, so the
+    // dense burst below can land entirely in the unarmed window and never be
+    // reported. Wait for the stream to prove itself on a throwaway path first.
+    // This test used to pass alone and fail beside
+    // `macos_watcher_kernel_arms_recursive_root_watch`, because tearing that
+    // test's stream down lengthens the arm here — a race, not a slow machine,
+    // and one no timeout can fix.
+    let armed = fixture.root.join(".arming-probe");
+    let arm_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        fs::write(&armed, b"probe").expect("arming probe");
+        match receiver.recv_timeout(Duration::from_millis(100)) {
+            Ok(_) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                assert!(
+                    Instant::now() < arm_deadline,
+                    "watcher never armed on the fixture root"
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("watcher stream closed before arming")
+            }
+        }
+    }
+    let _ = fs::remove_file(&armed);
+
     let project = fixture.root.join("project");
     fs::create_dir_all(project.join(".git/objects/ab")).expect("object tree");
     fs::create_dir_all(project.join(".git/refs/heads")).expect("ref tree");
@@ -205,9 +231,17 @@ fn macos_dense_git_init_emits_recursive_engine_roots() {
     let mut quiet_intervals = 0;
     let mut policy_cache = std::collections::HashMap::new();
     let mut recursive_roots = std::collections::BTreeSet::new();
-    while Instant::now() < deadline && quiet_intervals < 3 {
+    // Three quiet intervals mean the event stream has SETTLED, which is only a
+    // meaningful signal once it has started. FSEvents coalesces with latency,
+    // so on a loaded machine the first signal can arrive later than 300ms —
+    // and counting silence from the top treated "not started yet" as "finished",
+    // abandoning the wait with almost all of the 5s deadline unspent. Until the
+    // first signal lands the deadline is the only bound.
+    let mut stream_started = false;
+    while Instant::now() < deadline && (!stream_started || quiet_intervals < 3) {
         match receiver.recv_timeout(Duration::from_millis(100)) {
             Ok(signal) => {
+                stream_started = true;
                 quiet_intervals = 0;
                 if let Some(EngineEvent::RecursivePaths(paths)) =
                     crate::daemon::watcher::watcher_signal_engine_event(
