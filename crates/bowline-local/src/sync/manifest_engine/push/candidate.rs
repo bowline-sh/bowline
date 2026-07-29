@@ -20,7 +20,7 @@ use super::super::manifest::{
 use super::super::store::{AncestorCommit, FileRecord, ManifestStore};
 use super::super::unsyncable::{UnsyncableReason, UnsyncableRecord, path_scoped_reason};
 use super::{
-    BlobLedger, DeletionPolicy, PushDeps, PushError, RemoteObjects, RemoteRef,
+    BlobLedger, DeletionAuthorization, PushDeps, PushError, RemoteObjects, RemoteRef,
     mass_deletion_threshold, now_unix_ns, upload_file_blob,
 };
 
@@ -475,10 +475,16 @@ pub(super) fn record_unsyncable_outcome(
 pub(super) fn guard_mass_deletion(
     ancestor: &BTreeMap<WorkspacePath, FileRecord>,
     candidate: &Candidate,
-    deletions: DeletionPolicy,
+    deletions: DeletionAuthorization,
 ) -> Result<(), PushError> {
-    if deletions == DeletionPolicy::Confirmed {
-        return Ok(());
+    match deletions {
+        DeletionAuthorization::ExplicitOperation => return Ok(()),
+        DeletionAuthorization::ConfirmedPaths(confirmed)
+            if candidate.removals.is_subset(confirmed.as_ref()) =>
+        {
+            return Ok(());
+        }
+        DeletionAuthorization::Enforce | DeletionAuthorization::ConfirmedPaths(_) => {}
     }
     let threshold = mass_deletion_threshold(ancestor.len());
     if candidate.removals.len() > threshold {

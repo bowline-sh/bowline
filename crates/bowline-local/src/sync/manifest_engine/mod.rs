@@ -243,8 +243,9 @@ pub struct ManifestEngine {
     audit_round: u32,
     /// The re-probe of a stalled condition (missing root, hosted fork).
     stall_deadline: Option<u64>,
-    /// One-shot permission to publish a removal batch above the safety threshold.
-    deletions_confirmed: bool,
+    /// One-shot permission to publish exactly the removal paths the operator
+    /// reviewed. Consumed before a cycle performs any I/O.
+    confirmed_removals: Option<Arc<BTreeSet<WorkspacePath>>>,
 
     revision: u64,
     phase: EnginePhase,
@@ -290,7 +291,7 @@ impl ManifestEngine {
             audit_deadline: None,
             audit_round: 0,
             stall_deadline: None,
-            deletions_confirmed: false,
+            confirmed_removals: None,
             revision: 0,
             phase: EnginePhase::Starting,
             head_ref: None,
@@ -343,7 +344,7 @@ impl ManifestEngine {
         let Degradation::MassDeletionBlocked { removals, entries } = self.degradation else {
             return DeletionConfirmation::NotBlocked;
         };
-        self.deletions_confirmed = true;
+        self.confirmed_removals = Some(Arc::clone(&self.refused_removals));
         self.set_degradation(Degradation::Nominal);
         self.debounce_deadline = Some(clock.now_millis());
         self.preempt_backoff();
@@ -746,6 +747,14 @@ impl ManifestEngine {
         &mut self,
         io: &EngineIo<'_, O, R, C>,
     ) -> Result<(), CycleError> {
+        // Spend the capability before any fallible cycle work. A root, scan, or
+        // transport failure must not carry yesterday's approval into a later
+        // cycle whose watcher events may name additional removals.
+        let deletions = self
+            .confirmed_removals
+            .take()
+            .map(push::DeletionAuthorization::ConfirmedPaths)
+            .unwrap_or(push::DeletionAuthorization::Enforce);
         // NOTHING in a cycle may touch the workspace before the root is proven.
         self.guard_root()?;
         let mut observation = LocalObservation::Reactive;
@@ -769,7 +778,7 @@ impl ManifestEngine {
             pulled = true;
         }
 
-        self.publish_dirty(io, observation, pulled)?;
+        self.publish_dirty(io, observation, pulled, deletions)?;
 
         if !self.dirty.is_empty() {
             // Two ways to land here, both a reschedule and never an attention

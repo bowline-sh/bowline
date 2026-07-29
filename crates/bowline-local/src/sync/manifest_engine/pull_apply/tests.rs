@@ -679,6 +679,80 @@ fn symlink_recreated_never_followed() {
 }
 
 #[test]
+fn untracked_symlink_and_remote_create_preserve_both_targets() {
+    use std::os::unix::fs::symlink;
+
+    let mut engine = TestEngine::new("untracked-symlink-conflict");
+    symlink("local.txt", engine.root().join("link")).expect("create local symlink");
+    let remote = ManifestEntry::Symlink {
+        mode: FileMode::symlink(),
+        target: "remote.txt".to_string(),
+    };
+    engine.publish(&[("link", remote)]);
+
+    let outcome = engine.pull();
+
+    assert_eq!(
+        std::fs::read_link(engine.root().join("link")).expect("read local symlink"),
+        std::path::Path::new("local.txt"),
+        "the local target remains canonical"
+    );
+    let aside = outcome
+        .conflict_asides
+        .iter()
+        .next()
+        .expect("the remote target is preserved as an aside");
+    assert_eq!(
+        std::fs::read_link(engine.root().join(aside.as_str())).expect("read aside symlink"),
+        std::path::Path::new("remote.txt"),
+        "the divergent remote target survives in the aside"
+    );
+    assert!(
+        outcome.push_again.contains(&wp("link")),
+        "the kept-local target is queued for publication"
+    );
+}
+
+#[test]
+fn concurrent_symlink_retargets_keep_local_and_aside_remote() {
+    use std::os::unix::fs::symlink;
+
+    let mut engine = TestEngine::new("symlink-retarget-conflict");
+    symlink("base.txt", engine.root().join("link")).expect("create base symlink");
+    engine.push(&["link"]);
+
+    engine.remove("link");
+    symlink("local.txt", engine.root().join("link")).expect("retarget local symlink");
+    let remote = ManifestEntry::Symlink {
+        mode: FileMode::symlink(),
+        target: "remote.txt".to_string(),
+    };
+    engine.publish(&[("link", remote)]);
+
+    let outcome = engine.pull();
+
+    assert_eq!(
+        std::fs::read_link(engine.root().join("link")).expect("read local symlink"),
+        std::path::Path::new("local.txt"),
+        "the local target remains canonical"
+    );
+    let aside = outcome
+        .conflict_asides
+        .iter()
+        .next()
+        .expect("the remote target is preserved as an aside");
+    assert_eq!(
+        std::fs::read_link(engine.root().join(aside.as_str())).expect("read aside symlink"),
+        std::path::Path::new("remote.txt"),
+        "the divergent remote target survives in the aside"
+    );
+    assert!(
+        outcome.push_again.contains(&wp("link")),
+        "the kept-local target is queued for publication"
+    );
+}
+
+#[test]
 fn a_link_published_under_a_peers_mode_is_not_resurrected_by_a_remote_delete() {
     // The two-platform resurrection loop. A symlink's `st_mode` is a constant the
     // kernel picks and no API sets — Linux 0o120777, macOS 0o120755 — so a link
@@ -1027,6 +1101,12 @@ fn object_before_ref_apply() {
     assert!(git_apply_rank(".git/objects/ab/cdef") < git_apply_rank(".git/refs/heads/main"));
     assert!(git_apply_rank(".git/objects/ab/cdef") < git_apply_rank(".git/HEAD"));
     assert!(git_apply_rank(".git/objects/ab/cdef") < git_apply_rank(".git/index"));
+    let submodule_object = ".git/modules/libs/foo/objects/ab/cdef";
+    assert!(
+        git_apply_rank(submodule_object) < git_apply_rank(".git/modules/libs/foo/refs/heads/main")
+    );
+    assert!(git_apply_rank(submodule_object) < git_apply_rank(".git/modules/libs/foo/HEAD"));
+    assert!(git_apply_rank(submodule_object) < git_apply_rank(".git/modules/libs/foo/index"));
 
     let mut engine = TestEngine::new("git-order");
     let object = engine.remote_file(b"loose object bytes");

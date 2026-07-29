@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+use bowline_core::git_paths::classify_git_path;
+
 use crate::sync::manifest_engine::manifest::WorkspacePath;
 
 /// How many ops one cached `.git/refs` walk covers before it is walked again. A
@@ -145,8 +147,5 @@ pub(crate) fn is_git_lock_path(path: &str) -> bool {
 /// Apply-order rank: within a Git repo, `objects/**` must land before
 /// `refs`/`packed-refs`/`HEAD`/`index` so no ref points at a missing object.
 pub fn git_apply_rank(path: &str) -> u8 {
-    if !path.contains(".git/") {
-        return 1;
-    }
-    if path.contains(".git/objects/") { 0 } else { 2 }
+    classify_git_path(path).map_or(1, |class| class.apply_rank())
 }

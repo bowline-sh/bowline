@@ -22,7 +22,9 @@ use serde::Serialize;
 use crate::{
     env::{EnvLineKind, parse_env_text},
     events::LocalEventError,
-    metadata::{MetadataStore, ProjectHotState, SetupReceiptRecord, default_database_path},
+    metadata::{
+        MetadataError, MetadataStore, ProjectHotState, SetupReceiptRecord, default_database_path,
+    },
 };
 
 use super::{
@@ -150,15 +152,28 @@ pub fn run_project_setup(
         Err(error) => {
             // A dropped terminal transition would leave the project stuck in
             // `Warming`, which suppresses the very receipt this failure just
-            // wrote. Report the write failure instead of hiding it.
-            store.set_project_hot_state(
+            // wrote. Report that secondary failure without replacing the setup
+            // error the caller needs to diagnose.
+            let state_update = store.set_project_hot_state(
                 &workspace.id,
                 &project.id,
                 ProjectHotState::SetupBlocked,
-            )?;
-            Err(error)
+            );
+            Err(preserve_setup_error(error, state_update))
         }
     }
+}
+
+fn preserve_setup_error(
+    setup_error: SetupRunError,
+    state_update: Result<(), MetadataError>,
+) -> SetupRunError {
+    if let Err(state_error) = state_update {
+        eprintln!(
+            "bowline setup: failed to mark project as blocked after setup failure: {state_error}"
+        );
+    }
+    setup_error
 }
 
 fn run_project_setup_root(

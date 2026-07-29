@@ -308,6 +308,102 @@ fn delete_locally(harness: &DriverHarness, paths: &[String]) {
     }
 }
 
+#[test]
+fn a_transport_failure_consumes_mass_deletion_confirmation() {
+    let mut harness = DriverHarness::new("safety-confirmation-transport", "device-a");
+    harness.start();
+    seed_bulk(&mut harness);
+    let published = harness.remote.current_ref().expect("the fixture published");
+
+    let first = doomed_paths(mass_deletion_threshold(BULK_FILES) + 10);
+    delete_locally(&harness, &first);
+    harness.event(EngineEvent::FullScanRequired(
+        FullScanReason::WatcherDisconnected,
+    ));
+    harness.run_due();
+    assert!(matches!(
+        harness.engine.snapshot().degradation,
+        Degradation::MassDeletionBlocked { .. }
+    ));
+
+    harness.event(EngineEvent::ConfirmMassDeletion);
+    // A blocked cycle schedules a pull before it retries the refused push.
+    // Failing that earlier transport boundary proves the capability is spent by
+    // the cycle attempt itself, not only after publication has begun.
+    harness.remote.set_offline(true);
+    harness.run_due();
+    assert_eq!(
+        harness.remote.current_ref(),
+        Some(published.clone()),
+        "the offline confirmed push publishes nothing"
+    );
+
+    let additional: Vec<String> = (first.len()..BULK_FILES)
+        .map(|index| format!("f{index:04}.txt"))
+        .collect();
+    delete_locally(&harness, &additional);
+    harness.remote.set_offline(false);
+    harness.event(EngineEvent::Paths(
+        additional
+            .iter()
+            .map(|path| WorkspacePath::new(path.as_str()))
+            .collect(),
+    ));
+    harness.clock.advance(1_001);
+    harness.run_due();
+
+    assert_eq!(
+        harness.remote.current_ref(),
+        Some(published),
+        "new deletions after the transport failure require a new confirmation"
+    );
+    assert_eq!(
+        harness.engine.snapshot().degradation,
+        Degradation::MassDeletionBlocked {
+            removals: BULK_FILES,
+            entries: BULK_FILES,
+        },
+        "the combined batch is blocked instead of inheriting the spent confirmation"
+    );
+}
+
+#[test]
+fn confirmation_is_bound_to_the_presented_removal_paths() {
+    let mut harness = DriverHarness::new("safety-confirmation-paths", "device-a");
+    harness.start();
+    seed_bulk(&mut harness);
+    let published = harness.remote.current_ref().expect("the fixture published");
+
+    let confirmed = doomed_paths(mass_deletion_threshold(BULK_FILES) + 10);
+    delete_locally(&harness, &confirmed);
+    harness.event(EngineEvent::FullScanRequired(
+        FullScanReason::WatcherDisconnected,
+    ));
+    harness.run_due();
+    harness.event(EngineEvent::ConfirmMassDeletion);
+
+    let additional = format!("f{:04}.txt", confirmed.len());
+    fs::remove_file(harness.root.join(&additional)).expect("remove additional");
+    harness.event(EngineEvent::Paths(BTreeSet::from([WorkspacePath::new(
+        additional,
+    )])));
+    harness.clock.advance(1_001);
+    harness.run_due();
+
+    assert_eq!(
+        harness.remote.current_ref(),
+        Some(published),
+        "a path that was not presented for confirmation cannot inherit approval"
+    );
+    assert_eq!(
+        harness.engine.snapshot().degradation,
+        Degradation::MassDeletionBlocked {
+            removals: confirmed.len() + 1,
+            entries: BULK_FILES,
+        }
+    );
+}
+
 /// The head another trusted device would publish: the current head's entries,
 /// minus `dropped`, plus `added`. Advances the ref exactly as a peer's CAS would.
 fn peer_head(harness: &DriverHarness, dropped: &[String], added: &[(&str, &[u8])]) -> Manifest {

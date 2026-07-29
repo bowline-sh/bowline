@@ -29,7 +29,7 @@ use apply::apply_plan;
 // The entry<->row projection has its own module; re-exported here because every
 // child module reaches it as `super::entry_mode` and friends.
 pub(crate) use super::entry_record::{
-    entry_content_id, entry_matches_record, entry_mode, record_for_entry,
+    entry_matches_observed, entry_matches_record, entry_mode, record_for_entry,
 };
 use delta::{LocalDelta, RemoteDelta, local_delta, remote_delta};
 pub(crate) use delta::{LocalRead, read_local_content};
@@ -494,8 +494,14 @@ fn classify_one(
         (L::Untracked { .. }, R::Absent) => {
             plan.push_again.insert(path.clone()); // keep local; next push includes it
         }
-        (L::Untracked { content_id, .. }, R::Created(entry)) => {
-            if !force_aside && entry_content_id(entry) == content_id.as_ref() {
+        (
+            L::Untracked {
+                observed,
+                content_id,
+            },
+            R::Created(entry),
+        ) => {
+            if !force_aside && entry_matches_observed(entry, observed, content_id.as_ref()) {
                 plan.adopt(path, local.record_from_observed(entry)?); // identical: adopt, no rewrite
             } else {
                 // Aside the remote AND re-push the kept-local original: the aside
@@ -545,7 +551,7 @@ fn classify_one(
             },
             R::Changed(entry),
         ) => {
-            if entry_content_id(entry) != content_id.as_ref() {
+            if !entry_matches_observed(entry, observed, content_id.as_ref()) {
                 // Divergent bytes: keep local canonical, aside the remote.
                 plan.aside(path, entry.clone(), local.preimage());
                 plan.push_again.insert(path.clone());

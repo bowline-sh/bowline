@@ -231,13 +231,34 @@ pub enum PushOutcome {
 /// Whether this push may publish an unusually large number of removals.
 ///
 /// The engine enforces by default. `Confirmed` is reserved for an explicit
-/// user-driven operation (a work-view accept, or an operator confirming the
-/// blocked push) — never for an autonomous cycle, because the blast radius of a
-/// wrong mass deletion is every trusted device's copy of the workspace.
+/// user-driven operation (a work-view accept) — never for an autonomous cycle,
+/// because the blast radius of a wrong mass deletion is every trusted device's
+/// copy of the workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeletionPolicy {
     Enforce,
     Confirmed,
+}
+
+/// Internal proof of which removal scope may bypass the deletion threshold.
+///
+/// The public policy remains the stable two-variant API used by explicit
+/// operations. Autonomous cycles receive only the exact path capability created
+/// from the operator-visible refusal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum DeletionAuthorization {
+    Enforce,
+    ExplicitOperation,
+    ConfirmedPaths(Arc<BTreeSet<WorkspacePath>>),
+}
+
+impl From<DeletionPolicy> for DeletionAuthorization {
+    fn from(policy: DeletionPolicy) -> Self {
+        match policy {
+            DeletionPolicy::Enforce => Self::Enforce,
+            DeletionPolicy::Confirmed => Self::ExplicitOperation,
+        }
+    }
 }
 
 /// Removals below this count are always allowed, however small the workspace.
@@ -281,6 +302,16 @@ pub(super) fn push_dirty_paths<O: RemoteObjects, R: RemoteRef>(
     deletions: DeletionPolicy,
     evidence: WatcherEvidence,
 ) -> Result<PushOutcome, PushError> {
+    push_dirty_paths_authorized(store, deps, dirty_paths, deletions.into(), evidence)
+}
+
+pub(super) fn push_dirty_paths_authorized<O: RemoteObjects, R: RemoteRef>(
+    store: &mut ManifestStore,
+    deps: &PushDeps<'_, O, R>,
+    dirty_paths: &BTreeSet<WorkspacePath>,
+    deletions: DeletionAuthorization,
+    evidence: WatcherEvidence,
+) -> Result<PushOutcome, PushError> {
     let trust = match evidence {
         WatcherEvidence::Continuous => StatTrust::OutsideRacyWindow(deps.ctx.timestamps),
         WatcherEvidence::Gapped => StatTrust::Never,
@@ -306,7 +337,7 @@ fn push_scanned<O: RemoteObjects, R: RemoteRef>(
     deps: &PushDeps<'_, O, R>,
     dirty_paths: &BTreeSet<WorkspacePath>,
     trust: StatTrust,
-    deletions: DeletionPolicy,
+    deletions: DeletionAuthorization,
 ) -> Result<PushOutcome, PushError> {
     let ancestor = store.all_files()?;
     let state = store.engine_state()?;

@@ -15,6 +15,7 @@
 
 use bowline_core::ids::ContentId;
 
+use super::fs_guard::Observed;
 use super::manifest::{EntryKind, FileMode, ManifestEntry};
 use super::push::now_unix_ns;
 use super::store::{FileRecord, StatFingerprint};
@@ -85,11 +86,38 @@ pub(crate) fn entry_mode(entry: &ManifestEntry) -> FileMode {
     }
 }
 
-/// The content identity an entry carries, for the kinds that have one.
-pub(crate) fn entry_content_id(entry: &ManifestEntry) -> Option<&ContentId> {
+/// Whether `entry` and a live observation name the same object — content for a
+/// file, kind for a directory, target for a symlink. A missing file content ID
+/// is deliberately not equal to a remote file: callers must prove identical
+/// bytes before adopting them.
+pub(crate) fn entry_matches_observed(
+    entry: &ManifestEntry,
+    observed: &Observed,
+    content_id: Option<&ContentId>,
+) -> bool {
+    entry_matches_identity(
+        entry,
+        observed.kind,
+        content_id,
+        observed.symlink_target.as_deref(),
+    )
+}
+
+fn entry_matches_identity(
+    entry: &ManifestEntry,
+    kind: EntryKind,
+    content_id: Option<&ContentId>,
+    symlink_target: Option<&str>,
+) -> bool {
     match entry {
-        ManifestEntry::File { content_id, .. } => Some(content_id),
-        _ => None,
+        ManifestEntry::File {
+            content_id: entry_content_id,
+            ..
+        } => kind == EntryKind::File && content_id == Some(entry_content_id),
+        ManifestEntry::Directory { .. } => kind == EntryKind::Directory,
+        ManifestEntry::Symlink { target, .. } => {
+            kind == EntryKind::Symlink && symlink_target == Some(target)
+        }
     }
 }
 
@@ -97,13 +125,10 @@ pub(crate) fn entry_content_id(entry: &ManifestEntry) -> Option<&ContentId> {
 /// for a directory, target for a symlink. Deliberately says nothing about mode:
 /// a mode difference is a mode change, which the caller classifies separately.
 pub(crate) fn entry_matches_record(entry: &ManifestEntry, record: &FileRecord) -> bool {
-    match entry {
-        ManifestEntry::File { content_id, .. } => {
-            record.kind == EntryKind::File && record.content_id.as_ref() == Some(content_id)
-        }
-        ManifestEntry::Directory { .. } => record.kind == EntryKind::Directory,
-        ManifestEntry::Symlink { target, .. } => {
-            record.kind == EntryKind::Symlink && record.symlink_target.as_deref() == Some(target)
-        }
-    }
+    entry_matches_identity(
+        entry,
+        record.kind,
+        record.content_id.as_ref(),
+        record.symlink_target.as_deref(),
+    )
 }

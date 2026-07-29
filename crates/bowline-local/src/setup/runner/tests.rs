@@ -1,6 +1,25 @@
-use super::write_setup_log;
-use crate::workspace::TempWorkspace;
-use std::fs;
+use super::{SetupRunError, preserve_setup_error, write_setup_log};
+use crate::{metadata::MetadataError, workspace::TempWorkspace};
+use std::{fs, io};
+
+#[test]
+fn terminal_state_write_failure_does_not_mask_setup_error() {
+    let setup_error = SetupRunError::Io(io::Error::other("failed to spawn setup shell"));
+    let state_error = MetadataError::Io(io::Error::other("metadata database is unavailable"));
+
+    let preserved = preserve_setup_error(setup_error, Err(state_error));
+
+    assert_eq!(
+        preserved.to_string(),
+        "setup run failed: failed to spawn setup shell"
+    );
+    match preserved {
+        SetupRunError::Io(error) => {
+            assert_eq!(error.to_string(), "failed to spawn setup shell");
+        }
+        other => panic!("expected original setup I/O error, got {other}"),
+    }
+}
 
 #[cfg(unix)]
 #[test]

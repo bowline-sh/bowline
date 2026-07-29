@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use super::cycle_outcome::PushFailureScope;
-use super::push::{self, DeletionPolicy, PushDeps, PushOutcome};
+use super::push::{self, DeletionAuthorization, PushDeps, PushOutcome};
 use super::ref_observation::LocalObservation;
 use super::{
     Clock, CycleError, EngineIo, MAX_PUSH_ATTEMPTS, ManifestEngine, RefObservation, RemoteObjects,
@@ -39,6 +39,7 @@ impl ManifestEngine {
         io: &EngineIo<'_, O, R, C>,
         observation: LocalObservation,
         mut pulled: bool,
+        deletions: DeletionAuthorization,
     ) -> Result<(), CycleError> {
         let mut attempts = 0u8;
         while !self.dirty.is_empty() && attempts < MAX_PUSH_ATTEMPTS {
@@ -59,16 +60,11 @@ impl ManifestEngine {
             // unobservable; a batch that came from a stat walk over an unbounded
             // daemon-down gap leaves everything unobservable, so its bytes are
             // read (see `endpoint`).
-            let deletions = if self.deletions_confirmed {
-                DeletionPolicy::Confirmed
-            } else {
-                DeletionPolicy::Enforce
-            };
-            let outcome = match push::push_dirty_paths(
+            let outcome = match push::push_dirty_paths_authorized(
                 &mut self.store,
                 &deps,
                 &self.dirty,
-                deletions,
+                deletions.clone(),
                 observation.watcher_evidence(),
             ) {
                 Ok(outcome) => outcome,
@@ -85,9 +81,6 @@ impl ManifestEngine {
                     continue;
                 }
             };
-            // The confirmation is one-shot: it authorised the batch the user saw,
-            // not every future batch.
-            self.deletions_confirmed = false;
             match outcome {
                 PushOutcome::Advanced {
                     manifest_key,
