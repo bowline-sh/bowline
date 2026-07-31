@@ -67,6 +67,7 @@ fn test_engine(root: std::path::PathBuf, store_path: std::path::PathBuf) -> Mani
             &root.join(bowline_local::sync::manifest_engine::ENGINE_STATE_DIR),
         ),
         engine_state_dir: root.join(bowline_local::sync::manifest_engine::ENGINE_STATE_DIR),
+        endpoint_probe_root: root.join(bowline_local::sync::manifest_engine::ENGINE_STATE_DIR),
         workspace_root: root,
         config: EngineConfig::default(),
         project_view: false,

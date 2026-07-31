@@ -164,6 +164,7 @@ describe("workspace command contracts", () => {
         updateAvailable: true,
         updateCommand:
           "curl -fsSL 'https://install.bowline.sh/install.sh' | sh",
+        installationState: "installed-and-healthy",
       }),
     ).toBe(true);
     expect(isContractCommandOutput(readCommandFixture("contract"))).toBe(true);

@@ -440,9 +440,10 @@
         "envelopeId": "recovery_env_1",
         "ciphertext": "recovery_env_1:ciphertext",
         "fingerprint": "recovery_env_1:fingerprint",
+        "keyEpoch": 1,
         "recoveryProofVerifier": "recovery_env_1:verifier"
       },
-      "expectedSubject": "envelopeId=recovery_env_1\nfingerprint=recovery_env_1:fingerprint\nrecoveryProofVerifier=recovery_env_1:verifier\nciphertextHash=sha256:a7af2b5ab1bdc57eefc6b06577669ff8dbdacc080ffb70af80d36bedc10c1070"
+      "expectedSubject": "envelopeId=recovery_env_1\nfingerprint=recovery_env_1:fingerprint\nrecoveryProofVerifier=recovery_env_1:verifier\nkeyEpoch=1\nciphertextHash=sha256:a7af2b5ab1bdc57eefc6b06577669ff8dbdacc080ffb70af80d36bedc10c1070"
     },
     {
       "builder": "recoveryEnvelopeVerify",
@@ -463,9 +464,10 @@
         "envelopeId": "recovery_env_2",
         "ciphertext": "recovery_env_2:ciphertext",
         "fingerprint": "recovery_env_2:fingerprint",
+        "keyEpoch": 2,
         "recoveryProofVerifier": "recovery_env_2:verifier"
       },
-      "expectedSubject": "envelopeId=recovery_env_2\nfingerprint=recovery_env_2:fingerprint\nrecoveryProofVerifier=recovery_env_2:verifier\nciphertextHash=sha256:0bc5fd7a8733cb205c477ad4849c9a15d9b2800273acac85bd05853d4aafe337"
+      "expectedSubject": "envelopeId=recovery_env_2\nfingerprint=recovery_env_2:fingerprint\nrecoveryProofVerifier=recovery_env_2:verifier\nkeyEpoch=2\nciphertextHash=sha256:0bc5fd7a8733cb205c477ad4849c9a15d9b2800273acac85bd05853d4aafe337"
     },
     {
       "builder": "recoveryEnvelopeRevoke",

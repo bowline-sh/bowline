@@ -88,6 +88,29 @@ if (
 if (!installScript.includes('"$INSTALL_DIR/bowline" daemon restart')) {
   throw new Error("install.sh must restart the daemon binary it just replaced");
 }
+for (const marker of [
+  'CURRENT_LINK="$INSTALL_DIR/.bowline-current"',
+  "validate_binaries",
+  "restart_and_verify_daemon",
+  "rollback_switch",
+  'INSTALL_RESULT="installed-and-healthy"',
+  'INSTALL_RESULT="installed-on-disk-restart-required"',
+  "BOWLINE_INSTALL_RESULT=%s",
+]) {
+  if (!installScript.includes(marker)) {
+    throw new Error(
+      `install.sh transactional upgrade flow is missing: ${marker}`,
+    );
+  }
+}
+if (
+  installScript.includes(
+    'install -m 0755 "$TMPDIR/cli/bowline" "$INSTALL_DIR/bowline"',
+  ) ||
+  installScript.includes('rm -rf "$APP_DIR/Bowline.app"')
+) {
+  throw new Error("install.sh must not replace live release members in place");
+}
 if (!installScript.includes("quit_macos_app")) {
   throw new Error(
     "install.sh must quit the running app bundle before replacing it",

@@ -22,7 +22,7 @@ use crate::sync::manifest_engine::engine_test_support::{
     DriverHarness, TestEngine, open_engine_store, plant_fifo,
 };
 use crate::sync::manifest_engine::manifest::{FileMode, ManifestEntry, WorkspacePath};
-use crate::sync::manifest_engine::push::file_record_to_entry;
+use crate::sync::manifest_engine::push::{EngineConfig, file_record_to_entry};
 use crate::sync::manifest_engine::store::{
     AncestorCommit, FileRecord, Intent, IntentOperationKind,
 };
@@ -172,6 +172,60 @@ fn recover_intents_finalizes_an_installed_target_and_clears_the_journal() {
     assert!(engine.store.pending_intents().expect("intents").is_empty());
     assert_eq!(engine.read("recovered.txt"), bytes);
     assert!(engine.files().contains_key(&wp("recovered.txt")));
+}
+
+#[test]
+fn recovery_redownloads_a_segmented_file_when_the_staged_temp_was_lost() {
+    let mut engine = TestEngine::with_config(
+        "recover-segmented-without-temp",
+        EngineConfig {
+            large_file_threshold: 4,
+            max_seal_bytes: 4096,
+        },
+    );
+    let bytes = vec![0x6d; 512];
+    engine.write("recovered.bin", &bytes);
+    engine.push(&["recovered.bin"]);
+    let record = engine
+        .files()
+        .get(&wp("recovered.bin"))
+        .cloned()
+        .expect("published record");
+    let entry = file_record_to_entry(&record).expect("complete record");
+    engine.remove("recovered.bin");
+
+    let op = FsOp {
+        path: wp("recovered.bin"),
+        kind: FsOpKind::Install(entry),
+        expected: PreimagePayload::absent(),
+    };
+    let (operation_kind, target) = target_payload(&op);
+    engine
+        .store
+        .open_intent(&Intent {
+            path: op.path,
+            operation_kind,
+            temp_name: None,
+            expected_preimage: Some(
+                serde_json::to_string(&PreimagePayload::absent()).expect("encode preimage"),
+            ),
+            target_record: Some(serde_json::to_string(&target).expect("encode target")),
+            preserved_preimage: None,
+            target_manifest_key: engine.remote.current_ref().map(|head| head.manifest_key),
+            created_at: 1,
+        })
+        .expect("open intent");
+
+    let deps = PullDeps {
+        ctx: &engine.ctx,
+        objects: &engine.remote,
+        refs: &engine.remote,
+        scope: PullScope::WholeAncestor,
+    };
+    super::recover_intents(&mut engine.store, &deps).expect("recover segmented file");
+
+    assert_eq!(engine.read("recovered.bin"), bytes);
+    assert!(engine.store.pending_intents().expect("intents").is_empty());
 }
 
 // ---- a racing delete must never brick startup ------------------------------

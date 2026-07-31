@@ -129,8 +129,12 @@ impl Error for CompareAndSwapError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectionCode {
+    AccountSessionExpired,
+    AccountSessionMissing,
+    AccountSessionRevoked,
     Conflict,
     DeviceNotTrusted,
+    Expired,
     InvalidRequest,
     Unauthorized,
     WorkspaceMembershipRequired,
@@ -141,8 +145,12 @@ pub enum RejectionCode {
 impl RejectionCode {
     pub fn as_wire(self) -> &'static str {
         match self {
+            Self::AccountSessionExpired => "account_session_expired",
+            Self::AccountSessionMissing => "account_session_missing",
+            Self::AccountSessionRevoked => "account_session_revoked",
             Self::Conflict => "control_plane/conflict",
             Self::DeviceNotTrusted => "control_plane/device_not_trusted",
+            Self::Expired => "control_plane/expired",
             Self::InvalidRequest => "control_plane/invalid_request",
             Self::Unauthorized => "control_plane/unauthorized",
             Self::WorkspaceMembershipRequired => "control_plane/workspace_membership_required",
@@ -153,8 +161,12 @@ impl RejectionCode {
 
     pub fn from_wire(code: &str) -> Self {
         match code {
+            "account_session_expired" => Self::AccountSessionExpired,
+            "account_session_missing" => Self::AccountSessionMissing,
+            "account_session_revoked" => Self::AccountSessionRevoked,
             "control_plane/conflict" => Self::Conflict,
             "control_plane/device_not_trusted" => Self::DeviceNotTrusted,
+            "control_plane/expired" => Self::Expired,
             "control_plane/invalid_request" => Self::InvalidRequest,
             "control_plane/unauthorized" => Self::Unauthorized,
             "control_plane/workspace_membership_required" => Self::WorkspaceMembershipRequired,
@@ -261,7 +273,11 @@ impl ControlPlaneError {
                 Retryability::Retryable
             }
             Self::Rejected {
-                code: RejectionCode::Unauthorized,
+                code:
+                    RejectionCode::AccountSessionExpired
+                    | RejectionCode::AccountSessionMissing
+                    | RejectionCode::AccountSessionRevoked
+                    | RejectionCode::Unauthorized,
                 ..
             } => Retryability::AuthExpired,
             Self::UnknownSigningDevice { .. } => Retryability::TrustRefreshRequired,
@@ -455,6 +471,10 @@ mod rejection_code_tests {
     #[test]
     fn workspace_access_codes_round_trip_the_canonical_wire_values() {
         for code in [
+            RejectionCode::AccountSessionExpired,
+            RejectionCode::AccountSessionMissing,
+            RejectionCode::AccountSessionRevoked,
+            RejectionCode::Expired,
             RejectionCode::WorkspaceMembershipRequired,
             RejectionCode::WorkspaceOwnerRequired,
         ] {

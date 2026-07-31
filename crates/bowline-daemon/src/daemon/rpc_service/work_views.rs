@@ -14,8 +14,8 @@
 //! The daemon's own engine driver observes the accepted head through its ref
 //! subscription and applies it to the workspace as an ordinary remote change.
 
-use std::collections::BTreeSet;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use bowline_core::ids::DeviceId;
 use bowline_core::wire::generated::DaemonRpcErrorCode;
@@ -28,21 +28,32 @@ use crate::daemon::{DaemonServerState, hosted_control_plane, key_store};
 
 use bowline_daemon::manifest_transport::ManifestTransport;
 use bowline_local::sync::manifest_engine::work_view::{
-    ChangeKind, WorkViewChange, aside_prefix, capture_overlay, diff_manifests, fetch_manifest,
-    fetch_project_manifest, lift_project_manifest, materialize_view, project_manifest, review_view,
+    ChangeKind, WorkViewChange, aside_prefix, diff_manifests, fetch_manifest,
+    fetch_project_manifest, lift_project_manifest, materialize_view, project_manifest,
     three_way_merge,
 };
 use bowline_local::sync::manifest_engine::work_view_cli::partial_overlay;
 use bowline_local::sync::manifest_engine::{
     CasOutcome, EngineConfig, EngineContext, EngineCounters, Manifest, ManifestKey, ManifestStore,
-    ParentChain, ParentChainMode, PublishTreeRequest, RemoteObjects, RemoteRef, UnledgeredNodes,
-    WorkspaceCrypto, WorkspacePath, prepare_parent_chain, probe_name_folding,
-    probe_timestamp_granularity, project_view_verification_paths, publish_tree,
-    stat_walk_project_view,
+    ParentChain, ParentChainMode, PublishTreeRequest, RefVersionLookup, RemoteObjects, RemoteRef,
+    UnledgeredNodes, WorkspaceCrypto, WorkspacePath, prepare_parent_chain,
+    probe_endpoint_capabilities, publish_tree,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::daemon::sync::require_local_workspace_key;
+
+mod accept_recovery;
+mod capture;
+mod path_validation;
+#[cfg(test)]
+pub(super) use accept_recovery::accept_intent_path;
+use accept_recovery::{
+    AcceptIntent, clear_accept_intent, finish_accepted_intent, project_relative_path,
+    read_accept_intent, rebase_partial_overlay, write_accept_intent,
+};
+use capture::{WorkUnresolvedPath, capture_view, ensure_unresolved_acknowledged, review_view_dir};
+use path_validation::{checked_project_path, checked_view_dir};
 
 /// Private per-view engine state lives outside the synced workspace tree.
 const VIEW_ENGINE_STATE_DIR: &str = "work-views";
@@ -78,6 +89,9 @@ struct WorkViewOpParams {
     /// Normalized `--path` selectors for a partial accept; empty = whole view.
     #[serde(default)]
     paths: Vec<String>,
+    /// Exact `path=reason` tokens returned by review for unresolved paths.
+    #[serde(default)]
+    acknowledged_unresolved: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -85,6 +99,7 @@ struct WorkViewOpParams {
 struct WorkReviewResult {
     overlay_manifest_key: String,
     changes: Vec<WorkChangeWire>,
+    unresolved_paths: Vec<WorkUnresolvedPath>,
 }
 
 #[derive(Serialize)]
@@ -104,6 +119,10 @@ struct WorkAcceptResult {
     discarded_deletions: Vec<String>,
     aside_refused_paths: Vec<String>,
     accepted_paths: Vec<String>,
+    unresolved_paths: Vec<WorkUnresolvedPath>,
+    local_rebase_pending: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_rebase_error: Option<String>,
 }
 
 fn change_kind_wire(kind: ChangeKind) -> &'static str {
@@ -218,12 +237,14 @@ fn view_engine(
     std::fs::create_dir_all(&engine_dir).map_err(WorkViewRpcError::engine)?;
     let store = ManifestStore::open(engine_dir.join(VIEW_ENGINE_DB_FILE))
         .map_err(WorkViewRpcError::engine)?;
+    let capabilities = probe_endpoint_capabilities(view_dir);
     let ctx = EngineContext {
         crypto: env_crypto.clone(),
         device_id: device_id.clone(),
-        names: probe_name_folding(&engine_dir),
-        timestamps: probe_timestamp_granularity(&engine_dir),
+        names: capabilities.names,
+        timestamps: capabilities.timestamps,
         engine_state_dir: engine_dir,
+        endpoint_probe_root: view_dir.to_path_buf(),
         workspace_root: view_dir.to_path_buf(),
         config: EngineConfig::default(),
         project_view: true,
@@ -354,56 +375,7 @@ fn create_view<O: RemoteObjects, R: RemoteRef>(
     create_project_view(env, view_dir, "apps/web")
 }
 
-/// Capture any edits in the view directory as a new overlay manifest, returning
-/// the (possibly unchanged) overlay key. A clean view captures nothing.
-pub(super) fn capture_view<O: RemoteObjects, R: RemoteRef>(
-    env: &WorkViewEngineEnv<'_, O, R>,
-    view_dir: &Path,
-    current_overlay: &ManifestKey,
-) -> Result<ManifestKey, WorkViewRpcError> {
-    let (mut store, ctx) = view_engine(
-        &env.workspace_root,
-        &env.state_root,
-        env.crypto,
-        &env.device_id,
-        view_dir,
-    )?;
-    let policy =
-        bowline_local::policy::UserPolicy::load(view_dir).map_err(WorkViewRpcError::engine)?;
-    let ancestor = store.all_files().map_err(WorkViewRpcError::engine)?;
-    let walk =
-        stat_walk_project_view(view_dir, &policy, &ancestor).map_err(WorkViewRpcError::engine)?;
-    let mut dirty: BTreeSet<_> = walk.dirty;
-    dirty.extend(project_view_verification_paths(&policy, &ancestor));
-    if dirty.is_empty() {
-        return Ok(current_overlay.clone());
-    }
-    match capture_overlay(&mut store, &ctx, env.objects, current_overlay, &dirty)
-        .map_err(WorkViewRpcError::engine)?
-    {
-        Some(new_overlay) => Ok(new_overlay),
-        None => Ok(current_overlay.clone()),
-    }
-}
-
-pub(super) struct ReviewOutcome {
-    pub(super) overlay: ManifestKey,
-    pub(super) changes: Vec<WorkViewChange>,
-}
-
-/// Review: capture the view's current edits, then manifest-diff base vs overlay.
-pub(super) fn review_view_dir<O: RemoteObjects, R: RemoteRef>(
-    env: &WorkViewEngineEnv<'_, O, R>,
-    view_dir: &Path,
-    base: &ManifestKey,
-    overlay: &ManifestKey,
-) -> Result<ReviewOutcome, WorkViewRpcError> {
-    let overlay = capture_view(env, view_dir, overlay)?;
-    let changes =
-        review_view(env.objects, env.crypto, base, &overlay).map_err(WorkViewRpcError::engine)?;
-    Ok(ReviewOutcome { overlay, changes })
-}
-
+#[derive(Debug)]
 pub(super) struct AcceptOutcome {
     pub(super) overlay: ManifestKey,
     pub(super) base: ManifestKey,
@@ -419,33 +391,9 @@ pub(super) struct AcceptOutcome {
     /// from `accepted_paths` and reported here.
     pub(super) aside_refused_paths: Vec<String>,
     pub(super) accepted_paths: Vec<String>,
-}
-
-fn rebase_partial_overlay(
-    next_base: &Manifest,
-    previous_base: &Manifest,
-    captured: &Manifest,
-    accepted_paths: &[String],
-) -> Manifest {
-    let accepted = accepted_paths
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let mut rebased = next_base.clone();
-    for change in diff_manifests(previous_base, captured) {
-        if accepted.contains(change.path.as_str()) {
-            continue;
-        }
-        match captured.entries.get(&change.path) {
-            Some(entry) => {
-                rebased.entries.insert(change.path, entry.clone());
-            }
-            None => {
-                rebased.entries.remove(&change.path);
-            }
-        }
-    }
-    rebased
+    pub(super) unresolved_paths: Vec<WorkUnresolvedPath>,
+    pub(super) local_rebase_pending: bool,
+    pub(super) local_rebase_error: Option<String>,
 }
 
 /// Accept: capture, three-way merge (ancestor = base, ours = current head,
@@ -460,16 +408,59 @@ pub(super) fn accept_project_view_dir<O: RemoteObjects, R: RemoteRef>(
     overlay: &ManifestKey,
     project_path: &str,
     paths: &[String],
+    acknowledged_unresolved: &[String],
 ) -> Result<AcceptOutcome, WorkViewRpcError> {
-    let captured_overlay = capture_view(env, view_dir, overlay)?;
+    if let Some(intent) = read_accept_intent(env, view_dir)? {
+        if !intent.matches(base, overlay, project_path, paths) {
+            return Err(WorkViewRpcError::engine(
+                "a different accept is pending recovery for this work view",
+            ));
+        }
+        if let Some(version) = intent.published_ref_version {
+            match env
+                .refs
+                .lookup_ref_version(version)
+                .map_err(WorkViewRpcError::engine)?
+            {
+                RefVersionLookup::Found(key) if key.as_str() == intent.published_manifest_key => {
+                    return finish_accepted_intent(env, view_dir, &intent);
+                }
+                RefVersionLookup::Unknown => {
+                    return Ok(intent.outcome(
+                        true,
+                        Some(
+                            "the accepted workspace ref is outside the recoverable history window"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                RefVersionLookup::Found(_) | RefVersionLookup::NotAdvanced => {}
+            }
+        } else {
+            let current = env.refs.read_ref().map_err(WorkViewRpcError::engine)?;
+            if current
+                .as_ref()
+                .is_some_and(|head| head.manifest_key.as_str() == intent.published_manifest_key)
+            {
+                return finish_accepted_intent(env, view_dir, &intent);
+            }
+        }
+        clear_accept_intent(env, view_dir)?;
+    }
+    let captured = capture_view(env, view_dir, overlay)?;
+    ensure_unresolved_acknowledged(&captured.unresolved_paths, acknowledged_unresolved)?;
     for attempt in 1..=WORK_VIEW_ACCEPT_MAX_ATTEMPTS {
         match accept_project_view_dir_once(
             env,
-            view_dir,
-            base,
-            &captured_overlay,
-            project_path,
-            paths,
+            AcceptProjectViewRequest {
+                view_dir,
+                base,
+                requested_overlay: overlay,
+                overlay: &captured.overlay,
+                project_path,
+                paths,
+                unresolved_paths: &captured.unresolved_paths,
+            },
         ) {
             Err(WorkViewRpcError::HeadAdvanced) if attempt < WORK_VIEW_ACCEPT_MAX_ATTEMPTS => {
                 continue;
@@ -480,15 +471,21 @@ pub(super) fn accept_project_view_dir<O: RemoteObjects, R: RemoteRef>(
     Err(WorkViewRpcError::HeadAdvanced)
 }
 
+struct AcceptProjectViewRequest<'a> {
+    view_dir: &'a Path,
+    base: &'a ManifestKey,
+    requested_overlay: &'a ManifestKey,
+    overlay: &'a ManifestKey,
+    project_path: &'a str,
+    paths: &'a [String],
+    unresolved_paths: &'a [WorkUnresolvedPath],
+}
+
 fn accept_project_view_dir_once<O: RemoteObjects, R: RemoteRef>(
     env: &WorkViewEngineEnv<'_, O, R>,
-    view_dir: &Path,
-    base: &ManifestKey,
-    overlay: &ManifestKey,
-    project_path: &str,
-    paths: &[String],
+    request: AcceptProjectViewRequest<'_>,
 ) -> Result<AcceptOutcome, WorkViewRpcError> {
-    let overlay = overlay.clone();
+    let overlay = request.overlay.clone();
     let head = env
         .refs
         .read_ref()
@@ -496,27 +493,27 @@ fn accept_project_view_dir_once<O: RemoteObjects, R: RemoteRef>(
         .ok_or(WorkViewRpcError::NoSyncedHead)?;
     let workspace = fetch_manifest(env.objects, env.crypto, &head.manifest_key)
         .map_err(WorkViewRpcError::engine)?;
-    let base_manifest =
-        fetch_project_manifest(env.objects, env.crypto, base).map_err(WorkViewRpcError::engine)?;
+    let base_manifest = fetch_project_manifest(env.objects, env.crypto, request.base)
+        .map_err(WorkViewRpcError::engine)?;
     let overlay_manifest = fetch_project_manifest(env.objects, env.crypto, &overlay)
         .map_err(WorkViewRpcError::engine)?;
     let partial_overlay_snapshot;
     let accepted_paths;
-    let effective_overlay = if paths.is_empty() {
+    let effective_overlay = if request.paths.is_empty() {
         accepted_paths = diff_manifests(&base_manifest, &overlay_manifest)
             .into_iter()
             .map(|change| change.path.as_str().to_string())
             .collect();
         &overlay_manifest
     } else {
-        let (partial, accepted) = partial_overlay(&base_manifest, &overlay_manifest, paths)
+        let (partial, accepted) = partial_overlay(&base_manifest, &overlay_manifest, request.paths)
             .map_err(WorkViewRpcError::engine)?;
         partial_overlay_snapshot = partial;
         accepted_paths = accepted;
         &partial_overlay_snapshot
     };
-    let workspace_base = lift_project_manifest(&base_manifest, project_path);
-    let workspace_overlay = lift_project_manifest(effective_overlay, project_path);
+    let workspace_base = lift_project_manifest(&base_manifest, request.project_path);
+    let workspace_overlay = lift_project_manifest(effective_overlay, request.project_path);
     let merge = three_way_merge(
         &workspace_base,
         &workspace,
@@ -526,12 +523,12 @@ fn accept_project_view_dir_once<O: RemoteObjects, R: RemoteRef>(
     let discarded_deletions: Vec<String> = merge
         .discarded_deletions
         .iter()
-        .map(|path| project_relative_path(path, project_path))
+        .map(|path| project_relative_path(path, request.project_path))
         .collect();
     let aside_refused_paths: Vec<String> = merge
         .aside_refused_paths
         .iter()
-        .map(|path| project_relative_path(path, project_path))
+        .map(|path| project_relative_path(path, request.project_path))
         .collect();
     // Neither a discarded deletion nor a refused aside landed, so neither may be
     // reported as accepted: strip both from the set the caller records against
@@ -540,10 +537,10 @@ fn accept_project_view_dir_once<O: RemoteObjects, R: RemoteRef>(
         .into_iter()
         .filter(|path| !discarded_deletions.contains(path) && !aside_refused_paths.contains(path))
         .collect();
-    let next_base_snapshot = project_manifest(&merge.merged, project_path);
+    let next_base_snapshot = project_manifest(&merge.merged, request.project_path);
     let next_base = publish_manifest(env, &next_base_snapshot)?;
-    let next_overlay = if paths.is_empty() {
-        overlay
+    let next_overlay = if request.paths.is_empty() {
+        overlay.clone()
     } else {
         let rebased = rebase_partial_overlay(
             &next_base_snapshot,
@@ -553,57 +550,64 @@ fn accept_project_view_dir_once<O: RemoteObjects, R: RemoteRef>(
         );
         publish_manifest(env, &rebased)?
     };
-    let published = if merge.merged == workspace {
+    let candidate = if merge.merged == workspace {
         // Nothing to publish: the head already carries the accepted state (or the
         // only overlay change was a deletion the live workspace overrode).
-        head.manifest_key
+        head.manifest_key.clone()
     } else {
-        let key = publish_manifest(env, &merge.merged)?;
-        match env
-            .refs
-            .compare_and_swap(Some(head.version), &key)
-            .map_err(WorkViewRpcError::engine)?
-        {
-            CasOutcome::Advanced(_) => {}
-            CasOutcome::Lost(_) => return Err(WorkViewRpcError::HeadAdvanced),
-            CasOutcome::Ambiguous => {
-                // Same resolution as the core push loop: adopt only if the current
-                // head equals the candidate key.
-                let current = env.refs.read_ref().map_err(WorkViewRpcError::engine)?;
-                if current.map(|observed| observed.manifest_key) != Some(key.clone()) {
-                    return Err(WorkViewRpcError::HeadAdvanced);
-                }
-            }
-        }
-        key
+        publish_manifest(env, &merge.merged)?
     };
-    if !paths.is_empty() {
-        materialize_existing_view(env, view_dir, &next_overlay, true)?;
-    }
-    Ok(AcceptOutcome {
-        overlay: next_overlay,
-        base: next_base,
-        published,
+    let intent = AcceptIntent {
+        base_manifest_key: request.base.as_str().to_string(),
+        requested_overlay_manifest_key: request.requested_overlay.as_str().to_string(),
+        captured_overlay_manifest_key: overlay.as_str().to_string(),
+        project_path: request.project_path.to_string(),
+        paths: request.paths.to_vec(),
+        next_overlay_manifest_key: next_overlay.as_str().to_string(),
+        next_base_manifest_key: next_base.as_str().to_string(),
+        published_manifest_key: candidate.as_str().to_string(),
+        published_ref_version: Some(if merge.merged == workspace {
+            head.version
+        } else {
+            head.version.saturating_add(1)
+        }),
         conflict_asides: merge
             .conflict_asides
-            .into_iter()
-            .map(|path| project_relative_path(&path, project_path))
+            .iter()
+            .map(|path| project_relative_path(path, request.project_path))
             .collect(),
         discarded_deletions,
         aside_refused_paths,
         accepted_paths,
-    })
-}
-
-fn project_relative_path(path: &WorkspacePath, project_path: &str) -> String {
-    let prefix = project_path.trim_matches('/');
-    if prefix.is_empty() {
-        return path.as_str().to_string();
+        unresolved_paths: request.unresolved_paths.to_vec(),
+    };
+    // The receipt is durable before authority changes remotely. If the daemon
+    // terminates after CAS, the next identical request can prove whether this
+    // exact candidate landed and finish the local rebase idempotently.
+    write_accept_intent(env, request.view_dir, &intent)?;
+    if merge.merged != workspace {
+        match env
+            .refs
+            .compare_and_swap(Some(head.version), &candidate)
+            .map_err(WorkViewRpcError::engine)?
+        {
+            CasOutcome::Advanced(_) => {}
+            CasOutcome::Lost(_) => {
+                clear_accept_intent(env, request.view_dir)?;
+                return Err(WorkViewRpcError::HeadAdvanced);
+            }
+            CasOutcome::Ambiguous => {
+                // Same resolution as the core push loop: adopt only if the current
+                // head equals the candidate key.
+                let current = env.refs.read_ref().map_err(WorkViewRpcError::engine)?;
+                if current.map(|observed| observed.manifest_key) != Some(candidate.clone()) {
+                    clear_accept_intent(env, request.view_dir)?;
+                    return Err(WorkViewRpcError::HeadAdvanced);
+                }
+            }
+        }
     }
-    path.as_str()
-        .strip_prefix(&format!("{prefix}/"))
-        .unwrap_or(path.as_str())
-        .to_string()
+    finish_accepted_intent(env, request.view_dir, &intent)
 }
 
 #[cfg(test)]
@@ -614,7 +618,7 @@ fn accept_view_dir<O: RemoteObjects, R: RemoteRef>(
     overlay: &ManifestKey,
     paths: &[String],
 ) -> Result<AcceptOutcome, WorkViewRpcError> {
-    accept_project_view_dir(env, view_dir, base, overlay, "apps/web", paths)
+    accept_project_view_dir(env, view_dir, base, overlay, "apps/web", paths, &[])
 }
 
 // ---- RPC glue ---------------------------------------------------------------
@@ -651,57 +655,30 @@ fn work_rpc_context(state: &DaemonServerState) -> RpcResult<WorkRpcContext> {
     })
 }
 
-/// A view directory must live under the workspace's `.work/` tree — the daemon
-/// never materializes to an arbitrary caller-supplied path.
-fn checked_view_dir(root: &Path, view_dir: &str) -> RpcResult<PathBuf> {
-    let path = PathBuf::from(view_dir);
-    // A `..` component lets a lexically-valid path (`.work/../../x`) escape the
-    // tree, so reject parent-dir traversal outright rather than trusting the
-    // prefix check alone.
-    let has_traversal = path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir));
-    // Require at least one component under `.work` so the `.work` root itself
-    // cannot be used as a view directory (which would corrupt the overlay tree).
-    let inside_work_tree = path.strip_prefix(root).is_ok_and(|relative| {
-        let mut parts = relative.components();
-        parts
-            .next()
-            .is_some_and(|first| first.as_os_str() == ".work")
-            && parts.next().is_some()
-    });
-    if !path.is_absolute() || has_traversal || !inside_work_tree {
-        return Err(rpc_error(
-            DaemonRpcErrorCode::InvalidRequest,
-            "work-view directory must be inside the workspace .work tree",
-            false,
-        ));
-    }
-    Ok(path)
+fn work_view_operation_lock(
+    state: &DaemonServerState,
+    workspace_id: &bowline_core::ids::WorkspaceId,
+    view_dir: &Path,
+) -> RpcResult<Arc<Mutex<()>>> {
+    state
+        .work_view_operation_lock(workspace_id, view_dir)
+        .map_err(|()| {
+            rpc_error(
+                DaemonRpcErrorCode::Internal,
+                "work-view operation lock registry is unavailable",
+                false,
+            )
+        })
 }
 
-fn checked_project_path(root: &Path, view_dir: &Path, project_path: &str) -> RpcResult<String> {
-    let project = Path::new(project_path);
-    let canonical: PathBuf = project.components().collect();
-    let normalized = project_path.is_empty()
-        || (!project.is_absolute()
-            && !project_path.starts_with('/')
-            && project
-                .components()
-                .all(|component| matches!(component, Component::Normal(_)))
-            && canonical.to_str() == Some(project_path));
-    let expected = view_dir
-        .strip_prefix(root.join(".work"))
-        .ok()
-        .and_then(Path::parent);
-    if !normalized || expected != Some(project) {
-        return Err(rpc_error(
-            DaemonRpcErrorCode::InvalidRequest,
-            "project path must be normalized and match the work-view directory scope",
+fn enter_work_view_operation(lock: &Mutex<()>) -> RpcResult<MutexGuard<'_, ()>> {
+    lock.lock().map_err(|_| {
+        rpc_error(
+            DaemonRpcErrorCode::Internal,
+            "work-view operation lock is unavailable",
             false,
-        ));
-    }
-    Ok(project_path.to_string())
+        )
+    })
 }
 
 fn work_rpc_result<T>(result: Result<T, WorkViewRpcError>) -> RpcResult<T> {
@@ -793,6 +770,8 @@ pub(super) fn work_create(
     let rpc = work_rpc_context(state)?;
     let view_dir = checked_view_dir(&rpc.workspace_root, &params.view_dir)?;
     let project_path = checked_project_path(&rpc.workspace_root, &view_dir, &params.project_path)?;
+    let operation_lock = work_view_operation_lock(state, &rpc.workspace_id, &view_dir)?;
+    let _operation = enter_work_view_operation(&operation_lock)?;
     checkpoint(context, CancellationPoint::BeforeExternalCall)?;
     let base = with_transport_env!(&rpc, env, {
         if let Some(overlay) = params.overlay_manifest_key {
@@ -820,6 +799,8 @@ pub(super) fn work_review(
     let rpc = work_rpc_context(state)?;
     let view_dir = checked_view_dir(&rpc.workspace_root, &params.view_dir)?;
     checked_project_path(&rpc.workspace_root, &view_dir, &params.project_path)?;
+    let operation_lock = work_view_operation_lock(state, &rpc.workspace_id, &view_dir)?;
+    let _operation = enter_work_view_operation(&operation_lock)?;
     checkpoint(context, CancellationPoint::BeforeExternalCall)?;
     let outcome = with_transport_env!(
         &rpc,
@@ -834,6 +815,7 @@ pub(super) fn work_review(
     serde_json::to_value(WorkReviewResult {
         overlay_manifest_key: outcome.overlay.as_str().to_string(),
         changes: changes_wire(outcome.changes),
+        unresolved_paths: outcome.unresolved_paths,
     })
     .map_err(internal_serialization_error)
 }
@@ -849,6 +831,8 @@ pub(super) fn work_accept(
     let rpc = work_rpc_context(state)?;
     let view_dir = checked_view_dir(&rpc.workspace_root, &params.view_dir)?;
     let project_path = checked_project_path(&rpc.workspace_root, &view_dir, &params.project_path)?;
+    let operation_lock = work_view_operation_lock(state, &rpc.workspace_id, &view_dir)?;
+    let _operation = enter_work_view_operation(&operation_lock)?;
     checkpoint(context, CancellationPoint::BeforeExternalCall)?;
     let outcome = with_transport_env!(
         &rpc,
@@ -860,6 +844,7 @@ pub(super) fn work_accept(
             &ManifestKey::new(params.overlay_manifest_key.clone()),
             &project_path,
             &params.paths,
+            &params.acknowledged_unresolved,
         ))
     )?;
     serde_json::to_value(WorkAcceptResult {
@@ -870,6 +855,9 @@ pub(super) fn work_accept(
         discarded_deletions: outcome.discarded_deletions,
         aside_refused_paths: outcome.aside_refused_paths,
         accepted_paths: outcome.accepted_paths,
+        unresolved_paths: outcome.unresolved_paths,
+        local_rebase_pending: outcome.local_rebase_pending,
+        local_rebase_error: outcome.local_rebase_error,
     })
     .map_err(internal_serialization_error)
 }

@@ -28,9 +28,10 @@ use super::unsyncable::{UnsyncableReason, path_scoped_reason};
 
 mod anchored;
 
+pub(crate) use anchored::is_recovery_owner_record_name;
 pub use anchored::{
     AnchoredDirectory, AnchoredEntry, AnchoredLeafKind, AnchoredOpen, LeafName, MAX_ANCHORED_DEPTH,
-    open_containing_directory, open_workspace_root,
+    open_containing_directory, open_private_root, open_workspace_root,
 };
 
 /// 0600 — owner read/write only. Every engine-authored file (temp, spool,
@@ -187,6 +188,12 @@ pub enum FileRead {
     /// parent, vanished, or its fstat identity/size diverged from the expectation.
     /// NEVER carries bytes read through a symlink or from outside the workspace;
     /// the caller must re-observe and re-derive rather than trust these bytes.
+    Diverged,
+}
+
+/// Result of visiting a validated regular-file descriptor without buffering it.
+pub enum FileVisit<T> {
+    Value(T),
     Diverged,
 }
 
@@ -398,14 +405,46 @@ fn path_components(path: &str) -> impl Iterator<Item = String> + '_ {
 ///   compared to `expected` — a mismatch (raced inode, followed intermediate
 ///   symlink, truncation/growth) diverges rather than returning the bytes.
 ///
-/// Above `max_bytes` the envelope's whole-buffer seal cannot proceed within a
-/// bounded budget — the Plan 109 STOP condition surfaces as a typed error.
+/// Above `max_bytes` product policy refuses the file before reading it.
 pub fn read_file_bounded(
     root: &Path,
     path: &WorkspacePath,
     max_bytes: u64,
     expected: &ExpectedFile,
 ) -> Result<FileRead, PushError> {
+    match visit_file_bounded(root, path, max_bytes, expected, |file, byte_len| {
+        let capacity = usize::try_from(byte_len).map_err(|_| PushError::StreamSealUnsupported {
+            byte_len,
+            ceiling: max_bytes,
+        })?;
+        let mut buffer = Vec::with_capacity(capacity);
+        let read = file
+            .take(max_bytes.saturating_add(1))
+            .read_to_end(&mut buffer)
+            .map_err(PushError::Io)?;
+        if read as u64 > max_bytes {
+            return Err(PushError::StreamSealUnsupported {
+                byte_len: read as u64,
+                ceiling: max_bytes,
+            });
+        }
+        Ok(buffer)
+    })? {
+        FileVisit::Value(buffer) => Ok(FileRead::Bytes(buffer)),
+        FileVisit::Diverged => Ok(FileRead::Diverged),
+    }
+}
+
+/// Visit a regular file through one no-follow descriptor and prove that its
+/// identity still matches the caller's observation both before and after the
+/// visitor consumes it.
+pub fn visit_file_bounded<T>(
+    root: &Path,
+    path: &WorkspacePath,
+    max_bytes: u64,
+    expected: &ExpectedFile,
+    visitor: impl FnOnce(&mut fs::File, u64) -> Result<T, PushError>,
+) -> Result<FileVisit<T>, PushError> {
     use rustix::fs::{Mode, OFlags};
     use rustix::io::Errno;
 
@@ -414,7 +453,7 @@ pub fn read_file_bounded(
     // exist — the open then fails NOENT and diverges.
     if let ParentChain::Blocked = prepare_parent_chain(root, path, ParentChainMode::RequireExisting)
     {
-        return Ok(FileRead::Diverged);
+        return Ok(FileVisit::Diverged);
     }
 
     let absolute = root.join(path.as_str());
@@ -431,7 +470,7 @@ pub fn read_file_bounded(
         // intermediate raced into a non-directory. ISDIR/NXIO: it is no longer a
         // readable regular file. All are divergences, never engine errors.
         Err(Errno::LOOP | Errno::NOENT | Errno::NOTDIR | Errno::ISDIR | Errno::NXIO) => {
-            return Ok(FileRead::Diverged);
+            return Ok(FileVisit::Diverged);
         }
         Err(errno) => return Err(PushError::Io(io::Error::from(errno))),
     };
@@ -446,7 +485,7 @@ pub fn read_file_bounded(
     {
         // A directory, a followed intermediate symlink's target, a raced inode, or
         // a truncation/growth since the observation: do not seal these bytes.
-        return Ok(FileRead::Diverged);
+        return Ok(FileVisit::Diverged);
     }
 
     if metadata.len() > max_bytes {
@@ -455,21 +494,15 @@ pub fn read_file_bounded(
             ceiling: max_bytes,
         });
     }
-    let mut buffer = Vec::with_capacity(metadata.len() as usize);
-    // Bound the read too: a fingerprint match pins the size, but read defensively
-    // so a torn read past the ceiling can never be buffered unboundedly.
-    let read = file
-        .by_ref()
-        .take(max_bytes + 1)
-        .read_to_end(&mut buffer)
-        .map_err(PushError::Io)?;
-    if read as u64 > max_bytes {
-        return Err(PushError::StreamSealUnsupported {
-            byte_len: read as u64,
-            ceiling: max_bytes,
-        });
+    let value = visitor(&mut file, metadata.len())?;
+    let final_metadata = file.metadata().map_err(PushError::Io)?;
+    if !final_metadata.file_type().is_file()
+        || fingerprint_of(&final_metadata) != expected.fingerprint
+        || final_metadata.len() != expected.size
+    {
+        return Ok(FileVisit::Diverged);
     }
-    Ok(FileRead::Bytes(buffer))
+    Ok(FileVisit::Value(value))
 }
 
 /// Write `bytes` to `path` as a private (0600) file, replacing any existing
@@ -494,6 +527,12 @@ pub enum AtomicWrite {
     Blocked,
 }
 
+/// The outcome of a descriptor-anchored in-place write.
+pub enum GuardedWrite {
+    Written(StatFingerprint),
+    Blocked,
+}
+
 /// Atomically write `bytes` to workspace-relative `path` as a private (0600)
 /// file, replacing any existing content, WITHOUT ever following a symlink. The
 /// one primitive product surfaces (the work-view aux index) use to publish a
@@ -505,65 +544,97 @@ pub enum AtomicWrite {
 /// - the parent chain is validated (and, if missing, created) no-follow
 ///   ([`prepare_parent_chain`] `CreateMissing`); a symlinked intermediate is
 ///   [`AtomicWrite::Blocked`], never written through;
-/// - the temp sibling is created `O_NOFOLLOW | O_CREAT | O_TRUNC` in that same
-///   verified parent, so the final rename is a same-directory atomic replace; a
-///   symlink swapped in at the temp name is refused (`ELOOP`), never followed;
-/// - the rename targets the final leaf BY NAME — `rename(2)` never follows a
-///   final symlink, it replaces it — so a symlinked leaf is overwritten in place,
-///   never traversed onto an external target.
+/// - the containing directory is then opened component-by-component no-follow
+///   and held; the temp open and final rename are both relative to that
+///   descriptor, so swapping any checked parent cannot redirect either syscall;
+/// - the temp sibling is opened `O_NOFOLLOW | O_CREAT | O_TRUNC`; a symlink at
+///   the temp name is refused, while the final rename replaces a symlinked
+///   destination leaf rather than following it.
 pub fn write_private_file_atomic(
     root: &Path,
     path: &WorkspacePath,
     bytes: &[u8],
 ) -> Result<AtomicWrite, PushError> {
-    use rustix::fs::{Mode, OFlags};
-    use rustix::io::Errno;
-    use std::io::Write;
+    write_private_file_atomic_with(root, path, bytes, || {})
+}
 
+fn write_private_file_atomic_with(
+    root: &Path,
+    path: &WorkspacePath,
+    bytes: &[u8],
+    after_open: impl FnOnce(),
+) -> Result<AtomicWrite, PushError> {
     if let ParentChain::Blocked = prepare_parent_chain(root, path, ParentChainMode::CreateMissing) {
         return Ok(AtomicWrite::Blocked);
     }
-
-    let absolute = root.join(path.as_str());
-    // The temp lives beside the target leaf, inside the parent chain just verified
-    // no-follow, so the rename below is a same-directory atomic replace that never
-    // crosses a boundary.
-    let parent = absolute.parent().ok_or_else(|| {
-        PushError::Io(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "workspace path has no parent directory",
-        ))
-    })?;
-    let leaf = absolute.file_name().ok_or_else(|| {
+    let leaf = LeafName::of(path).ok_or_else(|| {
         PushError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
             "workspace path has no final component",
         ))
     })?;
-    let mut temp_name = std::ffi::OsString::from(".");
-    temp_name.push(leaf);
-    temp_name.push(".tmp");
-    let temp = parent.join(&temp_name);
-
-    // O_NOFOLLOW: a symlink swapped in at the temp name fails ELOOP instead of
-    // being followed outside the root. O_TRUNC reuses a stale regular temp.
-    let fd = match rustix::fs::open(
-        &temp,
-        OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::from_bits_truncate(PRIVATE_FILE_MODE as rustix::fs::RawMode),
-    ) {
-        Ok(fd) => fd,
-        // ELOOP: the temp name is a symlink. NOTDIR: an intermediate raced into a
-        // non-directory. Both are unusable on-disk shapes — refuse the write.
-        Err(Errno::LOOP | Errno::NOTDIR) => return Ok(AtomicWrite::Blocked),
-        Err(errno) => return Err(PushError::Io(io::Error::from(errno))),
+    let directory = match open_containing_directory(root, path) {
+        AnchoredOpen::Ready(directory) => directory,
+        AnchoredOpen::Absent | AnchoredOpen::Blocked => return Ok(AtomicWrite::Blocked),
     };
-    let mut file = fs::File::from(fd);
-    file.write_all(bytes).map_err(PushError::Io)?;
-    file.sync_all().map_err(PushError::Io)?;
-    drop(file);
-    fs::rename(&temp, &absolute).map_err(PushError::Io)?;
-    Ok(AtomicWrite::Written)
+    after_open();
+    directory
+        .write_private_file_atomic(&leaf, bytes)
+        .map_err(PushError::Io)
+}
+
+/// Atomically stream private bytes into a workspace-relative file without
+/// following either a parent or destination symlink.
+pub fn install_staged_file(
+    root: &Path,
+    path: &WorkspacePath,
+    source: &Path,
+    final_mode: FileMode,
+) -> Result<GuardedWrite, PushError> {
+    let source_leaf = LeafName::from_path(source).ok_or_else(|| {
+        PushError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "staged file path has no final component",
+        ))
+    })?;
+    let source_directory = open_private_root(source.parent().ok_or_else(|| {
+        PushError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "staged file path has no parent",
+        ))
+    })?)
+    .map_err(PushError::Io)?;
+    install_staged_file_from_directory(root, path, &source_directory, &source_leaf, final_mode)
+}
+
+/// Install a staged file while retaining the directory descriptor that created
+/// it. This is the mutation-boundary form used by pull materialization: neither
+/// a replacement of the staging directory nor a swap of the staged leaf can
+/// redirect the chmod or substitute different bytes between download and
+/// install.
+pub fn install_staged_file_from_directory(
+    root: &Path,
+    path: &WorkspacePath,
+    source_directory: &AnchoredDirectory,
+    source_leaf: &LeafName,
+    final_mode: FileMode,
+) -> Result<GuardedWrite, PushError> {
+    if let ParentChain::Blocked = prepare_parent_chain(root, path, ParentChainMode::CreateMissing) {
+        return Ok(GuardedWrite::Blocked);
+    }
+    let leaf = LeafName::of(path).ok_or_else(|| {
+        PushError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workspace path has no final component",
+        ))
+    })?;
+    let directory = match open_containing_directory(root, path) {
+        AnchoredOpen::Ready(directory) => directory,
+        AnchoredOpen::Absent | AnchoredOpen::Blocked => return Ok(GuardedWrite::Blocked),
+    };
+    directory
+        .install_staged_file(source_directory, source_leaf, &leaf, final_mode)
+        .map_err(PushError::Io)
 }
 
 /// Unix metadata timestamps flattened to a single nanosecond count, so the
@@ -614,5 +685,38 @@ mod tests {
 
         assert_eq!(observed.kind, EntryKind::Symlink);
         assert_eq!(observed.mode, FileMode::symlink());
+    }
+
+    #[test]
+    fn atomic_private_write_stays_in_the_directory_held_before_parent_swap() {
+        let base = std::env::temp_dir().join(format!(
+            "bowline-atomic-private-parent-swap-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        let root = base.join("root");
+        let decoy = base.join("decoy");
+        fs::create_dir_all(root.join(".bowline-meta")).expect("workspace metadata directory");
+        fs::create_dir_all(&decoy).expect("external decoy directory");
+        let path = WorkspacePath::new(".bowline-meta/aux-index");
+
+        let outcome = write_private_file_atomic_with(&root, &path, b"held-directory", || {
+            fs::rename(root.join(".bowline-meta"), root.join(".bowline-meta-held"))
+                .expect("move checked parent");
+            std::os::unix::fs::symlink(&decoy, root.join(".bowline-meta"))
+                .expect("replace checked parent with external symlink");
+        })
+        .expect("anchored write");
+
+        assert!(matches!(outcome, AtomicWrite::Written));
+        assert!(
+            !decoy.join("aux-index").exists(),
+            "the swapped-in symlink must not receive the aux index"
+        );
+        assert_eq!(
+            fs::read(root.join(".bowline-meta-held/aux-index")).expect("anchored output"),
+            b"held-directory"
+        );
+        let _ = fs::remove_dir_all(base);
     }
 }

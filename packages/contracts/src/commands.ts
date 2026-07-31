@@ -133,6 +133,9 @@ export type UpdateCommandOutput = CommandOutputBase<"update"> & {
   readonly latestVersion: string;
   readonly updateAvailable: boolean;
   readonly updateCommand: string;
+  readonly installationState?:
+    | "installed-and-healthy"
+    | "installed-on-disk-restart-required";
 };
 
 export type ContractFixtureDescriptor = {

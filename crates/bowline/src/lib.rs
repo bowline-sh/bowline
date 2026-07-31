@@ -55,7 +55,7 @@ use bowline_core::commands::{
     DoctorCommandOutput, DoctorSummary, DryRunCommandOutput, DryRunStatus, EventsCommandOutput,
     HelpCommandOutput, ScopedContractCommandOutput, SetupCommandOutput, SetupProjectOutcome,
     SetupProjectOutput, SetupProjectState, StatusCommandOutput, UpdateCommandOutput,
-    VersionCommandOutput, WatchFrame,
+    UpdateInstallationState, VersionCommandOutput, WatchFrame,
 };
 use bowline_core::devices::{AccountLoginState, AccountLoginStatus};
 use bowline_core::events::EVENT_SCHEMA_VERSION;

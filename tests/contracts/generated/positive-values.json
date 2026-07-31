@@ -836,6 +836,7 @@
     "createdByDeviceProof": "proof_create",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -859,6 +860,7 @@
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
   },
@@ -885,6 +887,7 @@
     "createdByDeviceProof": "proof_rotate",
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },

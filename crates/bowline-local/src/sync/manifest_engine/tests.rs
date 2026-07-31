@@ -17,8 +17,9 @@ use super::engine_test_support::{
     DriverHarness, FakeRemote, TestClock, engine_io, open_engine_store, test_context, test_crypto,
 };
 use super::{
-    Degradation, EngineEvent, EnginePhase, FullScanReason, ManifestEngine, ManifestEntry,
-    ManifestKey, RefObservation, SyncBarrierId, WorkspaceCrypto, WorkspacePath,
+    Degradation, ENGINE_STATE_DIR, EngineConfig, EngineEvent, EnginePhase, FullScanReason,
+    ManifestEngine, ManifestEntry, ManifestKey, RECOVERY_STATE_DIR, RefObservation, SyncBarrierId,
+    WorkspaceCrypto, WorkspacePath,
 };
 use crate::workspace::TempWorkspace;
 
@@ -641,18 +642,24 @@ struct TwoEngines {
 
 impl TwoEngines {
     fn new() -> Self {
+        Self::with_config(EngineConfig::default())
+    }
+
+    fn with_config(config: EngineConfig) -> Self {
+        Self::with_configs(config, config)
+    }
+
+    fn with_configs(config_a: EngineConfig, config_b: EngineConfig) -> Self {
         let ws_a = TempWorkspace::new("sim-a").expect("ws a");
         let ws_b = TempWorkspace::new("sim-b").expect("ws b");
         let root_a = ws_a.root().to_path_buf();
         let root_b = ws_b.root().to_path_buf();
-        let engine_a = ManifestEngine::new(
-            open_engine_store(&root_a),
-            test_context(root_a.clone(), "device-a"),
-        );
-        let engine_b = ManifestEngine::new(
-            open_engine_store(&root_b),
-            test_context(root_b.clone(), "device-b"),
-        );
+        let mut context_a = test_context(root_a.clone(), "device-a");
+        context_a.config = config_a;
+        let mut context_b = test_context(root_b.clone(), "device-b");
+        context_b.config = config_b;
+        let engine_a = ManifestEngine::new(open_engine_store(&root_a), context_a);
+        let engine_b = ManifestEngine::new(open_engine_store(&root_b), context_b);
         Self {
             _ws_a: ws_a,
             _ws_b: ws_b,
@@ -730,6 +737,45 @@ fn edit_on_a_propagates_to_b() {
     assert_eq!(
         fs::read(sim.root_b.join("shared.txt")).expect("b read"),
         b"from A"
+    );
+}
+
+#[test]
+fn segmented_large_file_propagates_to_a_peer() {
+    let mut sim = TwoEngines::with_configs(
+        EngineConfig {
+            large_file_threshold: 1024,
+            max_seal_bytes: 32 * 1024 * 1024,
+        },
+        EngineConfig {
+            large_file_threshold: 20 * 1024 * 1024,
+            max_seal_bytes: 32 * 1024 * 1024,
+        },
+    );
+    let mut state = 0x4d59_5df4_d0f3_3173_u64;
+    let bytes = (0..9 * 1024 * 1024)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect::<Vec<_>>();
+    sim.start();
+    sim.edit_a("large.bin", &bytes);
+    sim.ref_sync_b();
+    assert_eq!(
+        fs::read(sim.root_b.join("large.bin")).expect("b read"),
+        bytes
+    );
+    let temp_dir = sim.root_b.join(ENGINE_STATE_DIR).join(RECOVERY_STATE_DIR);
+    assert!(
+        fs::read_dir(temp_dir).expect("temp dir").all(|entry| !entry
+            .expect("temp entry")
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".sealed-partial")),
+        "ciphertext scratch is removed after materialization"
     );
 }
 

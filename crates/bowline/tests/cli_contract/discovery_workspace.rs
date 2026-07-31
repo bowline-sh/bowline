@@ -916,7 +916,16 @@ fn work_view_cli_creates_lists_restores_and_cleans_without_copying_source() {
         ("BOWLINE_DEVICE_ID", "dev_cli_phase9".to_string()),
         ("BOWLINE_CONTROL_SOCKET", socket.display().to_string()),
     ];
+    let _ = fs::remove_file(&socket);
+    let discard_listener = UnixListener::bind(&socket).expect("discard review socket binds");
+    discard_listener
+        .set_nonblocking(true)
+        .expect("nonblocking discard listener");
+    let discard_server = spawn_work_rpc_server(discard_listener, 1);
     let discarded = run_bowline_with_env(&["work", "discard", "auth-fix", "--json"], &discard_envs);
+    discard_server
+        .join()
+        .expect("discard review daemon server completes");
     assert!(discarded.status.success());
     let discarded_json = parse_stdout_json(discarded);
     assert_eq!(discarded_json["workView"]["lifecycle"], "discarded");
@@ -953,6 +962,13 @@ fn work_view_cli_creates_lists_restores_and_cleans_without_copying_source() {
         "2026-06-25T12:02:00Z"
     );
 
+    let _ = fs::remove_file(&socket);
+    let destructive_listener =
+        UnixListener::bind(&socket).expect("destructive preflight socket binds");
+    destructive_listener
+        .set_nonblocking(true)
+        .expect("nonblocking destructive listener");
+    let destructive_server = spawn_work_rpc_server(destructive_listener, 2);
     let discarded = run_bowline_with_env(&["work", "discard", "auth-fix", "--json"], &envs);
     assert!(discarded.status.success());
     let preview = run_bowline_with_env(&["work", "cleanup", "--json"], &envs);
@@ -960,10 +976,23 @@ fn work_view_cli_creates_lists_restores_and_cleans_without_copying_source() {
     assert!(materialized.is_dir());
 
     let cleanup = run_bowline_with_env(&["work", "cleanup", "--apply", "--json"], &envs);
-    assert!(cleanup.status.success());
+    destructive_server
+        .join()
+        .expect("destructive preflight daemon server completes");
+    assert!(cleanup.status.success(), "{cleanup:?}");
     let cleanup_json = parse_stdout_json(cleanup);
     assert_eq!(cleanup_json["deletedPaths"].as_array().unwrap().len(), 1);
     assert!(!materialized.exists());
+    let retired = code_root.join(format!(
+        ".work/apps/web/.bowline-cleanup-{}-0",
+        created_json["workView"]["id"]
+            .as_str()
+            .expect("work-view id")
+    ));
+    assert!(
+        !retired.exists(),
+        "a sealed quarantine with no open handles is deleted"
+    );
 
     let after_cleanup = run_bowline_with_env(&["work", "list", "--all", "--json"], &envs);
     assert!(after_cleanup.status.success());

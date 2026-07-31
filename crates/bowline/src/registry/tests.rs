@@ -310,7 +310,10 @@ fn sample_for_command_name(command: CommandName) -> Option<Command> {
         CommandName::Accept => Some(Command::WorkAccept(work_selector())),
         CommandName::Discard => Some(Command::WorkDiscard(work_selector())),
         CommandName::Restore => Some(Command::WorkRestore(work_selector())),
-        CommandName::Cleanup => Some(Command::WorkCleanup(work::WorkCleanupArgs { apply: true })),
+        CommandName::Cleanup => Some(Command::WorkCleanup(work::WorkCleanupArgs {
+            apply: true,
+            acknowledged_unresolved: Vec::new(),
+        })),
         CommandName::ForgetLocal => Some(Command::ForgetLocal(ForgetLocalArgs {
             project_path: "apps/web".to_string(),
             yes: true,
@@ -353,5 +356,6 @@ fn work_selector() -> work::WorkSelectorArgs {
     work::WorkSelectorArgs {
         selector: "sample".to_string(),
         paths: Vec::new(),
+        acknowledged_unresolved: Vec::new(),
     }
 }

@@ -106,9 +106,16 @@ pub(super) fn print_json(value: &impl serde::Serialize) {
 
 pub(super) fn write_json_line(value: &impl serde::Serialize) -> io::Result<()> {
     let mut stdout = io::stdout().lock();
-    serde_json::to_writer(&mut stdout, value)?;
-    writeln!(stdout)?;
-    stdout.flush()
+    write_json_line_to(&mut stdout, value)
+}
+
+pub(super) fn write_json_line_to(
+    writer: &mut impl Write,
+    value: &impl serde::Serialize,
+) -> io::Result<()> {
+    serde_json::to_writer(&mut *writer, value)?;
+    writeln!(writer)?;
+    writer.flush()
 }
 
 pub(super) fn write_text(text: &str) -> io::Result<()> {

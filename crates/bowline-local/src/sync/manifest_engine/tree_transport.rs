@@ -16,12 +16,18 @@ use super::manifest::{ManifestError, ManifestKey};
 use super::push::TransportError;
 use super::store::{ManifestStore, ManifestStoreError};
 
+#[path = "tree_transport/diff.rs"]
+mod diff;
 #[path = "tree_transport/fetch.rs"]
 mod fetch;
+#[path = "tree_transport/patch.rs"]
+mod patch;
 #[path = "tree_transport/publish.rs"]
 mod publish;
 
+pub use diff::{DiffTreeRequest, TreeDelta, diff_tree};
 pub use fetch::{FetchTreeRequest, FetchedTree, PruneBasis, fetch_tree};
+pub use patch::{PatchTreeRequest, patch_tree};
 pub use publish::{PublishTreeRequest, publish_tree};
 
 /// Reading half of the node ledger. Separated from [`TreeNodeLedger`] so a

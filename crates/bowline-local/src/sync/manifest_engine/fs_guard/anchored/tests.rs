@@ -321,4 +321,291 @@ fn a_leaf_name_is_the_final_component_and_never_a_path() {
     // no leaf at all, so it can never be handed to one.
     assert_eq!(LeafName::of(&WorkspacePath::new("a/b/")), None);
     assert_eq!(LeafName::of(&WorkspacePath::new("")), None);
+    assert!(is_recovery_owner_record_name(
+        ".bowline-recovery-owner-0123456789abcdef0123456789abcdef.record"
+    ));
+    assert!(is_recovery_owner_record_name(
+        ".bowline-recovery-owner-0123456789abcdef0123456789abcdef.record.complete"
+    ));
+    assert!(!is_recovery_owner_record_name(
+        ".bowline-recovery-owner-notes.record"
+    ));
+}
+
+#[test]
+fn atomic_write_never_reuses_a_predictable_hard_link() {
+    let scratch = Scratch::new("atomic-write-hard-link");
+    scratch.write(&scratch.root().join("victim"), "preserve me");
+    fs::hard_link(
+        scratch.root().join("victim"),
+        scratch.root().join(".state.tmp"),
+    )
+    .expect("seed predictable hard link");
+    let directory = open_workspace_root(&scratch.root()).expect("destination");
+
+    let outcome = directory
+        .write_private_file_atomic(&leaf("state"), b"new state")
+        .expect("atomic write");
+
+    assert!(matches!(outcome, AtomicWrite::Written));
+    assert_eq!(
+        fs::read(scratch.root().join("victim")).expect("victim"),
+        b"preserve me"
+    );
+    assert_eq!(
+        fs::read(scratch.root().join(".state.tmp")).expect("hard link"),
+        b"preserve me"
+    );
+    assert_eq!(
+        fs::read(scratch.root().join("state")).expect("written state"),
+        b"new state"
+    );
+}
+
+#[test]
+fn atomic_write_cleanup_reclaims_only_generated_stale_temps() {
+    let scratch = Scratch::new("atomic-write-cleanup");
+    let directory = open_workspace_root(&scratch.root()).expect("destination");
+    let generated = leaf(".bowline-materialize-atomic-00000000000000000000000000000000.tmp");
+    let lookalike = leaf(".bowline-materialize-atomic-not-user-state.tmp");
+    scratch.write(
+        &scratch.root().join(generated.as_str().expect("generated")),
+        "stale",
+    );
+    scratch.write(
+        &scratch.root().join(lookalike.as_str().expect("lookalike")),
+        "user",
+    );
+
+    directory
+        .clean_atomic_write_temps_before(u64::MAX)
+        .expect("clean stale atomic temp");
+
+    assert!(
+        !scratch
+            .root()
+            .join(generated.as_str().expect("generated"))
+            .exists()
+    );
+    assert_eq!(
+        fs::read(scratch.root().join(lookalike.as_str().expect("lookalike")))
+            .expect("preserved lookalike"),
+        b"user"
+    );
+}
+
+#[test]
+fn cross_device_fallback_stages_then_atomically_renames() {
+    let scratch = Scratch::new("cross-device-atomic");
+    let source_path = scratch.base.join("staged");
+    scratch.write(&source_path, "recovered bytes");
+    scratch.write(
+        &scratch.root().join(".bowline-recovery-user-data.tmp"),
+        "user bytes",
+    );
+    scratch.write(
+        &scratch
+            .root()
+            .join(".bowline-recovery-00000000000000000000000000000000.tmp"),
+        "abandoned recovery bytes",
+    );
+    let mut source = fs::File::open(&source_path).expect("staged source");
+    let destination = open_workspace_root(&scratch.root()).expect("destination");
+    let abandoned = leaf(".bowline-recovery-00000000000000000000000000000000.tmp");
+    let owner = abandoned.recovery_owner_sibling().expect("recovery owner");
+    let mut owner_file = destination
+        .create_private_file(&owner)
+        .expect("owner record");
+    write_recovery_owner(
+        &mut owner_file,
+        0,
+        directory_identity(&destination.directory).expect("directory identity"),
+        Some(file_identity(
+            &fs::metadata(
+                scratch
+                    .root()
+                    .join(".bowline-recovery-00000000000000000000000000000000.tmp"),
+            )
+            .expect("abandoned metadata"),
+        )),
+        &leaf("restored.txt"),
+    )
+    .expect("write owner");
+
+    let outcome = destination
+        .copy_staged_file_atomic(
+            &destination,
+            &mut source,
+            &leaf("restored.txt"),
+            FileMode::new(0o640),
+        )
+        .expect("atomic fallback");
+
+    assert!(matches!(outcome, GuardedWrite::Written(_)));
+    assert_eq!(
+        fs::read(scratch.root().join("restored.txt")).expect("installed"),
+        b"recovered bytes"
+    );
+    assert_eq!(
+        fs::read(scratch.root().join(".bowline-recovery-user-data.tmp"))
+            .expect("preserved matching user file"),
+        b"user bytes"
+    );
+    assert!(
+        !scratch
+            .root()
+            .join(".bowline-recovery-00000000000000000000000000000000.tmp")
+            .exists()
+    );
+}
+
+#[test]
+fn recovery_cleanup_finishes_an_install_interrupted_after_exchange() {
+    let scratch = Scratch::new("cross-device-interrupted-exchange");
+    scratch.write(&scratch.root().join("restored.txt"), "old bytes");
+    scratch.write(
+        &scratch
+            .root()
+            .join(".bowline-recovery-00000000000000000000000000000000.tmp"),
+        "recovered bytes",
+    );
+    let destination = open_workspace_root(&scratch.root()).expect("destination");
+    let temp = leaf(".bowline-recovery-00000000000000000000000000000000.tmp");
+    let destination_leaf = leaf("restored.txt");
+    let temp_identity = file_identity(
+        &fs::metadata(
+            scratch
+                .root()
+                .join(".bowline-recovery-00000000000000000000000000000000.tmp"),
+        )
+        .expect("temp metadata"),
+    );
+    let owner = temp.recovery_owner_sibling().expect("recovery owner");
+    let mut owner_file = destination
+        .create_private_file(&owner)
+        .expect("owner record");
+    write_recovery_owner(
+        &mut owner_file,
+        0,
+        directory_identity(&destination.directory).expect("directory identity"),
+        Some(temp_identity),
+        &destination_leaf,
+    )
+    .expect("write owner");
+    rustix::fs::renameat_with(
+        &destination.directory,
+        temp.as_c_str(),
+        &destination.directory,
+        destination_leaf.as_c_str(),
+        rustix::fs::RenameFlags::EXCHANGE,
+    )
+    .expect("simulate interrupted exchange");
+
+    destination
+        .clean_owned_recovery_temps(&destination)
+        .expect("finish interrupted cleanup");
+
+    assert_eq!(
+        fs::read(scratch.root().join("restored.txt")).expect("installed destination"),
+        b"recovered bytes"
+    );
+    assert!(
+        !scratch
+            .root()
+            .join(temp.as_str().expect("utf-8 temp"))
+            .exists()
+    );
+    assert!(
+        !scratch
+            .root()
+            .join(owner.as_str().expect("utf-8 owner"))
+            .exists()
+    );
+}
+
+#[test]
+fn recovery_cleanup_finishes_stale_pending_records() {
+    let scratch = Scratch::new("cross-device-stale-pending");
+    let destination = open_workspace_root(&scratch.root()).expect("destination");
+    let directory_identity =
+        directory_identity(&destination.directory).expect("directory identity");
+    let destination_leaf = leaf("restored.txt");
+    let abandoned_temp = leaf(".bowline-recovery-00000000000000000000000000000000.tmp");
+    let abandoned_owner = abandoned_temp
+        .recovery_owner_sibling()
+        .expect("abandoned owner");
+    destination
+        .create_private_file(&abandoned_temp)
+        .expect("empty pending temp");
+    let mut abandoned_owner_file = destination
+        .create_private_file(&abandoned_owner)
+        .expect("abandoned owner record");
+    write_recovery_owner(
+        &mut abandoned_owner_file,
+        0,
+        directory_identity,
+        None,
+        &destination_leaf,
+    )
+    .expect("write abandoned owner");
+    let absent_temp = leaf(".bowline-recovery-11111111111111111111111111111111.tmp");
+    let absent_owner = absent_temp.recovery_owner_sibling().expect("absent owner");
+    let mut absent_owner_file = destination
+        .create_private_file(&absent_owner)
+        .expect("absent owner record");
+    write_recovery_owner(
+        &mut absent_owner_file,
+        0,
+        directory_identity,
+        None,
+        &destination_leaf,
+    )
+    .expect("write absent owner");
+
+    destination
+        .clean_owned_recovery_temps(&destination)
+        .expect("finish stale pending cleanup");
+
+    for stale_leaf in [&abandoned_temp, &abandoned_owner, &absent_owner] {
+        assert!(
+            !scratch
+                .root()
+                .join(stale_leaf.as_str().expect("utf-8 leaf"))
+                .exists(),
+            "{} should be removed",
+            stale_leaf.as_str().expect("utf-8 leaf")
+        );
+    }
+}
+
+#[test]
+fn cross_device_fallback_rejects_a_substituted_temp_inode() {
+    let scratch = Scratch::new("cross-device-substitution");
+    scratch.write(&scratch.root().join("restored.txt"), "local bytes");
+    let destination = open_workspace_root(&scratch.root()).expect("destination");
+    let temp = leaf(".bowline-recovery-race.tmp");
+    let mut copied = destination.create_private_file(&temp).expect("copied temp");
+    copied.write_all(b"recovered bytes").expect("copy bytes");
+    copied.sync_all().expect("sync copied temp");
+
+    fs::rename(
+        scratch.root().join(".bowline-recovery-race.tmp"),
+        scratch.root().join("detached-trusted-copy"),
+    )
+    .expect("detach copied inode");
+    scratch.write(
+        &scratch.root().join(".bowline-recovery-race.tmp"),
+        "substituted bytes",
+    );
+
+    let outcome = destination
+        .install_copied_temp(&copied, &temp, &leaf("restored.txt"))
+        .expect("guarded install");
+
+    assert!(matches!(outcome, GuardedWrite::Blocked));
+    assert_eq!(
+        fs::read(scratch.root().join("restored.txt")).expect("preserved destination"),
+        b"local bytes"
+    );
+    assert!(!scratch.root().join(".bowline-recovery-race.tmp").exists());
 }

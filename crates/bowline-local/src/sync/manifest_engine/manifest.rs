@@ -20,11 +20,12 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+use std::io::{self, Read};
 
 use bowline_core::ids::ContentId;
 use bowline_core::workspace_graph::normalize_workspace_path;
 use bowline_storage::{
-    EnvelopeContext, EnvelopeError, ObjectKind, SealedEnvelope, StorageKey, open, seal,
+    EnvelopeContext, EnvelopeError, ObjectKind, SealedEnvelope, StorageKey, open_bounded, seal,
     workspace_id_hash,
 };
 use serde::{Deserialize, Serialize};
@@ -33,8 +34,12 @@ use crate::policy::is_private_workspace_state_path;
 
 #[path = "manifest/directory_tree.rs"]
 pub mod directory_tree;
+#[path = "manifest/segmented_file.rs"]
+mod segmented_file;
 #[path = "manifest/tree.rs"]
 pub mod tree;
+
+pub use segmented_file::{is_segmented_file_envelope, open_file_segmented, seal_file_segmented};
 
 /// Envelope AEAD format version for engine objects. Distinct from
 /// [`tree::TREE_FORMAT_VERSION`], which lives inside the sealed plaintext; this
@@ -333,6 +338,12 @@ pub fn physical_blob_key(sealed: &[u8]) -> BlobKey {
     BlobKey::new(format!("b_{}", blake3::hash(sealed).to_hex()))
 }
 
+pub fn physical_blob_key_reader(reader: &mut dyn Read) -> io::Result<BlobKey> {
+    let mut hasher = blake3::Hasher::new();
+    io::copy(reader, &mut hasher)?;
+    Ok(BlobKey::new(format!("b_{}", hasher.finalize().to_hex())))
+}
+
 /// Physical key of a sealed manifest tree node. The ROOT node's key is the
 /// manifest key the workspace ref points at, so this one function names both a
 /// whole snapshot and each of its shared subtrees.
@@ -489,12 +500,34 @@ pub fn open_file(
     key_epoch: KeyEpoch,
     expected_content_id: &ContentId,
     sealed: &[u8],
+    expected_size: u64,
+    max_decoded_bytes: u64,
 ) -> Result<Vec<u8>, ManifestError> {
+    if expected_size > max_decoded_bytes {
+        return Err(ManifestError::BoundExceeded {
+            bound: "file-decoded-size-policy",
+        });
+    }
     let Some(storage_key) = crypto.storage_key_at(key_epoch) else {
         return Err(ManifestError::UnknownKeyEpoch { key_epoch });
     };
     let context = crypto.file_context(expected_content_id, key_epoch, ENVELOPE_FORMAT_VERSION);
-    let plaintext = open(sealed, storage_key, &context).map_err(ManifestError::Envelope)?;
+    let plaintext = match open_bounded(sealed, storage_key, &context, expected_size) {
+        Err(EnvelopeError::DecodedSizeExceeded { .. }) => {
+            return Err(ManifestError::DecodedSizeMismatch {
+                expected: expected_size,
+                actual: None,
+            });
+        }
+        result => result.map_err(ManifestError::Envelope)?,
+    };
+    let actual_size = plaintext.len() as u64;
+    if actual_size != expected_size {
+        return Err(ManifestError::DecodedSizeMismatch {
+            expected: expected_size,
+            actual: Some(actual_size),
+        });
+    }
     if crypto.content_id_at(key_epoch, &plaintext).as_ref() != Some(expected_content_id) {
         return Err(ManifestError::ContentIdMismatch);
     }
@@ -512,12 +545,10 @@ pub fn seal_tree_node(
 
 /// Open one sealed tree node to bounds-checked plaintext.
 ///
-/// `max_sealed_bytes` is the pre-allocation guard: it is checked on the
-/// ciphertext BEFORE [`open`], so a hostile object cannot force a large
-/// plaintext allocation. `max_decoded_bytes` is enforced POST-decompress, on the
-/// plaintext [`open`] returns, so it is AEAD-gated — only an object that already
-/// authenticated under the workspace key can reach it — and it never trusts an
-/// attacker-declared size.
+/// Both bounds are enforced while their corresponding representation is read:
+/// the sealed length before authentication, and the decoded length by the
+/// envelope's streaming decompressor before the plaintext vector can grow past
+/// the configured cap.
 pub fn open_tree_node(
     crypto: &WorkspaceCrypto,
     sealed: &[u8],
@@ -534,14 +565,14 @@ pub fn open_tree_node(
         let storage_key = StorageKey::from_bytes(*key_bytes);
         // AEAD authentication makes a wrong-key attempt indistinguishable from any
         // other open failure, so trying the handful of held epochs leaks no oracle.
-        match open(sealed, storage_key, &context) {
+        match open_bounded(sealed, storage_key, &context, limits.max_decoded_bytes) {
             Ok(plaintext) => {
-                if plaintext.len() as u64 > limits.max_decoded_bytes {
-                    return Err(ManifestError::BoundExceeded {
-                        bound: "decoded-size",
-                    });
-                }
                 return Ok((plaintext, *key_epoch));
+            }
+            Err(EnvelopeError::DecodedSizeExceeded { .. }) => {
+                return Err(ManifestError::BoundExceeded {
+                    bound: "decoded-size",
+                });
             }
             Err(error) => last_error = Some(error),
         }
@@ -694,6 +725,10 @@ pub enum ManifestError {
         found: u32,
     },
     ContentIdMismatch,
+    DecodedSizeMismatch {
+        expected: u64,
+        actual: Option<u64>,
+    },
     NotSorted,
     DuplicatePath,
     /// An engine invariant the wire cannot express was violated locally.
@@ -725,6 +760,24 @@ impl fmt::Display for ManifestError {
             }
             Self::ContentIdMismatch => {
                 formatter.write_str("recovered plaintext does not match its content id")
+            }
+            Self::DecodedSizeMismatch {
+                expected,
+                actual: Some(actual),
+            } => {
+                write!(
+                    formatter,
+                    "recovered plaintext size {actual} does not match declared size {expected}"
+                )
+            }
+            Self::DecodedSizeMismatch {
+                expected,
+                actual: None,
+            } => {
+                write!(
+                    formatter,
+                    "recovered plaintext exceeds declared size {expected}"
+                )
             }
             Self::NotSorted => formatter.write_str("manifest entries are not canonically sorted"),
             Self::DuplicatePath => formatter.write_str("manifest contains a duplicate path"),

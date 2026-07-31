@@ -210,16 +210,12 @@ impl SchedulerCoordinator {
             // Join the finished worker so shutdown accounting and panic
             // reporting stay accurate before we start a replacement.
             if let Some(finished) = self.watcher_bridge.take() {
-                match finished.join() {
-                    Ok(()) => {
-                        self.watcher_workers_joined = self.watcher_workers_joined.saturating_add(1);
-                    }
-                    Err(error) => {
-                        eprintln!(
-                            "bowline-daemon watcher bridge join after engine loss failed: {error}"
-                        );
-                    }
+                if let Err(error) = finished.join() {
+                    eprintln!(
+                        "bowline-daemon watcher bridge join after engine loss failed: {error}"
+                    );
                 }
+                self.watcher_workers_joined = self.watcher_workers_joined.saturating_add(1);
             }
         }
         let started = match self.runtime.lock() {

@@ -44,6 +44,34 @@ use std::sync::atomic::AtomicU8;
 const STATUS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 const DEVICE_TRUST_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct WorkViewOperationKey {
+    workspace_id: String,
+    view_dir: PathBuf,
+}
+
+#[derive(Default)]
+struct WorkViewOperationLocks {
+    entries: Mutex<HashMap<WorkViewOperationKey, Weak<Mutex<()>>>>,
+}
+
+impl WorkViewOperationLocks {
+    fn get(&self, workspace_id: &WorkspaceId, view_dir: &Path) -> Result<Arc<Mutex<()>>, ()> {
+        let key = WorkViewOperationKey {
+            workspace_id: workspace_id.as_str().to_string(),
+            view_dir: view_dir.to_path_buf(),
+        };
+        let mut locks = self.entries.lock().map_err(|_| ())?;
+        if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+            return Ok(lock);
+        }
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(key, Arc::downgrade(&lock));
+        Ok(lock)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub(super) enum ShutdownPhase {
@@ -218,6 +246,7 @@ pub(super) struct DaemonServerState {
     manifest_counters: Mutex<Option<Arc<bowline_local::sync::manifest_engine::EngineCounters>>>,
     manifest_snapshot: Option<bowline_daemon::manifest_driver::EngineSnapshotHandle>,
     rpc_executor: Mutex<Option<Weak<super::rpc_service::RpcExecutor>>>,
+    work_view_operation_locks: WorkViewOperationLocks,
     engine_work_wake_pending: AtomicBool,
     projection_wake_pending: Arc<AtomicBool>,
     next_subscription_id: AtomicU64,
@@ -277,6 +306,7 @@ impl DaemonServerState {
                 .as_ref()
                 .map(ContinuousSyncRuntime::manifest_snapshot_handle),
             rpc_executor: Mutex::new(None),
+            work_view_operation_locks: WorkViewOperationLocks::default(),
             engine_work_wake_pending: AtomicBool::new(false),
             projection_wake_pending: Arc::new(AtomicBool::new(false)),
             next_subscription_id: AtomicU64::new(1),
@@ -297,6 +327,16 @@ impl DaemonServerState {
 
     pub(super) fn instance_id(&self) -> &str {
         &self.instance_id
+    }
+
+    /// One in-process mutation authority per canonical work-view path. Weak
+    /// entries let inactive views fall out of the registry automatically.
+    pub(super) fn work_view_operation_lock(
+        &self,
+        workspace_id: &WorkspaceId,
+        view_dir: &Path,
+    ) -> Result<Arc<Mutex<()>>, ()> {
+        self.work_view_operation_locks.get(workspace_id, view_dir)
     }
 
     #[cfg(test)]

@@ -8,7 +8,9 @@ mod recovery_preimage;
 mod store;
 
 pub use envelope::{
-    EnvelopeContext, EnvelopeError, SealedEnvelope, StorageKey, open, seal, workspace_id_hash,
+    EnvelopeContext, EnvelopeError, SealedEnvelope, SegmentedOpenStats, SegmentedSealStats,
+    StorageKey, is_segmented_envelope, open, open_bounded, open_segmented, seal, seal_segmented,
+    workspace_id_hash,
 };
 pub use gc::{
     StorageGcDeleteFailure, StorageGcExecutionReport, StorageGcFailureKind, StorageGcPlan,

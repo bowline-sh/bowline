@@ -4349,6 +4349,7 @@
     "createdByDeviceProof": "proof_create",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -4357,6 +4358,7 @@
     "createdByDeviceProof": "proof_create",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -4365,6 +4367,7 @@
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -4373,6 +4376,7 @@
     "createdByDeviceId": "dev_creator",
     "createdByDeviceProof": "proof_create",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -4381,6 +4385,16 @@
     "createdByDeviceId": "dev_creator",
     "createdByDeviceProof": "proof_create",
     "envelopeId": "rk_default",
+    "keyEpoch": 1,
+    "recoveryProofVerifier": "rkpv_recovery",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryCreateRecoveryEnvelopeRequest.missing.keyEpoch": {
+    "ciphertext": "ciphertext_default",
+    "createdByDeviceId": "dev_creator",
+    "createdByDeviceProof": "proof_create",
+    "envelopeId": "rk_default",
+    "fingerprint": "fingerprint_default",
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -4390,6 +4404,7 @@
     "createdByDeviceProof": "proof_create",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "workspaceId": "ws_code"
   },
   "HostedRecoveryCreateRecoveryEnvelopeRequest.missing.workspaceId": {
@@ -4398,6 +4413,7 @@
     "createdByDeviceProof": "proof_create",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery"
   },
   "HostedRecoveryDeviceGrant.missing.approverDeviceId": {
@@ -4576,6 +4592,7 @@
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
   },
@@ -4584,6 +4601,7 @@
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
   },
@@ -4592,6 +4610,7 @@
     "createdAt": "2026-06-23T12:00:00Z",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
   },
@@ -4600,6 +4619,7 @@
     "createdAt": "2026-06-23T12:00:00Z",
     "createdByDeviceId": "dev_creator",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
   },
@@ -4608,6 +4628,16 @@
     "createdAt": "2026-06-23T12:00:00Z",
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_default",
+    "keyEpoch": 1,
+    "state": "generated-unverified",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryEnvelope.missing.keyEpoch": {
+    "ciphertext": "ciphertext_default",
+    "createdAt": "2026-06-23T12:00:00Z",
+    "createdByDeviceId": "dev_creator",
+    "envelopeId": "rk_default",
+    "fingerprint": "fingerprint_default",
     "state": "generated-unverified",
     "workspaceId": "ws_code"
   },
@@ -4617,6 +4647,7 @@
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "workspaceId": "ws_code"
   },
   "HostedRecoveryEnvelope.missing.workspaceId": {
@@ -4625,6 +4656,7 @@
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified"
   },
   "HostedRecoveryEnvelope.null.revokedAt": {
@@ -4633,6 +4665,7 @@
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "revokedAt": null,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
@@ -4643,6 +4676,7 @@
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "rotatedAt": null,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
@@ -4653,6 +4687,7 @@
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "verifiedAt": null,
     "workspaceId": "ws_code"
@@ -4689,6 +4724,7 @@
     "createdByDeviceProof": "proof_rotate",
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -4697,6 +4733,7 @@
     "createdByDeviceProof": "proof_rotate",
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -4705,6 +4742,7 @@
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -4713,6 +4751,7 @@
     "createdByDeviceId": "dev_creator",
     "createdByDeviceProof": "proof_rotate",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -4721,6 +4760,16 @@
     "createdByDeviceId": "dev_creator",
     "createdByDeviceProof": "proof_rotate",
     "envelopeId": "rk_next",
+    "keyEpoch": 1,
+    "recoveryProofVerifier": "rkpv_recovery",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryRotateRecoveryEnvelopeRequest.missing.keyEpoch": {
+    "ciphertext": "ciphertext_default",
+    "createdByDeviceId": "dev_creator",
+    "createdByDeviceProof": "proof_rotate",
+    "envelopeId": "rk_next",
+    "fingerprint": "fingerprint_default",
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -4730,6 +4779,7 @@
     "createdByDeviceProof": "proof_rotate",
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "workspaceId": "ws_code"
   },
   "HostedRecoveryRotateRecoveryEnvelopeRequest.missing.workspaceId": {
@@ -4738,6 +4788,7 @@
     "createdByDeviceProof": "proof_rotate",
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery"
   },
   "HostedRecoveryVerifyRecoveryEnvelopeRequest.missing.envelopeId": {

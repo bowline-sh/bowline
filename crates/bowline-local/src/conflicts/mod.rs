@@ -88,6 +88,9 @@ pub enum ConflictError {
     /// The incoming version is a directory tree, which cannot be adopted by
     /// renaming it over the local one.
     DirectoryAside { path: WorkspacePath },
+    /// The local version is a directory tree, which cannot be atomically
+    /// replaced with one incoming non-directory entry.
+    DirectoryOrigin { path: WorkspacePath },
     /// The scan hit its entry budget before covering the workspace.
     ScanTruncated { visited: usize },
 }
@@ -103,6 +106,7 @@ impl ConflictError {
             Self::NoSuchAside { .. } => "no_such_conflict_aside",
             Self::ParentNotADirectory { .. } => "conflict_parent_not_a_directory",
             Self::DirectoryAside { .. } => "conflict_aside_is_a_directory",
+            Self::DirectoryOrigin { .. } => "conflict_origin_is_a_directory",
             Self::ScanTruncated { .. } => "conflict_scan_truncated",
         }
     }
@@ -123,6 +127,7 @@ impl ConflictError {
             | Self::NoSuchAside { .. }
             | Self::ParentNotADirectory { .. }
             | Self::DirectoryAside { .. }
+            | Self::DirectoryOrigin { .. }
             | Self::ScanTruncated { .. } => CommandRecoverability::UserAction,
         }
     }
@@ -174,6 +179,11 @@ impl fmt::Display for ConflictError {
                 "the incoming version at {} is a folder; resolve a folder conflict by reconciling the files inside it",
                 path.as_str()
             ),
+            Self::DirectoryOrigin { path } => write!(
+                formatter,
+                "the local version at {} is a folder; reconcile or move its files before taking the incoming version",
+                path.as_str()
+            ),
             Self::ScanTruncated { visited } => write!(
                 formatter,
                 "stopped after {visited} entries before covering the workspace"
@@ -192,6 +202,7 @@ impl Error for ConflictError {
             | Self::NoSuchAside { .. }
             | Self::ParentNotADirectory { .. }
             | Self::DirectoryAside { .. }
+            | Self::DirectoryOrigin { .. }
             | Self::ScanTruncated { .. } => None,
         }
     }

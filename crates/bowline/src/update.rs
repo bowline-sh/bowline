@@ -201,14 +201,24 @@ pub(super) fn print_update(args: UpdateArgs, json: bool) -> ExitCode {
     }
 
     match install_release(&manifest) {
-        Ok(()) => {
+        Ok(installation_state) => {
             if json {
-                print_json(&update_output(&installed_check(&check), &generated_at));
+                print_json(&installed_update_output(
+                    &installed_check(&check),
+                    &generated_at,
+                    installation_state,
+                ));
             } else {
-                println!(
-                    "Bowline updated: {} -> {}.",
-                    check.current_version, check.latest_version
-                );
+                match installation_state {
+                    UpdateInstallationState::InstalledAndHealthy => println!(
+                        "Bowline updated: {} -> {}. Installed and healthy.",
+                        check.current_version, check.latest_version
+                    ),
+                    UpdateInstallationState::InstalledOnDiskRestartRequired => println!(
+                        "Bowline installed on disk: {} -> {}. Daemon setup or restart is required.",
+                        check.current_version, check.latest_version
+                    ),
+                }
             }
             ExitCode::SUCCESS
         }
@@ -412,7 +422,7 @@ fn verify_release_signature(data: &[u8], signature: &Path) -> Result<(), UpdateE
 /// the single implementation of "put this Bowline on this machine": it verifies
 /// every artifact against the pinned key, handles both the CLI archive and the
 /// macOS app bundle, and restarts the daemon on the newly installed build.
-fn install_release(manifest: &ReleaseManifest) -> Result<(), UpdateError> {
+fn install_release(manifest: &ReleaseManifest) -> Result<UpdateInstallationState, UpdateError> {
     let artifact =
         manifest
             .artifacts
@@ -429,18 +439,33 @@ fn install_release(manifest: &ReleaseManifest) -> Result<(), UpdateError> {
     run_installer(&installer, &manifest.version)
 }
 
-fn run_installer(installer: &Path, version: &str) -> Result<(), UpdateError> {
+fn run_installer(installer: &Path, version: &str) -> Result<UpdateInstallationState, UpdateError> {
     let output = ProcessCommand::new("sh")
         .arg(installer)
         .arg("--version")
         .arg(version)
         .output()
         .map_err(|_| UpdateError::ToolMissing { tool: "sh" })?;
-    if output.status.success() {
-        return Ok(());
+    if !output.status.success() {
+        return Err(UpdateError::InstallFailed {
+            detail: process_failure_detail(&output.stderr),
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout
+        .lines()
+        .any(|line| line == "BOWLINE_INSTALL_RESULT=installed-and-healthy")
+    {
+        return Ok(UpdateInstallationState::InstalledAndHealthy);
+    }
+    if stdout
+        .lines()
+        .any(|line| line == "BOWLINE_INSTALL_RESULT=installed-on-disk-restart-required")
+    {
+        return Ok(UpdateInstallationState::InstalledOnDiskRestartRequired);
     }
     Err(UpdateError::InstallFailed {
-        detail: process_failure_detail(&output.stderr),
+        detail: "installer succeeded without reporting a verified installation state".to_string(),
     })
 }
 
@@ -572,94 +597,7 @@ fn curl_download(url: &str, destination: &Path) -> Result<(), UpdateError> {
     })
 }
 
-fn version_is_newer(latest: &str, current: &str) -> bool {
-    let Ok(latest) = Version::parse(latest.trim_start_matches('v')) else {
-        return false;
-    };
-    let Ok(current) = Version::parse(current.trim_start_matches('v')) else {
-        return false;
-    };
-    latest > current
-}
-
-fn update_output(check: &UpdateCheck, generated_at: &str) -> UpdateCommandOutput {
-    UpdateCommandOutput {
-        contract_version: CONTRACT_VERSION,
-        ok: true,
-        command: CommandName::Update,
-        generated_at: generated_at.to_string(),
-        current_version: check.current_version.clone(),
-        latest_version: check.latest_version.clone(),
-        update_available: check.update_available,
-        update_command: update_command(
-            check
-                .update_available
-                .then_some(check.latest_version.as_str()),
-        ),
-    }
-}
-
-fn validate_requested_update_target(
-    check: &UpdateCheck,
-    requested_version: Option<&str>,
-) -> Result<(), UpdateError> {
-    if requested_version.is_some() && !check.update_available {
-        return Err(UpdateError::NotNewer {
-            requested: check.latest_version.clone(),
-            current: check.current_version.clone(),
-        });
-    }
-    Ok(())
-}
-
-fn render_update_human(check: &UpdateCheck) -> String {
-    if check.update_available {
-        format!(
-            "Bowline update available: {} -> {}\nInstall it: {}\n",
-            check.current_version,
-            check.latest_version,
-            update_command(None)
-        )
-    } else {
-        format!("Bowline is up to date ({})\n", check.current_version)
-    }
-}
-
-fn update_command(version: Option<&str>) -> String {
-    match version {
-        Some(version) => format!("bowline update --version {version}"),
-        None => "bowline update".to_string(),
-    }
-}
-
-fn manifest_url(version: Option<&str>) -> String {
-    if let Ok(url) = env::var(ENV_MANIFEST_URL) {
-        return url;
-    }
-    match version {
-        Some(version) if version.starts_with('v') => {
-            format!("{DEFAULT_INSTALL_HOST}/releases/{version}/release-manifest.json")
-        }
-        Some(version) => {
-            format!("{DEFAULT_INSTALL_HOST}/releases/v{version}/release-manifest.json")
-        }
-        None => format!("{DEFAULT_INSTALL_HOST}/release-manifest.json"),
-    }
-}
-
-fn cache_path(version: Option<&str>) -> PathBuf {
-    if let Ok(path) = env::var(ENV_CACHE_PATH) {
-        return PathBuf::from(path);
-    }
-    let name = version
-        .map(|version| format!("release-manifest-{version}.json"))
-        .unwrap_or_else(|| "release-manifest.json".to_string());
-    env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| env::temp_dir())
-        .join(".local/state/bowline")
-        .join(name)
-}
+include!("update/output.rs");
 
 #[cfg(test)]
 mod tests {
@@ -692,6 +630,46 @@ mod tests {
                 .map(|artifact| artifact.sha256.as_str()),
             Some("abc")
         );
+    }
+
+    #[test]
+    fn installer_success_requires_a_verified_installation_state_marker() {
+        let workspace = TempWorkspace::new("bowline-update-result-test").expect("workspace");
+        let installer = workspace.path().join("install.sh");
+        fs::write(
+            &installer,
+            "printf '%s\\n' BOWLINE_INSTALL_RESULT=installed-and-healthy\n",
+        )
+        .expect("write installer");
+
+        assert_eq!(
+            run_installer(&installer, "9.0.0").expect("state marker"),
+            UpdateInstallationState::InstalledAndHealthy
+        );
+
+        fs::write(&installer, "echo installed-without-state\n").expect("rewrite installer");
+        assert!(matches!(
+            run_installer(&installer, "9.0.0"),
+            Err(UpdateError::InstallFailed { detail })
+                if detail.contains("without reporting a verified installation state")
+        ));
+    }
+
+    #[test]
+    fn installer_rollback_diagnostic_is_preserved_as_failure() {
+        let workspace = TempWorkspace::new("bowline-update-rollback-test").expect("workspace");
+        let installer = workspace.path().join("install.sh");
+        fs::write(
+            &installer,
+            "echo 'rolled back because daemon health verification failed' >&2\nexit 1\n",
+        )
+        .expect("write installer");
+
+        assert!(matches!(
+            run_installer(&installer, "9.0.0"),
+            Err(UpdateError::InstallFailed { detail })
+                if detail.contains("rolled back because daemon health verification failed")
+        ));
     }
 
     #[test]
@@ -828,6 +806,30 @@ mod tests {
         assert_eq!(installed.current_version, "9.0.0");
         assert_eq!(installed.latest_version, "9.0.0");
         assert!(!installed.update_available);
+    }
+
+    #[test]
+    fn installed_output_distinguishes_healthy_from_restart_required() {
+        let check = installed_check(&update_check("9.0.0", UpdateUrgency::Normal));
+        let healthy = installed_update_output(
+            &check,
+            "2026-07-05T12:00:00Z",
+            UpdateInstallationState::InstalledAndHealthy,
+        );
+        let restart_required = installed_update_output(
+            &check,
+            "2026-07-05T12:00:00Z",
+            UpdateInstallationState::InstalledOnDiskRestartRequired,
+        );
+
+        assert_eq!(
+            healthy.installation_state,
+            Some(UpdateInstallationState::InstalledAndHealthy)
+        );
+        assert_eq!(
+            restart_required.installation_state,
+            Some(UpdateInstallationState::InstalledOnDiskRestartRequired)
+        );
     }
 
     fn update_check(latest_version: &str, urgency: UpdateUrgency) -> UpdateCheck {

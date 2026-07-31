@@ -142,6 +142,7 @@ pub(crate) fn test_context(root: PathBuf, device: &str) -> EngineContext {
         crypto: test_crypto(),
         device_id: DeviceId::new(device.to_string()),
         engine_state_dir: root.join(super::ENGINE_STATE_DIR),
+        endpoint_probe_root: root.join(super::ENGINE_STATE_DIR),
         names: probe_name_folding(&root.join(super::ENGINE_STATE_DIR)),
         timestamps: probe_timestamp_granularity(&root.join(super::ENGINE_STATE_DIR)),
         workspace_root: root,
@@ -175,6 +176,7 @@ impl TestEngine {
             crypto: WorkspaceCrypto::new("ws_code", KEY_BYTES, KeyEpoch::new(1)),
             device_id: DeviceId::new(format!("device-{name}")),
             engine_state_dir: root.join(super::ENGINE_STATE_DIR),
+            endpoint_probe_root: root.join(super::ENGINE_STATE_DIR),
             names: probe_name_folding(&root.join(super::ENGINE_STATE_DIR)),
             timestamps: probe_timestamp_granularity(&root.join(super::ENGINE_STATE_DIR)),
             workspace_root: root,
@@ -251,8 +253,9 @@ impl TestEngine {
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
-            let now = sample_endpoint_clock(&self.ctx.engine_dir(), &self.ctx.workspace_root)
-                .expect("the endpoint clock is readable on the workspace volume");
+            let now =
+                sample_endpoint_clock(self.ctx.endpoint_probe_root(), &self.ctx.workspace_root)
+                    .expect("the endpoint clock is readable on the workspace volume");
             let remaining = bucket - now.nanos().rem_euclid(bucket);
             if remaining > SCENARIO_BUDGET_NS {
                 return;
@@ -279,7 +282,7 @@ impl TestEngine {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
             if let Some(now) =
-                sample_endpoint_clock(&self.ctx.engine_dir(), &self.ctx.workspace_root)
+                sample_endpoint_clock(self.ctx.endpoint_probe_root(), &self.ctx.workspace_root)
                 && granularity.bucket(ctime) < granularity.bucket(now.nanos())
             {
                 return;

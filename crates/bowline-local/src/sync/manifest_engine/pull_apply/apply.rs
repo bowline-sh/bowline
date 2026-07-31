@@ -28,9 +28,11 @@ use super::{
     FsOp, FsOpKind, LocalRead, MergePlan, PullDeps, PullError, PullOutcome, entry_mode,
     observe_syncable, read_local_content, record_for_entry,
 };
+use crate::sync::manifest_engine::aux_index::AUX_INDEX_PATH;
 use crate::sync::manifest_engine::endpoint::prove_rows;
 use crate::sync::manifest_engine::fs_guard::{
-    Observed, ParentChain, ParentChainMode, prepare_parent_chain,
+    AnchoredLeafKind, Observed, ParentChain, ParentChainMode, is_recovery_owner_record_name,
+    open_private_root, prepare_parent_chain,
 };
 use crate::sync::manifest_engine::manifest::{
     EntryKind, ManifestEntry, ManifestKey, WorkspacePath,
@@ -40,6 +42,7 @@ use crate::sync::manifest_engine::store::{
     AncestorCommit, FileRecord, Intent, IntentOperationKind, ManifestStore,
 };
 use crate::sync::manifest_engine::unsyncable::{UnsyncableReason, UnsyncableRecord};
+use crate::sync::manifest_engine::work_view_lock::acquire_work_view_transition_lock;
 
 // ---- apply transaction ------------------------------------------------------
 
@@ -76,6 +79,12 @@ pub(crate) fn apply_plan<O: RemoteObjects, R: RemoteRef>(
     // so no ref ever points at a missing object — Plan 109 Git contract) and
     // top-down (a parent directory exists before its children install).
     let mut fs_ops = plan.fs_ops;
+    let _work_view_transition = fs_ops
+        .iter()
+        .any(|op| op.path.as_str() == AUX_INDEX_PATH)
+        .then(|| acquire_work_view_transition_lock(&deps.ctx.workspace_root))
+        .transpose()
+        .map_err(PullError::engine_scratch)?;
     fs_ops.sort_by(|left, right| {
         delete_phase(left)
             .cmp(&delete_phase(right))
@@ -84,10 +93,10 @@ pub(crate) fn apply_plan<O: RemoteObjects, R: RemoteRef>(
 
     // Probing git lock state means a recursive walk of `<git dir>/refs`, which a
     // first pull — tens of thousands of `.git/objects/**` entries — must not do
-    // once per op. `GitLockCache` amortizes that walk per repo while still
-    // stat-ing `index.lock`/`HEAD.lock`/`packed-refs.lock` on every op, so a lock
-    // taken mid-apply defers the next op rather than the one after the cache
-    // expires.
+    // once per object. `GitLockCache` amortizes content-addressed payload probes
+    // but invalidates the recursive verdict before every operation that exposes
+    // mutable Git state. The three fixed locks are also stat-ed on every op, so
+    // any Git transaction taken mid-apply defers the next exposing operation.
     let mut git_locks = GitLockCache::default();
     for op in fs_ops {
         if git_locks.is_active(&deps.ctx.workspace_root, &op.path) {
@@ -147,6 +156,7 @@ pub(crate) fn apply_plan<O: RemoteObjects, R: RemoteRef>(
         applied,
         Some((manifest_key, ref_version)),
         &intent_ids,
+        &outcome.push_again,
     )?;
     deps.ctx.counters.record_sqlite_mutation();
     // The intents are cleared, so their preimages are no longer a rollback asset
@@ -166,8 +176,10 @@ pub(crate) fn apply_plan<O: RemoteObjects, R: RemoteRef>(
 fn prove_commit(ctx: &EngineContext, commit: &mut AncestorCommit) {
     prove_rows(
         &ctx.workspace_root,
-        &ctx.engine_dir(),
+        ctx.endpoint_probe_root(),
         ctx.timestamps,
+        &ctx.crypto,
+        ctx.config.max_seal_bytes,
         commit.upserts.iter_mut(),
     );
 }
@@ -442,6 +454,12 @@ pub fn recover_intents<O: RemoteObjects, R: RemoteRef>(
     deps: &PullDeps<'_, O, R>,
 ) -> Result<(), PullError> {
     let intents = store.pending_intents()?;
+    let _work_view_transition = intents
+        .iter()
+        .any(|intent| intent.path.as_str() == AUX_INDEX_PATH)
+        .then(|| acquire_work_view_transition_lock(&deps.ctx.workspace_root))
+        .transpose()
+        .map_err(PullError::engine_scratch)?;
     if intents.is_empty() {
         sweep_orphan_temps(deps.ctx, &BTreeSet::new())?;
         sweep_orphan_quarantine(deps.ctx, &BTreeSet::new())?;
@@ -480,7 +498,7 @@ pub fn recover_intents<O: RemoteObjects, R: RemoteRef>(
     // No verified head to ratchet: recovery re-derives the true head on the
     // follow-on pull, which authenticates it and advances the ratchet then.
     prove_commit(deps.ctx, &mut commit);
-    store.commit_pull_outcome(&commit, None, None, &intent_ids)?;
+    store.commit_pull_outcome(&commit, None, None, &intent_ids, &BTreeSet::new())?;
     deps.ctx.counters.record_sqlite_mutation();
     sweep_orphan_temps(deps.ctx, &keep_temps)?;
     // Every intent was just cleared, so every quarantine entry is now orphaned
@@ -701,17 +719,28 @@ pub(crate) fn sweep_orphan_temps(
     ctx: &EngineContext,
     keep: &BTreeSet<String>,
 ) -> Result<(), PullError> {
-    let dir = ctx.engine_dir().join("tmp");
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
+    let directory = match open_private_root(&ctx.recovery_dir()) {
+        Ok(directory) => directory,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(PullError::engine_scratch(error)),
     };
-    for entry in entries {
-        let entry = entry.map_err(PullError::engine_scratch)?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !keep.contains(&name) {
-            let _ = fs::remove_file(entry.path()); // orphan temp: discard
+    for entry in directory.entries().map_err(PullError::engine_scratch)? {
+        let Some(name) = entry.name.as_str() else {
+            continue;
+        };
+        if is_recovery_owner_record_name(name) {
+            continue;
+        }
+        if !keep.contains(name) {
+            match entry.kind {
+                AnchoredLeafKind::NonDirectory => {
+                    let _ = directory.unlink(&entry.name);
+                }
+                AnchoredLeafKind::Directory => {
+                    let _ = directory.remove_tree(&entry.name);
+                }
+                AnchoredLeafKind::Absent => {}
+            }
         }
     }
     Ok(())

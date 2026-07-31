@@ -281,11 +281,11 @@ fn one_remote_change_fetches_the_changed_subtree_not_the_tree() {
         "the pull applied the one remote change"
     );
     assert_eq!(
-        fetched_nodes, 3,
-        "every subtree whose key the device already holds is pruned, not fetched"
+        fetched_nodes, 6,
+        "the three changed ancestors are compared old-to-new; unchanged subtrees are not fetched"
     );
     assert!(
-        fetched_bytes * 20 < full.manifest_bytes_published,
+        fetched_bytes * 10 < full.manifest_bytes_published,
         "one remote change fetched {fetched_bytes} bytes of a {} byte tree",
         full.manifest_bytes_published,
     );

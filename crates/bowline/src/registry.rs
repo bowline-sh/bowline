@@ -175,6 +175,13 @@ const WORK_PATH_OPTION: OptionSpec = OptionSpec {
     required: false,
     repeatable: true,
 };
+const ACKNOWLEDGE_UNRESOLVED_OPTION: OptionSpec = OptionSpec {
+    name: "--acknowledge-unresolved",
+    value_name: Some("path=reason"),
+    summary: "Acknowledge one exact unresolved path and reason reported by review.",
+    required: false,
+    repeatable: true,
+};
 const ENGINE_OPTION: OptionSpec = OptionSpec {
     name: "--engine",
     value_name: Some("name"),

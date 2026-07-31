@@ -207,6 +207,7 @@ fn create_materialize_edit_review_accept_journey() {
     let dirty: BTreeSet<WorkspacePath> = [WorkspacePath::new("a.txt")].into_iter().collect();
     let overlay = capture_overlay(&mut view.store, &view.ctx, &workspace.remote, &base, &dirty)
         .expect("capture")
+        .overlay
         .expect("overlay advanced");
     assert_ne!(overlay, base);
 
@@ -277,6 +278,7 @@ fn accept_conflict_preserves_local_and_asides_the_overlay() {
     let dirty: BTreeSet<WorkspacePath> = [WorkspacePath::new("shared.txt")].into_iter().collect();
     let overlay = capture_overlay(&mut view.store, &view.ctx, &workspace.remote, &base, &dirty)
         .expect("capture")
+        .overlay
         .expect("overlay");
 
     // Meanwhile the workspace edits shared.txt a different way and advances.
@@ -341,6 +343,7 @@ fn accept_delete_vs_workspace_modify_reports_a_discarded_deletion() {
     let dirty: BTreeSet<WorkspacePath> = [WorkspacePath::new("shared.txt")].into_iter().collect();
     let overlay = capture_overlay(&mut view.store, &view.ctx, &workspace.remote, &base, &dirty)
         .expect("capture")
+        .overlay
         .expect("overlay");
 
     // Meanwhile the workspace independently modifies shared.txt and advances.
@@ -401,6 +404,7 @@ fn accept_clean_overlay_deletion_still_deletes() {
     let dirty: BTreeSet<WorkspacePath> = [WorkspacePath::new("gone.txt")].into_iter().collect();
     let overlay = capture_overlay(&mut view.store, &view.ctx, &workspace.remote, &base, &dirty)
         .expect("capture")
+        .overlay
         .expect("overlay");
 
     let mut aux = AuxIndex::empty();
@@ -477,7 +481,31 @@ fn capture_with_no_dirty_paths_is_a_noop() {
     let dirty: BTreeSet<WorkspacePath> = BTreeSet::new();
     let captured = capture_overlay(&mut view.store, &view.ctx, &workspace.remote, &base, &dirty)
         .expect("capture");
-    assert!(captured.is_none());
+    assert!(captured.overlay.is_none());
+    assert!(captured.skipped.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn capture_preserves_paths_that_cannot_settle_during_push() {
+    use std::os::unix::fs::symlink;
+
+    let mut workspace = WorkspaceFixture::new();
+    workspace.write("a.txt", b"alpha");
+    let base = workspace.push_head(&["a.txt"]);
+
+    let mut view = ViewFixture::new("wv-view-skipped");
+    materialize_view(&mut view.store, &view.ctx, &workspace.remote, &base).expect("materialize");
+    let external = view.root.join("../external-skipped");
+    fs::create_dir_all(&external).expect("external directory");
+    fs::write(external.join("file"), b"outside").expect("external file");
+    symlink(&external, view.root.join("linked")).expect("linked directory");
+
+    let dirty = BTreeSet::from([WorkspacePath::new("linked/file")]);
+    let captured = capture_overlay(&mut view.store, &view.ctx, &workspace.remote, &base, &dirty)
+        .expect("capture outcome");
+    assert!(captured.overlay.is_none());
+    assert_eq!(captured.skipped, dirty);
 }
 
 #[test]
@@ -529,6 +557,7 @@ fn two_device_work_view_journey_visible_across_devices() {
     let dirty: BTreeSet<WorkspacePath> = [WorkspacePath::new("feature.txt")].into_iter().collect();
     let overlay = capture_overlay(&mut view.store, &view.ctx, &mac.remote, &base, &dirty)
         .expect("capture")
+        .overlay
         .expect("overlay");
     let record = {
         let mut r = vivo_aux.get(&id).cloned().expect("record");
@@ -635,6 +664,7 @@ fn diff_reports_add_modify_delete() {
         .collect();
     let overlay = capture_overlay(&mut view.store, &view.ctx, &workspace.remote, &base, &dirty)
         .expect("capture")
+        .overlay
         .expect("overlay");
 
     let base_m = fetch_manifest(&workspace.remote, &workspace.ctx.crypto, &base).expect("base");

@@ -16,12 +16,15 @@ use bowline_local::sync::manifest_engine::{
 use crate::daemon::rpc_service::work_views::VIEW_ENGINE_DB_FILE;
 use crate::daemon::rpc_service::work_views::WorkViewEngineEnv;
 use crate::daemon::rpc_service::work_views::WorkViewRpcError;
+use crate::daemon::rpc_service::work_views::accept_intent_path;
+use crate::daemon::rpc_service::work_views::accept_project_view_dir;
 use crate::daemon::rpc_service::work_views::accept_view_dir;
 use crate::daemon::rpc_service::work_views::checked_project_path;
 use crate::daemon::rpc_service::work_views::checked_view_dir;
 use crate::daemon::rpc_service::work_views::create_view;
 use crate::daemon::rpc_service::work_views::materialize_existing_view;
 use crate::daemon::rpc_service::work_views::review_view_dir;
+use crate::daemon::rpc_service::work_views::view_engine;
 use crate::daemon::rpc_service::work_views::view_engine_dir;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -39,7 +42,11 @@ struct FakeRemote {
     blobs: Mutex<BTreeMap<String, Vec<u8>>>,
     manifests: Mutex<BTreeMap<String, Vec<u8>>>,
     head: Mutex<Option<RefObservation>>,
+    history: Mutex<BTreeMap<u64, ManifestKey>>,
     lose_next_cas: Mutex<bool>,
+    write_during_next_cas: Mutex<Option<(PathBuf, Vec<u8>)>>,
+    break_view_dir_during_next_cas: Mutex<Option<PathBuf>>,
+    lock_directory_during_next_cas: Mutex<Option<PathBuf>>,
 }
 
 impl FakeRemote {
@@ -92,6 +99,10 @@ impl FakeRemote {
             version,
             manifest_key: key.clone(),
         });
+        self.history
+            .lock()
+            .expect("history lock")
+            .insert(version, key.clone());
         key
     }
 
@@ -107,6 +118,24 @@ impl FakeRemote {
 
     fn lose_next_cas(&self) {
         *self.lose_next_cas.lock().expect("CAS race lock") = true;
+    }
+
+    fn write_during_next_cas(&self, path: PathBuf, bytes: &[u8]) {
+        *self.write_during_next_cas.lock().expect("CAS write lock") = Some((path, bytes.to_vec()));
+    }
+
+    fn break_view_dir_during_next_cas(&self, view_dir: PathBuf) {
+        *self
+            .break_view_dir_during_next_cas
+            .lock()
+            .expect("CAS view-dir failure lock") = Some(view_dir);
+    }
+
+    fn lock_directory_during_next_cas(&self, directory: PathBuf) {
+        *self
+            .lock_directory_during_next_cas
+            .lock()
+            .expect("CAS directory lock") = Some(directory);
     }
 }
 
@@ -161,6 +190,20 @@ impl RemoteRef for FakeRemote {
         Ok(self.head.lock().expect("head lock").clone())
     }
 
+    fn lookup_ref_version(
+        &self,
+        version: u64,
+    ) -> Result<bowline_local::sync::manifest_engine::RefVersionLookup, TransportError> {
+        Ok(self
+            .history
+            .lock()
+            .expect("history lock")
+            .get(&version)
+            .cloned()
+            .map(bowline_local::sync::manifest_engine::RefVersionLookup::Found)
+            .unwrap_or(bowline_local::sync::manifest_engine::RefVersionLookup::NotAdvanced))
+    }
+
     fn compare_and_swap(
         &self,
         expected_version: Option<u64>,
@@ -185,11 +228,43 @@ impl RemoteRef for FakeRemote {
             *head = Some(observed.clone());
             return Ok(CasOutcome::Lost(observed));
         }
+        if let Some((path, bytes)) = self
+            .write_during_next_cas
+            .lock()
+            .expect("CAS write lock")
+            .take()
+        {
+            std::fs::write(path, bytes).expect("injected concurrent view edit");
+        }
+        if let Some(view_dir) = self
+            .break_view_dir_during_next_cas
+            .lock()
+            .expect("CAS view-dir failure lock")
+            .take()
+        {
+            std::fs::rename(&view_dir, view_dir.with_extension("recover"))
+                .expect("move view aside for injected failure");
+            std::fs::write(&view_dir, b"blocked").expect("block view directory");
+        }
+        if let Some(directory) = self
+            .lock_directory_during_next_cas
+            .lock()
+            .expect("CAS directory lock")
+            .take()
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500))
+                .expect("lock accept-intent directory");
+        }
         let observed = RefObservation {
             version: current_version.unwrap_or(0) + 1,
             manifest_key: new_manifest_key.clone(),
         };
         *head = Some(observed.clone());
+        self.history
+            .lock()
+            .expect("history lock")
+            .insert(observed.version, observed.manifest_key.clone());
         Ok(CasOutcome::Advanced(observed))
     }
 }
@@ -302,6 +377,30 @@ fn view_engine_state_is_namespaced_by_workspace() {
     assert_eq!(
         second.parent(),
         Some(state_root.join("work-views").as_path())
+    );
+}
+
+#[test]
+fn view_engine_probes_the_materialized_view_volume_not_daemon_state() {
+    let fixture = Fixture::new("work-rpc-endpoint-volume");
+    let view_dir = fixture.view_dir();
+    let (_store, context) = view_engine(
+        &fixture.root,
+        &fixture.state_root,
+        &fixture.crypto,
+        &DeviceId::new("device_work_rpc"),
+        &view_dir,
+    )
+    .expect("view engine");
+
+    assert_eq!(context.endpoint_probe_root(), view_dir);
+    assert!(
+        context.engine_dir().starts_with(&fixture.state_root),
+        "SQLite state remains under daemon state"
+    );
+    assert!(
+        !context.engine_dir().starts_with(&view_dir),
+        "capability probing is not inferred from SQLite placement"
     );
 }
 
@@ -426,6 +525,56 @@ fn review_captures_view_edits_and_diffs_against_base() {
             ("feature.txt".to_string(), ChangeKind::Added),
         ]
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn review_reports_unsyncable_paths_and_accept_requires_exact_acknowledgement() {
+    use std::os::unix::net::UnixListener;
+
+    let fixture = Fixture::new("work-rpc-unresolved");
+    let env = fixture.env();
+    let view_dir = fixture.view_dir();
+    let base = create_view(&env, &view_dir).expect("create succeeds");
+    let socket_path = view_dir.join("agent.sock");
+    let short_socket = std::env::temp_dir().join(format!(
+        "bw-wv-{}-{}.sock",
+        std::process::id(),
+        fixture.remote.blobs.lock().expect("blobs lock").len()
+    ));
+    let _listener = UnixListener::bind(&short_socket).expect("short socket path");
+    std::fs::rename(short_socket, &socket_path).expect("move socket into view");
+
+    let reviewed = review_view_dir(&env, &view_dir, &base, &base).expect("review succeeds");
+    assert_eq!(
+        reviewed.unresolved_paths,
+        vec![super::WorkUnresolvedPath {
+            path: "agent.sock".to_string(),
+            reason: "unsupported-kind".to_string(),
+        }]
+    );
+    let blocked = accept_project_view_dir(&env, &view_dir, &base, &base, "apps/web", &[], &[])
+        .expect_err("unacknowledged path blocks accept");
+    assert!(
+        matches!(
+            blocked,
+            WorkViewRpcError::Engine(ref detail)
+                if detail.contains("agent.sock=unsupported-kind")
+        ),
+        "{blocked:?}"
+    );
+
+    let accepted = accept_project_view_dir(
+        &env,
+        &view_dir,
+        &base,
+        &base,
+        "apps/web",
+        &[],
+        &["agent.sock=unsupported-kind".to_string()],
+    )
+    .expect("exact acknowledgement permits accept");
+    assert_eq!(accepted.unresolved_paths, reviewed.unresolved_paths);
 }
 
 #[test]
@@ -867,6 +1016,151 @@ fn partial_accept_merges_only_selected_paths() {
         .collect::<Vec<_>>(),
         vec!["feature-c.txt"],
     );
+}
+
+#[test]
+fn partial_accept_preserves_an_edit_written_after_capture() {
+    let fixture = Fixture::new("work-rpc-accept-concurrent-edit");
+    let env = fixture.env();
+    let view_dir = fixture.view_dir();
+    let base = create_view(&env, &view_dir).expect("create succeeds");
+    let feature = view_dir.join("feature.txt");
+    std::fs::write(&feature, b"captured\n").expect("initial edit");
+    fixture
+        .remote
+        .write_during_next_cas(feature.clone(), b"newer local edit\n");
+
+    let outcome = accept_view_dir(&env, &view_dir, &base, &base, &["feature.txt".to_string()])
+        .expect("remote accept succeeds");
+
+    assert!(!outcome.local_rebase_pending);
+    assert_eq!(
+        std::fs::read(&feature).expect("newer edit survives"),
+        b"newer local edit\n"
+    );
+    let reviewed = review_view_dir(&env, &view_dir, &outcome.base, &outcome.overlay)
+        .expect("surviving edit remains reviewable");
+    assert!(
+        reviewed
+            .changes
+            .iter()
+            .any(|change| change.path.as_str() == "feature.txt")
+    );
+}
+
+#[test]
+fn post_cas_rebase_failure_is_recoverable_and_not_reported_as_failed_accept() {
+    let fixture = Fixture::new("work-rpc-accept-rebase-recovery");
+    let env = fixture.env();
+    let view_dir = fixture.view_dir();
+    let base = create_view(&env, &view_dir).expect("create succeeds");
+    std::fs::write(view_dir.join("feature.txt"), b"feature\n").expect("edit");
+    fixture
+        .remote
+        .break_view_dir_during_next_cas(view_dir.clone());
+
+    let pending = accept_view_dir(&env, &view_dir, &base, &base, &["feature.txt".to_string()])
+        .expect("the remote accept remains a successful outcome");
+
+    assert!(pending.local_rebase_pending);
+    assert_eq!(pending.published, fixture.remote.head_key());
+    assert!(
+        accept_intent_path(&env, &view_dir).is_file(),
+        "the accepted head receipt remains durable"
+    );
+    let intent_path = accept_intent_path(&env, &view_dir);
+    let mut legacy_intent: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&intent_path).expect("read durable accept receipt"))
+            .expect("decode durable accept receipt");
+    legacy_intent
+        .as_object_mut()
+        .expect("receipt is an object")
+        .remove("publishedRefVersion");
+    std::fs::write(
+        &intent_path,
+        serde_json::to_vec(&legacy_intent).expect("encode prior receipt shape"),
+    )
+    .expect("write prior receipt shape");
+
+    std::fs::remove_file(&view_dir).expect("remove injected blocker");
+    std::fs::rename(view_dir.with_extension("recover"), &view_dir)
+        .expect("restore view for recovery");
+    let recovered = accept_view_dir(&env, &view_dir, &base, &base, &["feature.txt".to_string()])
+        .expect("retry resumes the accepted intent");
+    assert!(!recovered.local_rebase_pending);
+    assert_eq!(recovered.published, pending.published);
+    assert!(!accept_intent_path(&env, &view_dir).exists());
+}
+
+#[test]
+fn post_cas_recovery_survives_a_later_workspace_head_advance() {
+    let fixture = Fixture::new("work-rpc-accept-rebase-superseded");
+    let env = fixture.env();
+    let view_dir = fixture.view_dir();
+    let base = create_view(&env, &view_dir).expect("create succeeds");
+    let feature = view_dir.join("feature.txt");
+    std::fs::write(&feature, b"feature\n").expect("edit");
+    fixture
+        .remote
+        .break_view_dir_during_next_cas(view_dir.clone());
+
+    let pending = accept_view_dir(&env, &view_dir, &base, &base, &["feature.txt".to_string()])
+        .expect("the remote accept remains a successful outcome");
+    assert!(pending.local_rebase_pending);
+
+    let later_file = fixture
+        .remote
+        .publish_blob(&fixture.crypto, b"later workspace state\n");
+    let later_head = fixture
+        .remote
+        .publish_head(&fixture.crypto, &[("README.md", later_file)]);
+    assert_ne!(later_head, pending.published);
+
+    std::fs::remove_file(&view_dir).expect("remove injected blocker");
+    std::fs::rename(view_dir.with_extension("recover"), &view_dir)
+        .expect("restore view for recovery");
+    let recovered = accept_view_dir(&env, &view_dir, &base, &base, &["feature.txt".to_string()])
+        .expect("history proves the earlier accept before finishing its local rebase");
+
+    assert!(!recovered.local_rebase_pending);
+    assert_eq!(recovered.published, pending.published);
+    assert_eq!(fixture.remote.head_key(), later_head);
+    let reviewed = review_view_dir(&env, &view_dir, &recovered.base, &recovered.overlay)
+        .expect("the recovered view can be reviewed");
+    assert!(
+        reviewed.changes.is_empty(),
+        "the accepted partial edit is no longer pending"
+    );
+    assert!(!accept_intent_path(&env, &view_dir).exists());
+}
+
+#[test]
+fn post_cas_receipt_cleanup_failure_remains_a_successful_recoverable_accept() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new("work-rpc-accept-receipt-cleanup");
+    let env = fixture.env();
+    let view_dir = fixture.view_dir();
+    let base = create_view(&env, &view_dir).expect("create succeeds");
+    std::fs::write(view_dir.join("feature.txt"), b"feature\n").expect("edit");
+    let intent_parent = accept_intent_path(&env, &view_dir)
+        .parent()
+        .expect("intent parent")
+        .to_path_buf();
+    fixture
+        .remote
+        .lock_directory_during_next_cas(intent_parent.clone());
+
+    let pending = accept_view_dir(&env, &view_dir, &base, &base, &["feature.txt".to_string()])
+        .expect("receipt cleanup cannot turn remote success into failure");
+    assert!(pending.local_rebase_pending);
+    assert_eq!(pending.published, fixture.remote.head_key());
+
+    std::fs::set_permissions(&intent_parent, std::fs::Permissions::from_mode(0o700))
+        .expect("restore intent directory");
+    let recovered = accept_view_dir(&env, &view_dir, &base, &base, &["feature.txt".to_string()])
+        .expect("retry clears the receipt");
+    assert!(!recovered.local_rebase_pending);
 }
 
 #[test]

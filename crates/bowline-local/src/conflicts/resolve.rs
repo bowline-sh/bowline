@@ -67,6 +67,11 @@ pub fn resolve_conflict(
                 // two trees silently.
                 return Err(ConflictError::DirectoryAside { path: aside });
             }
+            if matches!(located.origin_kind, AnchoredLeafKind::Directory) {
+                return Err(ConflictError::DirectoryOrigin {
+                    path: located.conflict.origin.clone(),
+                });
+            }
             // Rename over the origin rather than copy-then-delete: the origin is
             // replaced atomically, so no window exists where a build, an editor,
             // or a concurrent sync scan observes the path missing or half-written.

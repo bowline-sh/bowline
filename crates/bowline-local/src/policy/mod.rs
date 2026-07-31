@@ -21,7 +21,10 @@ use builtin_classification::{
 };
 pub(crate) use project_view::classify_project_view_path;
 pub use project_view::is_work_view_namespace_path;
-pub use state_paths::{is_private_workspace_state_path, is_secret_bearing_path};
+pub use state_paths::{
+    ENDPOINT_PROBE_STATE_PREFIX, is_private_workspace_state_path, is_secret_bearing_path,
+};
+pub(crate) use state_paths::{is_recovery_quarantine_component, is_recovery_temp_component};
 pub use traversal::policy_should_recurse;
 pub(crate) use traversal::{policy_prunes_subtree, policy_syncs_workspace_state};
 pub use types::{PathFacts, PathPolicyDecision};

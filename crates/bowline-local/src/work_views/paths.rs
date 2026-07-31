@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fs::{self, File},
     path::{Component, Path, PathBuf},
 };
 
@@ -14,6 +14,18 @@ use bowline_core::{
 use crate::metadata::{MetadataStore, default_database_path};
 
 use super::WorkViewError;
+
+/// Serialize aux-index plus metadata transitions across CLI processes. The
+/// stable lock inode is also held by manifest apply when it materializes the
+/// aux index, so synced replacements cannot race a CLI read/modify/write.
+pub fn acquire_work_view_transition_lock(store: &MetadataStore) -> Result<File, WorkViewError> {
+    let root = store
+        .current_workspace_root()?
+        .ok_or(WorkViewError::MissingWorkspaceRoot)?;
+    let root = expand_display_path(root);
+    crate::sync::manifest_engine::work_view_lock::acquire_work_view_transition_lock(&root)
+        .map_err(Into::into)
+}
 
 pub fn resolve_work_view(store: &MetadataStore, selector: &str) -> Result<WorkView, WorkViewError> {
     reconcile_aux_work_views(store)?;
@@ -407,6 +419,38 @@ mod tests {
     use super::*;
     use crate::workspace::TempWorkspace;
     use bowline_core::ids::WorkspaceId;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn transition_lock_serializes_separate_cli_processes() {
+        let temp = TempWorkspace::new("work-view-transition-lock").expect("temp workspace");
+        let root = temp.root().to_path_buf();
+        let first =
+            crate::sync::manifest_engine::work_view_lock::acquire_work_view_transition_lock(&root)
+                .expect("first lock");
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let contender_root = root.clone();
+        let contender = std::thread::spawn(move || {
+            let second =
+                crate::sync::manifest_engine::work_view_lock::acquire_work_view_transition_lock(
+                    &contender_root,
+                )
+                .expect("second lock");
+            acquired_tx.send(()).expect("report acquisition");
+            drop(second);
+        });
+
+        assert!(
+            acquired_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "the second process must wait while the first transition is active"
+        );
+        drop(first);
+        acquired_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("second process acquires after release");
+        contender.join().expect("contender exits");
+    }
 
     #[test]
     fn append_workspace_event_logs_duplicate_append_failure_without_panicking() {

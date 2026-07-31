@@ -90,8 +90,31 @@ function assertSshsigCli() {
 function writeArchive(workspace, archive) {
   const stage = path.join(workspace, "stage");
   mkdirSync(stage, { recursive: true });
-  writeFileSync(path.join(stage, "bowline"), "#!/bin/sh\nexit 0\n");
-  writeFileSync(path.join(stage, "bowline-daemon"), "#!/bin/sh\nexit 0\n");
+  // These stubs stand in for real binaries, so they speak the real output
+  // contracts: the CLI emits its JSON command contract and the daemon emits
+  // clap's "<name> <version> (<protocol>)" line. Stubs that printed a bare
+  // version string matched no real binary, so the installer's version readers
+  // could satisfy a fixture or a real install but never both.
+  writeFileSync(
+    path.join(stage, "bowline"),
+    `#!/bin/sh
+if [ "\${1:-}" = "version" ]; then
+  echo '{"contractVersion":8,"command":"version","cliVersion":"${version}","daemonVersion":"${version}","package":"bowline"}'
+  exit 0
+fi
+exit 1
+`,
+  );
+  writeFileSync(
+    path.join(stage, "bowline-daemon"),
+    `#!/bin/sh
+if [ "\${1:-}" = "--version" ]; then
+  echo "bowline-daemon ${version} (bowline-daemon-v2 v2)"
+  exit 0
+fi
+exit 1
+`,
+  );
   chmodSync(path.join(stage, "bowline"), 0o755);
   chmodSync(path.join(stage, "bowline-daemon"), 0o755);
   mustRun("tar", ["-C", stage, "-czf", archive, "bowline", "bowline-daemon"]);

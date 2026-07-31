@@ -28,7 +28,7 @@ use bowline_control_plane::{
 use bowline_core::ids::{DeviceId, SnapshotId, WorkspaceId};
 use bowline_local::sync::manifest_engine::{
     BlobKey, BlobReaderUpload, BlobUpload, CasOutcome, ManifestKey, ManifestUpload, RefObservation,
-    RemoteObjects, RemoteRef, TransportError,
+    RefVersionLookup, RemoteObjects, RemoteRef, TransportError,
 };
 use bowline_storage::ObjectKey;
 
@@ -144,6 +144,16 @@ impl<C: ControlPlaneClient + Sync> RemoteObjects for ManifestTransport<'_, C> {
         self.uploader.download("get-blob", key.as_str())
     }
 
+    fn get_blob_to_writer(
+        &self,
+        key: &BlobKey,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<u64, TransportError> {
+        self.drain_queue()?;
+        self.uploader
+            .download_to_writer("get-blob-to-writer", key.as_str(), writer)
+    }
+
     fn get_manifest(&self, key: &ManifestKey) -> Result<Vec<u8>, TransportError> {
         self.drain_queue()?;
         self.uploader.download("get-manifest", key.as_str())
@@ -158,6 +168,48 @@ impl<C: ControlPlaneClient + Sync> RemoteRef for ManifestTransport<'_, C> {
             .get_workspace_ref(self.uploader.workspace_id())
             .map_err(|error| helpers::control_plane_error("read-ref", error))?;
         Ok(current.and_then(head_observation))
+    }
+
+    fn lookup_ref_version(&self, version: u64) -> Result<RefVersionLookup, TransportError> {
+        const HISTORY_LIMIT: u64 = 500;
+
+        let Some(current) = self.read_ref()? else {
+            return Ok(RefVersionLookup::NotAdvanced);
+        };
+        if current.version == version {
+            return Ok(RefVersionLookup::Found(current.manifest_key));
+        }
+        if current.version < version {
+            return Ok(RefVersionLookup::NotAdvanced);
+        }
+        if current.version.saturating_sub(version).saturating_add(1) > HISTORY_LIMIT {
+            return Ok(RefVersionLookup::Unknown);
+        }
+        let rows = self
+            .uploader
+            .control_plane()
+            .list_workspace_ref_history(self.uploader.workspace_id(), HISTORY_LIMIT as u32)
+            .map_err(|error| helpers::control_plane_error("read-ref-history", error))?;
+        if let Some(row) = rows.into_iter().find(|row| row.version == version) {
+            return Ok(RefVersionLookup::Found(ManifestKey::new(
+                row.target_snapshot_id.as_str(),
+            )));
+        }
+        let Some(after_history) = self.read_ref()? else {
+            return Ok(RefVersionLookup::NotAdvanced);
+        };
+        if after_history.version < version {
+            return Ok(RefVersionLookup::NotAdvanced);
+        }
+        if after_history
+            .version
+            .saturating_sub(version)
+            .saturating_add(1)
+            > HISTORY_LIMIT
+        {
+            return Ok(RefVersionLookup::Unknown);
+        }
+        Ok(RefVersionLookup::NotAdvanced)
     }
 
     fn compare_and_swap(

@@ -61,14 +61,19 @@
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use unicode_normalization::{UnicodeNormalization, is_nfc};
 
+use crate::policy::ENDPOINT_PROBE_STATE_PREFIX;
+
 use super::fs_guard::{
-    MetadataNsecPair, ObserveOutcome, Observed, PRIVATE_FILE_MODE, observe_classified,
+    FileVisit, MetadataNsecPair, ObserveOutcome, Observed, PRIVATE_FILE_MODE, observe_classified,
+    visit_file_bounded,
 };
-use super::manifest::WorkspacePath;
+use super::manifest::{EntryKind, WorkspaceCrypto, WorkspacePath};
 use super::store::FileRecord;
 
 /// The engine's private probe files. They live under `.bowline`, which the stat
@@ -87,6 +92,13 @@ const PRECOMPOSED_PROBE_LEAF: &str = "normalization-\u{e9}.probe";
 /// filesystem that folds only the leading character cannot pass by accident.
 const MIXED_CASE_PROBE_LEAF: &str = "CaSe-Aa.probe";
 const SWAPPED_CASE_PROBE_LEAF: &str = "cAsE-aA.probe";
+static PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const ENDPOINT_PROBE_DIR_PREFIX: &str = ".bowline-endpoint-probe";
+const ENDPOINT_PROBE_OWNER_MARKER: &str = ".bowline-owner";
+const ENDPOINT_PROBE_OWNER_BYTES: &[u8] = b"bowline-endpoint-probe-v1\n";
+static CAPABILITY_CACHE: OnceLock<
+    Mutex<std::collections::BTreeMap<EndpointIdentity, EndpointCapabilities>>,
+> = OnceLock::new();
 
 /// A timestamp the probe writes and reads back. The seconds are odd and the
 /// nanoseconds are non-zero, so a filesystem that truncates to whole seconds and
@@ -128,6 +140,262 @@ impl TimestampGranularity {
     pub fn indistinguishable(self, left: i64, right: i64) -> bool {
         self.bucket(left) == self.bucket(right)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndpointCapabilities {
+    pub names: NameFolding,
+    pub timestamps: TimestampGranularity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct EndpointIdentity {
+    volume: u64,
+    directory: u64,
+}
+
+impl EndpointCapabilities {
+    const SAFE_DEFAULT: Self = Self {
+        names: NameFolding::EXACT,
+        timestamps: TimestampGranularity::TWO_SECONDS,
+    };
+}
+
+/// Probe endpoint semantics inside a private ephemeral directory on the
+/// endpoint's own mounted volume, caching only successful measurements by
+/// device and directory identity for this daemon process. The directory is
+/// part of the identity because case folding can be enabled per directory even
+/// when two endpoints share one mounted volume.
+pub fn probe_endpoint_capabilities(endpoint_root: &Path) -> EndpointCapabilities {
+    let Ok(identity) = endpoint_identity(endpoint_root) else {
+        return EndpointCapabilities::SAFE_DEFAULT;
+    };
+    let cache = CAPABILITY_CACHE.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()));
+    if let Ok(cache) = cache.lock()
+        && let Some(capabilities) = cache.get(&identity)
+    {
+        return *capabilities;
+    }
+    let Ok(measured) = measure_endpoint_root(endpoint_root) else {
+        return EndpointCapabilities::SAFE_DEFAULT;
+    };
+    let Ok(mut cache) = cache.lock() else {
+        return EndpointCapabilities::SAFE_DEFAULT;
+    };
+    cache_capabilities(&mut cache, identity, measured)
+}
+
+/// Prepare the reserved probe root on the workspace endpoint itself.
+///
+/// The directory is deliberately a sibling of `.bowline`: `.bowline` may be a
+/// symlink or nested mount, while these probes must read the materialization
+/// volume's clock. The policy layer excludes this exact reserved namespace from
+/// scans and watcher reconciliation.
+pub fn prepare_endpoint_probe_root(workspace_root: &Path) -> io::Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let workspace_metadata = fs::metadata(workspace_root)?;
+    if !workspace_metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workspace root is not a directory",
+        ));
+    }
+    if let Some(probe_root) =
+        find_owned_endpoint_probe_root(workspace_root, workspace_metadata.dev())?
+    {
+        return Ok(probe_root);
+    }
+    for _ in 0..16 {
+        let mut nonce = [0_u8; 16];
+        getrandom::fill(&mut nonce)
+            .map_err(|_| io::Error::other("endpoint probe root randomness unavailable"))?;
+        let probe_root = workspace_root.join(format!(
+            "{ENDPOINT_PROBE_STATE_PREFIX}{:032x}.tmp",
+            u128::from_le_bytes(nonce)
+        ));
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700);
+        match builder.create(&probe_root) {
+            Ok(()) => {
+                let initialized = fs::write(
+                    probe_root.join(ENDPOINT_PROBE_OWNER_MARKER),
+                    ENDPOINT_PROBE_OWNER_BYTES,
+                )
+                .and_then(|()| fs::symlink_metadata(&probe_root))
+                .and_then(|metadata| {
+                    validate_endpoint_probe_location(&metadata, workspace_metadata.dev())
+                })
+                .and_then(|()| validate_endpoint_probe_owner(&probe_root));
+                return match initialized {
+                    Ok(()) => Ok(probe_root),
+                    Err(error) => {
+                        let _ = fs::remove_file(probe_root.join(ENDPOINT_PROBE_OWNER_MARKER));
+                        let _ = fs::remove_dir(&probe_root);
+                        Err(error)
+                    }
+                };
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "endpoint probe root attempts exhausted",
+    ))
+}
+
+fn find_owned_endpoint_probe_root(
+    workspace_root: &Path,
+    workspace_dev: u64,
+) -> io::Result<Option<PathBuf>> {
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(workspace_root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with(ENDPOINT_PROBE_STATE_PREFIX) && name.ends_with(".tmp") {
+            candidates.push(entry.path());
+        }
+    }
+    candidates.sort();
+    for candidate in candidates {
+        let Ok(metadata) = fs::symlink_metadata(&candidate) else {
+            continue;
+        };
+        if validate_endpoint_probe_location(&metadata, workspace_dev).is_ok()
+            && validate_endpoint_probe_owner(&candidate).is_ok()
+        {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
+fn validate_endpoint_probe_location(metadata: &fs::Metadata, workspace_dev: u64) -> io::Result<()> {
+    if !metadata.file_type().is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "endpoint probe root is not a directory",
+        ));
+    }
+    if metadata.dev() != workspace_dev {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "endpoint probe root is not on the workspace volume",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_endpoint_probe_owner(probe_root: &Path) -> io::Result<()> {
+    let marker_path = probe_root.join(ENDPOINT_PROBE_OWNER_MARKER);
+    let marker_metadata = fs::symlink_metadata(&marker_path)?;
+    if !marker_metadata.file_type().is_file()
+        || marker_metadata.len() != ENDPOINT_PROBE_OWNER_BYTES.len() as u64
+        || fs::read(&marker_path)? != ENDPOINT_PROBE_OWNER_BYTES
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "endpoint probe root is not owned by Bowline",
+        ));
+    }
+    Ok(())
+}
+
+/// Remeasure an endpoint whose root disappeared and returned. This bypasses
+/// the process cache because a replacement mount or directory can reuse both
+/// the previous device number and inode.
+pub fn refresh_endpoint_capabilities(endpoint_root: &Path) -> EndpointCapabilities {
+    let Ok(identity) = endpoint_identity(endpoint_root) else {
+        return EndpointCapabilities::SAFE_DEFAULT;
+    };
+    let Ok(measured) = measure_endpoint_root(endpoint_root) else {
+        return EndpointCapabilities::SAFE_DEFAULT;
+    };
+    let cache = CAPABILITY_CACHE.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()));
+    let Ok(mut cache) = cache.lock() else {
+        return EndpointCapabilities::SAFE_DEFAULT;
+    };
+    refresh_cached_capabilities(&mut cache, identity, measured)
+}
+
+fn endpoint_identity(endpoint_root: &Path) -> io::Result<EndpointIdentity> {
+    let metadata = fs::metadata(endpoint_root)?;
+    Ok(EndpointIdentity {
+        volume: metadata.dev(),
+        directory: metadata.ino(),
+    })
+}
+
+fn cache_capabilities(
+    cache: &mut std::collections::BTreeMap<EndpointIdentity, EndpointCapabilities>,
+    identity: EndpointIdentity,
+    measured: EndpointCapabilities,
+) -> EndpointCapabilities {
+    *cache.entry(identity).or_insert(measured)
+}
+
+fn refresh_cached_capabilities(
+    cache: &mut std::collections::BTreeMap<EndpointIdentity, EndpointCapabilities>,
+    identity: EndpointIdentity,
+    measured: EndpointCapabilities,
+) -> EndpointCapabilities {
+    cache.insert(identity, measured);
+    measured
+}
+
+fn measure_endpoint_root(endpoint_root: &Path) -> io::Result<EndpointCapabilities> {
+    with_private_probe_dir(endpoint_root, measure_capabilities)
+}
+
+fn create_private_probe_dir(endpoint_root: &Path) -> io::Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    for _ in 0..16 {
+        let sequence = PROBE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = endpoint_root.join(format!(
+            "{ENDPOINT_PROBE_DIR_PREFIX}-{}-{sequence}",
+            std::process::id()
+        ));
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700);
+        match builder.create(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "endpoint probe directory attempts exhausted",
+    ))
+}
+
+fn with_private_probe_dir<T>(
+    endpoint_root: &Path,
+    measure: impl FnOnce(&Path) -> io::Result<T>,
+) -> io::Result<T> {
+    let probe_dir = create_private_probe_dir(endpoint_root)?;
+    let measured = measure(&probe_dir);
+    // Never recursively remove a directory inside the workspace. If another
+    // same-user process adds anything unexpected while the probe runs, leave it
+    // untouched and fail the probe rather than deleting content we do not own.
+    let removed = fs::remove_dir(&probe_dir);
+    match (measured, removed) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+fn measure_capabilities(probe_dir: &Path) -> io::Result<EndpointCapabilities> {
+    Ok(EndpointCapabilities {
+        names: measure_name_folding(probe_dir)?,
+        timestamps: measure_timestamp_granularity(probe_dir)?,
+    })
 }
 
 /// A reading of the endpoint volume's OWN clock — the clock that stamps the
@@ -220,16 +488,24 @@ fn measure_timestamp_granularity(engine_dir: &Path) -> io::Result<TimestampGranu
 /// daemon's state root, and a clock read from that volume says nothing about the
 /// volume whose mtimes the rows carry. `st_dev` is the proof, so the answer is
 /// about the measured volume rather than about a path convention.
-pub fn sample_endpoint_clock(engine_dir: &Path, workspace_root: &Path) -> Option<EndpointInstant> {
-    read_endpoint_clock(engine_dir, workspace_root).ok()
+pub fn sample_endpoint_clock(
+    endpoint_root: &Path,
+    workspace_root: &Path,
+) -> Option<EndpointInstant> {
+    read_endpoint_clock(endpoint_root, workspace_root).ok()
 }
 
-fn read_endpoint_clock(engine_dir: &Path, workspace_root: &Path) -> io::Result<EndpointInstant> {
-    let probe = engine_dir.join(CLOCK_PROBE_LEAF);
-    create_probe_file(engine_dir, &probe)?;
-    let result = fs::symlink_metadata(&probe);
-    let _ = fs::remove_file(&probe);
-    let metadata = result?;
+fn read_endpoint_clock(endpoint_root: &Path, workspace_root: &Path) -> io::Result<EndpointInstant> {
+    let metadata = with_private_probe_dir(endpoint_root, |probe_dir| {
+        let probe = probe_dir.join(CLOCK_PROBE_LEAF);
+        create_probe_file(probe_dir, &probe)?;
+        let measured = fs::symlink_metadata(&probe);
+        let removed = fs::remove_file(&probe);
+        match (measured, removed) {
+            (Ok(metadata), Ok(())) => Ok(metadata),
+            (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+        }
+    })?;
     let root = fs::metadata(workspace_root)?;
     if metadata.dev() != root.dev() {
         return Err(io::Error::new(
@@ -384,16 +660,22 @@ pub fn nfc_path(path: &WorkspacePath) -> WorkspacePath {
 /// Any failure answers [`NameFolding::EXACT`]; see that constant for why it is
 /// the safe direction.
 pub fn probe_name_folding(engine_dir: &Path) -> NameFolding {
-    NameFolding {
-        normalization: NormalizationForm::from_folds(
-            probe_resolves_as(engine_dir, DECOMPOSED_PROBE_LEAF, PRECOMPOSED_PROBE_LEAF)
-                .unwrap_or(false),
-        ),
-        case: CaseForm::from_folds(
-            probe_resolves_as(engine_dir, MIXED_CASE_PROBE_LEAF, SWAPPED_CASE_PROBE_LEAF)
-                .unwrap_or(false),
-        ),
-    }
+    measure_name_folding(engine_dir).unwrap_or(NameFolding::EXACT)
+}
+
+fn measure_name_folding(engine_dir: &Path) -> io::Result<NameFolding> {
+    Ok(NameFolding {
+        normalization: NormalizationForm::from_folds(probe_resolves_as(
+            engine_dir,
+            DECOMPOSED_PROBE_LEAF,
+            PRECOMPOSED_PROBE_LEAF,
+        )?),
+        case: CaseForm::from_folds(probe_resolves_as(
+            engine_dir,
+            MIXED_CASE_PROBE_LEAF,
+            SWAPPED_CASE_PROBE_LEAF,
+        )?),
+    })
 }
 
 /// Create a probe file named `created` and report whether the filesystem also
@@ -517,6 +799,8 @@ pub(super) fn prove_rows<'a>(
     workspace_root: &Path,
     engine_dir: &Path,
     granularity: TimestampGranularity,
+    crypto: &WorkspaceCrypto,
+    max_read_bytes: u64,
     rows: impl Iterator<Item = (&'a WorkspacePath, &'a mut FileRecord)>,
 ) {
     let Some(sampled) = sample_endpoint_clock(engine_dir, workspace_root) else {
@@ -525,7 +809,15 @@ pub(super) fn prove_rows<'a>(
         return;
     };
     for (path, record) in rows {
-        record.verified_at = prove_row(workspace_root, granularity, sampled, path, record);
+        record.verified_at = prove_row(
+            workspace_root,
+            granularity,
+            sampled,
+            crypto,
+            max_read_bytes,
+            path,
+            record,
+        );
     }
 }
 
@@ -533,6 +825,8 @@ fn prove_row(
     workspace_root: &Path,
     granularity: TimestampGranularity,
     sampled: EndpointInstant,
+    crypto: &WorkspaceCrypto,
+    max_read_bytes: u64,
     path: &WorkspacePath,
     record: &FileRecord,
 ) -> Option<EndpointInstant> {
@@ -542,10 +836,57 @@ fn prove_row(
     let ObserveOutcome::Present(observed) = observe_classified(workspace_root, path) else {
         return None;
     };
-    if observed.kind != record.kind || !same_stat(granularity, record, &observed) {
+    if observed.kind != record.kind
+        || observed.size != record.size
+        || observed.mode != record.mode
+        || observed.symlink_target != record.symlink_target
+        || !same_stat(granularity, record, &observed)
+    {
+        return None;
+    }
+    if granularity != TimestampGranularity::NANOSECOND
+        && record.kind == EntryKind::File
+        && !content_matches_record(
+            workspace_root,
+            path,
+            &observed,
+            record,
+            crypto,
+            max_read_bytes,
+        )
+    {
         return None;
     }
     Some(sampled)
+}
+
+fn content_matches_record(
+    workspace_root: &Path,
+    path: &WorkspacePath,
+    observed: &Observed,
+    record: &FileRecord,
+    crypto: &WorkspaceCrypto,
+    max_read_bytes: u64,
+) -> bool {
+    let (Some(expected_content_id), Some(key_epoch)) = (&record.content_id, record.key_epoch)
+    else {
+        return false;
+    };
+    matches!(
+        visit_file_bounded(
+            workspace_root,
+            path,
+            max_read_bytes,
+            &observed.expected_file(),
+            |file, _| {
+                crypto
+                    .content_id_reader_at(key_epoch, file)
+                    .map_err(super::push::PushError::Io)
+            },
+        ),
+        Ok(FileVisit::Value(Some((content_id, byte_len))))
+            if byte_len == observed.size && &content_id == expected_content_id
+    )
 }
 
 #[cfg(test)]

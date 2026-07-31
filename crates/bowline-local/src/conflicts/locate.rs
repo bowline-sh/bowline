@@ -33,6 +33,9 @@ pub(super) struct AnchoredConflict {
     /// `is_dir` would answer about a symlink's TARGET, making an aside symlinked
     /// at an external directory look like a directory tree of this workspace.
     pub(super) aside_kind: AnchoredLeafKind,
+    /// What the origin is right now, classified through the same held
+    /// descriptor as the aside.
+    pub(super) origin_kind: AnchoredLeafKind,
     pub(super) conflict: ConflictAside,
 }
 
@@ -65,16 +68,15 @@ pub(super) fn open_conflict(
     if matches!(aside_kind, AnchoredLeafKind::Absent) {
         return Err(ConflictError::NoSuchAside { path: aside });
     }
-    let origin_missing = matches!(
-        classify(&directory, &origin_leaf, &origin)?,
-        AnchoredLeafKind::Absent
-    );
+    let origin_kind = classify(&directory, &origin_leaf, &origin)?;
+    let origin_missing = matches!(origin_kind, AnchoredLeafKind::Absent);
 
     Ok(AnchoredConflict {
         directory,
         aside_leaf,
         origin_leaf,
         aside_kind,
+        origin_kind,
         conflict: ConflictAside {
             origin,
             aside,

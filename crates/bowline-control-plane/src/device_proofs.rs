@@ -68,6 +68,7 @@ pub fn recovery_envelope_payload_proof_subject(input: &RecoveryEnvelopeInput) ->
         input.envelope_id.as_str(),
         &input.fingerprint,
         &input.recovery_proof_verifier,
+        input.key_epoch,
         &input.ciphertext,
     )
 }
@@ -76,11 +77,12 @@ pub fn recovery_envelope_payload_proof_subject_parts(
     envelope_id: &str,
     fingerprint: &str,
     recovery_proof_verifier: &str,
+    key_epoch: u32,
     ciphertext: &str,
 ) -> String {
     let ciphertext_hash = Sha256::digest(ciphertext.as_bytes());
     format!(
-        "envelopeId={envelope_id}\nfingerprint={fingerprint}\nrecoveryProofVerifier={recovery_proof_verifier}\nciphertextHash=sha256:{ciphertext_hash:x}"
+        "envelopeId={envelope_id}\nfingerprint={fingerprint}\nrecoveryProofVerifier={recovery_proof_verifier}\nkeyEpoch={key_epoch}\nciphertextHash=sha256:{ciphertext_hash:x}"
     )
 }
 

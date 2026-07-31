@@ -11028,6 +11028,7 @@
     "createdByDeviceProof": "proof_create",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11042,6 +11043,7 @@
     "createdByDeviceProof": "proof_create",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11056,6 +11058,7 @@
     "createdByDeviceProof": "proof_create",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11070,6 +11073,7 @@
     "createdByDeviceProof": "proof_create",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11084,6 +11088,7 @@
     },
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11098,6 +11103,7 @@
     },
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11112,6 +11118,7 @@
       }
     },
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11126,6 +11133,7 @@
       }
     },
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11140,6 +11148,7 @@
         "unit": "x"
       }
     },
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11154,6 +11163,47 @@
         "unit": "x"
       }
     },
+    "keyEpoch": 1,
+    "recoveryProofVerifier": "rkpv_recovery",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryCreateRecoveryEnvelopeRequest.keyEpoch.maximum.invalid": {
+    "ciphertext": "ciphertext_default",
+    "createdByDeviceId": "dev_creator",
+    "createdByDeviceProof": "proof_create",
+    "envelopeId": "rk_default",
+    "fingerprint": "fingerprint_default",
+    "keyEpoch": 4294967296,
+    "recoveryProofVerifier": "rkpv_recovery",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryCreateRecoveryEnvelopeRequest.keyEpoch.maximum.valid": {
+    "ciphertext": "ciphertext_default",
+    "createdByDeviceId": "dev_creator",
+    "createdByDeviceProof": "proof_create",
+    "envelopeId": "rk_default",
+    "fingerprint": "fingerprint_default",
+    "keyEpoch": 4294967295,
+    "recoveryProofVerifier": "rkpv_recovery",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryCreateRecoveryEnvelopeRequest.keyEpoch.minimum.invalid": {
+    "ciphertext": "ciphertext_default",
+    "createdByDeviceId": "dev_creator",
+    "createdByDeviceProof": "proof_create",
+    "envelopeId": "rk_default",
+    "fingerprint": "fingerprint_default",
+    "keyEpoch": -1,
+    "recoveryProofVerifier": "rkpv_recovery",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryCreateRecoveryEnvelopeRequest.keyEpoch.minimum.valid": {
+    "ciphertext": "ciphertext_default",
+    "createdByDeviceId": "dev_creator",
+    "createdByDeviceProof": "proof_create",
+    "envelopeId": "rk_default",
+    "fingerprint": "fingerprint_default",
+    "keyEpoch": 0,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11163,6 +11213,7 @@
     "createdByDeviceProof": "proof_create",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": {
       "$boundaryString": {
         "count": 513,
@@ -11177,6 +11228,7 @@
     "createdByDeviceProof": "proof_create",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": {
       "$boundaryString": {
         "count": 512,
@@ -11191,6 +11243,7 @@
     "createdByDeviceProof": "proof_create",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": {
       "$boundaryString": {
@@ -11205,6 +11258,7 @@
     "createdByDeviceProof": "proof_create",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": {
       "$boundaryString": {
@@ -11622,6 +11676,7 @@
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
   },
@@ -11636,6 +11691,7 @@
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
   },
@@ -11650,6 +11706,7 @@
     },
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
   },
@@ -11664,6 +11721,7 @@
     },
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
   },
@@ -11678,6 +11736,7 @@
       }
     },
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
   },
@@ -11692,6 +11751,7 @@
       }
     },
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
   },
@@ -11706,6 +11766,7 @@
         "unit": "x"
       }
     },
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
   },
@@ -11720,6 +11781,47 @@
         "unit": "x"
       }
     },
+    "keyEpoch": 1,
+    "state": "generated-unverified",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryEnvelope.keyEpoch.maximum.invalid": {
+    "ciphertext": "ciphertext_default",
+    "createdAt": "2026-06-23T12:00:00Z",
+    "createdByDeviceId": "dev_creator",
+    "envelopeId": "rk_default",
+    "fingerprint": "fingerprint_default",
+    "keyEpoch": 4294967296,
+    "state": "generated-unverified",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryEnvelope.keyEpoch.maximum.valid": {
+    "ciphertext": "ciphertext_default",
+    "createdAt": "2026-06-23T12:00:00Z",
+    "createdByDeviceId": "dev_creator",
+    "envelopeId": "rk_default",
+    "fingerprint": "fingerprint_default",
+    "keyEpoch": 4294967295,
+    "state": "generated-unverified",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryEnvelope.keyEpoch.minimum.invalid": {
+    "ciphertext": "ciphertext_default",
+    "createdAt": "2026-06-23T12:00:00Z",
+    "createdByDeviceId": "dev_creator",
+    "envelopeId": "rk_default",
+    "fingerprint": "fingerprint_default",
+    "keyEpoch": -1,
+    "state": "generated-unverified",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryEnvelope.keyEpoch.minimum.valid": {
+    "ciphertext": "ciphertext_default",
+    "createdAt": "2026-06-23T12:00:00Z",
+    "createdByDeviceId": "dev_creator",
+    "envelopeId": "rk_default",
+    "fingerprint": "fingerprint_default",
+    "keyEpoch": 0,
     "state": "generated-unverified",
     "workspaceId": "ws_code"
   },
@@ -11729,6 +11831,7 @@
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "workspaceId": {
       "$boundaryString": {
@@ -11743,6 +11846,7 @@
     "createdByDeviceId": "dev_creator",
     "envelopeId": "rk_default",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "state": "generated-unverified",
     "workspaceId": {
       "$boundaryString": {
@@ -11886,6 +11990,7 @@
     "createdByDeviceProof": "proof_rotate",
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11900,6 +12005,7 @@
     "createdByDeviceProof": "proof_rotate",
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11914,6 +12020,7 @@
     "createdByDeviceProof": "proof_rotate",
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11928,6 +12035,7 @@
     "createdByDeviceProof": "proof_rotate",
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11942,6 +12050,7 @@
     },
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11956,6 +12065,7 @@
     },
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11970,6 +12080,7 @@
       }
     },
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11984,6 +12095,7 @@
       }
     },
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -11998,6 +12110,7 @@
         "unit": "x"
       }
     },
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -12012,6 +12125,47 @@
         "unit": "x"
       }
     },
+    "keyEpoch": 1,
+    "recoveryProofVerifier": "rkpv_recovery",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryRotateRecoveryEnvelopeRequest.keyEpoch.maximum.invalid": {
+    "ciphertext": "ciphertext_default",
+    "createdByDeviceId": "dev_creator",
+    "createdByDeviceProof": "proof_rotate",
+    "envelopeId": "rk_next",
+    "fingerprint": "fingerprint_default",
+    "keyEpoch": 4294967296,
+    "recoveryProofVerifier": "rkpv_recovery",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryRotateRecoveryEnvelopeRequest.keyEpoch.maximum.valid": {
+    "ciphertext": "ciphertext_default",
+    "createdByDeviceId": "dev_creator",
+    "createdByDeviceProof": "proof_rotate",
+    "envelopeId": "rk_next",
+    "fingerprint": "fingerprint_default",
+    "keyEpoch": 4294967295,
+    "recoveryProofVerifier": "rkpv_recovery",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryRotateRecoveryEnvelopeRequest.keyEpoch.minimum.invalid": {
+    "ciphertext": "ciphertext_default",
+    "createdByDeviceId": "dev_creator",
+    "createdByDeviceProof": "proof_rotate",
+    "envelopeId": "rk_next",
+    "fingerprint": "fingerprint_default",
+    "keyEpoch": -1,
+    "recoveryProofVerifier": "rkpv_recovery",
+    "workspaceId": "ws_code"
+  },
+  "HostedRecoveryRotateRecoveryEnvelopeRequest.keyEpoch.minimum.valid": {
+    "ciphertext": "ciphertext_default",
+    "createdByDeviceId": "dev_creator",
+    "createdByDeviceProof": "proof_rotate",
+    "envelopeId": "rk_next",
+    "fingerprint": "fingerprint_default",
+    "keyEpoch": 0,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": "ws_code"
   },
@@ -12021,6 +12175,7 @@
     "createdByDeviceProof": "proof_rotate",
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": {
       "$boundaryString": {
         "count": 513,
@@ -12035,6 +12190,7 @@
     "createdByDeviceProof": "proof_rotate",
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": {
       "$boundaryString": {
         "count": 512,
@@ -12049,6 +12205,7 @@
     "createdByDeviceProof": "proof_rotate",
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": {
       "$boundaryString": {
@@ -12063,6 +12220,7 @@
     "createdByDeviceProof": "proof_rotate",
     "envelopeId": "rk_next",
     "fingerprint": "fingerprint_default",
+    "keyEpoch": 1,
     "recoveryProofVerifier": "rkpv_recovery",
     "workspaceId": {
       "$boundaryString": {

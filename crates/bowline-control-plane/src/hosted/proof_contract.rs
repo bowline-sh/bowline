@@ -146,6 +146,7 @@ struct RecoveryEnvelopeProofInput {
     envelope_id: RecoveryEnvelopeId,
     ciphertext: Option<String>,
     fingerprint: Option<String>,
+    key_epoch: Option<u32>,
     recovery_proof_verifier: Option<String>,
 }
 
@@ -462,6 +463,7 @@ fn build_subject(case: &FixtureCase) -> String {
                 created_by_device_proof: String::new(),
                 ciphertext: input.ciphertext.expect("recovery fixture ciphertext"),
                 fingerprint: input.fingerprint.expect("recovery fixture fingerprint"),
+                key_epoch: input.key_epoch.expect("recovery fixture key epoch"),
                 recovery_proof_verifier: input
                     .recovery_proof_verifier
                     .expect("recovery fixture proof verifier"),

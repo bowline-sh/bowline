@@ -110,6 +110,14 @@ pub(in crate::daemon) struct WatcherBridge {
 }
 
 impl WatcherBridge {
+    #[cfg(test)]
+    pub(super) fn from_worker_for_test(worker: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            worker: Some(std::thread::spawn(worker)),
+            shutdown: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub(in crate::daemon) fn start(
         runtime: &mut DaemonRuntime,
     ) -> Result<WatcherBridgeStart, WatcherBridgeStartError> {

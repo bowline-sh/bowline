@@ -1,12 +1,14 @@
-use std::{error::Error, fmt, io, path::PathBuf};
+use std::{collections::BTreeMap, error::Error, fmt, io, path::PathBuf};
 
 use bowline_core::ids::{DeviceId, WorkspaceId};
+use bowline_core::work_views::WorkUnresolvedPath;
 
 use crate::metadata::{MetadataError, MetadataStore};
 
 mod cleanup;
 mod create_list;
 mod lifecycle;
+mod materialization_snapshot;
 mod paths;
 
 pub use cleanup::cleanup_work_views;
@@ -14,9 +16,11 @@ pub use create_list::{list_work_views, overlay_aux_engine_truth};
 pub use lifecycle::{
     WorkAcceptTransition, apply_accept_success, discard_work_view, restore_work_view,
 };
+pub use materialization_snapshot::materialization_snapshot;
 pub use paths::{
-    append_work_event, display_path, expand_display_path, open_store, reconcile_aux_work_views,
-    resolve_work_view, validate_work_view_name, visible_path, work_view_id,
+    acquire_work_view_transition_lock, append_work_event, display_path, expand_display_path,
+    open_store, reconcile_aux_work_views, resolve_work_view, validate_work_view_name, visible_path,
+    work_view_id,
 };
 
 pub(super) fn status_all_command(
@@ -56,6 +60,7 @@ pub struct WorkSelectorOptions {
     pub selector: String,
     pub paths: Vec<String>,
     pub generated_at: String,
+    pub expected_materializations: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +68,7 @@ pub struct WorkCleanupOptions {
     pub db_path: Option<PathBuf>,
     pub apply: bool,
     pub generated_at: String,
+    pub expected_materializations: BTreeMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -88,6 +94,9 @@ pub enum WorkViewError {
     ContentChangedDuringCapture {
         path: String,
     },
+    MaterializationChangedAfterReview {
+        path: String,
+    },
     InvalidName {
         name: String,
         reason: &'static str,
@@ -104,6 +113,14 @@ pub enum WorkViewError {
         selector: String,
     },
     InactiveWorkView {
+        name: String,
+    },
+    StaleWorkViewGeneration {
+        name: String,
+        expected: u64,
+        actual: u64,
+    },
+    WorkViewGenerationExhausted {
         name: String,
     },
     UnrestorableWorkView {
@@ -123,6 +140,9 @@ pub enum WorkViewError {
     },
     EmptyPathSelection {
         patterns: Vec<String>,
+    },
+    UnresolvedPaths {
+        paths: Vec<WorkUnresolvedPath>,
     },
     AcceptRollbackFailed {
         path: String,
@@ -175,6 +195,10 @@ impl fmt::Display for WorkViewError {
                 formatter,
                 "work-view content changed while `{path}` was being captured"
             ),
+            Self::MaterializationChangedAfterReview { path } => write!(
+                formatter,
+                "work-view materialization `{path}` changed after review; review again before the destructive command"
+            ),
             Self::InvalidName { name, reason } => {
                 write!(formatter, "work view name `{name}` is invalid: {reason}")
             }
@@ -196,6 +220,18 @@ impl fmt::Display for WorkViewError {
                     "work view `{name}` must be restored before it can be accepted"
                 )
             }
+            Self::StaleWorkViewGeneration {
+                name,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "work view `{name}` changed concurrently (expected generation {expected}, found {actual}); retry from fresh state"
+            ),
+            Self::WorkViewGenerationExhausted { name } => write!(
+                formatter,
+                "work view `{name}` exhausted its transition generation and cannot be mutated"
+            ),
             Self::UnrestorableWorkView { name } => {
                 write!(formatter, "work view `{name}` is not restorable")
             }
@@ -219,6 +255,16 @@ impl fmt::Display for WorkViewError {
                 formatter,
                 "no work-view changes matched --path {}",
                 patterns.join(", ")
+            ),
+            Self::UnresolvedPaths { paths } => write!(
+                formatter,
+                "unresolved work-view paths block this destructive command; pass each exact \
+                 --acknowledge-unresolved token: {}",
+                paths
+                    .iter()
+                    .map(|issue| format!("{}={}", issue.path, issue.reason))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             Self::AcceptRollbackFailed { path, reason } => write!(
                 formatter,

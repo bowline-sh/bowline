@@ -328,7 +328,7 @@ impl FakeControlPlaneClient {
                 input.key_epoch,
                 offer.recipient_device_id.clone(),
             );
-            let Some(regrant) = state.workspace_key_regrants.get_mut(&key) else {
+            let Some(regrant) = state.workspace_key_regrants.get(&key) else {
                 return Err(ControlPlaneError::Conflict {
                     resource: "workspace-key-regrant",
                     reason: "key regrant offer targets a device with no outstanding obligation",
@@ -340,6 +340,25 @@ impl FakeControlPlaneClient {
                     reason: "key regrant offer targets a device with no outstanding obligation",
                 });
             }
+            if regrant.state == WorkspaceKeyRegrantState::Offered
+                && regrant.sealed_by_device_id.as_ref() != Some(&input.device_id)
+            {
+                return Err(ControlPlaneError::Conflict {
+                    resource: "workspace-key-regrant",
+                    reason: "key regrant has already been offered by another device",
+                });
+            }
+        }
+        for offer in &input.offers {
+            let key = (
+                input.workspace_id.clone(),
+                input.key_epoch,
+                offer.recipient_device_id.clone(),
+            );
+            let regrant = state
+                .workspace_key_regrants
+                .get_mut(&key)
+                .expect("key regrant publication was preflighted");
             regrant.state = WorkspaceKeyRegrantState::Offered;
             regrant.ciphertext = Some(offer.ciphertext.clone());
             regrant.acceptance_proof_verifier = Some(offer.acceptance_proof_verifier.clone());
@@ -429,5 +448,98 @@ impl FakeControlPlaneClient {
             .entry(workspace_id.clone())
             .or_default()
             .push(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::WorkspaceKeyRegrantOffer;
+
+    #[test]
+    fn offered_regrant_only_accepts_retries_from_its_original_sealer() {
+        let workspace_id = WorkspaceId::new("workspace-regrant-sealer");
+        let recipient_device_id = DeviceId::new("device-recipient");
+        let pending_device_id = DeviceId::new("device-pending");
+        let original_sealer = DeviceId::new("device-original-sealer");
+        let mut state = FakeControlPlaneState::default();
+        let key = (workspace_id.clone(), 2, recipient_device_id.clone());
+        let pending_key = (workspace_id.clone(), 2, pending_device_id.clone());
+        state.workspace_key_regrants.insert(
+            key.clone(),
+            FakeKeyRegrant {
+                state: WorkspaceKeyRegrantState::Offered,
+                ciphertext: Some("original-ciphertext".to_string()),
+                acceptance_proof_verifier: Some("original-verifier".to_string()),
+                sealed_by_device_id: Some(original_sealer.clone()),
+            },
+        );
+        state
+            .workspace_key_regrants
+            .insert(pending_key.clone(), FakeKeyRegrant::pending());
+
+        FakeControlPlaneClient::publish_offers(
+            &mut state,
+            &WorkspaceKeyPublicationInput {
+                workspace_id: workspace_id.clone(),
+                device_id: original_sealer,
+                device_proof: "unused-by-publication-helper".to_string(),
+                key_epoch: 2,
+                offers: vec![WorkspaceKeyRegrantOffer {
+                    recipient_device_id: recipient_device_id.clone(),
+                    ciphertext: "retried-ciphertext".to_string(),
+                    acceptance_proof_verifier: "retried-verifier".to_string(),
+                }],
+            },
+        )
+        .expect("the original sealer may retry its offer");
+
+        let attacker = DeviceId::new("device-other-sealer");
+        let attack = FakeControlPlaneClient::publish_offers(
+            &mut state,
+            &WorkspaceKeyPublicationInput {
+                workspace_id,
+                device_id: attacker,
+                device_proof: "unused-by-publication-helper".to_string(),
+                key_epoch: 2,
+                offers: vec![
+                    WorkspaceKeyRegrantOffer {
+                        recipient_device_id: pending_device_id,
+                        ciphertext: "pending-ciphertext".to_string(),
+                        acceptance_proof_verifier: "pending-verifier".to_string(),
+                    },
+                    WorkspaceKeyRegrantOffer {
+                        recipient_device_id,
+                        ciphertext: "attacker-ciphertext".to_string(),
+                        acceptance_proof_verifier: "attacker-verifier".to_string(),
+                    },
+                ],
+            },
+        );
+
+        assert!(matches!(
+            attack,
+            Err(ControlPlaneError::Conflict {
+                resource: "workspace-key-regrant",
+                reason: "key regrant has already been offered by another device",
+            })
+        ));
+        assert_eq!(
+            state
+                .workspace_key_regrants
+                .get(&key)
+                .expect("regrant remains")
+                .ciphertext
+                .as_deref(),
+            Some("retried-ciphertext")
+        );
+        assert_eq!(
+            state
+                .workspace_key_regrants
+                .get(&pending_key)
+                .expect("pending regrant remains"),
+            &FakeKeyRegrant::pending(),
+            "a rejected batch does not partially publish earlier offers"
+        );
     }
 }

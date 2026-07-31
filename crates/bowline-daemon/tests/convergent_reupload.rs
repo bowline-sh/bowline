@@ -183,6 +183,7 @@ impl Fixture {
             device_id: DeviceId::new(DEVICE),
             names: probe_name_folding(&engine_state_dir),
             timestamps: probe_timestamp_granularity(&engine_state_dir),
+            endpoint_probe_root: engine_state_dir.clone(),
             engine_state_dir,
             workspace_root: self.root.clone(),
             config: EngineConfig::default(),

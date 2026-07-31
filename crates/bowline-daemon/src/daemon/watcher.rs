@@ -232,7 +232,9 @@ fn watcher_event_recursive_roots(
     let recursive_without_metadata = operation == WatcherOperation::Delete
         || matches!(
             event.kind,
-            EventKind::Modify(ModifyKind::Name(notify::event::RenameMode::From))
+            EventKind::Modify(ModifyKind::Name(
+                notify::event::RenameMode::From | notify::event::RenameMode::Any
+            ))
         );
     for (_, path, source_path) in watcher_event_paths(root, operation, event) {
         let destination_is_directory =
@@ -428,6 +430,42 @@ mod tests {
         };
         assert!(paths.contains(&WorkspacePath::new("src/old.rs")));
         assert!(paths.contains(&WorkspacePath::new("src/new.rs")));
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn macos_directory_rename_any_signals_reconcile_both_roots() {
+        use bowline_local::sync::manifest_engine::{EngineEvent, WorkspacePath};
+        let temp = std::env::temp_dir().join(format!(
+            "bowline-watcher-macos-directory-rename-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let root = temp.join("Code");
+        let source = root.join("src");
+        let destination = root.join("source");
+        std::fs::create_dir_all(source.join("nested")).expect("source tree");
+        std::fs::write(source.join("nested/main.rs"), "fn main() {}\n").expect("source file");
+        std::fs::rename(&source, &destination).expect("directory rename");
+
+        for (path, expected) in [(&source, "src"), (&destination, "source")] {
+            let event = Event::new(EventKind::Modify(notify::event::ModifyKind::Name(
+                notify::event::RenameMode::Any,
+            )))
+            .add_path(path.clone());
+            let signal = super::WatcherSignal::Changed { event };
+            let engine_event = super::watcher_signal_engine_event(
+                &root,
+                &signal,
+                &mut std::collections::HashMap::new(),
+            )
+            .expect("rename half yields an engine event");
+
+            let EngineEvent::RecursivePaths(roots) = engine_event else {
+                panic!("expected RecursivePaths event for {expected}");
+            };
+            assert_eq!(roots, [WorkspacePath::new(expected)].into_iter().collect());
+        }
         let _ = std::fs::remove_dir_all(temp);
     }
 

@@ -157,6 +157,8 @@ pub struct WorkDiffCommandOutput {
     pub action: WorkCommandAction,
     pub work_view: WorkView,
     pub changes: Vec<WorkDiffEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_paths: Vec<WorkUnresolvedPath>,
     pub status: WorkspaceStatus,
     pub next_actions: Vec<RepairCommand>,
 }
@@ -183,6 +185,10 @@ pub struct WorkLifecycleCommandOutput {
     /// them as accepted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aside_refused_paths: Vec<String>,
+    /// Paths that capture could not represent or settle. A destructive command
+    /// only proceeds when the caller acknowledges each exact path and reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_paths: Vec<WorkUnresolvedPath>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub partial: bool,
     pub work_view: WorkView,
@@ -200,8 +206,17 @@ pub struct WorkCleanupCommandOutput {
     pub workspace_id: WorkspaceId,
     pub previewed_paths: Vec<String>,
     pub deleted_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_paths: Vec<WorkUnresolvedPath>,
     pub status: WorkspaceStatus,
     pub next_actions: Vec<RepairCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkUnresolvedPath {
+    pub path: String,
+    pub reason: String,
 }
 
 fn is_false(value: &bool) -> bool {

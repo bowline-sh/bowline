@@ -98,7 +98,11 @@ impl ManifestEngine {
             ctx: &self.ctx,
             objects: io.objects,
             refs: io.refs,
-            scope: observation.scope(&self.dirty),
+            scope: if self.startup_reconcile {
+                PullScope::ReconcileAncestor(&self.startup_pending)
+            } else {
+                observation.scope(&self.dirty)
+            },
         };
         let observed = if self.force_ref_read {
             self.pending_ref_hint = None;
@@ -117,6 +121,8 @@ impl ManifestEngine {
             self.force_ref_read = true;
         }
         let outcome = result.map_err(pull_cycle_error)?;
+        self.startup_reconcile = false;
+        self.startup_pending.clear();
         if let (Some(version), Some(key)) =
             (outcome.ref_version, outcome.applied_manifest_key.clone())
         {

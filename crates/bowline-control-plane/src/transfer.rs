@@ -675,14 +675,21 @@ fn intent_failure_kind(error: &ControlPlaneError) -> IntentFailureKind {
         }
         ControlPlaneError::Rejected {
             code:
-                RejectionCode::DeviceNotTrusted
+                RejectionCode::AccountSessionExpired
+                | RejectionCode::AccountSessionMissing
+                | RejectionCode::AccountSessionRevoked
+                | RejectionCode::DeviceNotTrusted
                 | RejectionCode::Unauthorized
                 | RejectionCode::WorkspaceMembershipRequired
                 | RejectionCode::WorkspaceOwnerRequired,
             ..
         } => IntentFailureKind::DeviceNotTrusted,
         ControlPlaneError::Rejected {
-            code: RejectionCode::Conflict | RejectionCode::InvalidRequest | RejectionCode::Unknown,
+            code:
+                RejectionCode::Conflict
+                | RejectionCode::Expired
+                | RejectionCode::InvalidRequest
+                | RejectionCode::Unknown,
             ..
         }
         | ControlPlaneError::WorkspaceMissing { .. }

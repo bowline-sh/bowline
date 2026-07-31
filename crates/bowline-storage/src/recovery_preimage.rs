@@ -9,7 +9,10 @@ use zeroize::Zeroizing;
 
 use crate::{
     StorageKey,
-    envelope::{EnvelopeError, open_with_associated_data, seal_with_associated_data},
+    envelope::{
+        DEFAULT_MAX_DECODED_BYTES, EnvelopeError, open_with_associated_data,
+        seal_with_associated_data,
+    },
 };
 
 mod identity;
@@ -170,6 +173,7 @@ fn resume_authenticated_seal(
         &request.key,
         request.context.key_epoch().value(),
         &associated_data,
+        DEFAULT_MAX_DECODED_BYTES,
     )?);
     ensure_secure_file_mode(&sealed_path)?;
     let plaintext_path = request
@@ -224,6 +228,7 @@ pub fn open_local_recovery_preimage(
         &request.key,
         request.context.key_epoch().value(),
         &associated_data,
+        DEFAULT_MAX_DECODED_BYTES,
     )
     .map_err(Into::into)
 }
@@ -483,6 +488,7 @@ fn authenticate_existing_preimage(
         key,
         context.key_epoch().value(),
         &associated_data,
+        expected_plaintext.len() as u64,
     )?);
     if opened.as_slice() != expected_plaintext {
         return Err(LocalRecoveryPreimageError::ExistingPreimageMismatch);

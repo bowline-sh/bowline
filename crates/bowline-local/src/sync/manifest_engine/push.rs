@@ -8,11 +8,10 @@
 //! the user's local edit exactly as they were, so the driver can pull the winner
 //! against an unchanged base and retry.
 //!
-//! This module also owns the shared engine primitives that pull/apply reuses:
-//! the remote dependency traits ([`RemoteObjects`], [`RemoteRef`]) and the
-//! [`EngineContext`]. They live here because push is Step 4 (it lands first) and
-//! pull builds on them. The no-follow filesystem trust boundary that push's read
-//! side and apply's write side share has its own seam in [`super::fs_guard`];
+//! This module also owns the [`EngineContext`] shared with pull/apply. The
+//! remote dependency traits live in [`super::remote`]. The no-follow filesystem
+//! trust boundary that push's read side and apply's write side share has its own
+//! seam in [`super::fs_guard`];
 //! deriving the candidate delta — and the refusals that decide what may never
 //! reach a manifest — lives in the sibling `candidate` module.
 
@@ -20,7 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Seek, SeekFrom, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,13 +28,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bowline_core::ids::{ContentId, DeviceId};
 
 use super::endpoint::{NameFolding, StatTrust, TimestampGranularity};
-use super::fs_guard::write_private_file;
+use super::fs_guard::{ExpectedFile, FileVisit, PRIVATE_FILE_MODE, visit_file_bounded};
 use super::manifest::{
     BlobKey, EntryKind, KeyEpoch, Manifest, ManifestEntry, ManifestError, ManifestKey,
-    WorkspaceCrypto, WorkspacePath, physical_blob_key, seal_file,
+    WorkspaceCrypto, WorkspacePath, physical_blob_key, physical_blob_key_reader, seal_file,
+    seal_file_segmented,
+};
+pub use super::remote::{
+    BlobReaderUpload, BlobUpload, CasOutcome, ManifestUpload, RefObservation, RemoteObjects,
+    RemoteRef, TransportError,
 };
 use super::store::{FileRecord, ManifestStore, ManifestStoreError};
-use super::tree_transport::{PublishTreeRequest, StoreNodeLedger, TreeError, publish_tree};
+use super::tree_transport::{
+    PatchTreeRequest, PublishTreeRequest, StoreNodeLedger, TreeError, patch_tree, publish_tree,
+};
 
 #[path = "push/candidate.rs"]
 mod candidate;
@@ -45,79 +52,7 @@ use candidate::{Candidate, build_candidate, guard_mass_deletion, record_unsyncab
 /// large-file spool, and quarantined preimages all live here so a crash never
 /// strands plaintext or partial files inside the synced tree.
 pub const ENGINE_STATE_DIR: &str = ".bowline";
-
-// ---- dependency seams (Plan 111 wires the real transport; tests fake it) ----
-
-/// A sealed blob upload: create-only PUT + hosted metadata commit. The physical
-/// `key` is `blake3(sealed)`; a 412 on different bytes is corruption, never a
-/// recoverable reseal (Plan 108 object identity).
-pub struct BlobUpload<'a> {
-    pub key: &'a BlobKey,
-    pub content_id: &'a ContentId,
-    pub key_epoch: KeyEpoch,
-    pub sealed: &'a [u8],
-}
-
-/// A large sealed blob streamed from a 0600 on-disk spool, so peak memory during
-/// the HTTP send stays bounded rather than holding a second copy of the sealed
-/// bytes (Plan 109 review ADD 4).
-pub struct BlobReaderUpload<'a> {
-    pub key: &'a BlobKey,
-    pub content_id: &'a ContentId,
-    pub key_epoch: KeyEpoch,
-    pub spool_path: &'a Path,
-    pub byte_len: u64,
-}
-
-/// A sealed manifest upload: same create-only + commit contract as a blob.
-pub struct ManifestUpload<'a> {
-    pub key: &'a ManifestKey,
-    pub content_id: &'a ContentId,
-    pub key_epoch: KeyEpoch,
-    pub sealed: &'a [u8],
-}
-
-/// The object side of the hosted contract the engine consumes. Every `put_*`
-/// reserves, PUTs create-only, and commits hosted metadata before returning; the
-/// engine reads the object back through `get_*` and re-validates before letting
-/// anything reference it.
-pub trait RemoteObjects {
-    fn put_blob(&self, upload: BlobUpload<'_>) -> Result<(), TransportError>;
-    fn put_blob_reader(&self, upload: BlobReaderUpload<'_>) -> Result<(), TransportError>;
-    fn put_manifest(&self, upload: ManifestUpload<'_>) -> Result<(), TransportError>;
-    fn get_blob(&self, key: &BlobKey) -> Result<Vec<u8>, TransportError>;
-    fn get_manifest(&self, key: &ManifestKey) -> Result<Vec<u8>, TransportError>;
-}
-
-/// The current head of the workspace CAS ref, mapped from the hosted
-/// `WorkspaceRef` (`snapshot_id <-> manifest object key`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RefObservation {
-    pub version: u64,
-    pub manifest_key: ManifestKey,
-}
-
-/// The three outcomes of a ref CAS the engine must distinguish (Plan 108 loop).
-/// `Ambiguous` is a lost/failed ack after the swap may or may not have
-/// committed; push resolves it by reading the current ref.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CasOutcome {
-    Advanced(RefObservation),
-    Lost(RefObservation),
-    Ambiguous,
-}
-
-/// The ref side of the hosted contract. `read_ref` is the synchronous startup
-/// authority and the `Ambiguous`-CAS resolver; the subscription is only a
-/// wakeup (Plan 108).
-pub trait RemoteRef {
-    fn read_ref(&self) -> Result<Option<RefObservation>, TransportError>;
-    fn compare_and_swap(
-        &self,
-        expected_version: Option<u64>,
-        new_manifest_key: &ManifestKey,
-    ) -> Result<CasOutcome, TransportError>;
-}
+pub(crate) const RECOVERY_STATE_DIR: &str = ".bowline-materialize-recovery.tmp";
 
 // ---- engine context + config ----------------------------------------------
 
@@ -125,13 +60,11 @@ pub trait RemoteRef {
 /// large-file boundary with small fixtures.
 #[derive(Debug, Clone, Copy)]
 pub struct EngineConfig {
-    /// At or above this plaintext size a blob is sealed to a 0600 spool and
-    /// streamed from disk rather than uploaded from a buffer.
+    /// At or above this plaintext size a blob is hashed and sealed as bounded,
+    /// independently authenticated segments into a 0600 spool.
     pub large_file_threshold: u64,
-    /// Hard ceiling on the plaintext a single seal may buffer. The envelope has
-    /// no streaming-seal API (`seal(&[u8])`), so sealing is whole-buffer; above
-    /// this we STOP rather than buffer unboundedly (Plan 109 STOP condition,
-    /// documented in the module report).
+    /// Product-policy ceiling for one file. This no longer describes a memory
+    /// allocation: segmented sealing and opening stay bounded below it.
     pub max_seal_bytes: u64,
 }
 
@@ -156,6 +89,10 @@ pub struct EngineContext {
     /// views place it in the daemon state root so it cannot collide with
     /// project-owned content.
     pub engine_state_dir: PathBuf,
+    /// Existing directory on the endpoint volume where ephemeral capability and
+    /// clock probes may run. Separate from engine state because work-view state
+    /// can live on a different mounted volume than its materialized files.
+    pub endpoint_probe_root: PathBuf,
     pub config: EngineConfig,
     /// Work views are rooted at a project, where names reserved at the
     /// workspace root are ordinary project content.
@@ -184,6 +121,15 @@ impl EngineContext {
     /// The private engine subtree (`<root>/.bowline`).
     pub fn engine_dir(&self) -> PathBuf {
         self.engine_state_dir.clone()
+    }
+
+    pub fn endpoint_probe_root(&self) -> &Path {
+        &self.endpoint_probe_root
+    }
+
+    /// Private plaintext staging on the materialized endpoint's own volume.
+    pub fn recovery_dir(&self) -> PathBuf {
+        self.endpoint_probe_root.join(RECOVERY_STATE_DIR)
     }
 
     pub fn key_epoch(&self) -> KeyEpoch {
@@ -319,16 +265,12 @@ pub(super) fn push_dirty_paths_authorized<O: RemoteObjects, R: RemoteRef>(
     push_scanned(store, deps, dirty_paths, trust, deletions)
 }
 
-/// How the dirty batch was discovered, and therefore whether a stat fingerprint
-/// can be trusted at all.
+/// Whether the dirty batch's stat fingerprints are trustworthy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatcherEvidence {
-    /// A watcher has been attached since the ancestor rows were written, so the
-    /// only window a stat cannot see through is the racy one.
+    /// Continuous watcher coverage leaves only the racy stat window.
     Continuous,
-    /// The batch came from a stat walk covering an unbounded unobserved gap (a
-    /// restart seed, a watcher-overflow recovery) or from a surface that owns no
-    /// watcher at all (a work-view capture). Verify every file's bytes.
+    /// A watcher gap or watcherless surface requires byte verification.
     Gapped,
 }
 
@@ -339,35 +281,68 @@ fn push_scanned<O: RemoteObjects, R: RemoteRef>(
     trust: StatTrust,
     deletions: DeletionAuthorization,
 ) -> Result<PushOutcome, PushError> {
-    let ancestor = store.all_files()?;
+    let scopes = dirty_paths
+        .iter()
+        .map(|path| deps.ctx.names.canonical_spelling(path))
+        .collect();
+    let ancestor = store.files_in_scopes(&scopes)?;
+    deps.ctx.counters.record_ancestor_rows_read(ancestor.len());
+    let ancestor_count = store.file_count()? as usize;
     let state = store.engine_state()?;
+    let durable_pending = store.pending_push_paths()?;
+    let epoch_rebuild = store.has_files_outside_key_epoch(deps.ctx.key_epoch())?
+        || match state.applied_manifest_key.as_ref() {
+            Some(root) => store.tree_node_key_epoch(root)? != Some(deps.ctx.key_epoch()),
+            None => false,
+        };
 
     let mut ledger = BlobLedger::new(store, deps.ctx.key_epoch());
     let candidate = build_candidate(deps, &ancestor, dirty_paths, trust, &mut ledger)?;
-    // Every row here names an object whose PUT returned, so it is durable
-    // regardless of how the CAS below resolves: a lost CAS does not un-upload a
-    // blob, and the retry must not re-seal it.
+    // Every row names a completed PUT, so CAS loss cannot invalidate it and the
+    // retry must not re-seal the blob.
     let sealed = ledger.into_sealed();
     if !sealed.is_empty() {
         store.record_sealed_blobs(&sealed)?;
         deps.ctx.counters.record_sqlite_mutation();
     }
     record_unsyncable_outcome(store, &candidate)?;
-    if candidate.is_empty() {
-        if !candidate.local_refreshes.is_empty() {
-            store.refresh_local_file_records(&candidate.local_refreshes)?;
-            deps.ctx.counters.record_sqlite_mutation();
-        }
+    if candidate.is_empty() && !epoch_rebuild {
+        store.commit_push_no_change(&candidate.ancestor_commit(), &candidate.settled_paths())?;
+        deps.ctx.counters.record_sqlite_mutation();
         // No delta to publish, but any twice-diverged paths must still be handed
         // back so the driver retains and rescans them rather than dropping them.
         return Ok(PushOutcome::NoChange {
             skipped: candidate.skipped,
         });
     }
-    guard_mass_deletion(&ancestor, &candidate, deletions)?;
-
-    let manifest = build_manifest(&ancestor, &candidate, deps.ctx.key_epoch())?;
-    let manifest_key = upload_manifest(store, deps, &manifest)?;
+    guard_mass_deletion(
+        ancestor_count,
+        &ancestor,
+        &durable_pending,
+        &candidate,
+        deletions,
+    )?;
+    let manifest_key = match (state.applied_manifest_key.as_ref(), epoch_rebuild) {
+        (Some(root), false) => upload_manifest_delta(store, deps, root, &candidate)?,
+        (None, _) | (Some(_), true) => {
+            let complete_ancestor = if epoch_rebuild {
+                let complete = store.all_files()?;
+                deps.ctx.counters.record_ancestor_rows_read(complete.len());
+                complete
+            } else {
+                ancestor
+            };
+            let manifest = build_manifest(&complete_ancestor, &candidate, deps.ctx.key_epoch())?;
+            upload_manifest(store, deps, &manifest)?
+        }
+    };
+    if state.applied_manifest_key.as_ref() == Some(&manifest_key) {
+        store.commit_push_no_change(&candidate.ancestor_commit(), &candidate.settled_paths())?;
+        deps.ctx.counters.record_sqlite_mutation();
+        return Ok(PushOutcome::NoChange {
+            skipped: candidate.skipped,
+        });
+    }
 
     let expected = state.last_ref_version;
     deps.ctx.counters.record_cas_attempt();
@@ -376,6 +351,31 @@ fn push_scanned<O: RemoteObjects, R: RemoteRef>(
         .compare_and_swap(expected, &manifest_key)
         .map_err(PushError::Transport)?;
     resolve_cas(store, deps, &candidate, &manifest_key, outcome)
+}
+
+fn upload_manifest_delta<O: RemoteObjects, R: RemoteRef>(
+    store: &mut ManifestStore,
+    deps: &PushDeps<'_, O, R>,
+    root: &ManifestKey,
+    candidate: &Candidate,
+) -> Result<ManifestKey, PushError> {
+    let mut changes = BTreeMap::new();
+    for (path, (_, entry)) in &candidate.upserts {
+        changes.insert(path.clone(), Some(entry.clone()));
+    }
+    for path in &candidate.removals {
+        changes.insert(path.clone(), None);
+    }
+    let root = patch_tree(PatchTreeRequest {
+        objects: deps.objects,
+        crypto: &deps.ctx.crypto,
+        counters: &deps.ctx.counters,
+        root,
+        changes: &changes,
+    })?;
+    store.record_tree_node_epoch(&root, deps.ctx.key_epoch())?;
+    deps.ctx.counters.record_sqlite_mutation();
+    Ok(root)
 }
 
 /// Interpret the CAS outcome, committing the ancestor only on a proven advance.
@@ -423,7 +423,12 @@ fn commit_advance(
     manifest_key: &ManifestKey,
     ref_version: u64,
 ) -> Result<PushOutcome, PushError> {
-    store.commit_push_success(&candidate.ancestor_commit(), manifest_key, ref_version)?;
+    store.commit_push_success(
+        &candidate.ancestor_commit(),
+        manifest_key,
+        ref_version,
+        &candidate.settled_paths(),
+    )?;
     Ok(PushOutcome::Advanced {
         manifest_key: manifest_key.clone(),
         ref_version,
@@ -501,57 +506,106 @@ pub(super) fn upload_file_blob<O: RemoteObjects, R: RemoteRef>(
     let key = physical_blob_key(sealed.as_bytes());
     let key_epoch = deps.ctx.key_epoch();
 
-    if plaintext.len() as u64 >= deps.ctx.config.large_file_threshold {
-        upload_blob_streaming(deps, &key, content_id, key_epoch, sealed.as_bytes())?;
-    } else {
-        deps.objects
-            .put_blob(BlobUpload {
-                key: &key,
-                content_id,
-                key_epoch,
-                sealed: sealed.as_bytes(),
-            })
-            .map_err(PushError::Transport)?;
-    }
+    deps.objects
+        .put_blob(BlobUpload {
+            key: &key,
+            content_id,
+            key_epoch,
+            sealed: sealed.as_bytes(),
+        })
+        .map_err(PushError::Transport)?;
     // A real blob PUT happened (the dedup short-circuit above returned early).
     deps.ctx.counters.record_blob_upload();
     ledger.record(content_id, &key, plaintext.len() as u64);
     Ok(key)
 }
 
-/// Seal-to-spool then stream the upload from disk. The seal itself is still
-/// whole-buffer (bounded by `max_seal_bytes`); only the HTTP send is streamed.
-fn upload_blob_streaming<O: RemoteObjects, R: RemoteRef>(
+pub(super) fn upload_file_blob_segmented<O: RemoteObjects, R: RemoteRef>(
     deps: &PushDeps<'_, O, R>,
-    key: &BlobKey,
+    path: &WorkspacePath,
+    expected: &ExpectedFile,
     content_id: &ContentId,
-    key_epoch: KeyEpoch,
-    sealed: &[u8],
-) -> Result<(), PushError> {
-    let spool = write_private_spool(deps.ctx, key, sealed)?;
+    ledger: &mut BlobLedger<'_>,
+) -> Result<Option<BlobKey>, PushError> {
+    if let Some(existing) = ledger.known(content_id)? {
+        return Ok(Some(existing));
+    }
+
+    let (spool_path, mut spool) = create_segmented_spool(deps.ctx, content_id)?;
+    let visited = visit_file_bounded(
+        &deps.ctx.workspace_root,
+        path,
+        deps.ctx.config.max_seal_bytes,
+        expected,
+        |source, _| {
+            let stats = seal_file_segmented(&deps.ctx.crypto, content_id, source, &mut spool)
+                .map_err(PushError::Manifest)?;
+            spool.flush().map_err(PushError::Io)?;
+            spool.sync_all().map_err(PushError::Io)?;
+            Ok(stats)
+        },
+    );
+    let stats = match visited {
+        Ok(FileVisit::Value(stats)) => stats,
+        Ok(FileVisit::Diverged) => {
+            let _ = fs::remove_file(&spool_path);
+            return Ok(None);
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&spool_path);
+            return Err(error);
+        }
+    };
+    spool.seek(SeekFrom::Start(0)).map_err(PushError::Io)?;
+    let key = physical_blob_key_reader(&mut spool).map_err(PushError::Io)?;
+    let byte_len = spool.metadata().map_err(PushError::Io)?.len();
+    if byte_len != stats.sealed_bytes {
+        let _ = fs::remove_file(&spool_path);
+        return Err(PushError::Manifest(ManifestError::Internal {
+            reason: "segmented seal byte count mismatch",
+        }));
+    }
+    drop(spool);
+
     let result = deps.objects.put_blob_reader(BlobReaderUpload {
-        key,
+        key: &key,
         content_id,
-        key_epoch,
-        spool_path: &spool,
-        byte_len: sealed.len() as u64,
+        key_epoch: deps.ctx.key_epoch(),
+        spool_path: &spool_path,
+        byte_len,
     });
-    // The spool is engine-private scratch; remove it whether the upload
-    // succeeded or failed so a retry re-seals cleanly.
-    let _ = fs::remove_file(&spool);
-    result.map_err(PushError::Transport)
+    let _ = fs::remove_file(&spool_path);
+    result.map_err(PushError::Transport)?;
+    deps.ctx.counters.record_blob_upload();
+    ledger.record(content_id, &key, expected.size);
+    Ok(Some(key))
 }
 
-fn write_private_spool(
+fn create_segmented_spool(
     ctx: &EngineContext,
-    key: &BlobKey,
-    sealed: &[u8],
-) -> Result<PathBuf, PushError> {
+    content_id: &ContentId,
+) -> Result<(PathBuf, fs::File), PushError> {
     let dir = ctx.engine_dir().join("spool");
     fs::create_dir_all(&dir).map_err(PushError::Io)?;
-    let spool = dir.join(key.as_str());
-    write_private_file(&spool, sealed).map_err(PushError::Io)?;
-    Ok(spool)
+    for attempt in 0_u8..16 {
+        let path = dir.join(format!(
+            ".{}-{}-{attempt}.partial",
+            content_id.as_str(),
+            std::process::id()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).read(true).create_new(true);
+        options.mode(PRIVATE_FILE_MODE);
+        match options.open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(PushError::Io(error)),
+        }
+    }
+    Err(PushError::Io(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "segmented spool name attempts exhausted",
+    )))
 }
 
 /// Publish the candidate manifest as a Merkle tree and return its ROOT node key
@@ -657,32 +711,6 @@ pub fn now_unix_ns() -> i64 {
 
 // ---- errors -----------------------------------------------------------------
 
-/// A transport error surfaced by the [`RemoteObjects`]/[`RemoteRef`] seams. The
-/// real daemon maps `ByteStoreError`/`ControlPlaneError` into this; the detail
-/// is a `String` because the underlying errors already carry structured tags.
-#[derive(Debug)]
-pub struct TransportError {
-    pub operation: &'static str,
-    pub detail: String,
-}
-
-impl TransportError {
-    pub fn new(operation: &'static str, detail: impl Into<String>) -> Self {
-        Self {
-            operation,
-            detail: detail.into(),
-        }
-    }
-}
-
-impl fmt::Display for TransportError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "transport {}: {}", self.operation, self.detail)
-    }
-}
-
-impl Error for TransportError {}
-
 #[derive(Debug)]
 pub enum PushError {
     Io(io::Error),
@@ -718,8 +746,8 @@ impl fmt::Display for PushError {
             }
             Self::StreamSealUnsupported { byte_len, ceiling } => write!(
                 formatter,
-                "push cannot seal a {byte_len}-byte file: envelope has no streaming seal and the \
-                 {ceiling}-byte ceiling would be exceeded"
+                "push cannot seal a {byte_len}-byte file: the configured {ceiling}-byte file \
+                 ceiling would be exceeded"
             ),
             Self::MassDeletionRefused {
                 removals,

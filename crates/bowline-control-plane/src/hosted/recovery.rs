@@ -23,6 +23,7 @@ impl RecoveryControlPlaneClient for HostedControlPlaneClient {
             created_by_device_proof: input.created_by_device_proof,
             envelope_id: input.envelope_id.as_str().to_string(),
             fingerprint: input.fingerprint,
+            key_epoch: input.key_epoch,
             recovery_proof_verifier: input.recovery_proof_verifier,
             workspace_id: input.workspace_id.as_str().to_string(),
         };
@@ -57,6 +58,7 @@ impl RecoveryControlPlaneClient for HostedControlPlaneClient {
             created_by_device_proof: input.created_by_device_proof,
             envelope_id: input.envelope_id.as_str().to_string(),
             fingerprint: input.fingerprint,
+            key_epoch: input.key_epoch,
             recovery_proof_verifier: input.recovery_proof_verifier,
             workspace_id: input.workspace_id.as_str().to_string(),
         };
@@ -140,6 +142,7 @@ impl TryFrom<HostedRecoveryEnvelope> for RecoveryEnvelopeRecord {
             created_by_device_id: DeviceId::new(dto.created_by_device_id),
             ciphertext: dto.ciphertext,
             fingerprint: dto.fingerprint,
+            key_epoch: dto.key_epoch,
             state: recovery_envelope_state_from_dto(dto.state),
             created_at: parse_control_timestamp(dto.created_at.as_str())
                 .map_err(|error| add_field_context(error, "createdAt"))?,
@@ -201,6 +204,7 @@ mod tests {
             created_by_device_id: "dev_creator".to_string(),
             ciphertext: "ciphertext_default".to_string(),
             fingerprint: "fingerprint_default".to_string(),
+            key_epoch: 3,
             state: HostedRecoveryEnvelopeState::Active,
             created_at: wire_timestamp("2026-06-23T12:00:00Z"),
             verified_at: Some(wire_timestamp("2026-06-23T12:00:01Z")),
@@ -233,6 +237,7 @@ mod tests {
         assert_eq!(record.workspace_id.as_str(), "ws_code");
         assert_eq!(record.envelope_id.as_str(), "rk_default");
         assert_eq!(record.created_by_device_id.as_str(), "dev_creator");
+        assert_eq!(record.key_epoch, 3);
         assert_eq!(record.state, RecoveryEnvelopeState::Active);
         assert!(record.verified_at.is_some());
         assert_eq!(record.rotated_at, None);

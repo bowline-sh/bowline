@@ -122,17 +122,15 @@ pub fn restore_record(aux: &mut AuxIndex, id: &WorkViewId) -> Result<(), WorkVie
 ///   already equates `SnapshotId` with the manifest object key (Plan 108).
 /// - `overlayHead` <- the overlay manifest key, or [`OVERLAY_HEAD_EMPTY`] while
 ///   the overlay still equals the base (nothing captured yet).
-/// - `overlayVersion` <- 0 while the overlay equals the base, else 1. The aux
-///   record carries no revision counter; this field is vestigial wire
-///   compatibility and dies at the next contract bump.
+/// - `overlayVersion` <- the aux generation used for optimistic concurrency.
 pub fn overlay_engine_truth(view: &mut WorkView, record: &WorkViewRecord) {
     view.base_snapshot_id = SnapshotId::new(record.base_manifest_key.as_str().to_string());
     if record.overlay_manifest_key == record.base_manifest_key {
         view.overlay_head = OVERLAY_HEAD_EMPTY.to_string();
-        view.overlay_version = 0;
+        view.overlay_version = record.generation.get();
     } else {
         view.overlay_head = record.overlay_manifest_key.as_str().to_string();
-        view.overlay_version = 1;
+        view.overlay_version = record.generation.get();
     }
     view.lifecycle = wire_lifecycle(record.lifecycle);
 }
@@ -158,7 +156,7 @@ pub fn wire_view_from_record(
         visible_path: crate::work_views::display_path(&visible),
         base_snapshot_id: SnapshotId::new(record.base_manifest_key.as_str()),
         overlay_head: OVERLAY_HEAD_EMPTY.to_string(),
-        overlay_version: 0,
+        overlay_version: record.generation.get(),
         env_profile: "default".to_string(),
         lifecycle: wire_lifecycle(record.lifecycle),
         visibility: if retained {

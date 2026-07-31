@@ -168,13 +168,16 @@ fn record_resolution(
     let store = match MetadataStore::open(&db_path) {
         Ok(store) => store,
         Err(error) => {
-            eprintln!("bowline resolve: conflict timeline not updated: {error}");
+            report_timeline_error(&error);
             return;
         }
     };
     // The root the command already resolved is the workspace identity; a
     // resolution outside any accepted root has no timeline to append to.
-    let Ok(Some(workspace)) = store.workspace_by_accepted_root(root_label) else {
+    let Some(workspace) = timeline_workspace(
+        store.workspace_by_accepted_root(root_label),
+        report_timeline_error,
+    ) else {
         return;
     };
     let subject = bowline_local::events::ConflictEventSubject {
@@ -185,8 +188,22 @@ fn record_resolution(
         occurred_at,
     };
     if let Err(error) = store.append_conflict_resolved(&subject, resolution) {
-        eprintln!("bowline resolve: conflict timeline not updated: {error}");
+        report_timeline_error(&error);
     }
+}
+
+fn timeline_workspace<T, E>(lookup: Result<Option<T>, E>, report: impl FnOnce(&E)) -> Option<T> {
+    match lookup {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            report(&error);
+            None
+        }
+    }
+}
+
+fn report_timeline_error(error: &impl std::fmt::Display) {
+    eprintln!("bowline resolve: conflict timeline not updated: {error}");
 }
 
 fn apply(
@@ -361,6 +378,9 @@ fn conflict_failure(
         }
         ConflictError::DirectoryAside { .. } => {
             "Reconcile the files inside the folder one at a time; `bowline conflicts` lists them."
+        }
+        ConflictError::DirectoryOrigin { .. } => {
+            "Reconcile or move the local folder's files, then run `bowline conflicts` again."
         }
         ConflictError::ParentNotADirectory { .. } => {
             "Replace the symlink or file on the way to it with a real folder, then run `bowline conflicts` again."

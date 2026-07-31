@@ -161,18 +161,10 @@ pub fn run(args: RecoveryArgs, generated_at: String) -> Result<RecoveryRunOutput
             Ok(RecoveryRunOutput::without_words(RecoveryCommandOutput {
                 contract_version: CONTRACT_VERSION,
                 command: bowline_core::commands::CommandName::Recover,
-                generated_at: generated_at.clone(),
+                generated_at,
                 action: RecoveryCommandAction::Revoke,
                 workspace_id: Some(workspace_id),
-                recovery_key: RecoveryKeyState {
-                    lifecycle: RecoveryKeyLifecycle::Revoked,
-                    envelope_id: Some(envelope.envelope_id),
-                    fingerprint: Some(envelope.fingerprint),
-                    created_at: Some(envelope.created_at.to_string()),
-                    verified_at: envelope.verified_at.map(|timestamp| timestamp.to_string()),
-                    rotated_at: envelope.rotated_at.map(|timestamp| timestamp.to_string()),
-                    revoked_at: Some(generated_at),
-                },
+                recovery_key: recovery_state_from_envelope(envelope),
                 device_request: None,
                 encrypted_grant: None,
                 next_actions: Vec::new(),
@@ -339,5 +331,25 @@ mod tests {
         let json = serde_json::to_value(run.json_payload()).expect("payload serializes");
 
         assert!(json.get("oneTimeRecoveryWords").is_none());
+    }
+
+    #[test]
+    fn revoked_state_uses_the_control_plane_timestamp() {
+        let state = recovery_state_from_envelope(RecoveryEnvelopeRecord {
+            workspace_id: bowline_core::ids::WorkspaceId::new("ws_recovery"),
+            envelope_id: RecoveryEnvelopeId::new("rec_revoked"),
+            created_by_device_id: bowline_core::ids::DeviceId::new("device_owner"),
+            ciphertext: "ciphertext".to_string(),
+            fingerprint: "rkp_revoked".to_string(),
+            key_epoch: 1,
+            state: RecoveryEnvelopeState::Revoked,
+            created_at: bowline_control_plane::ControlPlaneTimestamp { tick: 40 },
+            verified_at: Some(bowline_control_plane::ControlPlaneTimestamp { tick: 41 }),
+            rotated_at: None,
+            revoked_at: Some(bowline_control_plane::ControlPlaneTimestamp { tick: 42 }),
+        });
+
+        assert_eq!(state.lifecycle, RecoveryKeyLifecycle::Revoked);
+        assert_eq!(state.revoked_at.as_deref(), Some("t000000000042"));
     }
 }

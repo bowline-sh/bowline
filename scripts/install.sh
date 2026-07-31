@@ -11,6 +11,22 @@ RELEASE_SIGNING_NAMESPACE="bowline-release"
 # Pinned release key; scripts/check-install-script.mjs enforces pubkey parity.
 RELEASE_SIGNING_PUBKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF4Nfjn9iT+NwvF2JpRj9GQAwkjv0Cpp16LXmA+AzBwP bowline-release-2026-07-23"
 RELEASE_MANIFEST=""
+RESOLVED_VERSION=""
+SWITCHED="0"
+CURRENT_LINK=""
+PREVIOUS_CURRENT=""
+PREVIOUS_CLI=""
+PREVIOUS_DAEMON=""
+PREVIOUS_CLI_LINK=""
+PREVIOUS_DAEMON_LINK=""
+OLD_DAEMON_ACTIVE="0"
+OLD_DAEMON_VERSION=""
+OLD_APP_STOPPED="0"
+ACTIVE_STAGE=""
+INSTALL_LOCK_FILE=""
+INSTALL_LOCK_HELD="0"
+INSTALL_LOCK_KIND=""
+COMMAND_MIGRATION_DIR=""
 
 usage() {
   cat <<'EOF'
@@ -92,9 +108,28 @@ esac
 
 TMPDIR="$(mktemp -d 2>/dev/null || mktemp -d -t bowline-install)"
 cleanup() {
+  if [ "$SWITCHED" = "1" ]; then
+    rollback_switch || note "automatic rollback could not restore the previous installation"
+  elif [ "$OLD_APP_STOPPED" = "1" ]; then
+    open "$APP_DIR/Bowline.app" >/dev/null 2>&1 ||
+      note "automatic recovery could not relaunch the previous Bowline.app"
+  fi
+  if [ -n "$ACTIVE_STAGE" ]; then
+    rm -rf "$ACTIVE_STAGE"
+  fi
+  if [ "$INSTALL_LOCK_HELD" = "1" ]; then
+    if [ "$INSTALL_LOCK_KIND" = "flock" ]; then
+      exec 9>&-
+    else
+      rm -f "$INSTALL_LOCK_FILE" ||
+        note "install lock cleanup failed at $INSTALL_LOCK_FILE"
+    fi
+  fi
   rm -rf "$TMPDIR"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 download() {
   url="$1"
@@ -167,6 +202,7 @@ resolve_release_base() {
       RELEASE_MANIFEST="$manifest"
       resolved_version="$(manifest_version "$manifest")"
       validate_manifest_version "$resolved_version"
+      RESOLVED_VERSION="$(version_without_prefix "$resolved_version")"
       case "$resolved_version" in
         v*) RELEASE_BASE="$RELEASE_HOST/releases/$resolved_version" ;;
         *) RELEASE_BASE="$RELEASE_HOST/releases/v$resolved_version" ;;
@@ -180,6 +216,7 @@ resolve_release_base() {
       resolved_version="$(manifest_version "$manifest")"
       validate_manifest_version "$resolved_version"
       verify_requested_version "$VERSION" "$resolved_version"
+      RESOLVED_VERSION="$(version_without_prefix "$resolved_version")"
       ;;
     *)
       RELEASE_BASE="$RELEASE_HOST/releases/v$VERSION"
@@ -189,6 +226,7 @@ resolve_release_base() {
       resolved_version="$(manifest_version "$manifest")"
       validate_manifest_version "$resolved_version"
       verify_requested_version "$VERSION" "$resolved_version"
+      RESOLVED_VERSION="$(version_without_prefix "$resolved_version")"
       ;;
   esac
 }
@@ -224,41 +262,310 @@ verify_manifest_bound_file() {
   [ "$actual" = "$expected" ] || fail "release manifest hash mismatch for $(basename "$file")"
 }
 
+# An flock is held by the open file description, not by the process that took
+# it, so every descendant that inherits fd 9 keeps the install lock after this
+# script exits. Bowline commands can leave a daemon running, and a daemon
+# holding fd 9 would fail every later install with "another Bowline installer
+# still holds" for as long as it lives — an upgrade path that breaks itself.
+# Run Bowline binaries through here so the lock never escapes into a child.
+# Closing an unopened descriptor is not an error, so this is also correct on
+# the shlock path, which holds the lock as a file rather than a descriptor.
+run_bowline() {
+  binary="$1"
+  shift
+  "$binary" "$@" 9>&-
+}
+
+# Read one string field from a JSON document on stdin. The CLI reports itself
+# as the JSON command contract, so versions are read the same way daemon status
+# already was, from one reader rather than a copy per call site.
+json_string_field() {
+  sed -nE "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"([^\"]+)\".*/\1/p" |
+    awk 'NR == 1 { print }'
+}
+
+# `bowline version` emits that JSON contract, while `bowline-daemon --version`
+# emits clap's plain "<name> <version> (<protocol>)" line. A single parser for
+# both took the last whitespace-separated word, which is the whole document for
+# the CLI and the protocol suffix for the daemon, so the staged-binary check
+# compared a JSON blob against a version string and could never pass. Each
+# output shape gets the reader its own contract needs.
+cli_reported_version() {
+  run_bowline "$1" version 2>/dev/null | json_string_field cliVersion
+}
+
+cli_reported_daemon_version() {
+  run_bowline "$1" version 2>/dev/null | json_string_field daemonVersion
+}
+
+daemon_reported_version() {
+  run_bowline "$1" --version 2>/dev/null | awk 'NR == 1 { print $2 }'
+}
+
+validate_binaries() {
+  bin_dir="$1"
+  [ -x "$bin_dir/bowline" ] || fail "staged release is missing executable bowline"
+  [ -x "$bin_dir/bowline-daemon" ] ||
+    fail "staged release is missing executable bowline-daemon"
+  cli_version="$(cli_reported_version "$bin_dir/bowline")"
+  daemon_version="$(daemon_reported_version "$bin_dir/bowline-daemon")"
+  [ "$cli_version" = "$RESOLVED_VERSION" ] ||
+    fail "staged bowline reports $cli_version, expected $RESOLVED_VERSION"
+  [ "$daemon_version" = "$RESOLVED_VERSION" ] ||
+    fail "staged bowline-daemon reports $daemon_version, expected $RESOLVED_VERSION"
+}
+
+atomic_symlink() {
+  target="$1"
+  link="$2"
+  temporary="${link}.new.$$"
+  rm -f "$temporary"
+  ln -s "$target" "$temporary"
+  if ! mv -fT "$temporary" "$link" 2>/dev/null; then
+    mv -fh "$temporary" "$link"
+  fi
+}
+
+acquire_install_lock() {
+  INSTALL_LOCK_FILE="$INSTALL_DIR/.bowline-install.lock"
+  if command -v shlock >/dev/null 2>&1; then
+    attempt=0
+    while ! shlock -f "$INSTALL_LOCK_FILE" -p "$$"; do
+      [ "$attempt" -lt 240 ] ||
+        fail "another Bowline installer still holds $INSTALL_LOCK_FILE"
+      sleep 0.25
+      attempt=$((attempt + 1))
+    done
+    INSTALL_LOCK_KIND="shlock"
+    INSTALL_LOCK_HELD="1"
+    return
+  fi
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$INSTALL_LOCK_FILE"
+    flock -w 60 9 ||
+      fail "another Bowline installer still holds $INSTALL_LOCK_FILE"
+    INSTALL_LOCK_KIND="flock"
+    INSTALL_LOCK_HELD="1"
+    return
+  fi
+  fail "shlock or flock is required for transactional installation"
+}
+
+capture_previous_install() {
+  if [ -x "$INSTALL_DIR/bowline" ]; then
+    PREVIOUS_CLI_LINK="$(readlink "$INSTALL_DIR/bowline" 2>/dev/null || true)"
+    if [ -z "$PREVIOUS_CLI_LINK" ]; then
+      PREVIOUS_CLI="$TMPDIR/previous-bowline"
+      cp -p "$INSTALL_DIR/bowline" "$PREVIOUS_CLI"
+    fi
+    OLD_DAEMON_VERSION="$(cli_reported_daemon_version "$INSTALL_DIR/bowline")"
+    if run_bowline "$INSTALL_DIR/bowline" daemon status --json >"$TMPDIR/old-daemon-status.json" 2>/dev/null; then
+      old_daemon_state="$(daemon_status_state "$TMPDIR/old-daemon-status.json")"
+      case "$old_daemon_state" in
+        running | starting | stopping | version-skew | unreachable)
+          OLD_DAEMON_ACTIVE="1"
+          ;;
+      esac
+    fi
+  fi
+  if [ -x "$INSTALL_DIR/bowline-daemon" ]; then
+    PREVIOUS_DAEMON_LINK="$(readlink "$INSTALL_DIR/bowline-daemon" 2>/dev/null || true)"
+    if [ -z "$PREVIOUS_DAEMON_LINK" ]; then
+      PREVIOUS_DAEMON="$TMPDIR/previous-bowline-daemon"
+      cp -p "$INSTALL_DIR/bowline-daemon" "$PREVIOUS_DAEMON"
+    fi
+  fi
+}
+
+install_command_links() {
+  cli_target="$1"
+  daemon_target="$2"
+  current_cli_target="$(readlink "$INSTALL_DIR/bowline" 2>/dev/null || true)"
+  current_daemon_target="$(readlink "$INSTALL_DIR/bowline-daemon" 2>/dev/null || true)"
+  if [ "$current_cli_target" = "$cli_target" ] &&
+    [ "$current_daemon_target" = "$daemon_target" ]; then
+    return
+  fi
+
+  COMMAND_MIGRATION_DIR="$INSTALL_DIR/.bowline-command-migration"
+  rm -rf "$COMMAND_MIGRATION_DIR"
+  mkdir "$COMMAND_MIGRATION_DIR"
+  printf '%s\n' "$cli_target" >"$COMMAND_MIGRATION_DIR/cli-target"
+  if [ "${BOWLINE_INSTALL_TEST_HOOKS:-0}:${BOWLINE_INSTALL_TEST_FAIL_AT:-}" = "1:kill-during-command-journal" ]; then
+    kill -9 "$$"
+  fi
+  printf '%s\n' "$daemon_target" >"$COMMAND_MIGRATION_DIR/daemon-target"
+  printf '%s\n' "ready-v1" >"$COMMAND_MIGRATION_DIR/ready"
+  atomic_symlink "$cli_target" "$INSTALL_DIR/bowline"
+  if [ "${BOWLINE_INSTALL_TEST_HOOKS:-0}:${BOWLINE_INSTALL_TEST_FAIL_AT:-}" = "1:between-command-links" ]; then
+    fail "test interruption between command links"
+  fi
+  if [ "${BOWLINE_INSTALL_TEST_HOOKS:-0}:${BOWLINE_INSTALL_TEST_FAIL_AT:-}" = "1:kill-between-command-links" ]; then
+    kill -9 "$$"
+  fi
+  atomic_symlink "$daemon_target" "$INSTALL_DIR/bowline-daemon"
+  rm -rf "$COMMAND_MIGRATION_DIR"
+  COMMAND_MIGRATION_DIR=""
+}
+
+recover_command_link_migration() {
+  COMMAND_MIGRATION_DIR="$INSTALL_DIR/.bowline-command-migration"
+  [ -d "$COMMAND_MIGRATION_DIR" ] || {
+    COMMAND_MIGRATION_DIR=""
+    return
+  }
+  if [ "$(sed -n '1p' "$COMMAND_MIGRATION_DIR/ready" 2>/dev/null || true)" != "ready-v1" ]; then
+    rm -rf "$COMMAND_MIGRATION_DIR"
+    COMMAND_MIGRATION_DIR=""
+    note "discarded an incomplete command-link migration journal"
+    return
+  fi
+  cli_target="$(sed -n '1p' "$COMMAND_MIGRATION_DIR/cli-target")"
+  daemon_target="$(sed -n '1p' "$COMMAND_MIGRATION_DIR/daemon-target")"
+  if [ -z "$cli_target" ] || [ -z "$daemon_target" ]; then
+    fail "interrupted command migration is missing its targets"
+  fi
+  atomic_symlink "$cli_target" "$INSTALL_DIR/bowline"
+  if [ "${BOWLINE_INSTALL_TEST_HOOKS:-0}:${BOWLINE_INSTALL_TEST_FAIL_AT:-}" = "1:between-recovery-command-links" ]; then
+    fail "test interruption between recovered command links"
+  fi
+  atomic_symlink "$daemon_target" "$INSTALL_DIR/bowline-daemon"
+  rm -rf "$COMMAND_MIGRATION_DIR"
+  COMMAND_MIGRATION_DIR=""
+  note "recovered an interrupted command-link migration"
+}
+
+daemon_status_version() {
+  json_string_field daemonVersion <"$1"
+}
+
+daemon_status_state() {
+  sed -nE 's/.*"daemon"[[:space:]]*:[[:space:]]*\{[^}]*"state"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$1" |
+    awk 'NR == 1 { print }'
+}
+
+wait_for_daemon_version() {
+  expected="$1"
+  observed="unavailable"
+  attempts=40
+  delay=0.25
+  if [ "${BOWLINE_INSTALL_TEST_HOOKS:-0}" = "1" ]; then
+    attempts="${BOWLINE_INSTALL_TEST_HEALTH_ATTEMPTS:-4}"
+    delay="${BOWLINE_INSTALL_TEST_HEALTH_DELAY:-0.01}"
+  fi
+  attempt=0
+  while [ "$attempt" -lt "$attempts" ]; do
+    if run_bowline "$INSTALL_DIR/bowline" daemon status --json >"$TMPDIR/daemon-status.json" 2>/dev/null; then
+      observed="$(daemon_status_version "$TMPDIR/daemon-status.json")"
+      if [ "$observed" = "$expected" ]; then
+        return 0
+      fi
+    fi
+    sleep "$delay"
+    attempt=$((attempt + 1))
+  done
+  note "daemon health/version handshake expected $expected, observed $observed"
+  return 1
+}
+
+restart_and_verify_daemon() {
+  expected="$1"
+  run_bowline "$INSTALL_DIR/bowline" daemon restart >/dev/null 2>&1 || return 1
+  wait_for_daemon_version "$expected"
+}
+
+rollback_switch() {
+  rollback_ok="1"
+  if [ -n "$PREVIOUS_CURRENT" ]; then
+    atomic_symlink "$PREVIOUS_CURRENT" "$CURRENT_LINK" || rollback_ok="0"
+  else
+    rm -f "$CURRENT_LINK" || rollback_ok="0"
+  fi
+  rm -f "$INSTALL_DIR/bowline" || rollback_ok="0"
+  rm -f "$INSTALL_DIR/bowline-daemon" || rollback_ok="0"
+  if [ -n "$PREVIOUS_CLI_LINK" ]; then
+    atomic_symlink "$PREVIOUS_CLI_LINK" "$INSTALL_DIR/bowline" || rollback_ok="0"
+  elif [ -n "$PREVIOUS_CLI" ]; then
+    cp -p "$PREVIOUS_CLI" "$INSTALL_DIR/bowline" || rollback_ok="0"
+  fi
+  if [ -n "$PREVIOUS_DAEMON_LINK" ]; then
+    atomic_symlink "$PREVIOUS_DAEMON_LINK" "$INSTALL_DIR/bowline-daemon" || rollback_ok="0"
+  elif [ -n "$PREVIOUS_DAEMON" ]; then
+    cp -p "$PREVIOUS_DAEMON" "$INSTALL_DIR/bowline-daemon" || rollback_ok="0"
+  fi
+  if [ "$rollback_ok" = "1" ] && [ -n "$COMMAND_MIGRATION_DIR" ]; then
+    rm -rf "$COMMAND_MIGRATION_DIR" || rollback_ok="0"
+    if [ "$rollback_ok" = "1" ]; then
+      COMMAND_MIGRATION_DIR=""
+    fi
+  fi
+  SWITCHED="0"
+  if [ "$OLD_DAEMON_ACTIVE" = "1" ]; then
+    restart_and_verify_daemon "$OLD_DAEMON_VERSION" || rollback_ok="0"
+  fi
+  if [ "$OLD_APP_STOPPED" = "1" ]; then
+    open "$APP_DIR/Bowline.app" >/dev/null 2>&1 || rollback_ok="0"
+  fi
+  [ "$rollback_ok" = "1" ]
+}
+
 install_cli_archive() {
   archive="$TMPDIR/bowline-$TARGET.tar.gz"
   need tar
   download "$RELEASE_BASE/bowline-$TARGET.tar.gz" "$archive"
   verify_checksum "$archive"
-  mkdir -p "$TMPDIR/cli" "$INSTALL_DIR"
-  tar -xzf "$archive" -C "$TMPDIR/cli"
-  install -m 0755 "$TMPDIR/cli/bowline" "$INSTALL_DIR/bowline"
-  install -m 0755 "$TMPDIR/cli/bowline-daemon" "$INSTALL_DIR/bowline-daemon"
+
+  versions_dir="$INSTALL_DIR/.bowline-versions"
+  mkdir -p "$versions_dir" "$INSTALL_DIR"
+  stage_dir="$(mktemp -d "$versions_dir/.stage-$RESOLVED_VERSION.XXXXXX")"
+  ACTIVE_STAGE="$stage_dir"
+  tar -xzf "$archive" -C "$stage_dir"
+  validate_binaries "$stage_dir"
+  release_name="$RESOLVED_VERSION-$TARGET-$(basename "$stage_dir" | sed 's/^.*\\.//')"
+  final_dir="$versions_dir/$release_name"
+  mv "$stage_dir" "$final_dir"
+  ACTIVE_STAGE=""
+
+  CURRENT_LINK="$INSTALL_DIR/.bowline-current"
+  PREVIOUS_CURRENT="$(readlink "$CURRENT_LINK" 2>/dev/null || true)"
+  atomic_symlink ".bowline-versions/$release_name" "$CURRENT_LINK"
+  SWITCHED="1"
+  install_command_links ".bowline-current/bowline" ".bowline-current/bowline-daemon"
 }
 
-# The replaced app bundle keeps running from the bytes we are about to delete,
-# so quit it before the swap and relaunch after; otherwise the old menu bar app
-# and daemon outlive the new CLI they must agree with.
+# The running app must release the old bundle before the current link moves.
+# Refusing the update is safer than deleting bytes under an old process.
 quit_macos_app() {
-  [ -d "$APP_DIR/Bowline.app" ] || return 0
-  command -v osascript >/dev/null 2>&1 || return 0
-  osascript -e 'quit app "Bowline"' >/dev/null 2>&1 || true
+  [ -e "$APP_DIR/Bowline.app" ] || return 0
+  command -v osascript >/dev/null 2>&1 ||
+    fail "cannot verify Bowline.app process state because osascript is unavailable"
+  app_running="$(osascript -e 'application "Bowline" is running' 2>/dev/null)" ||
+    fail "could not query whether Bowline.app is running"
+  [ "$app_running" = "true" ] || return 0
+  osascript -e 'quit app "Bowline"' >/dev/null 2>&1 ||
+    fail "Bowline.app refused the quit request"
+  OLD_APP_STOPPED="1"
   attempt=0
   while [ "$attempt" -lt 20 ]; do
-    pgrep -f "$APP_DIR/Bowline.app" >/dev/null 2>&1 || return 0
+    app_running="$(osascript -e 'application "Bowline" is running' 2>/dev/null)" ||
+      fail "could not verify that Bowline.app exited"
+    if [ "$app_running" = "false" ]; then
+      return 0
+    fi
     sleep 0.25
     attempt=$((attempt + 1))
   done
-  note "Bowline.app did not quit in time; restart it manually after the upgrade"
+  fail "Bowline.app did not quit in time"
 }
 
-# An upgrade replaces bowline-daemon on disk while the old process keeps
-# serving. Restarting the managed service is not service installation: the
-# service is only ever created by authenticated setup.
-restart_installed_daemon() {
-  [ -x "$INSTALL_DIR/bowline" ] || return 0
-  if "$INSTALL_DIR/bowline" daemon restart >/dev/null 2>&1; then
-    note "restarted the bowline daemon on the newly installed build"
-  fi
+validate_macos_app() {
+  app="$1"
+  bin_dir="$app/Contents/Resources/bin"
+  [ -d "$app/Contents" ] || fail "staged app bundle has no Contents directory"
+  validate_binaries "$bin_dir"
+  need codesign
+  codesign --verify --deep --strict "$app" >/dev/null 2>&1 ||
+    fail "staged app bundle signature verification failed"
 }
 
 install_macos_app() {
@@ -266,14 +573,34 @@ install_macos_app() {
   need ditto
   download "$RELEASE_BASE/Bowline-$TARGET.app.zip" "$app_zip"
   verify_checksum "$app_zip"
-  mkdir -p "$APP_DIR" "$INSTALL_DIR"
+
+  versions_dir="$APP_DIR/.bowline-versions"
+  mkdir -p "$versions_dir" "$INSTALL_DIR"
+  stage_root="$(mktemp -d "$versions_dir/.stage-$RESOLVED_VERSION.XXXXXX")"
+  ACTIVE_STAGE="$stage_root"
+  ditto -x -k "$app_zip" "$stage_root"
+  staged_app="$stage_root/Bowline.app"
+  validate_macos_app "$staged_app"
+  release_name="Bowline-$RESOLVED_VERSION-$(basename "$stage_root" | sed 's/^.*\\.//').app"
+  final_app="$versions_dir/$release_name"
+  mv "$staged_app" "$final_app"
+  rmdir "$stage_root"
+  ACTIVE_STAGE=""
+
   quit_macos_app
-  rm -rf "$APP_DIR/Bowline.app"
-  ditto -x -k "$app_zip" "$APP_DIR"
-  [ -x "$APP_DIR/Bowline.app/Contents/Resources/bin/bowline" ] ||
-    fail "downloaded app is missing bundled bowline"
-  ln -sf "$APP_DIR/Bowline.app/Contents/Resources/bin/bowline" "$INSTALL_DIR/bowline"
-  ln -sf "$APP_DIR/Bowline.app/Contents/Resources/bin/bowline-daemon" "$INSTALL_DIR/bowline-daemon"
+  CURRENT_LINK="$APP_DIR/Bowline.app"
+  if [ -d "$CURRENT_LINK" ] && [ ! -L "$CURRENT_LINK" ]; then
+    legacy_app="$versions_dir/Bowline-legacy-$$.app"
+    mv "$CURRENT_LINK" "$legacy_app"
+    PREVIOUS_CURRENT=".bowline-versions/$(basename "$legacy_app")"
+  else
+    PREVIOUS_CURRENT="$(readlink "$CURRENT_LINK" 2>/dev/null || true)"
+  fi
+  atomic_symlink ".bowline-versions/$release_name" "$CURRENT_LINK"
+  SWITCHED="1"
+  install_command_links \
+    "$APP_DIR/Bowline.app/Contents/Resources/bin/bowline" \
+    "$APP_DIR/Bowline.app/Contents/Resources/bin/bowline-daemon"
 }
 
 resolve_release_base
@@ -283,17 +610,41 @@ verify_manifest_bound_file checksums "$TMPDIR/checksums.txt"
 verify_manifest_bound_file checksums_sig "$TMPDIR/checksums.txt.sig"
 verify_signature "$TMPDIR/checksums.txt" "$TMPDIR/checksums.txt.sig"
 
+mkdir -p "$INSTALL_DIR"
+acquire_install_lock
+recover_command_link_migration
+capture_previous_install
+
 if [ "$PLATFORM" = "macos" ] && [ "$CLI_ONLY" = "0" ]; then
   install_macos_app
 else
   install_cli_archive
 fi
 
-restart_installed_daemon
+if [ "$OLD_DAEMON_ACTIVE" = "1" ]; then
+  if ! restart_and_verify_daemon "$RESOLVED_VERSION"; then
+    rollback_switch ||
+      fail "new daemon failed health verification and rollback also failed"
+    fail "new daemon failed health/version verification; rolled back to $OLD_DAEMON_VERSION"
+  fi
+  note "installed and healthy: daemon $RESOLVED_VERSION completed its version handshake"
+  INSTALL_RESULT="installed-and-healthy"
+else
+  note "installed on disk: daemon setup or restart is required before serving"
+  INSTALL_RESULT="installed-on-disk-restart-required"
+fi
 
 if [ "$PLATFORM" = "macos" ] && [ "$CLI_ONLY" = "0" ]; then
-  open "$APP_DIR/Bowline.app" >/dev/null 2>&1 || true
+  if ! open "$APP_DIR/Bowline.app" >/dev/null 2>&1; then
+    rollback_switch ||
+      fail "new app failed to relaunch and rollback also failed"
+    fail "new app failed to relaunch; rolled back to the previous installation"
+  fi
+  OLD_APP_STOPPED="0"
 fi
+
+SWITCHED="0"
+printf 'BOWLINE_INSTALL_RESULT=%s\n' "$INSTALL_RESULT"
 
 shell_rc_path() {
   case "$(basename "${SHELL:-/bin/sh}")" in

@@ -122,6 +122,22 @@ fn take_remote_replaces_the_file_with_the_incoming_version() {
 }
 
 #[test]
+fn timeline_workspace_reports_lookup_errors_but_not_missing_roots() {
+    let mut reported = Vec::new();
+    let failed = timeline_workspace(
+        Result::<Option<&str>, _>::Err("metadata lookup failed"),
+        |error| reported.push(*error),
+    );
+    let missing = timeline_workspace(Result::<Option<&str>, &str>::Ok(None), |_| {
+        panic!("a missing accepted root is not a metadata failure");
+    });
+
+    assert_eq!(failed, None);
+    assert_eq!(missing, None);
+    assert_eq!(reported, ["metadata lookup failed"]);
+}
+
+#[test]
 fn diff_changes_nothing_on_disk() {
     let workspace = Workspace::new("diff");
     workspace.write("src/auth.ts", "local\n");

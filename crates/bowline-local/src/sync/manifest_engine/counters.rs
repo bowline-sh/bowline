@@ -29,6 +29,9 @@ pub struct EngineCounters {
     /// paths the driver already knows are dirty — may cost a syscall. A value
     /// that tracks workspace size rather than change size is the regression.
     pub merge_observations: AtomicU64,
+    /// Ancestor rows materialized from SQLite. Scoped push/pull work should
+    /// track changed paths, never total workspace cardinality.
+    pub ancestor_rows_read: AtomicU64,
     /// Files opened and read for content (the C1/C5 "zero content opens" meter).
     pub content_opens: AtomicU64,
     /// Content identities computed (BLAKE3 over plaintext).
@@ -87,6 +90,11 @@ impl EngineCounters {
 
     pub fn record_merge_observations(&self, paths: u64) {
         self.merge_observations.fetch_add(paths, Ordering::Relaxed);
+    }
+
+    pub fn record_ancestor_rows_read(&self, rows: usize) {
+        self.ancestor_rows_read
+            .fetch_add(rows as u64, Ordering::Relaxed);
     }
 
     pub fn record_content_open(&self, bytes: u64) {
@@ -150,6 +158,7 @@ impl EngineCounters {
             stat_walks: self.stat_walks.load(Ordering::Relaxed),
             stat_entries: self.stat_entries.load(Ordering::Relaxed),
             merge_observations: self.merge_observations.load(Ordering::Relaxed),
+            ancestor_rows_read: self.ancestor_rows_read.load(Ordering::Relaxed),
             content_opens: self.content_opens.load(Ordering::Relaxed),
             content_hashes: self.content_hashes.load(Ordering::Relaxed),
             hashed_bytes: self.hashed_bytes.load(Ordering::Relaxed),
@@ -176,6 +185,7 @@ pub struct CountersSnapshot {
     pub stat_walks: u64,
     pub stat_entries: u64,
     pub merge_observations: u64,
+    pub ancestor_rows_read: u64,
     pub content_opens: u64,
     pub content_hashes: u64,
     pub hashed_bytes: u64,
@@ -201,6 +211,7 @@ impl CountersSnapshot {
             "statWalks": self.stat_walks,
             "statEntries": self.stat_entries,
             "mergeObservations": self.merge_observations,
+            "ancestorRowsRead": self.ancestor_rows_read,
             "contentOpens": self.content_opens,
             "contentHashes": self.content_hashes,
             "hashedBytes": self.hashed_bytes,
@@ -223,6 +234,14 @@ impl CountersSnapshot {
 #[cfg(test)]
 mod tests {
     use super::EngineCounters;
+
+    #[test]
+    fn ancestor_rows_are_visible_in_metrics_json() {
+        let counters = EngineCounters::default();
+        counters.record_ancestor_rows_read(3);
+
+        assert_eq!(counters.snapshot().to_json()["ancestorRowsRead"], 3);
+    }
 
     #[test]
     fn watcher_overflow_recoveries_are_visible_in_metrics_json() {

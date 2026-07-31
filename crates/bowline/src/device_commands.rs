@@ -307,11 +307,7 @@ fn render_devices_human_for_root(
 pub(super) fn print_recovery(args: recovery::RecoveryArgs, json: bool) -> ExitCode {
     let generated_at = generated_at();
     match recovery::run(args, generated_at.clone()) {
-        Ok(output) if json => emit_recovery_json(&output),
-        Ok(output) => {
-            print!("{}", render_recovery_human(&output));
-            ExitCode::SUCCESS
-        }
+        Ok(output) => emit_recovery(&output, json),
         Err(error) => {
             print_runtime_error(CommandName::Recover, generated_at, &error, json);
             ExitCode::from(EXIT_RUNTIME)
@@ -322,15 +318,111 @@ pub(super) fn print_recovery(args: recovery::RecoveryArgs, json: bool) -> ExitCo
 /// The envelope is already published by the time we get here, so a failed write
 /// would destroy the only copy of the words. Flush explicitly and, if stdout is
 /// unusable, fall back to stderr rather than exiting 0 with the secret gone.
-fn emit_recovery_json(output: &recovery::RecoveryRunOutput) -> ExitCode {
-    let payload = output.json_payload();
-    let written = write_json_line(&payload).and_then(|()| io::stdout().flush());
+fn emit_recovery(output: &recovery::RecoveryRunOutput, json: bool) -> ExitCode {
+    let stdout = io::stdout();
+    let stderr = io::stderr();
+    emit_recovery_to(output, json, &mut stdout.lock(), &mut stderr.lock())
+}
+
+fn emit_recovery_to(
+    output: &recovery::RecoveryRunOutput,
+    json: bool,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> ExitCode {
+    let written = if json {
+        write_json_line_to(stdout, &output.json_payload())
+    } else {
+        stdout
+            .write_all(render_recovery_human(output).as_bytes())
+            .and_then(|()| stdout.flush())
+    };
     let Err(error) = written else {
         return ExitCode::SUCCESS;
     };
-    eprintln!("bowline recover could not write its output to stdout: {error}");
+    let _ = writeln!(
+        stderr,
+        "bowline recover could not write its output to stdout: {error}"
+    );
     if let Some(words) = output.generated_words.as_deref() {
-        eprintln!("Store these Recovery Key words now; bowline cannot print them again:\n{words}");
+        let _ = writeln!(
+            stderr,
+            "Store these Recovery Key words now; bowline cannot print them again:\n{words}"
+        );
     }
     ExitCode::from(EXIT_RUNTIME)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bowline_core::commands::{RecoveryCommandAction, RecoveryCommandOutput};
+    use bowline_core::devices::{RecoveryKeyLifecycle, RecoveryKeyState};
+    use bowline_core::ids::RecoveryEnvelopeId;
+
+    struct FailAfter {
+        bytes: Vec<u8>,
+        limit: usize,
+    }
+
+    impl Write for FailAfter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            if self.bytes.len() >= self.limit {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "injected broken pipe",
+                ));
+            }
+            let written = buffer.len().min(self.limit - self.bytes.len());
+            self.bytes.extend_from_slice(&buffer[..written]);
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn human_recovery_write_failure_preserves_words_and_returns_failure() {
+        let output = recovery::RecoveryRunOutput {
+            output: RecoveryCommandOutput {
+                contract_version: CONTRACT_VERSION,
+                command: CommandName::Recover,
+                generated_at: "2026-07-30T12:00:00Z".to_string(),
+                action: RecoveryCommandAction::Create,
+                workspace_id: Some(WorkspaceId::new("workspace-recovery-output")),
+                recovery_key: RecoveryKeyState {
+                    lifecycle: RecoveryKeyLifecycle::GeneratedUnverified,
+                    envelope_id: Some(RecoveryEnvelopeId::new("recovery-output")),
+                    fingerprint: Some("rkp_output".to_string()),
+                    created_at: Some("2026-07-30T12:00:00Z".to_string()),
+                    verified_at: None,
+                    rotated_at: None,
+                    revoked_at: None,
+                },
+                device_request: None,
+                encrypted_grant: None,
+                next_actions: Vec::new(),
+            },
+            generated_words: Some("alpha beta gamma delta".to_string()),
+        };
+        let mut stdout = FailAfter {
+            bytes: Vec::new(),
+            limit: 16,
+        };
+        let mut stderr = Vec::new();
+
+        let exit = emit_recovery_to(&output, false, &mut stdout, &mut stderr);
+
+        assert_eq!(exit, ExitCode::from(EXIT_RUNTIME));
+        assert!(
+            !String::from_utf8(stdout.bytes)
+                .expect("stdout remains UTF-8")
+                .contains("alpha beta gamma delta")
+        );
+        let fallback = String::from_utf8(stderr).expect("stderr remains UTF-8");
+        assert!(fallback.contains("injected broken pipe"));
+        assert!(fallback.contains("alpha beta gamma delta"));
+    }
 }

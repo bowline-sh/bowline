@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::Cursor;
 
 use bowline_core::ids::ContentId;
 use bowline_storage::{open, seal};
@@ -212,9 +213,90 @@ fn file_round_trips_through_seal_and_open() {
     let plaintext = b"secret env value";
     let content_id = crypto.content_id(plaintext);
     let sealed = seal_file(&crypto, &content_id, plaintext).expect("seal");
-    let opened =
-        open_file(&crypto, crypto.key_epoch(), &content_id, sealed.as_bytes()).expect("open");
+    let opened = open_file(
+        &crypto,
+        crypto.key_epoch(),
+        &content_id,
+        sealed.as_bytes(),
+        plaintext.len() as u64,
+        u64::MAX,
+    )
+    .expect("open");
     assert_eq!(opened, plaintext);
+}
+
+#[test]
+fn segmented_file_round_trips_without_materializing_the_envelope() {
+    let crypto = crypto("ws_code", 1);
+    let plaintext = (0..9 * 1024 * 1024)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    let content_id = crypto.content_id(&plaintext);
+    let mut sealed = Vec::new();
+    let sealed_stats = seal_file_segmented(
+        &crypto,
+        &content_id,
+        &mut Cursor::new(&plaintext),
+        &mut sealed,
+    )
+    .expect("segmented seal");
+    let mut opened = Vec::new();
+    let opened_stats = open_file_segmented(
+        &crypto,
+        crypto.key_epoch(),
+        &content_id,
+        &mut Cursor::new(&sealed),
+        &mut opened,
+        plaintext.len() as u64,
+        plaintext.len() as u64,
+    )
+    .expect("segmented open");
+
+    assert_eq!(opened, plaintext);
+    assert_eq!(sealed_stats.plaintext_bytes, plaintext.len() as u64);
+    assert_eq!(sealed_stats.sealed_bytes, sealed.len() as u64);
+    assert_eq!(opened_stats.plaintext_bytes, plaintext.len() as u64);
+}
+
+#[test]
+fn segmented_file_open_checks_logical_identity_and_declared_size() {
+    let crypto = crypto("ws_code", 1);
+    let plaintext = vec![0x37; 5 * 1024 * 1024];
+    let content_id = crypto.content_id(&plaintext);
+    let mut sealed = Vec::new();
+    seal_file_segmented(
+        &crypto,
+        &content_id,
+        &mut Cursor::new(&plaintext),
+        &mut sealed,
+    )
+    .expect("segmented seal");
+
+    let wrong_content_id = crypto.content_id(b"other");
+    assert!(
+        open_file_segmented(
+            &crypto,
+            crypto.key_epoch(),
+            &wrong_content_id,
+            &mut Cursor::new(&sealed),
+            &mut Vec::new(),
+            plaintext.len() as u64,
+            plaintext.len() as u64,
+        )
+        .is_err()
+    );
+    assert!(matches!(
+        open_file_segmented(
+            &crypto,
+            crypto.key_epoch(),
+            &content_id,
+            &mut Cursor::new(&sealed),
+            &mut Vec::new(),
+            plaintext.len() as u64 - 1,
+            plaintext.len() as u64,
+        ),
+        Err(ManifestError::DecodedSizeMismatch { .. })
+    ));
 }
 
 #[test]
@@ -226,8 +308,15 @@ fn old_epoch_file_opens_from_a_rotated_keyring() {
     let rotated = WorkspaceCrypto::new("ws_code", ROTATED_KEY_BYTES, KeyEpoch::new(2))
         .with_key_epoch(KeyEpoch::new(1), KEY_BYTES);
 
-    let opened =
-        open_file(&rotated, KeyEpoch::new(1), &content_id, sealed.as_bytes()).expect("open");
+    let opened = open_file(
+        &rotated,
+        KeyEpoch::new(1),
+        &content_id,
+        sealed.as_bytes(),
+        plaintext.len() as u64,
+        u64::MAX,
+    )
+    .expect("open");
 
     assert_eq!(opened, plaintext);
     assert_eq!(
@@ -249,7 +338,9 @@ fn old_epoch_file_without_held_key_returns_unknown_epoch() {
             &rotated_only,
             KeyEpoch::new(1),
             &content_id,
-            sealed.as_bytes()
+            sealed.as_bytes(),
+            plaintext.len() as u64,
+            u64::MAX,
         ),
         Err(ManifestError::UnknownKeyEpoch {
             key_epoch
@@ -281,11 +372,28 @@ fn new_writes_seal_at_the_write_epoch() {
     let content_id = rotated.content_id(plaintext);
     let sealed = seal_file(&rotated, &content_id, plaintext).expect("seal");
 
-    let opened =
-        open_file(&rotated, KeyEpoch::new(2), &content_id, sealed.as_bytes()).expect("open");
+    let opened = open_file(
+        &rotated,
+        KeyEpoch::new(2),
+        &content_id,
+        sealed.as_bytes(),
+        plaintext.len() as u64,
+        u64::MAX,
+    )
+    .expect("open");
 
     assert_eq!(opened, plaintext);
-    assert!(open_file(&rotated, KeyEpoch::new(1), &content_id, sealed.as_bytes()).is_err());
+    assert!(
+        open_file(
+            &rotated,
+            KeyEpoch::new(1),
+            &content_id,
+            sealed.as_bytes(),
+            plaintext.len() as u64,
+            u64::MAX,
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -371,7 +479,9 @@ fn substitution_wrong_workspace_fails_open() {
             &attacker,
             sealer.key_epoch(),
             &content_id,
-            sealed.as_bytes()
+            sealed.as_bytes(),
+            plaintext.len() as u64,
+            u64::MAX,
         )
         .is_err()
     );
@@ -396,7 +506,17 @@ fn substitution_wrong_content_id_fails_open() {
     let sealed = seal_file(&crypto, &content_id, plaintext).expect("seal");
 
     let wrong = crypto.content_id(b"different content");
-    assert!(open_file(&crypto, crypto.key_epoch(), &wrong, sealed.as_bytes()).is_err());
+    assert!(
+        open_file(
+            &crypto,
+            crypto.key_epoch(),
+            &wrong,
+            sealed.as_bytes(),
+            plaintext.len() as u64,
+            u64::MAX,
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -412,7 +532,9 @@ fn substitution_wrong_epoch_fails_open() {
             &other_epoch,
             sealer.key_epoch(),
             &content_id,
-            sealed.as_bytes()
+            sealed.as_bytes(),
+            plaintext.len() as u64,
+            u64::MAX,
         )
         .is_err()
     );
@@ -427,13 +549,82 @@ fn substitution_wrong_format_fails_open() {
     // Seal under a divergent framing version; the normal opener uses version 1.
     let context = crypto.file_context_for_test(&content_id, 99);
     let sealed = seal(plaintext, crypto.storage_key_for_test(), &context).expect("seal");
-    assert!(open_file(&crypto, crypto.key_epoch(), &content_id, sealed.as_bytes()).is_err());
+    assert!(
+        open_file(
+            &crypto,
+            crypto.key_epoch(),
+            &content_id,
+            sealed.as_bytes(),
+            plaintext.len() as u64,
+            u64::MAX,
+        )
+        .is_err()
+    );
 
     // Sanity: opening under the matching (99) context still succeeds.
     assert!(open(sealed.as_bytes(), crypto.storage_key_for_test(), &context).is_ok());
 }
 
 // ---- bounded decode -------------------------------------------------------
+
+#[test]
+fn file_open_requires_the_declared_size_exactly() {
+    let crypto = crypto("ws_code", 1);
+    let plaintext = vec![b'f'; 4096];
+    let content_id = crypto.content_id(&plaintext);
+    let sealed = seal_file(&crypto, &content_id, &plaintext).expect("seal");
+
+    assert!(matches!(
+        open_file(
+            &crypto,
+            crypto.key_epoch(),
+            &content_id,
+            sealed.as_bytes(),
+            1024,
+            u64::MAX,
+        ),
+        Err(ManifestError::DecodedSizeMismatch {
+            expected: 1024,
+            actual: None,
+        })
+    ));
+    assert!(matches!(
+        open_file(
+            &crypto,
+            crypto.key_epoch(),
+            &content_id,
+            sealed.as_bytes(),
+            8192,
+            u64::MAX,
+        ),
+        Err(ManifestError::DecodedSizeMismatch {
+            expected: 8192,
+            actual: Some(4096),
+        })
+    ));
+}
+
+#[test]
+fn file_open_rejects_a_declared_size_above_local_policy_before_decode() {
+    let crypto = crypto("ws_code", 1);
+    let plaintext = b"small";
+    let content_id = crypto.content_id(plaintext);
+    let sealed = seal_file(&crypto, &content_id, plaintext).expect("seal");
+
+    assert!(matches!(
+        open_file(
+            &crypto,
+            crypto.key_epoch(),
+            &content_id,
+            sealed.as_bytes(),
+            1025,
+            1024,
+        ),
+        Err(ManifestError::BoundExceeded {
+            bound: "file-decoded-size-policy",
+        })
+    ));
+}
 
 /// Seal a node whose plaintext compresses hard: many identical entries.
 fn compressible_node(crypto: &WorkspaceCrypto) -> (Vec<u8>, Vec<u8>) {
@@ -465,8 +656,8 @@ fn compression_bomb_rejected_by_bounds() {
         "test needs a compressible bomb"
     );
 
-    // Sealed passes, decoded exceeds the bound: rejected after open, before the
-    // structured entry list is built.
+    // Sealed passes, decoded exceeds the bound: the streaming envelope opener
+    // stops before the structured entry list is built.
     let decoded_limit = DecodeLimits {
         max_sealed_bytes: u64::MAX,
         max_decoded_bytes: (plaintext.len() as u64) / 2,

@@ -566,6 +566,7 @@ fn classify_control_plane_error(error: ControlPlaneError) -> DeviceCommandError 
         ControlPlaneError::Rejected {
             code:
                 RejectionCode::DeviceNotTrusted
+                | RejectionCode::Expired
                 | RejectionCode::InvalidRequest
                 | RejectionCode::Unauthorized
                 | RejectionCode::WorkspaceMembershipRequired
@@ -711,9 +712,14 @@ mod tests {
             capability: "device-trust",
             reason: "trust mutation is disabled",
         });
+        let expired = classify_control_plane_error(ControlPlaneError::Rejected {
+            code: RejectionCode::Expired,
+            message: "grant has expired".to_string(),
+        });
 
         assert_eq!(missing.recoverability(), CommandRecoverability::UserAction);
         assert_eq!(stale.recoverability(), CommandRecoverability::UserAction);
+        assert_eq!(expired.recoverability(), CommandRecoverability::UserAction);
         assert_eq!(timeout.recoverability(), CommandRecoverability::Retry);
         assert_eq!(blocked.recoverability(), CommandRecoverability::Unsupported);
         assert_eq!(

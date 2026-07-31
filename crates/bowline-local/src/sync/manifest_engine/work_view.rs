@@ -118,6 +118,7 @@ pub fn new_work_view_record(base: ManifestKey) -> WorkViewRecord {
         base_manifest_key: base.clone(),
         overlay_manifest_key: base,
         lifecycle: WorkViewLifecycle::Active,
+        generation: super::aux_index::WorkViewGeneration::INITIAL,
     }
 }
 
@@ -180,17 +181,23 @@ pub fn materialize_view<O: RemoteObjects>(
     pull(view_store, &deps).map_err(WorkViewError::Pull)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureOverlayOutcome {
+    pub overlay: Option<ManifestKey>,
+    pub skipped: BTreeSet<WorkspacePath>,
+}
+
 /// Capture the current view directory as a new overlay: push the view's edits
 /// against a view-local ref seeded at `current_overlay`, uploading changed blobs
-/// to the shared object store. Returns the new overlay key, or `None` when the
-/// view is unchanged (nothing to capture).
+/// to the shared object store. The outcome retains paths that changed during
+/// capture even when no overlay could be advanced.
 pub fn capture_overlay<O: RemoteObjects>(
     view_store: &mut ManifestStore,
     view_ctx: &EngineContext,
     objects: &O,
     current_overlay: &ManifestKey,
     dirty: &BTreeSet<WorkspacePath>,
-) -> Result<Option<ManifestKey>, WorkViewError> {
+) -> Result<CaptureOverlayOutcome, WorkViewError> {
     let state = view_store.engine_state().map_err(WorkViewError::Store)?;
     // Seed the view ref at the version the view's own store last applied, so the
     // capture's CAS precondition matches (materialize seeds version 1).
@@ -215,8 +222,18 @@ pub fn capture_overlay<O: RemoteObjects>(
     )
     .map_err(WorkViewError::Push)?
     {
-        PushOutcome::Advanced { manifest_key, .. } => Ok(Some(manifest_key)),
-        PushOutcome::NoChange { .. } => Ok(None),
+        PushOutcome::Advanced {
+            manifest_key,
+            skipped,
+            ..
+        } => Ok(CaptureOverlayOutcome {
+            overlay: Some(manifest_key),
+            skipped,
+        }),
+        PushOutcome::NoChange { skipped } => Ok(CaptureOverlayOutcome {
+            overlay: None,
+            skipped,
+        }),
         PushOutcome::RefLost { .. } => Err(WorkViewError::ViewRefLost),
     }
 }

@@ -12,8 +12,8 @@ use bowline_control_plane::{
 };
 use bowline_core::ids::{ContentId, DeviceId, SnapshotId, WorkspaceId};
 use bowline_local::sync::manifest_engine::{
-    BlobReaderUpload, BlobUpload, CasOutcome, EngineEvent, KeyEpoch, ManifestUpload, RemoteObjects,
-    RemoteRef, physical_blob_key, physical_manifest_key,
+    BlobReaderUpload, BlobUpload, CasOutcome, EngineEvent, KeyEpoch, ManifestUpload,
+    RefVersionLookup, RemoteObjects, RemoteRef, physical_blob_key, physical_manifest_key,
 };
 use bowline_storage::{
     ObjectKey, ObjectKind as StorageObjectKind, ObjectMetadata, RetentionState, stable_object_hash,
@@ -269,6 +269,38 @@ fn put_then_get_blob_round_trips_sealed_bytes() {
 }
 
 #[test]
+fn blob_download_streams_into_the_callers_writer() {
+    let control_plane = ready_workspace();
+    let sealed = (0..2 * 1024)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    let key = physical_blob_key(&sealed);
+    control_plane.set_signed_url_override("upload", sequenced_put_server(&[("200 OK", b"")]));
+    control_plane.set_signed_url_override(
+        "download",
+        owned_signed_url_response("200 OK", Arc::new(sealed.clone())),
+    );
+
+    let transport = transport(&control_plane);
+    let content_id = content_id();
+    transport
+        .put_blob(BlobUpload {
+            key: &key,
+            content_id: &content_id,
+            key_epoch: KeyEpoch::new(1),
+            sealed: &sealed,
+        })
+        .expect("put blob");
+    let mut fetched = Vec::new();
+    let copied = transport
+        .get_blob_to_writer(&key, &mut fetched)
+        .expect("streaming blob download succeeds");
+
+    assert_eq!(copied, sealed.len() as u64);
+    assert_eq!(fetched, sealed);
+}
+
+#[test]
 fn put_then_get_manifest_round_trips_sealed_bytes() {
     let control_plane = ready_workspace();
     let sealed = b"sealed-manifest-round-trip".to_vec();
@@ -443,6 +475,30 @@ fn compare_and_swap_advances_from_genesis() {
     let observation = observed.expect("a real head after advancing");
     assert_eq!(observation.version, 1);
     assert_eq!(observation.manifest_key, manifest_key);
+}
+
+#[test]
+fn ref_version_lookup_proves_a_superseded_manifest_from_history() {
+    let control_plane = ready_workspace();
+    let transport = transport(&control_plane);
+    let first = physical_manifest_key(b"first-manifest");
+    let second = physical_manifest_key(b"second-manifest");
+    let third = physical_manifest_key(b"third-manifest");
+
+    transport
+        .compare_and_swap(None, &first)
+        .expect("first CAS succeeds");
+    transport
+        .compare_and_swap(Some(1), &second)
+        .expect("second CAS succeeds");
+    transport
+        .compare_and_swap(Some(2), &third)
+        .expect("third CAS succeeds");
+
+    assert_eq!(
+        transport.lookup_ref_version(1).expect("history lookup"),
+        RefVersionLookup::Found(first)
+    );
 }
 
 #[test]

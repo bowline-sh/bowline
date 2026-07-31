@@ -239,6 +239,7 @@ fn parses_repeatable_work_view_path_selectors() {
         Command::WorkAccept(WorkSelectorArgs {
             selector: "agent-output".to_string(),
             paths: vec!["src/a.ts".to_string(), "src/b.ts".to_string()],
+            acknowledged_unresolved: Vec::new(),
         })
     );
 }

@@ -19,6 +19,7 @@ use super::{
     EnginePhase, FullScanReason, Manifest, RefObservation, RemoteRef, WorkspacePath,
     mass_deletion_threshold,
 };
+use crate::policy::ENDPOINT_PROBE_STATE_PREFIX;
 use crate::workspace::TempWorkspace;
 
 fn head_paths(harness: &DriverHarness) -> BTreeSet<WorkspacePath> {
@@ -35,6 +36,8 @@ fn head_paths(harness: &DriverHarness) -> BTreeSet<WorkspacePath> {
 #[test]
 fn a_vanished_root_publishes_nothing_and_names_the_cause() {
     let mut harness = DriverHarness::new("safety-root-gone", "device-a");
+    harness.engine.ctx.endpoint_probe_root =
+        super::prepare_endpoint_probe_root(&harness.root).expect("prepare endpoint probe root");
     harness.start();
     harness.write("a.txt", b"alpha");
     harness.write("b.txt", b"beta");
@@ -67,6 +70,16 @@ fn a_vanished_root_publishes_nothing_and_names_the_cause() {
     );
 
     // The volume comes back: the engine re-observes rather than replaying.
+    for entry in fs::read_dir(&moved).expect("list restored root") {
+        let entry = entry.expect("root entry");
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(ENDPOINT_PROBE_STATE_PREFIX)
+        {
+            fs::remove_dir_all(entry.path()).expect("drop derivable endpoint probe state");
+        }
+    }
     fs::rename(&moved, &harness.root).expect("restore the root");
     harness.clock.advance(60_000);
     harness.run_due();
@@ -79,6 +92,16 @@ fn a_vanished_root_publishes_nothing_and_names_the_cause() {
         harness.engine.snapshot().degradation,
         Degradation::RootUnavailable(_)
     ));
+    assert!(
+        fs::read_dir(&harness.root)
+            .expect("list recovered root")
+            .filter_map(Result::ok)
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(ENDPOINT_PROBE_STATE_PREFIX)),
+        "root recovery recreates endpoint probe state on the returned volume"
+    );
 }
 
 #[test]

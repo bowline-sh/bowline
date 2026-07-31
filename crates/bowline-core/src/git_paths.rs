@@ -73,6 +73,47 @@ pub fn is_git_derivable_volatile_path(path: &str) -> bool {
     classify_git_path(path).is_some_and(GitPathClass::is_derivable_volatile)
 }
 
+/// Whether `path` names content-addressed object payload whose name cannot be
+/// updated in place by a Git transaction. Mutable metadata under `objects/info`
+/// and pack sidecars deliberately do not qualify.
+pub fn is_immutable_git_object_payload(path: &str) -> bool {
+    if classify_git_path(path) != Some(GitPathClass::ImmutableObject) {
+        return false;
+    }
+    let Some(tail) = git_tail_path(path) else {
+        return false;
+    };
+    let object_path = tail
+        .strip_prefix("objects/")
+        .or_else(|| tail.rsplit_once("/objects/").map(|(_, object)| object));
+    let Some(object_path) = object_path else {
+        return false;
+    };
+    let components = object_path.split('/').collect::<Vec<_>>();
+    match components.as_slice() {
+        [fanout, object]
+            if fanout.len() == 2
+                && fanout.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && object.len() >= 38
+                && object.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+        {
+            true
+        }
+        ["pack", artifact] => immutable_pack_artifact(artifact),
+        _ => false,
+    }
+}
+
+fn immutable_pack_artifact(artifact: &str) -> bool {
+    let Some((stem, extension)) = artifact.rsplit_once('.') else {
+        return false;
+    };
+    let Some(hash) = stem.strip_prefix("pack-") else {
+        return false;
+    };
+    hash.len() >= 40 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) && extension == "pack"
+}
+
 fn git_tail_path(path: &str) -> Option<&str> {
     if let Some(tail) = path.strip_prefix(".git/") {
         return Some(tail);
@@ -203,7 +244,9 @@ fn is_git_temp_object_path(tail: &[&str], tail_path: &str, final_name: &str) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{GitPathClass, classify_git_path, is_git_directory_path};
+    use super::{
+        GitPathClass, classify_git_path, is_git_directory_path, is_immutable_git_object_payload,
+    };
 
     #[test]
     fn classifies_git_path_shapes() {
@@ -350,6 +393,32 @@ mod tests {
         for (path, expected) in cases {
             assert_eq!(classify_git_path(path), expected, "{path}");
         }
+    }
+
+    #[test]
+    fn immutable_object_payloads_exclude_mutable_object_metadata() {
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        assert!(is_immutable_git_object_payload(&format!(
+            ".git/objects/ab/{hash}"
+        )));
+        assert!(is_immutable_git_object_payload(&format!(
+            ".git/objects/pack/pack-{hash}.pack"
+        )));
+        assert!(!is_immutable_git_object_payload(&format!(
+            ".git/objects/pack/pack-{hash}.idx"
+        )));
+        assert!(!is_immutable_git_object_payload(&format!(
+            ".git/objects/pack/pack-{hash}.bitmap"
+        )));
+        assert!(!is_immutable_git_object_payload(
+            ".git/objects/info/alternates"
+        ));
+        assert!(!is_immutable_git_object_payload(
+            ".git/objects/pack/multi-pack-index"
+        ));
+        assert!(!is_immutable_git_object_payload(
+            ".git/objects/pack/multi-pack-index.d/chain"
+        ));
     }
 
     /// An interrupted operation must travel as one bundle: the conflicted

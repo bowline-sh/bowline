@@ -15,9 +15,6 @@
 //! changing the manifest identity.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::error::Error;
-use std::fmt;
-use std::io;
 use std::path::Path;
 
 use bowline_core::ids::ContentId;
@@ -27,6 +24,12 @@ use super::endpoint::EndpointInstant;
 use super::manifest::directory_tree::SubtreeHash;
 use super::manifest::{BlobKey, EntryKind, FileMode, KeyEpoch, ManifestKey, WorkspacePath};
 use super::unsyncable::{UnsyncableReason, UnsyncableRecord};
+
+#[path = "store/error.rs"]
+mod error;
+#[path = "store/file_queries.rs"]
+mod file_queries;
+pub use error::ManifestStoreError;
 
 const SCHEMA: &str = "\
 CREATE TABLE IF NOT EXISTS files (
@@ -68,6 +71,9 @@ CREATE TABLE IF NOT EXISTS unsyncable (
     errno INTEGER,
     observed_at INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS pending_push (
+    path TEXT PRIMARY KEY
+) STRICT;
 CREATE TABLE IF NOT EXISTS blobs (
     content_id TEXT PRIMARY KEY,
     blob_key TEXT NOT NULL,
@@ -78,7 +84,13 @@ CREATE TABLE IF NOT EXISTS tree_nodes (
     subtree_hash TEXT PRIMARY KEY,
     node_key TEXT NOT NULL,
     key_epoch INTEGER NOT NULL
-) STRICT;";
+) STRICT;
+CREATE TABLE IF NOT EXISTS tree_node_epochs (
+    node_key TEXT PRIMARY KEY,
+    key_epoch INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS files_key_epoch_idx ON files(key_epoch);
+CREATE INDEX IF NOT EXISTS tree_nodes_node_key_idx ON tree_nodes(node_key);";
 
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
 
@@ -237,32 +249,6 @@ impl ManifestStore {
         Ok(verdict == "ok")
     }
 
-    /// The full ancestor as a sorted map — the three-way base for merge.
-    pub fn all_files(&self) -> Result<BTreeMap<WorkspacePath, FileRecord>, ManifestStoreError> {
-        let mut statement = self.connection.prepare(
-            "SELECT path, kind, size, mode, symlink_target, content_id, blob_key, key_epoch, \
-             mtime_ns, ctime_ns, inode, dev, hashed_at, verified_at FROM files ORDER BY path",
-        )?;
-        let rows = statement.query_map([], |row| Ok(row_to_file(row)))?;
-        let mut files = BTreeMap::new();
-        for row in rows {
-            let (path, record) = row??;
-            files.insert(path, record);
-        }
-        Ok(files)
-    }
-
-    /// How many ancestor rows exist. The workspace-root sentinel uses it to tell
-    /// "a brand-new workspace with nothing to lose" from "a workspace whose root
-    /// has been replaced under committed state" — the latter must never be
-    /// adopted, because adopting it publishes an empty manifest to every peer.
-    pub fn file_count(&self) -> Result<u64, ManifestStoreError> {
-        let count: i64 = self
-            .connection
-            .query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))?;
-        from_i64(count)
-    }
-
     /// Every path the engine currently cannot sync, sorted by path.
     pub fn unsyncable(
         &self,
@@ -415,7 +401,22 @@ impl ManifestStore {
                     i64::from(key_epoch.get()),
                 ])?;
             }
+            record_tree_node_epochs(connection, nodes.values(), key_epoch)?;
             Ok(())
+        })
+    }
+
+    /// Record the epoch of a copy-on-write root whose upload returned. The
+    /// subtree-hash ledger has no flat manifest from which to derive hashes on
+    /// this path, but the physical-key epoch proof is independently sufficient
+    /// to distinguish an ordinary edit from a key-rotation rebuild.
+    pub fn record_tree_node_epoch(
+        &mut self,
+        node_key: &ManifestKey,
+        key_epoch: KeyEpoch,
+    ) -> Result<(), ManifestStoreError> {
+        self.in_transaction(|connection| {
+            record_tree_node_epochs(connection, std::iter::once(node_key), key_epoch)
         })
     }
 
@@ -468,14 +469,13 @@ impl ManifestStore {
         })
     }
 
-    /// The ONLY place `files` changes on push. One transaction applies the
-    /// ancestor mutation, advances `applied_manifest_key` + `last_ref_version`,
-    /// and advances the freshness ratchet together.
+    /// Atomically commit the pushed ancestor and its verified ref.
     pub fn commit_push_success(
         &mut self,
         commit: &AncestorCommit,
         manifest_key: &ManifestKey,
         ref_version: u64,
+        settled_paths: &BTreeSet<WorkspacePath>,
     ) -> Result<(), ManifestStoreError> {
         let version = to_i64(ref_version)?;
         self.in_transaction(|connection| {
@@ -487,7 +487,41 @@ impl ManifestStore {
             // pass `enforce_freshness` and revert workspace state we published — the
             // gap when no pull has ever populated the ratchet.
             advance_verified_ratchet(connection, manifest_key, version)?;
+            delete_pending_push_paths(connection, settled_paths)?;
             Ok(())
+        })
+    }
+
+    pub fn pending_push_paths(&self) -> Result<BTreeSet<WorkspacePath>, ManifestStoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT path FROM pending_push ORDER BY path")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut paths = BTreeSet::new();
+        for row in rows {
+            paths.insert(WorkspacePath::new(row?));
+        }
+        Ok(paths)
+    }
+
+    pub fn clear_pending_push_paths(
+        &mut self,
+        paths: &BTreeSet<WorkspacePath>,
+    ) -> Result<(), ManifestStoreError> {
+        self.in_transaction(|connection| delete_pending_push_paths(connection, paths))
+    }
+
+    /// Atomically settle a push that changed no remote tree while retaining
+    /// verified local-only stat observations. A crash cannot clear the pending
+    /// path while leaving its old fingerprint behind.
+    pub fn commit_push_no_change(
+        &mut self,
+        commit: &AncestorCommit,
+        settled_paths: &BTreeSet<WorkspacePath>,
+    ) -> Result<(), ManifestStoreError> {
+        self.in_transaction(|connection| {
+            apply_ancestor(connection, commit)?;
+            delete_pending_push_paths(connection, settled_paths)
         })
     }
 
@@ -524,6 +558,7 @@ impl ManifestStore {
         applied: Option<(&ManifestKey, u64)>,
         verified: Option<(&ManifestKey, u64)>,
         intent_ids: &[WorkspacePath],
+        push_again: &BTreeSet<WorkspacePath>,
     ) -> Result<(), ManifestStoreError> {
         self.in_transaction(|connection| {
             apply_ancestor(connection, commit)?;
@@ -536,6 +571,11 @@ impl ManifestStore {
             let mut delete = connection.prepare("DELETE FROM intents WHERE path = ?1")?;
             for path in intent_ids {
                 delete.execute(params![path.as_str()])?;
+            }
+            let mut insert =
+                connection.prepare("INSERT OR IGNORE INTO pending_push(path) VALUES (?1)")?;
+            for path in push_again {
+                insert.execute(params![path.as_str()])?;
             }
             Ok(())
         })
@@ -599,6 +639,17 @@ impl ManifestStore {
             }
         }
     }
+}
+
+fn delete_pending_push_paths(
+    connection: &Connection,
+    paths: &BTreeSet<WorkspacePath>,
+) -> Result<(), ManifestStoreError> {
+    let mut delete = connection.prepare("DELETE FROM pending_push WHERE path = ?1")?;
+    for path in paths {
+        delete.execute(params![path.as_str()])?;
+    }
+    Ok(())
 }
 
 fn apply_ancestor(
@@ -683,6 +734,21 @@ fn set_applied(
          last_ref_version = excluded.last_ref_version",
         params![manifest_key.as_str(), ref_version],
     )?;
+    Ok(())
+}
+
+fn record_tree_node_epochs<'a>(
+    connection: &Connection,
+    node_keys: impl IntoIterator<Item = &'a ManifestKey>,
+    key_epoch: KeyEpoch,
+) -> Result<(), ManifestStoreError> {
+    let mut upsert = connection.prepare(
+        "INSERT INTO tree_node_epochs (node_key, key_epoch) VALUES (?1, ?2) \
+         ON CONFLICT(node_key) DO UPDATE SET key_epoch = excluded.key_epoch",
+    )?;
+    for node_key in node_keys {
+        upsert.execute(params![node_key.as_str(), i64::from(key_epoch.get())])?;
+    }
     Ok(())
 }
 
@@ -816,49 +882,6 @@ fn from_i64(value: i64) -> Result<u64, ManifestStoreError> {
 
 fn u32_from_i64(value: i64, field: &'static str) -> Result<u32, ManifestStoreError> {
     u32::try_from(value).map_err(|_| ManifestStoreError::ValueOutOfRange { field })
-}
-
-#[derive(Debug)]
-pub enum ManifestStoreError {
-    Sqlite(rusqlite::Error),
-    Io(io::Error),
-    Corrupt { field: &'static str },
-    ValueOutOfRange { field: &'static str },
-}
-
-impl fmt::Display for ManifestStoreError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Sqlite(error) => write!(formatter, "manifest store SQLite failed: {error}"),
-            Self::Io(error) => write!(formatter, "manifest store I/O failed: {error}"),
-            Self::Corrupt { field } => write!(formatter, "manifest store corrupt value: {field}"),
-            Self::ValueOutOfRange { field } => {
-                write!(formatter, "manifest store value out of range: {field}")
-            }
-        }
-    }
-}
-
-impl Error for ManifestStoreError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Sqlite(error) => Some(error),
-            Self::Io(error) => Some(error),
-            Self::Corrupt { .. } | Self::ValueOutOfRange { .. } => None,
-        }
-    }
-}
-
-impl From<rusqlite::Error> for ManifestStoreError {
-    fn from(error: rusqlite::Error) -> Self {
-        Self::Sqlite(error)
-    }
-}
-
-impl From<io::Error> for ManifestStoreError {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
-    }
 }
 
 #[cfg(test)]

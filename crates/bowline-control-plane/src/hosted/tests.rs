@@ -111,6 +111,31 @@ fn hosted_boundary_accepts_headless_genesis_ref() {
 }
 
 #[test]
+fn hosted_boundary_rejects_genesis_ref_with_head_fields() {
+    for (snapshot_id, updated_by_device_id, head_signature) in [
+        (Some("snap_forged"), None, None),
+        (None, Some("device_attacker"), None),
+        (None, None, Some("forged_signature")),
+    ] {
+        let malformed = HostedWorkspaceRef {
+            workspace_id: "workspace_1".to_string(),
+            version: 0,
+            snapshot_id: snapshot_id.map(str::to_string),
+            updated_at: wire_timestamp("2026-07-02T12:00:00Z"),
+            updated_by_device_id: updated_by_device_id.map(str::to_string),
+            head_signature: head_signature.map(str::to_string),
+        };
+
+        let error = workspace_ref_from_dto(malformed, |_, _| {
+            panic!("genesis refs never enter signature verification")
+        })
+        .expect_err("genesis head fields violate the hosted contract");
+
+        assert!(error.to_string().contains("version-0 genesis ref"));
+    }
+}
+
+#[test]
 fn hosted_boundary_rejects_advanced_ref_without_snapshot() {
     // A version >= 1 ref must carry a manifest-backed head; a headless advanced
     // ref is a contract violation rejected at the boundary.
@@ -694,6 +719,72 @@ fn convex_error_payload_maps_to_rejection_code() {
 }
 
 #[test]
+fn expired_convex_error_maps_to_expired_rejection_code() {
+    let mut payload = BTreeMap::new();
+    payload.insert("code".to_string(), Value::from("control_plane/expired"));
+    payload.insert("message".to_string(), Value::from("grant has expired"));
+
+    let error = unwrap_function_result(
+        "test:expired",
+        FunctionResult::ConvexError(ConvexError {
+            message: "application rejected the call".to_string(),
+            data: Value::Object(payload),
+        }),
+    )
+    .expect_err("expired payload rejects");
+
+    assert_eq!(
+        error,
+        ControlPlaneError::Rejected {
+            code: RejectionCode::Expired,
+            message: "grant has expired".to_string(),
+        }
+    );
+}
+
+#[test]
+fn account_session_convex_errors_preserve_code_and_require_fresh_auth() {
+    for (wire_code, rejection_code) in [
+        (
+            "account_session_expired",
+            RejectionCode::AccountSessionExpired,
+        ),
+        (
+            "account_session_missing",
+            RejectionCode::AccountSessionMissing,
+        ),
+        (
+            "account_session_revoked",
+            RejectionCode::AccountSessionRevoked,
+        ),
+    ] {
+        let mut payload = BTreeMap::new();
+        payload.insert("code".to_string(), Value::from(wire_code));
+        payload.insert(
+            "message".to_string(),
+            Value::from("account session must be replaced"),
+        );
+        let error = unwrap_function_result(
+            "test:accountSession",
+            FunctionResult::ConvexError(ConvexError {
+                message: "application rejected the call".to_string(),
+                data: Value::Object(payload),
+            }),
+        )
+        .expect_err("account session payload rejects");
+
+        assert_eq!(
+            error,
+            ControlPlaneError::Rejected {
+                code: rejection_code,
+                message: "account session must be replaced".to_string(),
+            }
+        );
+        assert_eq!(error.retryability(), Retryability::AuthExpired);
+    }
+}
+
+#[test]
 fn unauthorized_convex_error_maps_to_permanent_rejection_code() {
     let mut payload = BTreeMap::new();
     payload.insert(
@@ -856,8 +947,8 @@ fn an_operator_token_alone_cannot_authenticate_account_calls() {
 }
 
 /// A daemon runs for months on a persisted session id. When that session finally
-/// expires the control plane answers `Unauthorized`, and without this the daemon
-/// repeats the refused call until a human restarts it.
+/// expires the control plane answers `account_session_expired`, and without this
+/// the daemon repeats the refused call until a human restarts it.
 #[test]
 fn a_refused_account_session_is_replaced_and_the_call_retried_once() {
     let calls = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -886,7 +977,7 @@ fn a_refused_account_session_is_replaced_and_the_call_retried_once() {
                         == Some(&Value::from("bowline_session_stale"))
                     {
                         return Err(ControlPlaneError::Rejected {
-                            code: RejectionCode::Unauthorized,
+                            code: RejectionCode::AccountSessionExpired,
                             message: "account session expired".to_string(),
                         });
                     }

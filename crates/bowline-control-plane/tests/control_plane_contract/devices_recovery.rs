@@ -16,6 +16,7 @@ fn signed_recovery_envelope_input(
         created_by_device_proof: String::new(),
         ciphertext: ciphertext.to_string(),
         fingerprint: fingerprint.to_string(),
+        key_epoch: 1,
         recovery_proof_verifier: recovery_proof_verifier.clone(),
     });
     RecoveryEnvelopeInput {
@@ -25,6 +26,7 @@ fn signed_recovery_envelope_input(
         created_by_device_proof: device_proof(workspace_id, created_by_device_id, action, &subject),
         ciphertext: ciphertext.to_string(),
         fingerprint: fingerprint.to_string(),
+        key_epoch: 1,
         recovery_proof_verifier,
     }
 }
@@ -943,7 +945,7 @@ fn recovery_authorization_requires_private_proof_not_public_fingerprint() {
         .expect("settled recovery authorization replays the existing grant");
     assert_eq!(replayed, recovered);
     control_plane.set_workspace_key_epoch("workspace-recovery-proof", 2);
-    let stale_replay = control_plane
+    let replay_after_rotation = control_plane
         .authorize_device_with_recovery(RecoveryDeviceAuthorizationInput {
             workspace_id: WorkspaceId::new("workspace-recovery-proof"),
             envelope_id: RecoveryEnvelopeId::new("rk_public"),
@@ -954,8 +956,12 @@ fn recovery_authorization_requires_private_proof_not_public_fingerprint() {
             recovery_proof: recovery_proof.clone(),
             expires_in_ticks: 600,
         })
-        .expect_err("stale settled recovery grants are rejected");
-    assert!(matches!(stale_replay, ControlPlaneError::Conflict { .. }));
+        .expect("an established pre-rotation grant remains replayable");
+    assert_eq!(replay_after_rotation, recovered);
+    assert_eq!(
+        replay_after_rotation.key_epoch, 1,
+        "replay returns the original grant rather than rewriting its epoch"
+    );
     control_plane.set_workspace_key_epoch("workspace-recovery-proof", 1);
     control_plane.revoke_device_grant(&request.request_id);
     let revoked_replay = control_plane

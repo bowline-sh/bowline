@@ -13,11 +13,15 @@ use crate::metadata::MetadataStore;
 
 use super::{
     WorkListOptions, WorkViewError,
-    paths::{expand_display_path, open_store, reconcile_aux_work_views, status_for_work_views},
+    paths::{
+        acquire_work_view_transition_lock, expand_display_path, open_store,
+        reconcile_aux_work_views, status_for_work_views,
+    },
 };
 
 pub fn list_work_views(options: WorkListOptions) -> Result<WorkListCommandOutput, WorkViewError> {
     let store = open_store(options.db_path.as_deref())?;
+    let _transition_lock = acquire_work_view_transition_lock(&store)?;
     let workspace = store
         .current_workspace()?
         .ok_or(WorkViewError::MissingWorkspace)?;

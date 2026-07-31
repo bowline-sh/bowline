@@ -91,6 +91,19 @@ impl MetadataStore {
         upsert_work_view_record(&self.connection, record, &project_path)
     }
 
+    pub fn upsert_work_views(&self, records: &[WorkViewRecord]) -> Result<(), MetadataError> {
+        let project_paths = records
+            .iter()
+            .map(|record| self.workspace_relative_path(&record.workspace_id, &record.project_path))
+            .collect::<Result<Vec<_>, _>>()?;
+        let transaction = self.connection.unchecked_transaction()?;
+        for (record, project_path) in records.iter().zip(project_paths) {
+            upsert_work_view_record(&transaction, record, &project_path)?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn record_materialized_overlay_receipt(
         &self,
         workspace_id: &WorkspaceId,

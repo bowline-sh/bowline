@@ -4568,6 +4568,18 @@
       "valuePath": "/boundary-values.json#/HostedRecoveryEnvelope.fingerprint.maxLength.valid"
     },
     {
+      "declaration": "HostedRecoveryEnvelope",
+      "expectation": "accept",
+      "id": "HostedRecoveryEnvelope.keyEpoch.minimum.valid",
+      "valuePath": "/boundary-values.json#/HostedRecoveryEnvelope.keyEpoch.minimum.valid"
+    },
+    {
+      "declaration": "HostedRecoveryEnvelope",
+      "expectation": "accept",
+      "id": "HostedRecoveryEnvelope.keyEpoch.maximum.valid",
+      "valuePath": "/boundary-values.json#/HostedRecoveryEnvelope.keyEpoch.maximum.valid"
+    },
+    {
       "declaration": "HostedRecoveryDeviceGrant",
       "expectation": "accept",
       "id": "HostedRecoveryDeviceGrant.grantId.maxLength.valid",
@@ -4678,6 +4690,18 @@
     {
       "declaration": "HostedRecoveryCreateRecoveryEnvelopeRequest",
       "expectation": "accept",
+      "id": "HostedRecoveryCreateRecoveryEnvelopeRequest.keyEpoch.minimum.valid",
+      "valuePath": "/boundary-values.json#/HostedRecoveryCreateRecoveryEnvelopeRequest.keyEpoch.minimum.valid"
+    },
+    {
+      "declaration": "HostedRecoveryCreateRecoveryEnvelopeRequest",
+      "expectation": "accept",
+      "id": "HostedRecoveryCreateRecoveryEnvelopeRequest.keyEpoch.maximum.valid",
+      "valuePath": "/boundary-values.json#/HostedRecoveryCreateRecoveryEnvelopeRequest.keyEpoch.maximum.valid"
+    },
+    {
+      "declaration": "HostedRecoveryCreateRecoveryEnvelopeRequest",
+      "expectation": "accept",
       "id": "HostedRecoveryCreateRecoveryEnvelopeRequest.recoveryProofVerifier.maxLength.valid",
       "valuePath": "/boundary-values.json#/HostedRecoveryCreateRecoveryEnvelopeRequest.recoveryProofVerifier.maxLength.valid"
     },
@@ -4716,6 +4740,18 @@
       "expectation": "accept",
       "id": "HostedRecoveryRotateRecoveryEnvelopeRequest.fingerprint.maxLength.valid",
       "valuePath": "/boundary-values.json#/HostedRecoveryRotateRecoveryEnvelopeRequest.fingerprint.maxLength.valid"
+    },
+    {
+      "declaration": "HostedRecoveryRotateRecoveryEnvelopeRequest",
+      "expectation": "accept",
+      "id": "HostedRecoveryRotateRecoveryEnvelopeRequest.keyEpoch.minimum.valid",
+      "valuePath": "/boundary-values.json#/HostedRecoveryRotateRecoveryEnvelopeRequest.keyEpoch.minimum.valid"
+    },
+    {
+      "declaration": "HostedRecoveryRotateRecoveryEnvelopeRequest",
+      "expectation": "accept",
+      "id": "HostedRecoveryRotateRecoveryEnvelopeRequest.keyEpoch.maximum.valid",
+      "valuePath": "/boundary-values.json#/HostedRecoveryRotateRecoveryEnvelopeRequest.keyEpoch.maximum.valid"
     },
     {
       "declaration": "HostedRecoveryRotateRecoveryEnvelopeRequest",
@@ -7706,5 +7742,5 @@
       "valuePath": "/boundary-values.json#/HostedDashboardListDashboardRecoveryEnvelopesResponse.revision.maximum.valid"
     }
   ],
-  "schemaHash": "7e3e3eb8a0f34e782f71fd39798c9575a48b8dbb14248a6108eabdb0deee8313"
+  "schemaHash": "3a2adba48e6ba54b18a10d053f41ce878b6c376a714fef3b3cad0b6f8a770036"
 }

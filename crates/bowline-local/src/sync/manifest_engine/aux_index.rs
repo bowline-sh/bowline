@@ -38,7 +38,19 @@ pub const AUX_INDEX_PATH: &str = ".bowline-meta/aux-index";
 const AUX_INDEX_MODE: u32 = 0o600;
 
 /// Current aux-index plaintext format version, inside the sealed plaintext.
-pub const AUX_INDEX_FORMAT_VERSION: u32 = 2;
+pub const AUX_INDEX_FORMAT_VERSION: u32 = 3;
+
+/// Oldest plaintext this build can still read. Version 3 added a per-view
+/// generation; a version 2 index predates it and is upgraded on read by
+/// starting those views at [`WorkViewGeneration::INITIAL`], which is what they
+/// have earned — no operation has yet been serialized against them.
+///
+/// Reading an older index is not a nicety. The index is the only record of a
+/// workspace's work views, and rejecting it takes every work-view command with
+/// it. Bumping the version without this left an upgraded device reporting
+/// `aux index decode failed` from `bowline work create`, recoverable "retry",
+/// on an index that would never parse however many times it was retried.
+const MIN_READABLE_AUX_INDEX_FORMAT_VERSION: u32 = 2;
 
 // ---- model ------------------------------------------------------------------
 
@@ -77,6 +89,31 @@ pub enum WorkViewLifecycle {
     Discarded,
 }
 
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct WorkViewGeneration(u64);
+
+impl WorkViewGeneration {
+    pub const INITIAL: Self = Self(0);
+
+    pub fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+
+    pub fn checked_next(self) -> Option<Self> {
+        self.0
+            .checked_add(1)
+            .filter(|next| *next < u64::MAX)
+            .map(Self)
+    }
+}
+
 /// One work view: the base it forked from, the overlay manifest holding the
 /// view's current truth, and its lifecycle state. Both keys are physical
 /// manifest keys (`m_<64 hex>`); an overlay is just another manifest whose
@@ -92,6 +129,7 @@ pub struct WorkViewRecord {
     pub base_manifest_key: super::manifest::ManifestKey,
     pub overlay_manifest_key: super::manifest::ManifestKey,
     pub lifecycle: WorkViewLifecycle,
+    pub generation: WorkViewGeneration,
 }
 
 /// The whole auxiliary index: a sorted map of work views plus its format
@@ -169,6 +207,11 @@ struct WorkViewWire {
     base_manifest_key: String,
     overlay_manifest_key: String,
     lifecycle: WorkViewLifecycle,
+    /// Absent in a version 2 index, which predates per-view generations. Such a
+    /// view starts at the initial generation because nothing has been
+    /// serialized against it yet; this is an upgrade, not a guess.
+    #[serde(default)]
+    generation: WorkViewGeneration,
 }
 
 impl WorkViewWire {
@@ -184,6 +227,7 @@ impl WorkViewWire {
             base_manifest_key: record.base_manifest_key.as_str().to_string(),
             overlay_manifest_key: record.overlay_manifest_key.as_str().to_string(),
             lifecycle: record.lifecycle,
+            generation: record.generation,
         }
     }
 
@@ -200,6 +244,7 @@ impl WorkViewWire {
                 base_manifest_key: super::manifest::ManifestKey::new(self.base_manifest_key),
                 overlay_manifest_key: super::manifest::ManifestKey::new(self.overlay_manifest_key),
                 lifecycle: self.lifecycle,
+                generation: self.generation,
             },
         )
     }
@@ -212,6 +257,7 @@ impl WorkViewWire {
 #[derive(Debug, Clone, Copy)]
 pub struct AuxDecodeLimits {
     pub max_sealed_bytes: u64,
+    pub max_decoded_bytes: u64,
     pub max_records: u64,
     pub max_id_len: u64,
 }
@@ -220,6 +266,7 @@ impl Default for AuxDecodeLimits {
     fn default() -> Self {
         Self {
             max_sealed_bytes: 16 * 1024 * 1024,
+            max_decoded_bytes: 16 * 1024 * 1024,
             max_records: 100_000,
             max_id_len: 256,
         }
@@ -235,7 +282,13 @@ pub fn decode_aux_index_plaintext(
 ) -> Result<AuxIndex, AuxIndexError> {
     let wire: AuxIndexWire = serde_json::from_slice(plaintext)
         .map_err(|_| AuxIndexError::Serialization("aux index decode failed"))?;
-    if wire.format_version != AUX_INDEX_FORMAT_VERSION {
+    // A range, not equality: an index written by an older build is upgraded on
+    // read and rewritten at the current version on the next encode. Equality
+    // here made every version bump a silent breaking change for anyone who
+    // already had an index.
+    if wire.format_version < MIN_READABLE_AUX_INDEX_FORMAT_VERSION
+        || wire.format_version > AUX_INDEX_FORMAT_VERSION
+    {
         return Err(AuxIndexError::InvalidRecord {
             reason: "unsupported aux-index format version",
         });
@@ -249,6 +302,11 @@ pub fn decode_aux_index_plaintext(
     let mut work_views = BTreeMap::new();
     let mut previous: Option<String> = None;
     for view in wire.work_views {
+        if view.generation.get() == u64::MAX {
+            return Err(AuxIndexError::InvalidRecord {
+                reason: "work-view generation is exhausted",
+            });
+        }
         if view.id.is_empty() {
             return Err(AuxIndexError::InvalidRecord {
                 reason: "work-view id is empty",
@@ -359,6 +417,7 @@ pub fn open_aux_index(
     key_epoch: KeyEpoch,
     expected_content_id: &ContentId,
     sealed: &[u8],
+    expected_size: u64,
     limits: &AuxDecodeLimits,
 ) -> Result<AuxIndex, AuxIndexError> {
     if sealed.len() as u64 > limits.max_sealed_bytes {
@@ -366,8 +425,15 @@ pub fn open_aux_index(
             bound: "sealed-size",
         });
     }
-    let plaintext =
-        open_file(crypto, key_epoch, expected_content_id, sealed).map_err(AuxIndexError::Seal)?;
+    let plaintext = open_file(
+        crypto,
+        key_epoch,
+        expected_content_id,
+        sealed,
+        expected_size,
+        limits.max_decoded_bytes,
+    )
+    .map_err(AuxIndexError::Seal)?;
     decode_aux_index_plaintext(&plaintext, limits)
 }
 
@@ -378,16 +444,22 @@ pub fn open_aux_index(
 /// spelling of entry access for the deleted old-engine authority.)
 pub fn aux_index_pointer(
     snapshot: &Manifest,
-) -> Result<Option<(ContentId, BlobKey, KeyEpoch)>, AuxIndexError> {
+) -> Result<Option<(ContentId, BlobKey, KeyEpoch, u64)>, AuxIndexError> {
     let path = WorkspacePath::new(AUX_INDEX_PATH);
     match snapshot.entries.get(&path) {
         None => Ok(None),
         Some(ManifestEntry::File {
+            size,
             content_id,
             blob_key,
             key_epoch,
             ..
-        }) => Ok(Some((content_id.clone(), blob_key.clone(), *key_epoch))),
+        }) => Ok(Some((
+            content_id.clone(),
+            blob_key.clone(),
+            *key_epoch,
+            *size,
+        ))),
         Some(other) => Err(AuxIndexError::WrongEntryKind {
             found: other.kind(),
         }),
@@ -424,7 +496,7 @@ pub fn load_aux_index<O: RemoteObjects>(
     snapshot: &Manifest,
     limits: &AuxDecodeLimits,
 ) -> Result<Option<AuxIndex>, AuxIndexError> {
-    let Some((content_id, blob_key, key_epoch)) = aux_index_pointer(snapshot)? else {
+    let Some((content_id, blob_key, key_epoch, size)) = aux_index_pointer(snapshot)? else {
         return Ok(None);
     };
     let sealed = objects
@@ -433,7 +505,7 @@ pub fn load_aux_index<O: RemoteObjects>(
     if physical_blob_key(&sealed) != blob_key {
         return Err(AuxIndexError::BlobKeyMismatch);
     }
-    let aux = open_aux_index(crypto, key_epoch, &content_id, &sealed, limits)?;
+    let aux = open_aux_index(crypto, key_epoch, &content_id, &sealed, size, limits)?;
     Ok(Some(aux))
 }
 

@@ -740,6 +740,22 @@ fn taking_remote_on_a_folder_is_a_user_action_rather_than_a_retry() {
 }
 
 #[test]
+fn taking_remote_over_a_local_folder_is_a_user_action_rather_than_a_retry() {
+    let workspace = Workspace::new("directory-origin");
+    workspace.write("acme/web/src/auth.ts/local.txt", "local");
+    workspace.write(&aside_of("acme/web/src/auth.ts"), "remote");
+    let aside = WorkspacePath::new(aside_of("acme/web/src/auth.ts"));
+
+    let error = resolve_conflict(&workspace.root, &aside, ConflictResolution::TakeRemote)
+        .expect_err("a file is not renamed over the local folder");
+
+    assert_eq!(error.tag(), "conflict_origin_is_a_directory", "{error}");
+    assert_eq!(error.recoverability(), CommandRecoverability::UserAction);
+    assert_eq!(workspace.read("acme/web/src/auth.ts/local.txt"), "local");
+    assert!(workspace.exists(aside.as_str()));
+}
+
+#[test]
 fn a_truncated_scan_is_never_reported_as_retryable() {
     // The entry budget is a constant, so an identical rescan of an unchanged
     // tree stops in exactly the same place.

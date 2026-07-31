@@ -169,6 +169,15 @@ pub struct UpdateCommandOutput {
     pub latest_version: String,
     pub update_available: bool,
     pub update_command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation_state: Option<UpdateInstallationState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpdateInstallationState {
+    InstalledAndHealthy,
+    InstalledOnDiskRestartRequired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

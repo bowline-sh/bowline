@@ -57,7 +57,7 @@ fn create_and_reopen_round_trips_files_and_state() {
     {
         let mut store = ManifestStore::open(&path).expect("open");
         store
-            .commit_push_success(&commit, &ManifestKey::new("m_head"), 7)
+            .commit_push_success(&commit, &ManifestKey::new("m_head"), 7, &BTreeSet::new())
             .expect("push");
     }
 
@@ -76,6 +76,31 @@ fn create_and_reopen_round_trips_files_and_state() {
 }
 
 #[test]
+fn scoped_file_reads_include_exact_paths_and_descendants_only() {
+    let (_workspace, path) = store_path("store-scoped-files");
+    let commit = commit_of(&[
+        ("a", file_record(1)),
+        ("a/child", file_record(2)),
+        ("a0/not-a-child", file_record(3)),
+        ("ab/not-a-child", file_record(4)),
+        ("other", file_record(5)),
+    ]);
+    let mut store = ManifestStore::open(&path).expect("open");
+    store
+        .commit_push_success(&commit, &ManifestKey::new("m_head"), 1, &BTreeSet::new())
+        .expect("push");
+
+    let files = store
+        .files_in_scopes(&BTreeSet::from([WorkspacePath::new("a")]))
+        .expect("scoped files");
+
+    assert_eq!(
+        files.keys().cloned().collect::<Vec<_>>(),
+        vec![WorkspacePath::new("a"), WorkspacePath::new("a/child")]
+    );
+}
+
+#[test]
 fn engine_state_singleton_is_enforced() {
     let (_workspace, path) = store_path("store-singleton");
     let mut store = ManifestStore::open(&path).expect("open");
@@ -88,6 +113,7 @@ fn engine_state_singleton_is_enforced() {
             &commit_of(&[("a", file_record(1))]),
             &ManifestKey::new("m_a"),
             4,
+            &BTreeSet::new(),
         )
         .expect("push");
 
@@ -123,7 +149,7 @@ fn push_success_is_atomic() {
     let mut store = ManifestStore::open(&path).expect("open");
     let base = commit_of(&[("keep", file_record(1)), ("drop", file_record(2))]);
     store
-        .commit_push_success(&base, &ManifestKey::new("m_base"), 1)
+        .commit_push_success(&base, &ManifestKey::new("m_base"), 1, &BTreeSet::new())
         .expect("base push");
 
     // A transaction that writes then fails must leave the ancestor and state
@@ -170,6 +196,7 @@ fn pull_outcome_commits_rows_and_intents_atomically() {
             Some((&ManifestKey::new("m_pulled"), 12)),
             Some((&ManifestKey::new("m_pulled"), 12)),
             &[WorkspacePath::new("changed")],
+            &BTreeSet::new(),
         )
         .expect("pull outcome");
 
@@ -343,4 +370,88 @@ fn the_blob_ledger_is_scoped_to_the_current_key_epoch() {
         None,
         "a rotated key must re-seal rather than reuse an object from the old epoch"
     );
+}
+
+/// Manual release-mode scale matrix for the SQLite half of invariant C2.
+///
+/// Run with:
+/// `cargo test -p bowline-local --release --lib scoped_ancestor_scale_matrix -- --ignored --nocapture`
+///
+/// It deliberately seeds rows directly: materializing one million files would
+/// measure filesystem fixture creation rather than the range query under test.
+#[test]
+#[ignore = "manual 10k/100k/1m scale benchmark"]
+fn scoped_ancestor_scale_matrix() {
+    use std::process::Command;
+    use std::time::Instant;
+
+    const SAMPLES: usize = 20;
+    const WORKSPACE_SIZES: [usize; 3] = [10_000, 100_000, 1_000_000];
+    const CHANGE_COUNTS: [usize; 3] = [1, 10, 100];
+    let (_workspace, path) = store_path("store-scope-scale");
+    let store = ManifestStore::open(&path).expect("open");
+
+    let mut seeded = 0;
+    for workspace_size in WORKSPACE_SIZES {
+        store
+            .connection
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("begin");
+        {
+            let mut insert = store
+                .connection
+                .prepare(
+                    "INSERT INTO files(path, kind, size, mode, mtime_ns, ctime_ns, inode, dev) \
+                     VALUES (?1, 0, 7, 420, 1, 1, ?2, 1)",
+                )
+                .expect("prepare");
+            for index in seeded..workspace_size {
+                insert
+                    .execute(params![format!("f{index:07}.dat"), index as i64])
+                    .expect("insert");
+            }
+        }
+        store.connection.execute_batch("COMMIT").expect("commit");
+        seeded = workspace_size;
+        for changes in CHANGE_COUNTS {
+            let scopes = (0..changes)
+                .map(|index| {
+                    let row = index * workspace_size / changes;
+                    WorkspacePath::new(format!("f{row:07}.dat"))
+                })
+                .collect::<BTreeSet<_>>();
+            let mut micros = Vec::with_capacity(SAMPLES);
+            let mut rows_read = 0;
+            let mut peak_rss_kib = 0;
+            for _ in 0..SAMPLES {
+                let started = Instant::now();
+                let rows = store.files_in_scopes(&scopes).expect("scoped rows");
+                micros.push(started.elapsed().as_micros() as u64);
+                rows_read = rows.len();
+                peak_rss_kib = peak_rss_kib.max(current_rss_kib());
+            }
+            micros.sort_unstable();
+            let p95_micros = micros[(SAMPLES * 95).div_ceil(100) - 1];
+            println!(
+                "{{\"workspaceEntries\":{workspace_size},\"changedPaths\":{changes},\
+                 \"p95Micros\":{p95_micros},\"rowsRead\":{rows_read},\
+                 \"contentOpens\":0,\"peakObservedRssKiB\":{peak_rss_kib}}}"
+            );
+            assert_eq!(rows_read, changes);
+            assert!(p95_micros < 100_000, "scoped ancestor p95 exceeded 100 ms");
+            assert!(peak_rss_kib < 1_048_576, "benchmark RSS exceeded 1 GiB");
+        }
+    }
+
+    fn current_rss_kib() -> u64 {
+        let output = Command::new("ps")
+            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+            .output()
+            .expect("ps");
+        String::from_utf8(output.stdout)
+            .expect("utf8")
+            .trim()
+            .parse()
+            .expect("rss")
+    }
 }

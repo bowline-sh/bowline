@@ -25,10 +25,11 @@ mod aux_cli {
 }
 
 use super::{
-    WorkSelectorOptions, WorkViewError,
+    WorkSelectorOptions, WorkViewError, materialization_snapshot,
     paths::{
-        append_work_event, ensure_no_symlink_ancestors, ensure_path_inside, expand_display_path,
-        open_store, resolve_work_view, work_namespace_root,
+        acquire_work_view_transition_lock, append_work_event, ensure_no_symlink_ancestors,
+        ensure_path_inside, expand_display_path, open_store, resolve_work_view,
+        work_namespace_root,
     },
     status_all_command,
 };
@@ -37,7 +38,9 @@ pub fn discard_work_view(
     options: WorkSelectorOptions,
 ) -> Result<WorkLifecycleCommandOutput, WorkViewError> {
     let store = open_store(options.db_path.as_deref())?;
+    let _transition_lock = acquire_work_view_transition_lock(&store)?;
     let work_view = resolve_work_view(&store, &options.selector)?;
+    verify_expected_materializations(&work_view, &options.expected_materializations)?;
     transition_work_view_with_store(
         store,
         work_view,
@@ -57,10 +60,27 @@ pub fn discard_work_view(
     )
 }
 
+fn verify_expected_materializations(
+    work_view: &WorkView,
+    expected: &std::collections::BTreeMap<String, String>,
+) -> Result<(), WorkViewError> {
+    for display in &work_view.host_materializations {
+        let path = expand_display_path(display);
+        let actual = materialization_snapshot(&path)?;
+        if expected.get(display) != Some(&actual) {
+            return Err(WorkViewError::MaterializationChangedAfterReview {
+                path: display.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub fn restore_work_view(
     options: WorkSelectorOptions,
 ) -> Result<WorkLifecycleCommandOutput, WorkViewError> {
     let store = open_store(options.db_path.as_deref())?;
+    let _transition_lock = acquire_work_view_transition_lock(&store)?;
     let work_view = resolve_work_view(&store, &options.selector)?;
     ensure_restorable_work_view(&work_view)?;
     ensure_restorable_materialization(&store, &work_view)?;
@@ -111,8 +131,20 @@ fn sync_aux_lifecycle(
     let Some(record) = aux.work_views.get_mut(&id) else {
         return Ok(());
     };
+    if record.generation.get() != work_view.overlay_version {
+        return Err(WorkViewError::StaleWorkViewGeneration {
+            name: work_view.name.clone(),
+            expected: work_view.overlay_version,
+            actual: record.generation.get(),
+        });
+    }
     record.lifecycle = target;
     record.updated_at = generated_at.to_string();
+    record.generation = record.generation.checked_next().ok_or_else(|| {
+        WorkViewError::WorkViewGenerationExhausted {
+            name: work_view.name.clone(),
+        }
+    })?;
     aux_cli::write_aux_index_file(&root, &aux)?;
     Ok(())
 }
@@ -131,6 +163,10 @@ pub struct WorkAcceptTransition {
     /// [`WorkLifecycleCommandOutput::aside_refused_paths`]).
     pub aside_refused_paths: Vec<String>,
     pub partial: bool,
+    /// The remote head is accepted, but daemon-local recovery work remains.
+    /// Keep the view active so the exact same command can resume and retire it.
+    pub local_completion_pending: bool,
+    pub expected_generation: crate::sync::manifest_engine::aux_index::WorkViewGeneration,
     /// The overlay key the daemon captured before merging.
     pub captured_overlay: String,
     /// Project-scoped accepted state used as the next partial-review base.
@@ -147,23 +183,41 @@ pub fn apply_accept_success(
     transition: WorkAcceptTransition,
 ) -> Result<WorkLifecycleCommandOutput, WorkViewError> {
     sync_aux_accept(&store, &work_view, &transition, &generated_at)?;
-    if transition.partial {
+    work_view.overlay_version = transition
+        .expected_generation
+        .checked_next()
+        .ok_or_else(|| WorkViewError::WorkViewGenerationExhausted {
+            name: work_view.name.clone(),
+        })?
+        .get();
+    if transition.partial || transition.local_completion_pending {
         work_view.updated_at = generated_at.clone();
         store.upsert_work_view(&work_view)?;
-        append_work_event(&store, EventName::WorkAccepted, &work_view, &generated_at);
-        let next_actions = vec![RepairCommand::inspect(
-            "Review remaining work-view changes".to_string(),
-            Some(format!("bowline work review {}", work_view.name)),
-        )];
+        if !transition.local_completion_pending {
+            append_work_event(&store, EventName::WorkAccepted, &work_view, &generated_at);
+        }
+        let next_actions = if transition.partial {
+            vec![RepairCommand::inspect(
+                "Review remaining work-view changes".to_string(),
+                Some(format!("bowline work review {}", work_view.name)),
+            )]
+        } else {
+            Vec::new()
+        };
         return Ok(WorkLifecycleCommandOutput {
             contract_version: CONTRACT_VERSION,
             command: CommandName::Accept,
             generated_at,
             action: WorkCommandAction::Accepted,
-            paths: transition.paths,
+            paths: if transition.partial {
+                transition.paths
+            } else {
+                Vec::new()
+            },
             discarded_deletions: transition.discarded_deletions,
             aside_refused_paths: transition.aside_refused_paths,
-            partial: true,
+            unresolved_paths: Vec::new(),
+            partial: transition.partial,
             work_view,
             status: WorkspaceStatus::healthy(),
             next_actions,
@@ -190,6 +244,7 @@ pub fn apply_accept_success(
         paths: Vec::new(),
         discarded_deletions: transition.discarded_deletions,
         aside_refused_paths: transition.aside_refused_paths,
+        unresolved_paths: Vec::new(),
         partial: false,
         work_view,
         status: WorkspaceStatus::healthy(),
@@ -217,8 +272,15 @@ fn sync_aux_accept(
     let Some(record) = aux.work_views.get_mut(&id) else {
         return Ok(());
     };
+    if record.generation != transition.expected_generation {
+        return Err(WorkViewError::StaleWorkViewGeneration {
+            name: work_view.name.clone(),
+            expected: transition.expected_generation.get(),
+            actual: record.generation.get(),
+        });
+    }
     record.overlay_manifest_key = aux_cli::AuxManifestKey::new(transition.captured_overlay.clone());
-    if transition.partial {
+    if transition.partial || transition.local_completion_pending {
         if let Some(base) = &transition.accepted_base {
             record.base_manifest_key = aux_cli::AuxManifestKey::new(base.clone());
         }
@@ -226,6 +288,11 @@ fn sync_aux_accept(
         record.lifecycle = aux_cli::AuxWorkViewLifecycle::Accepted;
     }
     record.updated_at = generated_at.to_string();
+    record.generation = record.generation.checked_next().ok_or_else(|| {
+        WorkViewError::WorkViewGenerationExhausted {
+            name: work_view.name.clone(),
+        }
+    })?;
     aux_cli::write_aux_index_file(&root, &aux)?;
     Ok(())
 }
@@ -245,6 +312,7 @@ fn transition_work_view_with_store(
         },
         &generated_at,
     )?;
+    work_view.overlay_version = work_view.overlay_version.saturating_add(1);
     work_view.lifecycle = transition.lifecycle;
     work_view.visibility = transition.visibility;
     work_view.sync_state = WorkViewSyncState::LocalOnly;
@@ -262,6 +330,7 @@ fn transition_work_view_with_store(
         paths: Vec::new(),
         discarded_deletions: Vec::new(),
         aside_refused_paths: Vec::new(),
+        unresolved_paths: Vec::new(),
         partial: false,
         work_view,
         status: WorkspaceStatus::healthy(),

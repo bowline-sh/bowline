@@ -19,12 +19,14 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             "create-recovery-envelope",
             &recovery_envelope_payload_proof_subject(&input),
         )?;
+        assert_recovery_envelope_epoch(&state, &input)?;
         let key = (input.workspace_id.clone(), input.envelope_id.clone());
         if let Some(existing) = state.recovery_envelopes.get(&key) {
             let existing_proof = state.recovery_proof_verifiers.get(&key);
             if existing.ciphertext == input.ciphertext
                 && existing.fingerprint == input.fingerprint
                 && existing.created_by_device_id == input.created_by_device_id
+                && existing.key_epoch == input.key_epoch
                 && existing_proof == Some(&input.recovery_proof_verifier)
             {
                 return Ok(existing.clone());
@@ -40,6 +42,7 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             created_by_device_id: input.created_by_device_id,
             ciphertext: input.ciphertext,
             fingerprint: input.fingerprint,
+            key_epoch: input.key_epoch,
             state: RecoveryEnvelopeState::GeneratedUnverified,
             created_at: self.clock.now(),
             verified_at: None,
@@ -138,12 +141,14 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             "rotate-recovery-envelope",
             &recovery_envelope_payload_proof_subject(&input),
         )?;
+        assert_recovery_envelope_epoch(&state, &input)?;
         let record_key = (input.workspace_id.clone(), input.envelope_id.clone());
         if let Some(existing) = state.recovery_envelopes.get(&record_key) {
             let existing_proof = state.recovery_proof_verifiers.get(&record_key);
             if existing.ciphertext == input.ciphertext
                 && existing.fingerprint == input.fingerprint
                 && existing.created_by_device_id == input.created_by_device_id
+                && existing.key_epoch == input.key_epoch
                 && existing_proof == Some(&input.recovery_proof_verifier)
             {
                 return Ok(existing.clone());
@@ -171,6 +176,7 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             created_by_device_id: input.created_by_device_id,
             ciphertext: input.ciphertext,
             fingerprint: input.fingerprint,
+            key_epoch: input.key_epoch,
             state: RecoveryEnvelopeState::GeneratedUnverified,
             created_at: rotated_at,
             verified_at: None,
@@ -310,10 +316,10 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
                 .get(&input.workspace_id)
                 .copied()
                 .unwrap_or(1);
-            if existing_grant.key_epoch != current_key_epoch {
+            if !grant_epoch_is_established(existing_grant.key_epoch, current_key_epoch) {
                 return Err(ControlPlaneError::Conflict {
                     resource: "device-grant",
-                    reason: "device grant key epoch must match current workspace epoch",
+                    reason: "device grant key epoch must be an established workspace epoch",
                 });
             }
             return Ok(existing_grant.clone());
@@ -335,10 +341,10 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
             .get(&input.workspace_id)
             .copied()
             .unwrap_or(1);
-        if input.key_epoch != current_key_epoch {
+        if !grant_epoch_is_established(input.key_epoch, current_key_epoch) {
             return Err(ControlPlaneError::Conflict {
                 resource: "device-grant",
-                reason: "device grant key epoch must match current workspace epoch",
+                reason: "device grant key epoch must be an established workspace epoch",
             });
         }
         let granted_at = self.clock.now();
@@ -380,4 +386,34 @@ impl RecoveryControlPlaneClient for FakeControlPlaneClient {
         state.grants.insert(input.request_id.clone(), grant.clone());
         Ok(grant)
     }
+}
+
+fn assert_recovery_envelope_epoch(
+    state: &FakeControlPlaneState,
+    input: &RecoveryEnvelopeInput,
+) -> ControlPlaneResult<()> {
+    let current_key_epoch = state
+        .workspace_key_epochs
+        .get(&input.workspace_id)
+        .copied()
+        .unwrap_or(1);
+    let held_key_epoch = state
+        .device_held_key_epochs
+        .get(&(
+            input.workspace_id.clone(),
+            input.created_by_device_id.clone(),
+        ))
+        .copied()
+        .unwrap_or(0);
+    if input.key_epoch == current_key_epoch && held_key_epoch >= input.key_epoch {
+        return Ok(());
+    }
+    Err(ControlPlaneError::Conflict {
+        resource: "recovery-envelope",
+        reason: "Recovery Key must cover the creator's current workspace key epoch",
+    })
+}
+
+fn grant_epoch_is_established(key_epoch: u32, current_key_epoch: u32) -> bool {
+    (1..=current_key_epoch).contains(&key_epoch)
 }

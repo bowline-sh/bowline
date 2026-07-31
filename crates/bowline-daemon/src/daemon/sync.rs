@@ -134,6 +134,7 @@ pub(super) enum ManifestEngineHost {
 pub(super) enum ManifestEngineUnavailableReason {
     WorkspaceKeyUnavailable,
     HostedContextUnavailable,
+    EndpointProbeUnavailable,
     DriverStartFailed,
 }
 
@@ -142,6 +143,7 @@ impl ManifestEngineUnavailableReason {
         match self {
             Self::WorkspaceKeyUnavailable => "workspace key unavailable",
             Self::HostedContextUnavailable => "hosted context unavailable",
+            Self::EndpointProbeUnavailable => "endpoint probe unavailable",
             Self::DriverStartFailed => "driver failed to start",
         }
     }
@@ -528,7 +530,7 @@ fn build_manifest_driver(
         MANIFEST_ENGINE_DB_FILE, ManifestDriver, ManifestDriverConfig,
     };
     use bowline_local::sync::manifest_engine::{
-        EngineConfig, EngineContext, probe_name_folding, probe_timestamp_granularity,
+        EngineConfig, EngineContext, prepare_endpoint_probe_root, probe_endpoint_capabilities,
     };
 
     let workspace_key = match require_local_workspace_key(args) {
@@ -548,14 +550,23 @@ fn build_manifest_driver(
     let engine_state_dir = args
         .root
         .join(bowline_local::sync::manifest_engine::ENGINE_STATE_DIR);
+    let endpoint_probe_root = match prepare_endpoint_probe_root(&args.root) {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("bowline-daemon endpoint probe unavailable: {error}");
+            return Err(ManifestEngineUnavailableReason::EndpointProbeUnavailable);
+        }
+    };
+    let capabilities = probe_endpoint_capabilities(&endpoint_probe_root);
     let context = EngineContext {
         crypto: workspace_key.workspace_crypto(&args.workspace_id),
         device_id: args.device_id.clone(),
         // Probed here, once, because this is where the daemon accepts the
         // workspace volume; the verdict cannot change while the root stays
         // mounted, and a root replacement rebuilds this context.
-        names: probe_name_folding(&engine_state_dir),
-        timestamps: probe_timestamp_granularity(&engine_state_dir),
+        names: capabilities.names,
+        timestamps: capabilities.timestamps,
+        endpoint_probe_root,
         engine_state_dir,
         workspace_root: args.root.clone(),
         config: EngineConfig::default(),

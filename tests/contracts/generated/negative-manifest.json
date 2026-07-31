@@ -1881,6 +1881,12 @@
     {
       "declaration": "HostedRecoveryEnvelope",
       "expectation": "reject",
+      "id": "HostedRecoveryEnvelope.missing.keyEpoch",
+      "missingField": "keyEpoch"
+    },
+    {
+      "declaration": "HostedRecoveryEnvelope",
+      "expectation": "reject",
       "id": "HostedRecoveryEnvelope.missing.state",
       "missingField": "state"
     },
@@ -2031,6 +2037,12 @@
     {
       "declaration": "HostedRecoveryCreateRecoveryEnvelopeRequest",
       "expectation": "reject",
+      "id": "HostedRecoveryCreateRecoveryEnvelopeRequest.missing.keyEpoch",
+      "missingField": "keyEpoch"
+    },
+    {
+      "declaration": "HostedRecoveryCreateRecoveryEnvelopeRequest",
+      "expectation": "reject",
       "id": "HostedRecoveryCreateRecoveryEnvelopeRequest.missing.recoveryProofVerifier",
       "missingField": "recoveryProofVerifier"
     },
@@ -2069,6 +2081,12 @@
       "expectation": "reject",
       "id": "HostedRecoveryRotateRecoveryEnvelopeRequest.missing.fingerprint",
       "missingField": "fingerprint"
+    },
+    {
+      "declaration": "HostedRecoveryRotateRecoveryEnvelopeRequest",
+      "expectation": "reject",
+      "id": "HostedRecoveryRotateRecoveryEnvelopeRequest.missing.keyEpoch",
+      "missingField": "keyEpoch"
     },
     {
       "declaration": "HostedRecoveryRotateRecoveryEnvelopeRequest",
@@ -6742,6 +6760,18 @@
       "valuePath": "/boundary-values.json#/HostedRecoveryEnvelope.fingerprint.maxLength.invalid"
     },
     {
+      "declaration": "HostedRecoveryEnvelope",
+      "expectation": "reject",
+      "id": "HostedRecoveryEnvelope.keyEpoch.minimum.invalid",
+      "valuePath": "/boundary-values.json#/HostedRecoveryEnvelope.keyEpoch.minimum.invalid"
+    },
+    {
+      "declaration": "HostedRecoveryEnvelope",
+      "expectation": "reject",
+      "id": "HostedRecoveryEnvelope.keyEpoch.maximum.invalid",
+      "valuePath": "/boundary-values.json#/HostedRecoveryEnvelope.keyEpoch.maximum.invalid"
+    },
+    {
       "declaration": "HostedRecoveryDeviceGrant",
       "expectation": "reject",
       "id": "HostedRecoveryDeviceGrant.grantId.maxLength.invalid",
@@ -6852,6 +6882,18 @@
     {
       "declaration": "HostedRecoveryCreateRecoveryEnvelopeRequest",
       "expectation": "reject",
+      "id": "HostedRecoveryCreateRecoveryEnvelopeRequest.keyEpoch.minimum.invalid",
+      "valuePath": "/boundary-values.json#/HostedRecoveryCreateRecoveryEnvelopeRequest.keyEpoch.minimum.invalid"
+    },
+    {
+      "declaration": "HostedRecoveryCreateRecoveryEnvelopeRequest",
+      "expectation": "reject",
+      "id": "HostedRecoveryCreateRecoveryEnvelopeRequest.keyEpoch.maximum.invalid",
+      "valuePath": "/boundary-values.json#/HostedRecoveryCreateRecoveryEnvelopeRequest.keyEpoch.maximum.invalid"
+    },
+    {
+      "declaration": "HostedRecoveryCreateRecoveryEnvelopeRequest",
+      "expectation": "reject",
       "id": "HostedRecoveryCreateRecoveryEnvelopeRequest.recoveryProofVerifier.maxLength.invalid",
       "valuePath": "/boundary-values.json#/HostedRecoveryCreateRecoveryEnvelopeRequest.recoveryProofVerifier.maxLength.invalid"
     },
@@ -6890,6 +6932,18 @@
       "expectation": "reject",
       "id": "HostedRecoveryRotateRecoveryEnvelopeRequest.fingerprint.maxLength.invalid",
       "valuePath": "/boundary-values.json#/HostedRecoveryRotateRecoveryEnvelopeRequest.fingerprint.maxLength.invalid"
+    },
+    {
+      "declaration": "HostedRecoveryRotateRecoveryEnvelopeRequest",
+      "expectation": "reject",
+      "id": "HostedRecoveryRotateRecoveryEnvelopeRequest.keyEpoch.minimum.invalid",
+      "valuePath": "/boundary-values.json#/HostedRecoveryRotateRecoveryEnvelopeRequest.keyEpoch.minimum.invalid"
+    },
+    {
+      "declaration": "HostedRecoveryRotateRecoveryEnvelopeRequest",
+      "expectation": "reject",
+      "id": "HostedRecoveryRotateRecoveryEnvelopeRequest.keyEpoch.maximum.invalid",
+      "valuePath": "/boundary-values.json#/HostedRecoveryRotateRecoveryEnvelopeRequest.keyEpoch.maximum.invalid"
     },
     {
       "declaration": "HostedRecoveryRotateRecoveryEnvelopeRequest",
@@ -9880,5 +9934,5 @@
       "valuePath": "/boundary-values.json#/HostedDashboardListDashboardRecoveryEnvelopesResponse.revision.maximum.invalid"
     }
   ],
-  "schemaHash": "7e3e3eb8a0f34e782f71fd39798c9575a48b8dbb14248a6108eabdb0deee8313"
+  "schemaHash": "3a2adba48e6ba54b18a10d053f41ce878b6c376a714fef3b3cad0b6f8a770036"
 }

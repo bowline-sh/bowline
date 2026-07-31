@@ -9,7 +9,7 @@
 //! or the merge plan; the orchestrator in `apply.rs` composes them.
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
@@ -21,20 +21,23 @@ use super::naming::{
 };
 use super::{FsOp, FsOpKind, PullError, entry_mode, observe_syncable, record_for_entry};
 use crate::sync::manifest_engine::fs_guard::{
-    ExpectedFile, Observed, ParentChain, ParentChainMode, prepare_parent_chain,
-    symlink_target_lands_in_workspace, write_private_file,
+    AnchoredDirectory, AnchoredOpen, ExpectedFile, GuardedWrite, LeafName, Observed, ParentChain,
+    ParentChainMode, install_staged_file, install_staged_file_from_directory, open_private_root,
+    prepare_parent_chain, symlink_target_lands_in_workspace,
 };
 use crate::sync::manifest_engine::manifest::{
-    BlobKey, EntryKind, FileMode, KeyEpoch, ManifestEntry, WorkspacePath, open_file,
-    physical_blob_key,
+    BlobKey, EntryKind, FileMode, KeyEpoch, ManifestEntry, WorkspacePath,
+    is_segmented_file_envelope, open_file, open_file_segmented, physical_blob_key_reader,
 };
-use crate::sync::manifest_engine::push::{EngineContext, RemoteObjects};
+use crate::sync::manifest_engine::push::{EngineContext, PushError, RemoteObjects};
 use crate::sync::manifest_engine::store::FileRecord;
 
 /// A prepared 0600 temp file holding the exact bytes to install.
 pub struct TempFile {
     pub path: PathBuf,
     pub name: String,
+    directory: AnchoredDirectory,
+    leaf: LeafName,
 }
 
 /// The outcome of one filesystem materialization attempt. Neither non-`Done`
@@ -103,6 +106,7 @@ pub(crate) fn stage_write_temp<O: RemoteObjects>(
         _ => return Ok(None),
     };
     let ManifestEntry::File {
+        size,
         content_id,
         blob_key,
         key_epoch,
@@ -111,27 +115,158 @@ pub(crate) fn stage_write_temp<O: RemoteObjects>(
     else {
         return Ok(None); // directories and symlinks carry no temp content
     };
-    let plaintext = download_file(ctx, objects, *key_epoch, content_id, blob_key)?;
     let name = temp_name(&op.path, blob_key);
-    let temp_dir = ctx.engine_dir().join("tmp");
-    fs::create_dir_all(&temp_dir).map_err(PullError::engine_scratch)?;
-    let path = temp_dir.join(&name);
-    write_private_file(&path, &plaintext).map_err(PullError::engine_scratch)?;
-    Ok(Some(TempFile { path, name }))
+    let directory = recovery_directory(ctx)?;
+    let leaf = LeafName::from_path(Path::new(&name)).ok_or(PullError::Internal {
+        reason: "recovery temp name has no leaf",
+    })?;
+    let path = ctx.recovery_dir().join(&name);
+    stage_downloaded_file(StageDownloadRequest {
+        ctx,
+        objects,
+        key_epoch: *key_epoch,
+        content_id,
+        blob_key,
+        expected_size: *size,
+        directory: &directory,
+        plaintext_leaf: &leaf,
+    })?;
+    Ok(Some(TempFile {
+        path,
+        name,
+        directory,
+        leaf,
+    }))
 }
 
-pub(crate) fn download_file<O: RemoteObjects>(
-    ctx: &EngineContext,
-    objects: &O,
-    key_epoch: KeyEpoch,
-    content_id: &ContentId,
-    blob_key: &BlobKey,
-) -> Result<Vec<u8>, PullError> {
-    let sealed = objects.get_blob(blob_key).map_err(PullError::Transport)?;
-    if &physical_blob_key(&sealed) != blob_key {
-        return Err(PullError::BlobKeyMismatch);
+fn recovery_directory(ctx: &EngineContext) -> Result<AnchoredDirectory, PullError> {
+    let root = open_private_root(ctx.endpoint_probe_root()).map_err(PullError::engine_scratch)?;
+    let recovery_path = ctx.recovery_dir();
+    let leaf = LeafName::from_path(&recovery_path).ok_or(PullError::Internal {
+        reason: "recovery directory name has no leaf",
+    })?;
+    match root.open_directory(&leaf) {
+        AnchoredOpen::Ready(directory) => Ok(directory),
+        AnchoredOpen::Absent => match root
+            .create_directory(&leaf, 0o700)
+            .map_err(PullError::engine_scratch)?
+        {
+            AnchoredOpen::Ready(directory) => Ok(directory),
+            AnchoredOpen::Absent | AnchoredOpen::Blocked => Err(PullError::Internal {
+                reason: "recovery directory could not be opened after creation",
+            }),
+        },
+        AnchoredOpen::Blocked => Err(PullError::Internal {
+            reason: "recovery directory is not a private directory",
+        }),
     }
-    open_file(&ctx.crypto, key_epoch, content_id, &sealed).map_err(PullError::Manifest)
+}
+
+struct StageDownloadRequest<'a, O> {
+    ctx: &'a EngineContext,
+    objects: &'a O,
+    key_epoch: KeyEpoch,
+    content_id: &'a ContentId,
+    blob_key: &'a BlobKey,
+    expected_size: u64,
+    directory: &'a AnchoredDirectory,
+    plaintext_leaf: &'a LeafName,
+}
+
+fn stage_downloaded_file<O: RemoteObjects>(
+    request: StageDownloadRequest<'_, O>,
+) -> Result<(), PullError> {
+    let StageDownloadRequest {
+        ctx,
+        objects,
+        key_epoch,
+        content_id,
+        blob_key,
+        expected_size,
+        directory,
+        plaintext_leaf,
+    } = request;
+    let sealed_name = format!(
+        "{}.sealed-partial",
+        plaintext_leaf.as_str().ok_or(PullError::Internal {
+            reason: "recovery temp name is not UTF-8",
+        })?
+    );
+    let sealed_leaf = LeafName::from_path(Path::new(&sealed_name)).ok_or(PullError::Internal {
+        reason: "sealed recovery temp name has no leaf",
+    })?;
+    let _ = directory.unlink(&sealed_leaf);
+    let mut sealed = directory
+        .create_private_file(&sealed_leaf)
+        .map_err(PullError::engine_scratch)?;
+    let result = (|| {
+        let downloaded = objects
+            .get_blob_to_writer(blob_key, &mut sealed)
+            .map_err(PullError::Transport)?;
+        sealed.flush().map_err(PullError::engine_scratch)?;
+        sealed.sync_all().map_err(PullError::engine_scratch)?;
+        let sealed_len = sealed.metadata().map_err(PullError::engine_scratch)?.len();
+        if downloaded != sealed_len {
+            return Err(PullError::BlobKeyMismatch);
+        }
+        sealed
+            .seek(SeekFrom::Start(0))
+            .map_err(PullError::engine_scratch)?;
+        if &physical_blob_key_reader(&mut sealed).map_err(PullError::engine_scratch)? != blob_key {
+            return Err(PullError::BlobKeyMismatch);
+        }
+        sealed
+            .seek(SeekFrom::Start(0))
+            .map_err(PullError::engine_scratch)?;
+        let mut prefix = [0_u8; 8];
+        let prefix_len = sealed
+            .read(&mut prefix)
+            .map_err(PullError::engine_scratch)?;
+        sealed
+            .seek(SeekFrom::Start(0))
+            .map_err(PullError::engine_scratch)?;
+
+        let _ = directory.unlink(plaintext_leaf);
+        let mut plaintext = directory
+            .create_private_file(plaintext_leaf)
+            .map_err(PullError::engine_scratch)?;
+        if is_segmented_file_envelope(&prefix[..prefix_len]) {
+            open_file_segmented(
+                &ctx.crypto,
+                key_epoch,
+                content_id,
+                &mut sealed,
+                &mut plaintext,
+                expected_size,
+                ctx.config.max_seal_bytes,
+            )
+            .map_err(PullError::Manifest)?;
+        } else {
+            let mut sealed_bytes = Vec::new();
+            sealed
+                .read_to_end(&mut sealed_bytes)
+                .map_err(PullError::engine_scratch)?;
+            let opened = open_file(
+                &ctx.crypto,
+                key_epoch,
+                content_id,
+                &sealed_bytes,
+                expected_size,
+                ctx.config.max_seal_bytes,
+            )
+            .map_err(PullError::Manifest)?;
+            plaintext
+                .write_all(&opened)
+                .map_err(PullError::engine_scratch)?;
+        }
+        plaintext.flush().map_err(PullError::engine_scratch)?;
+        plaintext.sync_all().map_err(PullError::engine_scratch)
+    })();
+    let _ = directory.unlink(&sealed_leaf);
+    if result.is_err() {
+        let _ = directory.unlink(plaintext_leaf);
+    }
+    result
 }
 
 /// Atomic no-replace install (create) or checked replace (preserve preimage to
@@ -186,12 +321,23 @@ pub(crate) fn install_entry<O: RemoteObjects>(
             let temp = temp.ok_or(PullError::Internal {
                 reason: "file install without temp",
             })?;
-            // Stamp the manifest entry's mode onto the 0600 staging temp BEFORE
-            // the atomic rename, so the installed file carries the intended mode
-            // rather than 0600. Without this the next pull re-observes a spurious
-            // mode change and conflict-asides a file it should have installed.
-            chmod_temp(&temp.path, entry_mode(entry))?;
-            fs::rename(&temp.path, &absolute).map_err(|error| PullError::path(path, &error))?;
+            match install_staged_file_from_directory(
+                &ctx.workspace_root,
+                path,
+                &temp.directory,
+                &temp.leaf,
+                entry_mode(entry),
+            )
+            .map_err(|error| match error {
+                PushError::Io(error) => PullError::path(path, &error),
+                other => PullError::from(other),
+            })? {
+                GuardedWrite::Written(fingerprint) => {
+                    fsync_parent(&absolute);
+                    return Ok(Materialized::Done(record_for_entry(entry, fingerprint)));
+                }
+                GuardedWrite::Blocked => return Ok(Materialized::ParentBlocked),
+            }
         }
         ManifestEntry::Directory { mode } => {
             create_dir_no_follow(path, &absolute)?;
@@ -310,16 +456,26 @@ pub(crate) fn materialize_aside<O: RemoteObjects>(
     let absolute = ctx.workspace_root.join(aside.as_str());
     match entry {
         ManifestEntry::File {
+            size,
             content_id,
             blob_key,
             key_epoch,
             ..
         } => {
-            let bytes = match temp {
-                Some(temp) => fs::read(&temp.path).map_err(PullError::engine_scratch)?,
-                None => download_file(ctx, objects, *key_epoch, content_id, blob_key)?,
+            let (source, remove_after) = match temp {
+                Some(temp) => (temp.path, false),
+                None => (
+                    download_recovery_temp(
+                        ctx, objects, path, *key_epoch, content_id, blob_key, *size,
+                    )?,
+                    true,
+                ),
             };
-            create_no_replace(&aside, &absolute, &bytes)?;
+            let result = create_no_replace_from_file(&aside, &absolute, &source);
+            if remove_after {
+                let _ = fs::remove_file(&source);
+            }
+            result?;
         }
         ManifestEntry::Directory { .. } => {
             create_dir_no_follow(&aside, &absolute)?;
@@ -399,21 +555,21 @@ fn aside_content_matches(
     }
 }
 
-pub(crate) fn create_no_replace(
+fn create_no_replace_from_file(
     path: &WorkspacePath,
     absolute: &Path,
-    bytes: &[u8],
+    source: &Path,
 ) -> Result<(), PullError> {
+    let mut reader = fs::File::open(source).map_err(PullError::engine_scratch)?;
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true).mode(0o644);
-    let mut file = options
+    let mut writer = options
         .open(absolute)
         .map_err(|error| PullError::path(path, &error))?;
-    file.write_all(bytes)
-        .map_err(|error| PullError::path(path, &error))?;
-    file.sync_all()
-        .map_err(|error| PullError::path(path, &error))?;
-    Ok(())
+    io::copy(&mut reader, &mut writer).map_err(|error| PullError::path(path, &error))?;
+    writer
+        .sync_all()
+        .map_err(|error| PullError::path(path, &error))
 }
 
 /// The quarantine subtree: full copies of bytes an apply is about to displace,
@@ -487,6 +643,7 @@ pub(crate) fn reinstall_from_download<O: RemoteObjects>(
     entry: &ManifestEntry,
 ) -> Result<Materialized<FileRecord>, PullError> {
     if let ManifestEntry::File {
+        size,
         content_id,
         blob_key,
         key_epoch,
@@ -498,14 +655,20 @@ pub(crate) fn reinstall_from_download<O: RemoteObjects>(
         {
             return Ok(Materialized::ParentBlocked);
         }
-        let bytes = download_file(ctx, objects, *key_epoch, content_id, blob_key)?;
+        let temp =
+            download_recovery_temp(ctx, objects, path, *key_epoch, content_id, blob_key, *size)?;
         let absolute = ctx.workspace_root.join(path.as_str());
         // Preserve the on-disk preimage before overwriting, so a reinstall (no
         // temp survived) still leaves a rollback asset like the rename path does.
         preserve_preimage(ctx, path, &absolute)?;
-        write_private_file(&absolute, &bytes).map_err(|error| PullError::path(path, &error))?;
-        set_mode(&ctx.workspace_root, path, entry_mode(entry))?;
+        let copied = copy_replacement(&ctx.workspace_root, path, &temp, entry_mode(entry));
+        let _ = fs::remove_file(&temp);
+        let fingerprint = match copied? {
+            GuardedWrite::Written(fingerprint) => fingerprint,
+            GuardedWrite::Blocked => return Ok(Materialized::ParentBlocked),
+        };
         fsync_parent(&absolute);
+        return Ok(Materialized::Done(record_for_entry(entry, fingerprint)));
     }
     let Some(observed) = observe_syncable(&ctx.workspace_root, path)? else {
         return Ok(Materialized::Vanished);
@@ -514,6 +677,46 @@ pub(crate) fn reinstall_from_download<O: RemoteObjects>(
         entry,
         observed.fingerprint,
     )))
+}
+
+fn download_recovery_temp<O: RemoteObjects>(
+    ctx: &EngineContext,
+    objects: &O,
+    path: &WorkspacePath,
+    key_epoch: KeyEpoch,
+    content_id: &ContentId,
+    blob_key: &BlobKey,
+    expected_size: u64,
+) -> Result<PathBuf, PullError> {
+    let directory = recovery_directory(ctx)?;
+    let name = temp_name(path, blob_key);
+    let leaf = LeafName::from_path(Path::new(&name)).ok_or(PullError::Internal {
+        reason: "recovery temp name has no leaf",
+    })?;
+    let target = ctx.recovery_dir().join(&name);
+    stage_downloaded_file(StageDownloadRequest {
+        ctx,
+        objects,
+        key_epoch,
+        content_id,
+        blob_key,
+        expected_size,
+        directory: &directory,
+        plaintext_leaf: &leaf,
+    })?;
+    Ok(target)
+}
+
+pub(crate) fn copy_replacement(
+    root: &Path,
+    path: &WorkspacePath,
+    source: &Path,
+    final_mode: FileMode,
+) -> Result<GuardedWrite, PullError> {
+    install_staged_file(root, path, source, final_mode).map_err(|error| match error {
+        PushError::Io(error) => PullError::path(path, &error),
+        other => PullError::from(other),
+    })
 }
 
 // ---- low-level filesystem helpers -------------------------------------------
@@ -528,16 +731,6 @@ pub(crate) fn fsync_parent(absolute: &Path) {
     {
         let _ = dir.sync_all();
     }
-}
-
-/// Fchmod a staging temp to `mode` before it is atomically renamed into place.
-/// Operates on the file object (fchmod) rather than re-resolving the path, so a
-/// racing swap of the temp cannot redirect the chmod.
-pub(crate) fn chmod_temp(temp: &Path, mode: FileMode) -> Result<(), PullError> {
-    let file = fs::File::open(temp).map_err(PullError::engine_scratch)?;
-    file.set_permissions(fs::Permissions::from_mode(mode.get()))
-        .map_err(PullError::engine_scratch)?;
-    Ok(())
 }
 
 pub(crate) fn set_mode(root: &Path, path: &WorkspacePath, mode: FileMode) -> Result<(), PullError> {

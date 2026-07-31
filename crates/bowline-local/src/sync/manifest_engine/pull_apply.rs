@@ -50,7 +50,8 @@ use super::push::{
 };
 use super::store::{FileRecord, ManifestStore, ManifestStoreError};
 use super::tree_transport::{
-    FetchTreeRequest, PruneBasis, StoreNodeLedger, TreeError, TreeNodeLedger, fetch_tree,
+    DiffTreeRequest, FetchTreeRequest, PruneBasis, StoreNodeLedger, TreeError, TreeNodeLedger,
+    diff_tree, fetch_tree,
 };
 use super::unsyncable::{UnsyncablePath, UnsyncableReason, UnsyncableRecord};
 
@@ -79,28 +80,39 @@ pub struct PullDeps<'a, O: RemoteObjects, R: RemoteRef> {
 /// entry.
 #[derive(Clone, Copy)]
 pub enum PullScope<'a> {
-    /// Steady state: the driver's dirty set is the whole local-divergence story
-    /// (watcher events plus the paths the last stat walk reported).
+    /// Steady-state watcher and stat-walk divergences.
     ChangedAndDirty(&'a BTreeSet<WorkspacePath>),
-    /// A full stat walk refreshed the dirty set inside this same cycle, so the
-    /// set is complete by construction rather than by assumption. Debug builds
-    /// use that guarantee to re-observe every excluded path once and prove the
-    /// narrowing lost nothing.
+    /// A complete same-cycle stat walk, enabling debug narrowing proofs.
     ChangedAndWalked(&'a BTreeSet<WorkspacePath>),
-    /// The caller keeps no dirty set at all — a work-view materialize owns no
-    /// watcher and no driver — so every path is observed. Its ancestor is one
-    /// project rather than the whole workspace.
+    /// A work-view materialize with no watcher observes its whole ancestor.
     WholeAncestor,
+    /// Startup crash repair: reclassify even when the ref still names the
+    /// recorded applied root, because the local ancestor can commit before its
+    /// follow-on copy-on-write push reaches the ref.
+    ReconcileAncestor(&'a BTreeSet<WorkspacePath>),
 }
 
 impl PullScope<'_> {
+    fn dirty_paths(&self) -> Option<&BTreeSet<WorkspacePath>> {
+        match self {
+            Self::ChangedAndDirty(dirty)
+            | Self::ChangedAndWalked(dirty)
+            | Self::ReconcileAncestor(dirty) => Some(dirty),
+            Self::WholeAncestor => None,
+        }
+    }
+
     fn observes(&self, path: &WorkspacePath, remote: &RemoteDelta) -> bool {
         match self {
-            Self::WholeAncestor => true,
+            Self::WholeAncestor | Self::ReconcileAncestor(_) => true,
             Self::ChangedAndDirty(dirty) | Self::ChangedAndWalked(dirty) => {
                 !matches!(remote, RemoteDelta::Unchanged) || dirty.contains(path)
             }
         }
+    }
+
+    fn reconciles_pending(&self, path: &WorkspacePath) -> bool {
+        matches!(self, Self::ReconcileAncestor(pending) if pending.contains(path))
     }
 }
 
@@ -168,7 +180,9 @@ fn pull_observed<O: RemoteObjects, R: RemoteRef>(
     enforce_freshness(store, &head)?;
 
     let state = store.engine_state()?;
-    if state.applied_manifest_key.as_ref() == Some(&head.manifest_key) {
+    if state.applied_manifest_key.as_ref() == Some(&head.manifest_key)
+        && !matches!(deps.scope, PullScope::ReconcileAncestor(_))
+    {
         // An ABA hosted sequence (A -> B -> A while offline) re-presents the
         // applied key at a newer version. Persist that version (applied +
         // ratchet) or every later push CASes against the stale stored version,
@@ -234,11 +248,53 @@ pub(crate) fn decide_head<O: RemoteObjects, R: RemoteRef>(
     deps: &PullDeps<'_, O, R>,
     head: &super::push::RefObservation,
 ) -> Result<MergePlan, PullError> {
+    let state = store.engine_state()?;
+    if let (Some(applied), Some(dirty)) = (
+        state.applied_manifest_key.as_ref(),
+        deps.scope.dirty_paths(),
+    ) {
+        let limits = if deps.ctx.project_view {
+            DecodeLimits::project_view()
+        } else {
+            DecodeLimits::default()
+        };
+        let delta = diff_tree(DiffTreeRequest {
+            objects: deps.objects,
+            crypto: &deps.ctx.crypto,
+            counters: &deps.ctx.counters,
+            old_root: applied,
+            new_root: &head.manifest_key,
+            dirty,
+            names: deps.ctx.names,
+            limits: &limits,
+        })?;
+        let mut scopes = delta.touched;
+        scopes.extend(dirty.iter().cloned());
+        for collision in &delta.collisions {
+            scopes.extend(collision.paths.iter().cloned());
+        }
+        let ancestor = store.files_at_paths(&scopes)?;
+        deps.ctx.counters.record_ancestor_rows_read(ancestor.len());
+        return classify(
+            deps.ctx,
+            &ancestor,
+            &delta.entries,
+            &delta.collisions,
+            deps.scope,
+        );
+    }
     let ancestor = store.all_files()?;
+    deps.ctx.counters.record_ancestor_rows_read(ancestor.len());
     // `head_snapshot` is the new engine's flat `Manifest` (distinct from the old
     // `SnapshotManifest` the page-reader gate targets); binding it to a non-
     // `*manifest` name keeps that intent unambiguous.
-    let (head_snapshot, collisions) = fetch_head(store, deps, head, &ancestor)?;
+    let (head_snapshot, collisions) = fetch_head(
+        store,
+        deps,
+        head,
+        &ancestor,
+        !matches!(deps.scope, PullScope::ReconcileAncestor(_)),
+    )?;
     classify(
         deps.ctx,
         &ancestor,
@@ -262,6 +318,7 @@ fn fetch_head<O: RemoteObjects, R: RemoteRef>(
     deps: &PullDeps<'_, O, R>,
     head: &super::push::RefObservation,
     ancestor: &BTreeMap<WorkspacePath, FileRecord>,
+    prune_unchanged: bool,
 ) -> Result<(super::manifest::Manifest, Vec<PathCollision>), PullError> {
     let key_epoch = deps.ctx.key_epoch();
     let limits = if deps.ctx.project_view {
@@ -275,6 +332,11 @@ fn fetch_head<O: RemoteObjects, R: RemoteRef>(
         .subtree_hashes(key_epoch)
         .map_err(PullError::Manifest)?;
     let mut ledger = StoreNodeLedger::new(store, key_epoch);
+    let prune = prune_unchanged.then_some(PruneBasis {
+        entries: &ancestor_entries,
+        hashes: &ancestor_hashes,
+        ledger: &ledger,
+    });
     let fetched = fetch_tree(FetchTreeRequest {
         objects: deps.objects,
         crypto: &deps.ctx.crypto,
@@ -282,11 +344,7 @@ fn fetch_head<O: RemoteObjects, R: RemoteRef>(
         root: &head.manifest_key,
         limits: &limits,
         names: deps.ctx.names,
-        prune: Some(PruneBasis {
-            entries: &ancestor_entries,
-            hashes: &ancestor_hashes,
-            ledger: &ledger,
-        }),
+        prune,
     })?;
     // `head_snapshot` is deliberately not named `*manifest`: the flat-manifest
     // cutover gate treats a manifest-named binding's entry-map access as the
@@ -392,6 +450,14 @@ fn classify(
             ancestor.get(path),
             remote_delta.requires_verified_local_content(),
         )?;
+        if scope.reconciles_pending(path)
+            && ancestor.get(path).is_none()
+            && matches!(local, LocalDelta::Absent)
+            && remote.get(path).is_some()
+        {
+            plan.push_again.insert(path.clone());
+            continue;
+        }
         // A case-fold collision must never silently clobber: force the aside path.
         let force_aside = collided.contains(path.as_str());
         classify_one(
@@ -533,6 +599,11 @@ fn classify_one(
             // Keep the deletion; preserve the remote change as an aside.
             plan.aside(path, entry.clone(), PreimagePayload::absent());
             plan.ancestor_removals.insert(path.clone());
+            // The applied remote root still contains this path. Carry the local
+            // deletion into the next push explicitly so copy-on-write
+            // publication removes it instead of relying on a flat rebuild to
+            // omit every row absent from the local ancestor.
+            plan.push_again.insert(path.clone());
         }
         (L::Deleted, R::Unchanged | R::ModeChanged(_)) => {
             plan.push_again.insert(path.clone()); // deletion is local-ahead; push it

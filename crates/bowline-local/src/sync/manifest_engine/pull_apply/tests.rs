@@ -13,6 +13,9 @@ use crate::sync::manifest_engine::engine_test_support::{Event, TestEngine};
 use crate::sync::manifest_engine::manifest::{FileMode, ManifestEntry, ManifestKey, WorkspacePath};
 use crate::sync::manifest_engine::unsyncable::UnsyncableReason;
 
+#[path = "tests/recovery_copy.rs"]
+mod recovery_copy;
+
 pub(super) fn wp(path: &str) -> WorkspacePath {
     WorkspacePath::new(path)
 }
@@ -29,6 +32,28 @@ fn row_ancestor_absent_local_absent_remote_present_creates_remote() {
     assert_eq!(engine.read("new.txt"), b"remote bytes");
     assert!(engine.files().contains_key(&wp("new.txt")));
     assert!(outcome.installed.contains(&wp("new.txt")));
+}
+
+#[test]
+fn pull_rejects_file_content_that_does_not_match_its_declared_size() {
+    let mut engine = TestEngine::new("declared-size-mismatch");
+    let mut entry = engine.remote_file(b"remote bytes");
+    let ManifestEntry::File { size, .. } = &mut entry else {
+        unreachable!("remote_file always returns a file entry");
+    };
+    *size += 1;
+    engine.publish(&[("new.txt", entry)]);
+
+    assert!(matches!(
+        engine.try_pull(),
+        Err(PullError::Manifest(
+            crate::sync::manifest_engine::manifest::ManifestError::DecodedSizeMismatch {
+                expected: 13,
+                actual: Some(12),
+            }
+        ))
+    ));
+    assert!(!engine.root().join("new.txt").exists());
 }
 
 #[test]
@@ -416,6 +441,10 @@ fn row_ancestor_present_local_deleted_remote_changed_keeps_deletion_asides_remot
 
     let outcome = engine.pull();
     assert!(!engine.exists("gone.txt")); // deletion kept
+    assert!(
+        outcome.push_again.contains(&wp("gone.txt")),
+        "the next copy-on-write push must remove the path from the applied remote root"
+    );
     let aside = outcome.conflict_asides.iter().next().expect("one aside");
     assert_eq!(engine.read(aside.as_str()), b"remote changed");
 }
@@ -1944,12 +1973,18 @@ fn narrowing_a_pull_replaces_one_stat_per_entry_with_one_stat_per_change() {
     let second = engine.remote.publish_blob(&engine.ctx.crypto, b"peer two");
     head.entries.insert(wp(&paths[1]), second);
     engine.remote.publish_manifest(&engine.ctx.crypto, &head);
-    let before = engine.counters().merge_observations;
+    let before = engine.counters();
     engine.pull_dirty(&[]);
+    let after = engine.counters();
     assert_eq!(
-        engine.counters().merge_observations - before,
+        after.merge_observations - before.merge_observations,
         1,
         "the narrowed scope costs one stat per changed entry"
+    );
+    assert_eq!(
+        after.ancestor_rows_read - before.ancestor_rows_read,
+        1,
+        "the narrowed scope reads one ancestor row rather than the workspace"
     );
     assert_eq!(engine.read(&paths[1]), b"peer two");
 }
@@ -1984,6 +2019,82 @@ fn a_narrowed_pull_still_sees_a_local_divergence_the_dirty_set_carries() {
 }
 
 #[test]
+fn startup_reconciliation_preserves_a_durable_pending_tombstone() {
+    let mut engine = TestEngine::new("pull-reconcile-tombstone");
+    engine.write("gone.txt", b"remote bytes");
+    engine.push(&["gone.txt"]);
+    engine.remove("gone.txt");
+    let path = wp("gone.txt");
+    let pending = std::collections::BTreeSet::from([path.clone()]);
+    engine
+        .store
+        .commit_pull_outcome(
+            &crate::sync::manifest_engine::store::AncestorCommit {
+                upserts: std::collections::BTreeMap::new(),
+                removals: pending.clone(),
+            },
+            None,
+            None,
+            &[],
+            &pending,
+        )
+        .expect("persist crash-window tombstone");
+
+    let deps = PullDeps {
+        ctx: &engine.ctx,
+        objects: &engine.remote,
+        refs: &engine.remote,
+        scope: PullScope::ReconcileAncestor(&pending),
+    };
+    let outcome = super::pull(&mut engine.store, &deps).expect("startup reconcile");
+
+    assert!(outcome.push_again.contains(&path));
+    assert!(
+        !engine.root().join("gone.txt").exists(),
+        "reconciliation must not resurrect the remotely present file"
+    );
+    assert!(matches!(
+        engine.push(&["gone.txt"]),
+        crate::sync::manifest_engine::push::PushOutcome::Advanced { .. }
+    ));
+    assert!(
+        !engine
+            .remote
+            .decoded_manifest(&engine.ctx.crypto)
+            .expect("head")
+            .entries
+            .contains_key(&path)
+    );
+}
+
+#[test]
+fn a_remote_directory_mode_change_does_not_delete_unchanged_descendants() {
+    let mut engine = TestEngine::new("pull-directory-mode-scope");
+    engine.write("tree/child.txt", b"child");
+    engine.push(&["tree", "tree/child.txt"]);
+
+    let mut head = engine
+        .remote
+        .decoded_manifest(&engine.ctx.crypto)
+        .expect("published head");
+    head.entries.insert(
+        wp("tree"),
+        ManifestEntry::Directory {
+            mode: FileMode::new(0o700),
+        },
+    );
+    engine.remote.publish_manifest(&engine.ctx.crypto, &head);
+
+    engine.pull_dirty(&[]);
+
+    assert_eq!(engine.read("tree/child.txt"), b"child");
+    assert!(
+        engine.files().contains_key(&wp("tree/child.txt")),
+        "an unchanged descendant remains in the durable ancestor"
+    );
+}
+
+#[test]
 fn a_git_lock_taken_mid_plan_defers_the_very_next_op() {
     // `index.lock` is what `git add`, `git commit`, `git checkout` and `git rebase`
     // take. Applying remote opaque Git state alongside a live Git transaction is
@@ -2008,6 +2119,56 @@ fn a_git_lock_taken_mid_plan_defers_the_very_next_op() {
 }
 
 #[test]
+fn a_ref_lock_after_an_object_defers_the_next_ref_operation() {
+    let engine = TestEngine::new("git-ref-lock-midplan");
+    let root = engine.root();
+    let refs = root.join("repo").join(".git").join("refs").join("heads");
+    std::fs::create_dir_all(&refs).expect("refs heads");
+
+    let mut cache = super::git_contract::GitLockCache::default();
+    assert!(
+        !cache.is_active(
+            &root,
+            &wp("repo/.git/objects/aa/0123456789abcdef0123456789abcdef01234567")
+        ),
+        "the first object primes the unlocked recursive verdict"
+    );
+    std::fs::write(refs.join("main.lock"), b"").expect("main ref lock");
+
+    assert!(
+        cache.is_active(&root, &wp("repo/.git/refs/heads/main")),
+        "a ref operation must invalidate the object-write cache and see the new lock"
+    );
+}
+
+#[test]
+fn mutable_object_metadata_also_reprobes_ref_locks() {
+    for mutable_path in [
+        "repo/.git/objects/info/alternates",
+        "repo/.git/objects/pack/multi-pack-index",
+        "repo/.git/objects/pack/pack-0123456789abcdef0123456789abcdef01234567.idx",
+        "repo/.git/objects/pack/pack-0123456789abcdef0123456789abcdef01234567.bitmap",
+    ] {
+        let engine = TestEngine::new("git-object-metadata-lock");
+        let root = engine.root();
+        let refs = root.join("repo").join(".git").join("refs").join("heads");
+        std::fs::create_dir_all(&refs).expect("refs heads");
+
+        let mut cache = super::git_contract::GitLockCache::default();
+        assert!(!cache.is_active(
+            &root,
+            &wp("repo/.git/objects/aa/0123456789abcdef0123456789abcdef01234567")
+        ));
+        std::fs::write(refs.join("main.lock"), b"").expect("main ref lock");
+
+        assert!(
+            cache.is_active(&root, &wp(mutable_path)),
+            "{mutable_path} is mutable metadata and must not reuse the object cache"
+        );
+    }
+}
+
+#[test]
 fn the_recursive_refs_walk_is_per_repo_per_plan_not_per_op() {
     let engine = TestEngine::new("git-lock-probe-cost");
     let root = engine.root();
@@ -2022,14 +2183,12 @@ fn the_recursive_refs_walk_is_per_repo_per_plan_not_per_op() {
     let mut cache = super::git_contract::GitLockCache::default();
     for index in 0..ops {
         let repo = if index % 2 == 0 { "repo-a" } else { "repo-b" };
-        assert!(!cache.is_active(&root, &wp(&format!("{repo}/.git/objects/{index:05}"))));
+        assert!(!cache.is_active(&root, &wp(&format!("{repo}/.git/objects/aa/{index:038x}"))));
     }
 
-    // Two repos, re-walked once every `GIT_LOCK_REPROBE_OPS` ops. Only the
-    // recursive walk rides that schedule — the three single-file lock stats run on
-    // every one of these ops, which is what the mid-plan test above asserts. The
-    // bound is what matters: walks must track the reprobe schedule, never the op
-    // count.
+    // Two repos, re-walked once every `GIT_LOCK_REPROBE_OPS` immutable-object
+    // ops. Mutable Git paths deliberately bypass this cache; the bound here
+    // covers both large initial materializations and GC-driven object removals.
     assert!(
         cache.probes() as usize <= 2 * (ops / 256 + 1),
         "refs walks ({}) must stay bounded by the reprobe schedule, not by {ops} ops",

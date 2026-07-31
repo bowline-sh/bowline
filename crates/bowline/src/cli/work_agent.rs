@@ -139,6 +139,10 @@ fn parse_work_selector_args(
         .options("--path")
         .map(str::to_string)
         .collect::<Vec<_>>();
+    let acknowledged_unresolved = values
+        .options("--acknowledge-unresolved")
+        .map(str::to_string)
+        .collect::<Vec<_>>();
     if !mode.allow_paths && !paths.is_empty() {
         return Err(parse_error(command_usage_error(
             command,
@@ -168,7 +172,11 @@ fn parse_work_selector_args(
             work_usage_actions(),
         )));
     }
-    Ok(work::WorkSelectorArgs { selector, paths })
+    Ok(work::WorkSelectorArgs {
+        selector,
+        paths,
+        acknowledged_unresolved,
+    })
 }
 
 pub(super) fn parse_cleanup_command(
@@ -185,6 +193,10 @@ pub(super) fn parse_cleanup_command(
 
     Ok(Command::WorkCleanup(work::WorkCleanupArgs {
         apply: values.flag("--apply"),
+        acknowledged_unresolved: values
+            .options("--acknowledge-unresolved")
+            .map(str::to_string)
+            .collect(),
     }))
 }
 

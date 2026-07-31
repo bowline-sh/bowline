@@ -5,6 +5,11 @@
 
 use super::is_project_env_name;
 
+/// Prefix for uniquely owned workspace-volume directories used by transient
+/// endpoint capability and clock probes. The full names use the existing
+/// materialization-temp convention and are therefore derivable daemon state.
+pub const ENDPOINT_PROBE_STATE_PREFIX: &str = ".bowline-materialize-endpoint-probe-";
+
 /// Whether any path component is a project `.env` file, so callers can flag
 /// content that may carry secrets.
 pub fn is_secret_bearing_path(path: &str) -> bool {
@@ -22,9 +27,32 @@ pub fn is_secret_bearing_path(path: &str) -> bool {
 pub fn is_private_workspace_state_path(path: &str) -> bool {
     path == ".bowline"
         || path.starts_with(".bowline/")
-        || path
-            .split('/')
-            .any(|part| part.starts_with(".bowline-materialize-") && part.ends_with(".tmp"))
+        || path.split('/').any(|part| {
+            (part.starts_with(".bowline-materialize-") && part.ends_with(".tmp"))
+                || is_recovery_temp_component(part)
+                || is_recovery_quarantine_component(part)
+        })
+}
+
+pub(crate) fn is_recovery_temp_component(name: &str) -> bool {
+    is_recovery_nonce_component(name, ".bowline-recovery-")
+}
+
+pub(crate) fn is_recovery_quarantine_component(name: &str) -> bool {
+    is_recovery_nonce_component(name, ".bowline-recovery-quarantine-")
+}
+
+fn is_recovery_nonce_component(name: &str, prefix: &str) -> bool {
+    let Some(nonce) = name
+        .strip_prefix(prefix)
+        .and_then(|name| name.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    nonce.len() == 32
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]
@@ -44,7 +72,11 @@ mod tests {
         for path in [
             ".bowline",
             ".bowline/local.sqlite3",
+            ".bowline-materialize-endpoint-probe-123-1.tmp",
+            ".bowline-materialize-endpoint-probe-123-1.tmp/endpoint-clock.probe",
             "app/src/.bowline-materialize-main_rs-abcdef123456.tmp",
+            "vendor/.bowline-recovery-0123456789abcdef0123456789abcdef.tmp",
+            "vendor/.bowline-recovery-quarantine-0123456789abcdef0123456789abcdef.tmp",
         ] {
             assert!(is_private_workspace_state_path(path), "{path}");
         }
@@ -58,6 +90,9 @@ mod tests {
             ".bowline-conflicts/conflict/local/app.env",
             "project/.bowline/state.json",
             ".bowline-materialize-not-a-temp",
+            "vendor/.bowline-recovery-notes.tmp",
+            "vendor/.bowline-recovery-0123456789abcdef.tmp",
+            "vendor/.bowline-recovery-0123456789ABCDEF0123456789ABCDEF.tmp",
         ] {
             assert!(!is_private_workspace_state_path(path), "{path}");
         }

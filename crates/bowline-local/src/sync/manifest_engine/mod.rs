@@ -30,6 +30,7 @@ pub mod tree_transport;
 pub mod unsyncable;
 pub mod work_view;
 pub mod work_view_cli;
+pub(crate) mod work_view_lock;
 pub mod workspace_root;
 
 mod cycle_outcome;
@@ -37,6 +38,7 @@ mod entry_record;
 mod events;
 mod publish_cycle;
 mod ref_observation;
+mod remote;
 mod scan_cycle;
 mod state;
 
@@ -75,8 +77,10 @@ pub use counters::{CountersSnapshot, EngineCounters};
 pub use cycle_outcome::EngineError;
 use cycle_outcome::{pull_cycle_error, push_cycle_error};
 pub use endpoint::{
-    CaseForm, EndpointInstant, NameFolding, NormalizationForm, StatTrust, TimestampGranularity,
-    nfc_path, probe_name_folding, probe_timestamp_granularity, sample_endpoint_clock,
+    CaseForm, EndpointCapabilities, EndpointInstant, NameFolding, NormalizationForm, StatTrust,
+    TimestampGranularity, nfc_path, prepare_endpoint_probe_root, probe_endpoint_capabilities,
+    probe_name_folding, probe_timestamp_granularity, refresh_endpoint_capabilities,
+    sample_endpoint_clock,
 };
 pub use events::{DeletionConfirmation, EngineEvent, FullScanReason, SyncBarrierId};
 pub use fs_guard::{
@@ -99,12 +103,17 @@ pub use pull_apply::{
     RecoveryObservation, git_apply_rank, git_lock_active, pull, recover_intents, recovery_action,
     recovery_boundary,
 };
+#[cfg(test)]
+pub(crate) use push::RECOVERY_STATE_DIR;
 pub use push::{
-    BlobReaderUpload, BlobUpload, CasOutcome, DeletionPolicy, ENGINE_STATE_DIR, EngineConfig,
-    EngineContext, ManifestUpload, PushDeps, PushError, PushOutcome, RefObservation, RemoteObjects,
-    RemoteRef, TransportError, WatcherEvidence, mass_deletion_threshold, push,
+    DeletionPolicy, ENGINE_STATE_DIR, EngineConfig, EngineContext, PushDeps, PushError,
+    PushOutcome, WatcherEvidence, mass_deletion_threshold, push,
 };
 use ref_observation::LocalObservation;
+pub use remote::{
+    BlobReaderUpload, BlobUpload, CasOutcome, ManifestUpload, RefObservation, RefVersionLookup,
+    RemoteObjects, RemoteRef, TransportError,
+};
 pub use stat_walk::{
     StatWalk, project_view_verification_paths, stat_walk, stat_walk_project_view,
     stat_walk_subtrees,
@@ -231,6 +240,8 @@ pub struct ManifestEngine {
     pending_ref_hint: Option<RefObservation>,
     force_ref_read: bool,
     unattributed_pull_pending: bool,
+    startup_reconcile: bool,
+    startup_pending: BTreeSet<WorkspacePath>,
     cycle_active: bool,
 
     debounce_deadline: Option<u64>,
@@ -283,6 +294,8 @@ impl ManifestEngine {
             pending_ref_hint: None,
             force_ref_read: false,
             unattributed_pull_pending: false,
+            startup_reconcile: true,
+            startup_pending: BTreeSet::new(),
             cycle_active: false,
             debounce_deadline: None,
             max_latency_deadline: None,
@@ -447,6 +460,12 @@ impl ManifestEngine {
             self.refresh_and_bump(io);
             return absorbed;
         }
+        let pending_push = self
+            .store
+            .pending_push_paths()
+            .map_err(EngineError::Store)?;
+        self.startup_pending = pending_push.clone();
+        self.absorb_dirty(pending_push);
         // Seed the dirty set from one stat walk, then pull-first before any push.
         // Schedule the startup cycle immediately so `run_due_work` runs it now
         // (the deadline gate would otherwise skip flag-only work).

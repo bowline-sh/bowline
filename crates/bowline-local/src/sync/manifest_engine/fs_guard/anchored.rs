@@ -24,14 +24,24 @@
 //! subtree the root descriptor refers to.
 
 use std::ffi::CString;
-use std::io;
+use std::fs;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags};
+use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, RenameFlags};
 use rustix::io::Errno;
 
-use super::super::manifest::WorkspacePath;
+use crate::policy::{is_recovery_quarantine_component, is_recovery_temp_component};
+
+use super::super::manifest::{FileMode, WorkspacePath};
+use super::{AtomicWrite, GuardedWrite, PRIVATE_FILE_MODE, fingerprint_of};
+
+mod atomic_write;
+mod recovery_ops;
 
 /// How deep an anchored descent goes before refusing — [`AnchoredDirectory::remove_tree`]
 /// and any caller walking with [`AnchoredDirectory::open_directory`].
@@ -60,6 +70,11 @@ const ROOT_DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
     .union(OFlags::CLOEXEC);
 
+const RECOVERY_OWNER_MAGIC: &[u8; 8] = b"BWLREC01";
+const RECOVERY_OWNER_HEADER_BYTES: usize = 50;
+const RECOVERY_OWNER_BYTES: usize = RECOVERY_OWNER_HEADER_BYTES + 255;
+const RECOVERY_CLEANUP_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// One path component: a name *inside* a directory, never a path.
 ///
 /// The newtype is the guard. An operation anchored to a held descriptor that
@@ -76,6 +91,15 @@ impl LeafName {
     /// none (empty, or ending in `/`) or contains an interior NUL.
     pub fn of(path: &WorkspacePath) -> Option<Self> {
         let leaf = path.as_str().rsplit('/').next()?;
+        if leaf.is_empty() {
+            return None;
+        }
+        CString::new(leaf).ok().map(Self)
+    }
+
+    /// The final component of an absolute or relative filesystem path.
+    pub fn from_path(path: &Path) -> Option<Self> {
+        let leaf = path.file_name()?.as_bytes();
         if leaf.is_empty() {
             return None;
         }
@@ -101,6 +125,89 @@ impl LeafName {
     fn as_c_str(&self) -> &std::ffi::CStr {
         &self.0
     }
+
+    fn recovery_sibling() -> io::Result<Self> {
+        Self::random_temp_name(".bowline-recovery-")
+    }
+
+    fn atomic_write_sibling() -> io::Result<Self> {
+        Self::random_temp_name(".bowline-materialize-atomic-")
+    }
+
+    fn random_temp_name(prefix: &str) -> io::Result<Self> {
+        let mut nonce = [0_u8; 16];
+        getrandom::fill(&mut nonce)
+            .map_err(|_| io::Error::other("recovery temp randomness unavailable"))?;
+        CString::new(format!("{prefix}{:032x}.tmp", u128::from_le_bytes(nonce)))
+            .map(Self)
+            .map_err(|_| io::Error::other("generated recovery temp name contained NUL"))
+    }
+
+    fn recovery_owner_sibling(&self) -> Option<Self> {
+        let name = self.as_str()?;
+        let nonce = name
+            .strip_prefix(".bowline-recovery-")?
+            .strip_suffix(".tmp")?;
+        CString::new(format!(".bowline-recovery-owner-{nonce}.record"))
+            .ok()
+            .map(Self)
+    }
+
+    fn recovery_owner_completion_sibling(&self) -> Option<Self> {
+        let name = self.as_str()?;
+        CString::new(format!("{name}.complete")).ok().map(Self)
+    }
+
+    fn recovery_pending_owner_sibling(&self) -> Option<Self> {
+        let name = self.as_str()?;
+        let pending = name.strip_suffix(".complete").unwrap_or(name);
+        CString::new(pending).ok().map(Self)
+    }
+
+    fn is_recovery_owner_completion(&self) -> bool {
+        self.as_str()
+            .is_some_and(|name| name.ends_with(".complete"))
+    }
+
+    fn recovery_quarantine_sibling(&self) -> Option<Self> {
+        let name = self.as_str()?;
+        let nonce = name
+            .strip_prefix(".bowline-recovery-")?
+            .strip_suffix(".tmp")?;
+        let quarantine = format!(".bowline-recovery-quarantine-{nonce}.tmp");
+        is_recovery_quarantine_component(&quarantine).then(|| {
+            Self(CString::new(quarantine).expect("generated recovery quarantine is NUL-free"))
+        })
+    }
+
+    fn recovery_temp_for_owner(&self) -> Option<Self> {
+        let name = self.as_str()?;
+        let base = name.strip_suffix(".complete").unwrap_or(name);
+        let nonce = base
+            .strip_prefix(".bowline-recovery-owner-")?
+            .strip_suffix(".record")?;
+        let temp = format!(".bowline-recovery-{nonce}.tmp");
+        is_recovery_temp_component(&temp)
+            .then(|| Self(CString::new(temp).expect("generated recovery leaf is NUL-free")))
+    }
+}
+
+pub(crate) fn is_recovery_owner_record_name(name: &str) -> bool {
+    let base = name.strip_suffix(".complete").unwrap_or(name);
+    let Some(nonce) = base
+        .strip_prefix(".bowline-recovery-owner-")
+        .and_then(|name| name.strip_suffix(".record"))
+    else {
+        return false;
+    };
+    is_recovery_temp_component(&format!(".bowline-recovery-{nonce}.tmp"))
+}
+
+fn is_lower_hex_nonce(nonce: &str) -> bool {
+    nonce.len() == 32
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// One entry of an anchored listing, classified and sized through the very
@@ -199,6 +306,13 @@ pub fn open_workspace_root(root: &Path) -> io::Result<AnchoredDirectory> {
         .map_err(io::Error::from)
 }
 
+/// Open an engine-owned directory without following a replacement symlink.
+pub fn open_private_root(root: &Path) -> io::Result<AnchoredDirectory> {
+    rustix::fs::open(root, DIRECTORY_FLAGS, Mode::empty())
+        .map(|directory| AnchoredDirectory { directory })
+        .map_err(io::Error::from)
+}
+
 impl AnchoredDirectory {
     /// What `leaf` is right now, seen through this descriptor.
     pub fn classify(&self, leaf: &LeafName) -> io::Result<AnchoredLeafKind> {
@@ -251,11 +365,39 @@ impl AnchoredDirectory {
         }
     }
 
+    /// Create one child directory without following its name.
+    pub fn create_directory(&self, leaf: &LeafName, mode: u32) -> io::Result<AnchoredOpen> {
+        match rustix::fs::mkdirat(
+            &self.directory,
+            leaf.as_c_str(),
+            Mode::from_bits_truncate(mode as rustix::fs::RawMode),
+        ) {
+            Ok(()) | Err(Errno::EXIST) => Ok(self.open_directory(leaf)),
+            Err(errno) => Err(io::Error::from(errno)),
+        }
+    }
+
+    /// Exclusively create a private regular file in this held directory.
+    pub fn create_private_file(&self, leaf: &LeafName) -> io::Result<fs::File> {
+        rustix::fs::openat(
+            &self.directory,
+            leaf.as_c_str(),
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_bits_truncate(PRIVATE_FILE_MODE as rustix::fs::RawMode),
+        )
+        .map(fs::File::from)
+        .map_err(io::Error::from)
+    }
+
     /// Unlink `leaf` by name. A symlink loses its own name; whatever it pointed
     /// at is not this workspace's to delete.
     pub fn unlink(&self, leaf: &LeafName) -> io::Result<()> {
         rustix::fs::unlinkat(&self.directory, leaf.as_c_str(), AtFlags::empty())
             .map_err(io::Error::from)
+    }
+
+    fn sync(&self) -> io::Result<()> {
+        rustix::fs::fsync(&self.directory).map_err(io::Error::from)
     }
 
     /// Remove `leaf` and everything beneath it, descending only through
@@ -278,6 +420,399 @@ impl AnchoredDirectory {
         )
         .map_err(io::Error::from)
     }
+
+    /// Atomically install a staged regular file from another held directory.
+    ///
+    /// The staged inode is opened no-follow, made durable, and assigned its
+    /// final mode before one descriptor-relative rename installs it. A symlink
+    /// already at the destination is refused.
+    pub fn install_staged_file(
+        &self,
+        source_directory: &Self,
+        source_leaf: &LeafName,
+        destination_leaf: &LeafName,
+        final_mode: FileMode,
+    ) -> io::Result<GuardedWrite> {
+        let fd = match rustix::fs::openat(
+            &source_directory.directory,
+            source_leaf.as_c_str(),
+            OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(fd) => fd,
+            Err(Errno::LOOP | Errno::NOENT | Errno::NOTDIR | Errno::ISDIR | Errno::NXIO) => {
+                return Ok(GuardedWrite::Blocked);
+            }
+            Err(errno) => return Err(io::Error::from(errno)),
+        };
+        let mut file = fs::File::from(fd);
+        if !file.metadata()?.file_type().is_file() {
+            return Ok(GuardedWrite::Blocked);
+        }
+        file.sync_all()?;
+        file.set_permissions(fs::Permissions::from_mode(final_mode.get()))?;
+        file.sync_all()?;
+        let exchanged =
+            match self.rename_refusing_symlink(source_directory, source_leaf, destination_leaf) {
+                Ok(Some(exchanged)) => exchanged,
+                Ok(None) => return Ok(GuardedWrite::Blocked),
+                Err(error) if error.raw_os_error() == Some(Errno::XDEV.raw_os_error()) => {
+                    return self.copy_staged_file_atomic(
+                        source_directory,
+                        &mut file,
+                        destination_leaf,
+                        final_mode,
+                    );
+                }
+                Err(error) => return Err(error),
+            };
+        let opened = file.metadata()?;
+        let Some(named) = stat_at(self.directory.as_fd(), destination_leaf)? else {
+            return Ok(GuardedWrite::Blocked);
+        };
+        if stat_identity(&named) != Some(file_identity(&opened)) {
+            self.rollback_staged_install(
+                source_directory,
+                source_leaf,
+                destination_leaf,
+                exchanged,
+            )?;
+            return Ok(GuardedWrite::Blocked);
+        }
+        if exchanged {
+            match source_directory.unlink(source_leaf) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(GuardedWrite::Written(fingerprint_of(&opened)))
+    }
+
+    fn rename_refusing_symlink(
+        &self,
+        source_directory: &Self,
+        source_leaf: &LeafName,
+        destination_leaf: &LeafName,
+    ) -> io::Result<Option<bool>> {
+        let destination = stat_at(self.directory.as_fd(), destination_leaf)?;
+        if destination
+            .as_ref()
+            .is_some_and(|stat| FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile)
+        {
+            return Ok(None);
+        }
+        if destination.is_none() {
+            return match rustix::fs::renameat_with(
+                &source_directory.directory,
+                source_leaf.as_c_str(),
+                &self.directory,
+                destination_leaf.as_c_str(),
+                RenameFlags::NOREPLACE,
+            ) {
+                Ok(()) => Ok(Some(false)),
+                Err(Errno::EXIST) => Ok(None),
+                Err(Errno::XDEV) => Err(io::Error::from(Errno::XDEV)),
+                Err(errno) => Err(io::Error::from(errno)),
+            };
+        }
+        rustix::fs::renameat_with(
+            &source_directory.directory,
+            source_leaf.as_c_str(),
+            &self.directory,
+            destination_leaf.as_c_str(),
+            RenameFlags::EXCHANGE,
+        )
+        .map_err(io::Error::from)?;
+        if stat_at(source_directory.directory.as_fd(), source_leaf)?
+            .is_some_and(|stat| FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile)
+        {
+            rustix::fs::renameat_with(
+                &source_directory.directory,
+                source_leaf.as_c_str(),
+                &self.directory,
+                destination_leaf.as_c_str(),
+                RenameFlags::EXCHANGE,
+            )
+            .map_err(io::Error::from)?;
+            return Ok(None);
+        }
+        Ok(Some(true))
+    }
+
+    /// Restore the namespace after the staged name was swapped between its
+    /// validated open and the rename. An exchange puts the original destination
+    /// back atomically. A no-replace create moves the substituted inode back out
+    /// of the workspace, restoring the original absence.
+    fn rollback_staged_install(
+        &self,
+        source_directory: &Self,
+        source_leaf: &LeafName,
+        destination_leaf: &LeafName,
+        exchanged: bool,
+    ) -> io::Result<()> {
+        if exchanged {
+            return rustix::fs::renameat_with(
+                &source_directory.directory,
+                source_leaf.as_c_str(),
+                &self.directory,
+                destination_leaf.as_c_str(),
+                RenameFlags::EXCHANGE,
+            )
+            .map_err(io::Error::from);
+        }
+        match source_directory.unlink(source_leaf) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        rustix::fs::renameat_with(
+            &self.directory,
+            destination_leaf.as_c_str(),
+            &source_directory.directory,
+            source_leaf.as_c_str(),
+            RenameFlags::NOREPLACE,
+        )
+        .map_err(io::Error::from)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+struct RecoveryOwnerRecord {
+    created_at: u64,
+    directory: FileIdentity,
+    temp: Option<FileIdentity>,
+    destination_leaf: LeafName,
+}
+
+fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
+    FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }
+}
+
+// `Stat` mirrors the platform's `struct stat`, and its field widths differ:
+// `st_dev` is i32 on macOS but u64 on Linux, `st_mode` u16 but u32. A widening
+// conversion is therefore mandatory on one target and a `useless_conversion`
+// lint on the other, which no single expression satisfies. Both conversions
+// live here once, per platform, so call sites read the same everywhere and a
+// macOS-only check can never miss what Linux rejects.
+#[cfg(target_os = "macos")]
+fn device_number(stat: &rustix::fs::Stat) -> Option<u64> {
+    u64::try_from(stat.st_dev).ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn device_number(stat: &rustix::fs::Stat) -> Option<u64> {
+    Some(stat.st_dev)
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn permission_bits(stat: &rustix::fs::Stat) -> u32 {
+    u32::from(stat.st_mode & 0o777)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(super) fn permission_bits(stat: &rustix::fs::Stat) -> u32 {
+    stat.st_mode & 0o777
+}
+
+fn stat_identity(stat: &rustix::fs::Stat) -> Option<FileIdentity> {
+    Some(FileIdentity {
+        device: device_number(stat)?,
+        inode: stat.st_ino,
+    })
+}
+
+fn directory_identity(directory: &OwnedFd) -> io::Result<FileIdentity> {
+    rustix::fs::fstat(directory)
+        .map_err(io::Error::from)
+        .and_then(|stat| {
+            stat_identity(&stat).ok_or_else(|| io::Error::other("directory device overflow"))
+        })
+}
+
+fn write_recovery_owner(
+    file: &mut fs::File,
+    created_at: u64,
+    directory: FileIdentity,
+    temp: Option<FileIdentity>,
+    destination_leaf: &LeafName,
+) -> io::Result<()> {
+    let temp = temp.unwrap_or(FileIdentity {
+        device: 0,
+        inode: 0,
+    });
+    let destination_bytes = destination_leaf.as_c_str().to_bytes();
+    let destination_length = u16::try_from(destination_bytes.len())
+        .map_err(|_| io::Error::other("recovery destination leaf too long"))?;
+    let mut record = [0_u8; RECOVERY_OWNER_BYTES];
+    record[..8].copy_from_slice(RECOVERY_OWNER_MAGIC);
+    for (index, value) in [
+        created_at,
+        directory.device,
+        directory.inode,
+        temp.device,
+        temp.inode,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let start = 8 + index * 8;
+        record[start..start + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    record[48..50].copy_from_slice(&destination_length.to_le_bytes());
+    record[RECOVERY_OWNER_HEADER_BYTES..RECOVERY_OWNER_HEADER_BYTES + destination_bytes.len()]
+        .copy_from_slice(destination_bytes);
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(&record)?;
+    file.set_len(RECOVERY_OWNER_BYTES as u64)?;
+    file.sync_all()
+}
+
+fn cleanup_recovery_setup(
+    owner_directory: &AnchoredDirectory,
+    owner: &LeafName,
+    destination_directory: &AnchoredDirectory,
+    temp: Option<&LeafName>,
+) -> io::Result<()> {
+    if let Some(temp) = temp {
+        unlink_if_present(destination_directory, temp)?;
+        destination_directory.sync()?;
+    }
+    if let Some(completion) = owner.recovery_owner_completion_sibling() {
+        unlink_if_present(owner_directory, &completion)?;
+    }
+    unlink_if_present(owner_directory, owner)?;
+    owner_directory.sync()
+}
+
+fn publish_completed_recovery_owner(
+    owner_directory: &AnchoredDirectory,
+    owner: &LeafName,
+    created_at: u64,
+    directory: FileIdentity,
+    temp: FileIdentity,
+    destination_leaf: &LeafName,
+) -> io::Result<()> {
+    let completion = owner
+        .recovery_owner_completion_sibling()
+        .ok_or_else(|| io::Error::other("recovery completion name invalid"))?;
+    unlink_if_present(owner_directory, &completion)?;
+    let mut completion_file = owner_directory.create_private_file(&completion)?;
+    write_recovery_owner(
+        &mut completion_file,
+        created_at,
+        directory,
+        Some(temp),
+        destination_leaf,
+    )?;
+    rustix::fs::renameat_with(
+        &owner_directory.directory,
+        completion.as_c_str(),
+        &owner_directory.directory,
+        owner.as_c_str(),
+        RenameFlags::empty(),
+    )
+    .map_err(io::Error::from)?;
+    owner_directory.sync()
+}
+
+fn remove_recovery_owner_family(
+    owner_directory: &AnchoredDirectory,
+    owner: &LeafName,
+) -> io::Result<()> {
+    let pending = owner
+        .recovery_pending_owner_sibling()
+        .ok_or_else(|| io::Error::other("recovery pending owner name invalid"))?;
+    if let Some(completion) = pending.recovery_owner_completion_sibling() {
+        unlink_if_present(owner_directory, &completion)?;
+    }
+    unlink_if_present(owner_directory, &pending)?;
+    owner_directory.sync()
+}
+
+fn unlink_if_present(directory: &AnchoredDirectory, leaf: &LeafName) -> io::Result<()> {
+    match directory.unlink(leaf) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn read_recovery_owner(
+    directory: &AnchoredDirectory,
+    owner: &LeafName,
+) -> io::Result<Option<RecoveryOwnerRecord>> {
+    let fd = match rustix::fs::openat(
+        &directory.directory,
+        owner.as_c_str(),
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(Errno::NOENT | Errno::LOOP | Errno::ISDIR | Errno::NOTDIR) => return Ok(None),
+        Err(error) => return Err(io::Error::from(error)),
+    };
+    let mut file = fs::File::from(fd);
+    let mut bytes = [0_u8; RECOVERY_OWNER_BYTES];
+    match file.read_exact(&mut bytes) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    let mut extra = [0_u8; 1];
+    if file.read(&mut extra)? != 0 || &bytes[..8] != RECOVERY_OWNER_MAGIC {
+        return Ok(None);
+    }
+    let mut values = [0_u64; 5];
+    for (index, value) in values.iter_mut().enumerate() {
+        let start = 8 + index * 8;
+        *value = u64::from_le_bytes(
+            bytes[start..start + 8]
+                .try_into()
+                .expect("fixed recovery owner field"),
+        );
+    }
+    let temp = FileIdentity {
+        device: values[3],
+        inode: values[4],
+    };
+    let destination_length = usize::from(u16::from_le_bytes(
+        bytes[48..50]
+            .try_into()
+            .expect("fixed recovery destination length"),
+    ));
+    let Some(destination_bytes) =
+        bytes.get(RECOVERY_OWNER_HEADER_BYTES..RECOVERY_OWNER_HEADER_BYTES + destination_length)
+    else {
+        return Ok(None);
+    };
+    let Some(destination_leaf) = CString::new(destination_bytes).ok().map(LeafName) else {
+        return Ok(None);
+    };
+    Ok(Some(RecoveryOwnerRecord {
+        created_at: values[0],
+        directory: FileIdentity {
+            device: values[1],
+            inode: values[2],
+        },
+        temp: (temp.device != 0 || temp.inode != 0).then_some(temp),
+        destination_leaf,
+    }))
+}
+
+fn unix_seconds() -> io::Result<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| io::Error::other("system clock predates Unix epoch"))
 }
 
 fn classify_at(directory: BorrowedFd<'_>, leaf: &LeafName) -> io::Result<AnchoredLeafKind> {

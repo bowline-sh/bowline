@@ -37,6 +37,7 @@ use super::pull_apply::{
 };
 use super::push::{PushDeps, RemoteObjects, RemoteRef, push};
 use super::store::AncestorCommit;
+use super::{ENGINE_STATE_DIR, RECOVERY_STATE_DIR};
 use crate::workspace::TempWorkspace;
 
 const ENV_WORKSPACE: &str = "BOWLINE_KILL_WORKSPACE";
@@ -452,6 +453,7 @@ fn staged_apply<O: RemoteObjects, R: RemoteRef>(
             Some((manifest_key, ref_version)),
             Some((manifest_key, ref_version)),
             std::slice::from_ref(&op.path),
+            &BTreeSet::new(),
         )
         .expect("commit outcome");
     hit(Barrier::AfterOutcome);
@@ -641,7 +643,10 @@ fn mode_of(root: &Path, rel: &str) -> u32 {
 }
 
 fn tmp_contains(root: &Path, needle: &[u8]) -> bool {
-    dir_has_file_content(&root.join(".bowline").join("tmp"), needle)
+    dir_has_file_content(
+        &root.join(ENGINE_STATE_DIR).join(RECOVERY_STATE_DIR),
+        needle,
+    )
 }
 
 fn quarantine_is_empty(root: &Path) -> bool {

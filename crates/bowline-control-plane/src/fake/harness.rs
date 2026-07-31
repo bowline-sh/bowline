@@ -442,15 +442,25 @@ impl FakeControlPlaneClient {
         if another_trusted_device {
             return Ok(());
         }
+        let current_key_epoch = state
+            .workspace_key_epochs
+            .get(workspace_id)
+            .copied()
+            .unwrap_or(1);
         let active_recovery_key = state.recovery_envelopes.values().any(|envelope| {
             &envelope.workspace_id == workspace_id
                 && envelope.state == RecoveryEnvelopeState::Active
+                && envelope.key_epoch == current_key_epoch
         });
-        if active_recovery_key {
+        if active_recovery_key
+            && !state
+                .pending_workspace_key_epochs
+                .contains_key(workspace_id)
+        {
             return Ok(());
         }
         Err(device_not_trusted(
-            "cannot revoke the last trusted device without another trusted device or active Recovery Key",
+            "cannot revoke the last trusted device until the current workspace epoch has an active Recovery Key and no key rotation is pending",
         ))
     }
 }

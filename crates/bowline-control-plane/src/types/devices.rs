@@ -246,6 +246,7 @@ pub struct RecoveryEnvelopeInput {
     pub created_by_device_proof: String,
     pub ciphertext: String,
     pub fingerprint: String,
+    pub key_epoch: u32,
     pub recovery_proof_verifier: String,
 }
 
@@ -276,6 +277,7 @@ pub struct RecoveryEnvelopeRecord {
     pub created_by_device_id: DeviceId,
     pub ciphertext: String,
     pub fingerprint: String,
+    pub key_epoch: u32,
     pub state: RecoveryEnvelopeState,
     pub created_at: ControlPlaneTimestamp,
     pub verified_at: Option<ControlPlaneTimestamp>,

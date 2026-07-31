@@ -4,11 +4,15 @@
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 
-use super::{DeletionPolicy, EntryKind, PushDeps, PushOutcome, WatcherEvidence, push_dirty_paths};
+use super::{
+    DeletionPolicy, EntryKind, PushDeps, PushError, PushOutcome, WatcherEvidence, push_dirty_paths,
+};
 use crate::sync::manifest_engine::endpoint::TimestampGranularity;
 use crate::sync::manifest_engine::engine_test_support::{CasMode, Event, KEY_BYTES, TestEngine};
 use crate::sync::manifest_engine::fs_guard::{FileRead, Observed, read_file_bounded};
-use crate::sync::manifest_engine::manifest::{KeyEpoch, WorkspaceCrypto, WorkspacePath};
+use crate::sync::manifest_engine::manifest::{
+    KeyEpoch, ManifestEntry, WorkspaceCrypto, WorkspacePath,
+};
 use crate::sync::manifest_engine::push::EngineConfig;
 use crate::sync::manifest_engine::store::StatFingerprint;
 use crate::sync::manifest_engine::unsyncable::UnsyncableReason;
@@ -139,6 +143,73 @@ fn content_equivalent_rewrite_refreshes_the_local_fingerprint_once() {
 }
 
 #[test]
+fn patched_root_noop_still_commits_a_mixed_local_fingerprint_refresh() {
+    let mut engine = TestEngine::new("push-refresh-with-remote-noop");
+    engine.write("same.txt", b"unchanged");
+    engine.push(&["same.txt"]);
+    engine.write("same.txt", b"unchanged");
+    engine.settle_endpoint_clock("same.txt");
+
+    let before_refresh = engine.counters().content_hashes;
+    assert!(matches!(
+        engine.push(&["same.txt", "already-absent.txt"]),
+        PushOutcome::NoChange { skipped } if skipped.is_empty()
+    ));
+    let after_refresh = engine.counters().content_hashes;
+    assert_eq!(after_refresh, before_refresh + 1);
+
+    assert!(matches!(
+        engine.push(&["same.txt"]),
+        PushOutcome::NoChange { skipped } if skipped.is_empty()
+    ));
+    assert_eq!(
+        engine.counters().content_hashes,
+        after_refresh,
+        "the mixed no-op persisted the refreshed fingerprint"
+    );
+}
+
+#[test]
+fn patched_root_noop_repairs_a_missing_ancestor_row() {
+    let mut engine = TestEngine::new("push-noop-repairs-ancestor");
+    engine.write("same.txt", b"remote bytes");
+    engine.push(&["same.txt"]);
+    let path = WorkspacePath::new("same.txt");
+    let head_before = engine.remote.current_ref();
+    engine
+        .store
+        .commit_pull_outcome(
+            &crate::sync::manifest_engine::store::AncestorCommit {
+                upserts: std::collections::BTreeMap::new(),
+                removals: std::collections::BTreeSet::from([path.clone()]),
+            },
+            None,
+            None,
+            &[],
+            &std::collections::BTreeSet::from([path.clone()]),
+        )
+        .expect("remove merge-base row");
+
+    assert!(matches!(
+        engine.push(&["same.txt"]),
+        PushOutcome::NoChange { skipped } if skipped.is_empty()
+    ));
+
+    assert_eq!(engine.remote.current_ref(), head_before);
+    assert!(
+        engine.files().contains_key(&path),
+        "the no-op patch restores SQLite agreement with the applied tree"
+    );
+    assert!(
+        engine
+            .store
+            .pending_push_paths()
+            .expect("pending")
+            .is_empty()
+    );
+}
+
+#[test]
 fn verified_unchanged_bytes_are_resealed_for_a_new_key_epoch() {
     let mut engine = TestEngine::new("push-verify-new-epoch");
     engine.write("same.txt", b"unchanged");
@@ -178,6 +249,71 @@ fn verified_unchanged_bytes_are_resealed_for_a_new_key_epoch() {
         .clone();
     assert_eq!(after.key_epoch, Some(KeyEpoch::new(2)));
     assert_ne!(after.blob_key, before.blob_key);
+}
+
+#[test]
+fn directory_only_state_rebuilds_every_tree_node_for_a_new_key_epoch() {
+    let mut engine = TestEngine::new("push-directory-new-epoch");
+    std::fs::create_dir_all(engine.root().join("tree")).expect("create directory");
+    assert!(matches!(
+        engine.push(&["tree"]),
+        PushOutcome::Advanced { .. }
+    ));
+    let manifests_before = engine
+        .remote
+        .events()
+        .iter()
+        .filter(|event| matches!(event, Event::PutManifest(_)))
+        .count();
+
+    engine.ctx.crypto = WorkspaceCrypto::new("ws_code", [9_u8; 32], KeyEpoch::new(2))
+        .with_key_epoch(KeyEpoch::new(1), KEY_BYTES);
+    assert!(matches!(
+        engine.push(&["tree"]),
+        PushOutcome::Advanced { .. }
+    ));
+
+    let manifests_after = engine
+        .remote
+        .events()
+        .iter()
+        .filter(|event| matches!(event, Event::PutManifest(_)))
+        .count();
+    assert_eq!(
+        manifests_after - manifests_before,
+        2,
+        "the directory child and root nodes are both resealed"
+    );
+    let root = engine.remote.current_ref().expect("new head").manifest_key;
+    assert_eq!(
+        engine.store.tree_node_key_epoch(&root).expect("root epoch"),
+        Some(KeyEpoch::new(2))
+    );
+}
+
+#[test]
+fn consecutive_copy_on_write_edits_never_fall_back_to_all_ancestor_rows() {
+    let mut engine = TestEngine::new("push-consecutive-cow");
+    let paths = (0..100)
+        .map(|index| format!("f{index:03}.txt"))
+        .collect::<Vec<_>>();
+    for path in &paths {
+        engine.write(path, b"base");
+    }
+    let initial = paths.iter().map(String::as_str).collect::<Vec<_>>();
+    engine.push(&initial);
+
+    engine.write("f000.txt", b"first");
+    engine.push(&["f000.txt"]);
+    let before = engine.counters().ancestor_rows_read;
+    engine.write("f000.txt", b"second");
+    engine.push(&["f000.txt"]);
+
+    assert_eq!(
+        engine.counters().ancestor_rows_read - before,
+        1,
+        "a patched root retains its epoch proof for the following edit"
+    );
 }
 
 #[test]
@@ -272,8 +408,8 @@ fn cas_succeeded_ack_lost_adopts_current_head() {
 
 #[test]
 fn large_file_memory_stays_bounded() {
-    // Threshold below file size routes the sealed blob through a 0600 spool and
-    // a streamed upload, so no second in-memory copy is buffered for the send.
+    // Threshold below file size hashes and seals fixed-size authenticated
+    // segments straight into a 0600 spool, then streams the spool.
     let config = EngineConfig {
         large_file_threshold: 4,
         max_seal_bytes: 4096,
@@ -290,10 +426,8 @@ fn large_file_memory_stays_bounded() {
         "large file is streamed from the spool, not buffered"
     );
 
-    // Above the seal ceiling the envelope cannot stream-seal: STOP, never buffer.
-    // The file becomes a reported unsyncable path — NOT an error that kills the
-    // engine. One oversize dataset dropped into ~/Code must not stop the
-    // workspace from syncing everything else.
+    // Above the configured product ceiling the file becomes a reported
+    // unsyncable path — NOT an error that kills the engine.
     let ceiling = EngineConfig {
         large_file_threshold: 4,
         max_seal_bytes: 64,
@@ -369,6 +503,211 @@ fn watcher_event_on_unchanged_directory_seals_no_manifest() {
         cas_before,
         "no CAS attempted for an unchanged directory"
     );
+}
+
+#[test]
+fn watcher_event_for_an_untracked_absent_path_publishes_nothing() {
+    let mut engine = TestEngine::new("push-absent-noop");
+    engine.write("tracked.txt", b"tracked");
+    assert!(matches!(
+        engine.push(&["tracked.txt"]),
+        PushOutcome::Advanced { .. }
+    ));
+    let head = engine.remote.current_ref();
+    let manifests = engine.counters().manifest_uploads;
+    let cas = engine.counters().cas_attempts;
+
+    assert!(matches!(
+        engine.push(&["never-existed.txt"]),
+        PushOutcome::NoChange { .. }
+    ));
+
+    assert_eq!(engine.remote.current_ref(), head);
+    assert_eq!(engine.counters().manifest_uploads, manifests);
+    assert_eq!(engine.counters().cas_attempts, cas);
+}
+
+#[test]
+fn a_durable_remote_only_tombstone_removes_a_nested_applied_entry() {
+    let mut engine = TestEngine::new("push-remote-only-tombstone");
+    engine.write("alpha/proj/data.bin", b"tracked");
+    assert!(matches!(
+        engine.push(&["alpha/proj/data.bin"]),
+        PushOutcome::Advanced { .. }
+    ));
+    engine.remove("alpha/proj/data.bin");
+    let path = WorkspacePath::new("alpha/proj/data.bin");
+    engine
+        .store
+        .commit_pull_outcome(
+            &crate::sync::manifest_engine::store::AncestorCommit {
+                upserts: std::collections::BTreeMap::new(),
+                removals: std::collections::BTreeSet::from([path.clone()]),
+            },
+            None,
+            None,
+            &[],
+            &std::collections::BTreeSet::from([path.clone()]),
+        )
+        .expect("persist tombstone");
+
+    assert!(matches!(
+        engine.push(&["alpha/proj/data.bin"]),
+        PushOutcome::Advanced { .. }
+    ));
+    assert!(
+        !engine
+            .remote
+            .decoded_manifest(&engine.ctx.crypto)
+            .expect("head")
+            .entries
+            .contains_key(&path)
+    );
+    assert!(
+        engine
+            .store
+            .pending_push_paths()
+            .expect("pending")
+            .is_empty()
+    );
+}
+
+#[test]
+fn copy_on_write_publish_handles_directory_leaf_transitions() {
+    let mut engine = TestEngine::new("push-cow-kind-transitions");
+    engine.write("node/child.txt", b"child");
+    assert!(matches!(
+        engine.push(&["node", "node/child.txt"]),
+        PushOutcome::Advanced { .. }
+    ));
+
+    std::fs::remove_dir_all(engine.root().join("node")).expect("remove directory");
+    engine.write("node", b"leaf");
+    assert!(matches!(
+        engine.push(&["node"]),
+        PushOutcome::Advanced { .. }
+    ));
+    let manifest = engine
+        .remote
+        .decoded_manifest(&engine.ctx.crypto)
+        .expect("file head");
+    assert!(matches!(
+        manifest.entries.get(&WorkspacePath::new("node")),
+        Some(ManifestEntry::File { .. })
+    ));
+    assert!(
+        !manifest
+            .entries
+            .contains_key(&WorkspacePath::new("node/child.txt"))
+    );
+    assert!(
+        !engine
+            .files()
+            .contains_key(&WorkspacePath::new("node/child.txt")),
+        "the local ancestor must forget descendants removed by a directory-to-file transition"
+    );
+
+    std::fs::remove_file(engine.root().join("node")).expect("remove file");
+    engine.write("node/next.txt", b"next");
+    assert!(matches!(
+        engine.push(&["node", "node/next.txt"]),
+        PushOutcome::Advanced { .. }
+    ));
+    let manifest = engine
+        .remote
+        .decoded_manifest(&engine.ctx.crypto)
+        .expect("directory head");
+    assert!(matches!(
+        manifest.entries.get(&WorkspacePath::new("node")),
+        Some(ManifestEntry::Directory { .. })
+    ));
+    assert!(matches!(
+        manifest.entries.get(&WorkspacePath::new("node/next.txt")),
+        Some(ManifestEntry::File { .. })
+    ));
+}
+
+#[test]
+fn deleting_one_directory_counts_every_descendant_for_mass_deletion() {
+    let mut engine = TestEngine::new("push-directory-mass-deletion");
+    let children = (0..70)
+        .map(|index| format!("tree/f{index:02}.txt"))
+        .collect::<Vec<_>>();
+    for child in &children {
+        engine.write(child, b"body");
+    }
+    let mut initial = vec!["tree"];
+    initial.extend(children.iter().map(String::as_str));
+    assert!(matches!(
+        engine.push(&initial),
+        PushOutcome::Advanced { .. }
+    ));
+    let head_before = engine.remote.current_ref();
+
+    std::fs::remove_dir_all(engine.root().join("tree")).expect("remove directory");
+    let error = engine
+        .try_push(&["tree"])
+        .expect_err("mass deletion is refused");
+    let PushError::MassDeletionRefused {
+        removals,
+        entries,
+        threshold,
+    } = error
+    else {
+        panic!("expected mass deletion refusal");
+    };
+    assert_eq!(entries, 71);
+    assert_eq!(threshold, 64);
+    assert_eq!(removals.len(), 71);
+    assert!(removals.contains(&WorkspacePath::new("tree/f00.txt")));
+    assert_eq!(
+        engine.remote.current_ref(),
+        head_before,
+        "the refused deletion must not advance the remote head"
+    );
+}
+
+#[test]
+fn durable_tombstones_are_counted_by_the_mass_deletion_guard() {
+    let mut engine = TestEngine::new("push-durable-mass-deletion");
+    let paths = (0..70)
+        .map(|index| WorkspacePath::new(format!("f{index:02}.txt")))
+        .collect::<std::collections::BTreeSet<_>>();
+    for path in &paths {
+        engine.write(path.as_str(), b"body");
+    }
+    let initial = paths.iter().map(WorkspacePath::as_str).collect::<Vec<_>>();
+    engine.push(&initial);
+    let head_before = engine.remote.current_ref();
+    for path in &paths {
+        engine.remove(path.as_str());
+    }
+    engine
+        .store
+        .commit_pull_outcome(
+            &crate::sync::manifest_engine::store::AncestorCommit {
+                upserts: std::collections::BTreeMap::new(),
+                removals: paths.clone(),
+            },
+            None,
+            None,
+            &[],
+            &paths,
+        )
+        .expect("persist tombstones");
+
+    let error = engine
+        .try_push(&initial)
+        .expect_err("durable mass deletion is refused");
+    assert!(matches!(
+        error,
+        PushError::MassDeletionRefused {
+            removals,
+            threshold: 64,
+            ..
+        } if removals == paths
+    ));
+    assert_eq!(engine.remote.current_ref(), head_before);
 }
 
 #[test]
@@ -753,13 +1092,24 @@ fn twice_diverged_path_is_reported_as_skipped() {
     std::fs::create_dir_all(&external).expect("external dir");
     std::fs::write(external.join("file"), b"EXTERNAL SECRET").expect("external file");
     symlink(&external, engine.root().join("dir")).expect("symlink dir");
+    let skipped_path = WorkspacePath::new("dir/file");
+    engine
+        .store
+        .commit_pull_outcome(
+            &crate::sync::manifest_engine::store::AncestorCommit::default(),
+            None,
+            None,
+            &[],
+            &std::collections::BTreeSet::from([skipped_path.clone()]),
+        )
+        .expect("seed durable follow-on push");
 
     // Only-skipped batch: no delta to publish, but the churning path is returned.
     match engine.push(&["dir/file"]) {
         PushOutcome::NoChange { skipped } => {
             assert_eq!(
                 skipped,
-                std::iter::once(WorkspacePath::new("dir/file")).collect(),
+                std::iter::once(skipped_path.clone()).collect(),
                 "the twice-diverged path is reported as skipped"
             );
         }
@@ -774,7 +1124,7 @@ fn twice_diverged_path_is_reported_as_skipped() {
         PushOutcome::Advanced { skipped, .. } => {
             assert_eq!(
                 skipped,
-                std::iter::once(WorkspacePath::new("dir/file")).collect(),
+                std::iter::once(skipped_path.clone()).collect(),
                 "an advancing push still reports the churning path"
             );
         }
@@ -787,6 +1137,15 @@ fn twice_diverged_path_is_reported_as_skipped() {
             .contains_key(&WorkspacePath::new("clean.txt"))
     );
     assert!(!engine.files().contains_key(&WorkspacePath::new("dir/file")));
+    engine.reopen_store();
+    assert!(
+        engine
+            .store
+            .pending_push_paths()
+            .expect("pending after restart")
+            .contains(&skipped_path),
+        "a restart retains the unsettled follow-on push"
+    );
 }
 
 #[test]

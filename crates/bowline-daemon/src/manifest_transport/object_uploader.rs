@@ -281,6 +281,18 @@ impl<'a, C: ControlPlaneClient> ObjectUploader<'a, C> {
             .get_object(&object_key)
             .map_err(|error| byte_store_error(operation, error))
     }
+
+    pub(super) fn download_to_writer(
+        &self,
+        operation: &'static str,
+        key: &str,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<u64, TransportError> {
+        let object_key = parse_object_key(key)?;
+        self.store()
+            .get_object_to_writer(&object_key, writer)
+            .map_err(|error| byte_store_error(operation, error))
+    }
 }
 
 struct CompletionRequest<'a> {

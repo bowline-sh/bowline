@@ -17,6 +17,7 @@ fn record(base: &str, overlay: &str, lifecycle: WorkViewLifecycle) -> WorkViewRe
         base_manifest_key: ManifestKey::new(base),
         overlay_manifest_key: ManifestKey::new(overlay),
         lifecycle,
+        generation: super::super::aux_index::WorkViewGeneration::new(u64::from(base != overlay)),
     }
 }
 

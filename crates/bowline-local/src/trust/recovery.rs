@@ -82,6 +82,7 @@ where
         envelope_id.as_str(),
         &recovery_key.fingerprint,
         &recovery_proof_verifier,
+        workspace_key.key_epoch,
         &ciphertext,
     );
     let created_by_device_proof = grants::device_authorization_proof(
@@ -98,17 +99,10 @@ where
         created_by_device_proof,
         ciphertext,
         fingerprint: recovery_key.fingerprint.clone(),
+        key_epoch: workspace_key.key_epoch,
         recovery_proof_verifier,
     })?;
-    let state = RecoveryKeyState {
-        lifecycle: RecoveryKeyLifecycle::GeneratedUnverified,
-        envelope_id: Some(envelope.envelope_id),
-        fingerprint: Some(recovery_key.fingerprint.clone()),
-        created_at: Some(generated_at.clone()),
-        verified_at: None,
-        rotated_at: None,
-        revoked_at: None,
-    };
+    let state = recovery_state_from_envelope(&envelope, RecoveryKeyLifecycle::GeneratedUnverified);
 
     Ok((
         recovery_key,
@@ -188,15 +182,7 @@ where
         generated_at: generated_at.clone(),
         action: RecoveryCommandAction::Verify,
         workspace_id: Some(workspace_id),
-        recovery_key: RecoveryKeyState {
-            lifecycle: RecoveryKeyLifecycle::Active,
-            envelope_id: Some(envelope_id),
-            fingerprint: Some(envelope.fingerprint),
-            created_at: Some(envelope.created_at.to_string()),
-            verified_at: Some(generated_at),
-            rotated_at: None,
-            revoked_at: None,
-        },
+        recovery_key: recovery_state_from_envelope(&envelope, RecoveryKeyLifecycle::Active),
         device_request: None,
         encrypted_grant: None,
         next_actions: Vec::new(),
@@ -229,6 +215,7 @@ where
         envelope_id.as_str(),
         &recovery_key.fingerprint,
         &recovery_proof_verifier,
+        workspace_key.key_epoch,
         &ciphertext,
     );
     let created_by_device_proof = grants::device_authorization_proof(
@@ -245,6 +232,7 @@ where
         created_by_device_proof,
         ciphertext,
         fingerprint: recovery_key.fingerprint.clone(),
+        key_epoch: workspace_key.key_epoch,
         recovery_proof_verifier,
     })?;
 
@@ -314,6 +302,9 @@ where
         return Err(RecoveryError::Grant(grants::GrantError::WorkspaceMismatch));
     }
     let workspace_key = recovery_payload.workspace_key;
+    if workspace_key.key_epoch != envelope.key_epoch {
+        return Err(RecoveryError::Grant(grants::GrantError::KeyEpochMismatch));
+    }
     let recovery_device_proof_verifiers = recovery_payload.device_proof_verifiers;
 
     let request = trust::create_device_request(
@@ -388,6 +379,13 @@ where
         device_id: options.device_id.clone(),
         grant_acceptance_proof,
     })?;
+    let convergence_deferred = trust::converge_workspace_key_epoch(
+        control_plane,
+        key_store,
+        &options.workspace_id,
+        &options.device_id,
+    )
+    .is_err();
 
     Ok(RecoveryCommandOutput {
         contract_version: CONTRACT_VERSION,
@@ -413,7 +411,15 @@ where
             state: EncryptedDeviceGrantState::Accepted,
             accepted_at: accepted.accepted_at.map(|timestamp| timestamp.to_string()),
         }),
-        next_actions: Vec::new(),
+        next_actions: if convergence_deferred {
+            vec![RepairCommand::inspect(
+                "Workspace key convergence is deferred; Bowline will retry automatically"
+                    .to_string(),
+                Some("bowline status".to_string()),
+            )]
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -524,7 +530,8 @@ impl From<bowline_control_plane::ControlPlaneError> for RecoveryError {
 mod tests {
     use bowline_control_plane::{
         DeterministicClock, DeterministicIdGenerator, DeviceControlPlaneClient,
-        RecoveryControlPlaneClient, RecoveryEnvelopeState,
+        DeviceRevocationInput, RecoveryControlPlaneClient, RecoveryEnvelopeState,
+        device_revocation_proof_subject,
     };
     use bowline_core::{
         commands::RecoveryCommandAction,
@@ -645,7 +652,23 @@ mod tests {
             .envelope_id
             .clone()
             .expect("envelope id");
-        verify_recovery_key(
+        let created_envelope = control_plane
+            .list_recovery_envelopes(&workspace_id)
+            .expect("created envelope list")
+            .into_iter()
+            .find(|envelope| envelope.envelope_id == envelope_id)
+            .expect("created envelope");
+        assert_eq!(
+            created.recovery_key.created_at,
+            Some(created_envelope.created_at.to_string()),
+            "create output uses the control-plane timestamp"
+        );
+        assert_ne!(
+            created.recovery_key.created_at,
+            Some("t000000000002".to_string()),
+            "create output does not substitute the client generation time"
+        );
+        let verified = verify_recovery_key(
             &control_plane,
             &trusted_keychain,
             workspace_id.clone(),
@@ -655,6 +678,45 @@ mod tests {
             "t000000000003".to_string(),
         )
         .expect("verified recovery key");
+        let verified_envelope = control_plane
+            .list_recovery_envelopes(&workspace_id)
+            .expect("verified envelope list")
+            .into_iter()
+            .find(|envelope| envelope.envelope_id == envelope_id)
+            .expect("verified envelope");
+        assert_eq!(
+            verified.recovery_key.verified_at,
+            verified_envelope
+                .verified_at
+                .map(|timestamp| timestamp.to_string()),
+            "verify output uses the control-plane timestamp"
+        );
+        assert_ne!(
+            verified.recovery_key.verified_at,
+            Some("t000000000003".to_string()),
+            "verify output does not substitute the client generation time"
+        );
+        let revoker_identity = trusted_keychain
+            .load_or_create_device_identity()
+            .expect("trusted identity");
+        let trusted_device_id = DeviceId::new("trusted-device");
+        let revocation_proof = grants::device_authorization_proof(
+            &revoker_identity,
+            &workspace_id,
+            &trusted_device_id,
+            "revoke-device",
+            &device_revocation_proof_subject(&trusted_device_id),
+        )
+        .expect("last-device revocation proof");
+        control_plane
+            .revoke_device(DeviceRevocationInput {
+                workspace_id: workspace_id.clone(),
+                device_id: trusted_device_id.clone(),
+                revoked_by_device_id: trusted_device_id,
+                revoked_by_device_proof: revocation_proof,
+                reason: "lost final device".to_string(),
+            })
+            .expect("active recovery key permits last-device revocation");
 
         let fresh_keychain = FakeKeychain::default();
         let recovered = use_recovery_key(
@@ -682,6 +744,15 @@ mod tests {
                 .load_workspace_key(&workspace_id)
                 .expect("fresh keychain readable")
                 .is_some()
+        );
+        assert_eq!(
+            fresh_keychain
+                .load_workspace_keyring(&workspace_id)
+                .expect("fresh keyring readable")
+                .expect("fresh keyring")
+                .established_key_epoch(),
+            2,
+            "the recovered device seeds the revocation's pending epoch"
         );
         assert!(
             fresh_keychain

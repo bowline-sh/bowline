@@ -210,7 +210,7 @@ pub(crate) fn recovery_facts(
     let temp_exists = intent
         .temp_name
         .as_ref()
-        .map(|name| ctx.engine_dir().join("tmp").join(name).exists())
+        .map(|name| ctx.recovery_dir().join(name).exists())
         .unwrap_or(false);
     let quarantine_exists = intent
         .preserved_preimage

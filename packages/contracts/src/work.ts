@@ -103,6 +103,11 @@ export const WORK_COMMAND_ACTIONS = [
 ] as const;
 export type WorkCommandAction = (typeof WORK_COMMAND_ACTIONS)[number];
 
+export type WorkUnresolvedPath = {
+  readonly path: string;
+  readonly reason: string;
+};
+
 export type WorkCreateCommandOutput = CommandOutputBase<"work create"> & {
   readonly action: "created" | "reused";
   readonly workView: WorkView;
@@ -125,6 +130,7 @@ export type WorkDiffCommandOutput = CommandOutputBase<
   readonly action: "diffed";
   readonly workView: WorkView;
   readonly changes: readonly WorkDiffEntry[];
+  readonly unresolvedPaths?: readonly WorkUnresolvedPath[];
   readonly status: WorkspaceStatus;
   readonly nextActions: readonly RepairCommand[];
 };
@@ -144,6 +150,7 @@ export type WorkLifecycleCommandOutput = CommandOutputBase<
   // workspace path budget. The local file stays canonical and the view's version
   // is dropped, so accept reports them instead of counting them as accepted.
   readonly asideRefusedPaths?: readonly string[];
+  readonly unresolvedPaths?: readonly WorkUnresolvedPath[];
   readonly partial?: boolean;
   readonly workView: WorkView;
   readonly status: WorkspaceStatus;
@@ -155,6 +162,7 @@ export type WorkCleanupCommandOutput = CommandOutputBase<"work cleanup"> & {
   readonly workspaceId: WorkspaceId;
   readonly previewedPaths: readonly string[];
   readonly deletedPaths: readonly string[];
+  readonly unresolvedPaths?: readonly WorkUnresolvedPath[];
   readonly status: WorkspaceStatus;
   readonly nextActions: readonly RepairCommand[];
 };

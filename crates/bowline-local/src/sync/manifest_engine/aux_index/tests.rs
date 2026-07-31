@@ -37,7 +37,17 @@ fn sample_record(name: &str, lifecycle: WorkViewLifecycle) -> WorkViewRecord {
         base_manifest_key: ManifestKey::new(format!("m_base_{name}")),
         overlay_manifest_key: ManifestKey::new(format!("m_overlay_{name}")),
         lifecycle,
+        generation: WorkViewGeneration::INITIAL,
     }
+}
+
+#[test]
+fn generation_never_reuses_an_exhausted_value() {
+    assert!(
+        WorkViewGeneration::new(u64::MAX - 1)
+            .checked_next()
+            .is_none()
+    );
 }
 
 #[test]
@@ -122,6 +132,7 @@ fn open_under_a_foreign_key_is_rejected() {
         sealed.key_epoch,
         &sealed.content_id,
         &sealed.sealed,
+        sealed.size,
         &AuxDecodeLimits::default(),
     )
     .expect_err("foreign key must fail");
@@ -140,6 +151,7 @@ fn open_under_a_foreign_epoch_is_rejected() {
         sealed.key_epoch,
         &sealed.content_id,
         &sealed.sealed,
+        sealed.size,
         &AuxDecodeLimits::default(),
     )
     .expect_err("foreign epoch must fail");
@@ -156,6 +168,7 @@ fn open_with_a_substituted_content_id_is_rejected() {
         sealed.key_epoch,
         &wrong,
         &sealed.sealed,
+        sealed.size,
         &AuxDecodeLimits::default(),
     )
     .expect_err("substituted content id must fail");
@@ -209,11 +222,44 @@ fn aux_index_pointer_rejects_a_non_file_entry() {
     assert!(matches!(error, AuxIndexError::WrongEntryKind { .. }));
 }
 
+/// A version 2 index has no per-view generation. Rejecting it took every
+/// work-view command on an upgraded device with it, reported as
+/// `aux index decode failed` and recoverable "retry" — an index that would
+/// never parse however often it was retried.
+#[test]
+fn decode_upgrades_a_version_two_index_without_generations() {
+    let plaintext = br#"{"formatVersion":2,"workViews":[
+        {"id":"wv_a","projectId":"proj_a","projectPath":"a","name":"a","ownerDeviceId":"dev_test","createdAt":"now","updatedAt":"now","baseManifestKey":"m_a","overlayManifestKey":"m_b","lifecycle":"active"}]}"#;
+    let index = decode_aux_index_plaintext(plaintext, &AuxDecodeLimits::default())
+        .expect("a version 2 index still reads");
+    let record = index
+        .get(&WorkViewId::new("wv_a"))
+        .expect("the view survives the upgrade");
+    assert_eq!(
+        record.generation,
+        WorkViewGeneration::INITIAL,
+        "a view that predates generations starts at the initial one"
+    );
+}
+
+#[test]
+fn decode_rejects_an_unknown_future_format_version() {
+    let plaintext = br#"{"formatVersion":99,"workViews":[]}"#;
+    let error = decode_aux_index_plaintext(plaintext, &AuxDecodeLimits::default())
+        .expect_err("a newer index is not guessed at");
+    assert!(matches!(
+        error,
+        AuxIndexError::InvalidRecord {
+            reason: "unsupported aux-index format version"
+        }
+    ));
+}
+
 #[test]
 fn decode_rejects_unsorted_records() {
-    let plaintext = br#"{"formatVersion":2,"workViews":[
-        {"id":"wv_z","projectId":"proj_z","projectPath":"z","name":"z","ownerDeviceId":"dev_test","createdAt":"now","updatedAt":"now","baseManifestKey":"m_a","overlayManifestKey":"m_b","lifecycle":"active"},
-        {"id":"wv_a","projectId":"proj_a","projectPath":"a","name":"a","ownerDeviceId":"dev_test","createdAt":"now","updatedAt":"now","baseManifestKey":"m_a","overlayManifestKey":"m_b","lifecycle":"active"}]}"#;
+    let plaintext = br#"{"formatVersion":3,"workViews":[
+        {"id":"wv_z","projectId":"proj_z","projectPath":"z","name":"z","ownerDeviceId":"dev_test","createdAt":"now","updatedAt":"now","baseManifestKey":"m_a","overlayManifestKey":"m_b","lifecycle":"active","generation":0},
+        {"id":"wv_a","projectId":"proj_a","projectPath":"a","name":"a","ownerDeviceId":"dev_test","createdAt":"now","updatedAt":"now","baseManifestKey":"m_a","overlayManifestKey":"m_b","lifecycle":"active","generation":0}]}"#;
     let error =
         decode_aux_index_plaintext(plaintext, &AuxDecodeLimits::default()).expect_err("unsorted");
     assert!(matches!(error, AuxIndexError::NotSorted));
@@ -221,9 +267,9 @@ fn decode_rejects_unsorted_records() {
 
 #[test]
 fn decode_rejects_duplicate_ids() {
-    let plaintext = br#"{"formatVersion":2,"workViews":[
-        {"id":"wv_a","projectId":"proj_a","projectPath":"a","name":"a","ownerDeviceId":"dev_test","createdAt":"now","updatedAt":"now","baseManifestKey":"m_a","overlayManifestKey":"m_b","lifecycle":"active"},
-        {"id":"wv_a","projectId":"proj_a","projectPath":"a","name":"a","ownerDeviceId":"dev_test","createdAt":"now","updatedAt":"now","baseManifestKey":"m_a","overlayManifestKey":"m_b","lifecycle":"active"}]}"#;
+    let plaintext = br#"{"formatVersion":3,"workViews":[
+        {"id":"wv_a","projectId":"proj_a","projectPath":"a","name":"a","ownerDeviceId":"dev_test","createdAt":"now","updatedAt":"now","baseManifestKey":"m_a","overlayManifestKey":"m_b","lifecycle":"active","generation":0},
+        {"id":"wv_a","projectId":"proj_a","projectPath":"a","name":"a","ownerDeviceId":"dev_test","createdAt":"now","updatedAt":"now","baseManifestKey":"m_a","overlayManifestKey":"m_b","lifecycle":"active","generation":0}]}"#;
     let error =
         decode_aux_index_plaintext(plaintext, &AuxDecodeLimits::default()).expect_err("duplicate");
     assert!(matches!(error, AuxIndexError::DuplicateId));

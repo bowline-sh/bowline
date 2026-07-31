@@ -12,7 +12,8 @@ use bowline_core::workspace_graph::symlink_target_stays_in_workspace;
 
 use super::super::endpoint::{StatTrust, prove_rows};
 use super::super::fs_guard::{
-    FileRead, ObserveOutcome, Observed, observe_classified, read_file_bounded,
+    FileRead, FileVisit, ObserveOutcome, Observed, observe_classified, read_file_bounded,
+    visit_file_bounded,
 };
 use super::super::manifest::{
     EntryKind, MAX_WORKSPACE_PATH_LEN, ManifestEntry, WorkspacePath, publishable_workspace_path,
@@ -21,7 +22,7 @@ use super::super::store::{AncestorCommit, FileRecord, ManifestStore};
 use super::super::unsyncable::{UnsyncableReason, UnsyncableRecord, path_scoped_reason};
 use super::{
     BlobLedger, DeletionAuthorization, PushDeps, PushError, RemoteObjects, RemoteRef,
-    mass_deletion_threshold, now_unix_ns, upload_file_blob,
+    mass_deletion_threshold, now_unix_ns, upload_file_blob, upload_file_blob_segmented,
 };
 
 /// The immutable delta a scan produced. Never touches the store until CAS
@@ -65,6 +66,17 @@ impl Candidate {
             removals: self.removals.clone(),
         }
     }
+
+    /// Paths this scan conclusively settled. Churning and unsyncable paths stay
+    /// durable in `pending_push` so a crash before their retry cannot erase the
+    /// only reminder that a follow-on publication is still required.
+    pub(super) fn settled_paths(&self) -> BTreeSet<WorkspacePath> {
+        self.scanned
+            .iter()
+            .filter(|path| !self.skipped.contains(*path) && !self.unsyncable.contains_key(*path))
+            .cloned()
+            .collect()
+    }
 }
 
 pub(super) fn build_candidate<O: RemoteObjects, R: RemoteRef>(
@@ -105,9 +117,11 @@ pub(super) fn build_candidate<O: RemoteObjects, R: RemoteRef>(
                 candidate.upserts.insert(path.clone(), *entry);
             }
             PathScan::Remove => {
-                if ancestor.contains_key(path) {
-                    candidate.removals.insert(path.clone());
-                }
+                // A pull conflict can intentionally remove the local ancestor
+                // row while the applied remote root still contains the path.
+                // Carry the tombstone; the copy-on-write patcher proves whether
+                // it changes that root and makes an already-absent path a no-op.
+                candidate.removals.insert(path.clone());
             }
             PathScan::Unsyncable(record) => {
                 candidate.unsyncable.insert(path.clone(), *record);
@@ -124,6 +138,7 @@ pub(super) fn build_candidate<O: RemoteObjects, R: RemoteRef>(
             }
         }
     }
+    expand_subtree_removals(&mut candidate, ancestor);
     candidate.scanned = publish;
     // The last step of building the candidate, so what is handed back is
     // complete and frozen: every row it carries is stamped with the endpoint
@@ -133,8 +148,10 @@ pub(super) fn build_candidate<O: RemoteObjects, R: RemoteRef>(
     // proof it never had (see [`super::super::endpoint`]).
     prove_rows(
         &deps.ctx.workspace_root,
-        &deps.ctx.engine_dir(),
+        deps.ctx.endpoint_probe_root(),
         deps.ctx.timestamps,
+        &deps.ctx.crypto,
+        deps.ctx.config.max_seal_bytes,
         candidate
             .upserts
             .iter_mut()
@@ -142,6 +159,57 @@ pub(super) fn build_candidate<O: RemoteObjects, R: RemoteRef>(
             .chain(candidate.local_refreshes.iter_mut()),
     );
     Ok(candidate)
+}
+
+/// A manifest has no implicit directory membership: replacing or deleting one
+/// directory entry must explicitly remove every tracked descendant. The scoped
+/// ancestor includes those prefix rows, so expanding here makes the SQLite
+/// ancestor commit, mass-deletion guard, and remote tree patch operate on the
+/// same complete deletion set.
+fn expand_subtree_removals(
+    candidate: &mut Candidate,
+    ancestor: &BTreeMap<WorkspacePath, FileRecord>,
+) {
+    let destructive_roots = candidate
+        .removals
+        .iter()
+        .cloned()
+        .chain(candidate.upserts.iter().filter_map(|(path, (_, entry))| {
+            let replaces_directory = ancestor
+                .get(path)
+                .is_some_and(|record| record.kind == EntryKind::Directory)
+                && !matches!(entry, ManifestEntry::Directory { .. });
+            replaces_directory.then(|| path.clone())
+        }))
+        .collect::<BTreeSet<_>>();
+
+    if destructive_roots.is_empty() {
+        return;
+    }
+
+    let is_below_destructive_root = |path: &WorkspacePath| {
+        destructive_roots
+            .iter()
+            .any(|root| path != root && is_descendant(path, root))
+    };
+    candidate.removals.extend(
+        ancestor
+            .keys()
+            .filter(|path| is_below_destructive_root(path))
+            .cloned(),
+    );
+    candidate
+        .upserts
+        .retain(|path, _| !is_below_destructive_root(path));
+    candidate
+        .local_refreshes
+        .retain(|path, _| !is_below_destructive_root(path));
+}
+
+fn is_descendant(path: &WorkspacePath, root: &WorkspacePath) -> bool {
+    path.as_str()
+        .strip_prefix(root.as_str())
+        .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 /// What one dirty path contributes to the candidate delta. The upsert payload is
@@ -350,27 +418,55 @@ fn file_candidate<O: RemoteObjects, R: RemoteRef>(
         return Ok(ScanResult::Unchanged);
     }
 
-    let plaintext = match read_file_bounded(
-        &deps.ctx.workspace_root,
-        path,
-        deps.ctx.config.max_seal_bytes,
-        &observed.expected_file(),
-    ) {
-        Ok(FileRead::Bytes(plaintext)) => plaintext,
-        // The leaf was not the regular file we observed (symlink swap, replaced
-        // inode, symlinked parent): re-observe rather than seal foreign bytes.
-        Ok(FileRead::Diverged) => return Ok(ScanResult::Diverged),
-        // One unreadable or oversize file is that file's problem. Reporting it as
-        // a path-scoped divergence keeps the rest of the workspace syncing; the
-        // old behaviour turned it into a fatal that killed the engine thread.
-        Err(error) => return Ok(ScanResult::Unsyncable(Box::new(read_rejection(error)?))),
+    let is_segmented = observed.size >= deps.ctx.config.large_file_threshold;
+    let (content_id, plaintext) = if is_segmented {
+        let visited = visit_file_bounded(
+            &deps.ctx.workspace_root,
+            path,
+            deps.ctx.config.max_seal_bytes,
+            &observed.expected_file(),
+            |file, _| {
+                deps.ctx
+                    .crypto
+                    .content_id_reader(file)
+                    .map_err(PushError::Io)
+            },
+        );
+        match visited {
+            Ok(FileVisit::Value((content_id, byte_len))) if byte_len == observed.size => {
+                deps.ctx.counters.record_content_open(byte_len);
+                (content_id, None)
+            }
+            Ok(FileVisit::Value(_)) | Ok(FileVisit::Diverged) => {
+                return Ok(ScanResult::Diverged);
+            }
+            Err(error) => {
+                return Ok(ScanResult::Unsyncable(Box::new(read_rejection(error)?)));
+            }
+        }
+    } else {
+        let plaintext = match read_file_bounded(
+            &deps.ctx.workspace_root,
+            path,
+            deps.ctx.config.max_seal_bytes,
+            &observed.expected_file(),
+        ) {
+            Ok(FileRead::Bytes(plaintext)) => plaintext,
+            // The leaf was not the regular file we observed (symlink swap,
+            // replaced inode, symlinked parent): re-observe rather than seal
+            // foreign bytes.
+            Ok(FileRead::Diverged) => return Ok(ScanResult::Diverged),
+            // One unreadable or oversize file is that file's problem. Reporting
+            // it as a path-scoped divergence keeps the workspace syncing.
+            Err(error) => {
+                return Ok(ScanResult::Unsyncable(Box::new(read_rejection(error)?)));
+            }
+        };
+        deps.ctx
+            .counters
+            .record_content_open(plaintext.len() as u64);
+        (deps.ctx.crypto.content_id(&plaintext), Some(plaintext))
     };
-    // One real content open + hash of a changed file (invariant C2: an edit
-    // costs the edit; an unchanged file never reaches here).
-    deps.ctx
-        .counters
-        .record_content_open(plaintext.len() as u64);
-    let content_id = deps.ctx.crypto.content_id(&plaintext);
     deps.ctx.counters.record_content_hash();
 
     if let Some(row) = ancestor_row
@@ -398,10 +494,32 @@ fn file_candidate<O: RemoteObjects, R: RemoteRef>(
                 .clone()
                 .ok_or(PushError::AncestorRowMissing { field: "blob_key" })?
         }
-        _ => upload_file_blob(deps, &content_id, &plaintext, ledger)?,
+        _ if is_segmented => {
+            let Some(blob_key) = upload_file_blob_segmented(
+                deps,
+                path,
+                &observed.expected_file(),
+                &content_id,
+                ledger,
+            )?
+            else {
+                return Ok(ScanResult::Diverged);
+            };
+            blob_key
+        }
+        _ => upload_file_blob(
+            deps,
+            &content_id,
+            plaintext.as_deref().ok_or(PushError::Manifest(
+                super::super::manifest::ManifestError::Internal {
+                    reason: "buffered file lost plaintext",
+                },
+            ))?,
+            ledger,
+        )?,
     };
 
-    let size = plaintext.len() as u64;
+    let size = observed.size;
     let key_epoch = deps.ctx.key_epoch();
     Ok(ScanResult::Entry(Box::new((
         FileRecord {
@@ -473,24 +591,32 @@ pub(super) fn record_unsyncable_outcome(
 /// place; this is the last one, and it is the one that holds when a future bug
 /// invents a new way to produce the same batch.
 pub(super) fn guard_mass_deletion(
-    ancestor: &BTreeMap<WorkspacePath, FileRecord>,
+    ancestor_count: usize,
+    scoped_ancestor: &BTreeMap<WorkspacePath, FileRecord>,
+    durable_pending: &BTreeSet<WorkspacePath>,
     candidate: &Candidate,
     deletions: DeletionAuthorization,
 ) -> Result<(), PushError> {
+    let removals = candidate
+        .removals
+        .iter()
+        .filter(|path| scoped_ancestor.contains_key(*path) || durable_pending.contains(*path))
+        .cloned()
+        .collect::<BTreeSet<_>>();
     match deletions {
         DeletionAuthorization::ExplicitOperation => return Ok(()),
         DeletionAuthorization::ConfirmedPaths(confirmed)
-            if candidate.removals.is_subset(confirmed.as_ref()) =>
+            if removals.is_subset(confirmed.as_ref()) =>
         {
             return Ok(());
         }
         DeletionAuthorization::Enforce | DeletionAuthorization::ConfirmedPaths(_) => {}
     }
-    let threshold = mass_deletion_threshold(ancestor.len());
-    if candidate.removals.len() > threshold {
+    let threshold = mass_deletion_threshold(ancestor_count);
+    if removals.len() > threshold {
         return Err(PushError::MassDeletionRefused {
-            removals: candidate.removals.clone(),
-            entries: ancestor.len(),
+            removals,
+            entries: ancestor_count,
             threshold,
         });
     }

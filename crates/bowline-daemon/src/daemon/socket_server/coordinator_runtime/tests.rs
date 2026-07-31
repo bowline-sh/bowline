@@ -465,6 +465,52 @@ fn watcher_bridge_drop_joins_under_live_production() {
 }
 
 #[test]
+fn panicked_watcher_bridge_still_counts_as_joined() {
+    let runtime = DaemonRuntime {
+        sync: None,
+        notify_approvals: false,
+        notification_dedupe: Arc::new(Mutex::new(NotificationDedupe::default())),
+        next_notification_poll: Instant::now(),
+        pending_notification_status: None,
+    };
+    let state = Arc::new(DaemonServerState::new(&runtime).expect("daemon state"));
+    let (handle, _events) = coordinator_channel(4);
+    let (loss_fallback_tx, loss_fallback_rx) = crossbeam_channel::unbounded();
+    let mut scheduler = SchedulerCoordinator::new(
+        Arc::new(Mutex::new(runtime)),
+        state,
+        handle,
+        SystemCoordinatorClock::new(),
+        loss_fallback_tx,
+        loss_fallback_rx,
+    );
+    scheduler.attach_watcher_bridge(Some(WatcherBridge::from_worker_for_test(|| {
+        panic!("injected watcher bridge panic");
+    })));
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while scheduler
+        .watcher_bridge
+        .as_ref()
+        .is_some_and(|bridge| !bridge.is_finished())
+    {
+        assert!(
+            Instant::now() < deadline,
+            "injected watcher bridge did not finish"
+        );
+        std::thread::yield_now();
+    }
+    scheduler.ensure_watcher_bridge(Instant::now());
+
+    assert_eq!(scheduler.watcher_workers_started, 1);
+    assert_eq!(
+        scheduler.watcher_workers_joined, 1,
+        "joining reaps a panicked worker even though JoinHandle reports its panic"
+    );
+    assert!(scheduler.watcher_bridge.is_none());
+}
+
+#[test]
 fn watcher_bridge_without_engine_does_not_start() {
     let temp = crate::daemon::tests::unique_temp_dir("watcher-bridge-no-engine");
     let root = temp.join("Code");

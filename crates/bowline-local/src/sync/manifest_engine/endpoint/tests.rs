@@ -107,6 +107,54 @@ fn a_matching_fingerprint_is_matched_at_endpoint_resolution() {
 }
 
 #[test]
+fn coarse_proof_rejects_same_size_rewrite_hidden_by_matching_stat() {
+    let workspace = TempWorkspace::new("coarse-proof-content").expect("temp workspace");
+    let path = WorkspacePath::new("same-size.txt");
+    let absolute = workspace.root().join(path.as_str());
+    let crypto = WorkspaceCrypto::new("workspace", [7_u8; 32], KeyEpoch::new(1));
+    std::fs::write(&absolute, b"old!").expect("write original");
+
+    let ObserveOutcome::Present(original) = observe_classified(workspace.root(), &path) else {
+        panic!("original file observation");
+    };
+    let mut row = record(
+        (original.fingerprint.mtime_ns, original.fingerprint.ctime_ns),
+        None,
+    );
+    row.size = original.size;
+    row.mode = original.mode;
+    row.fingerprint = original.fingerprint;
+    row.content_id = Some(crypto.content_id(b"old!"));
+
+    std::fs::write(&absolute, b"new!").expect("same-size rewrite");
+    let ObserveOutcome::Present(rewritten) = observe_classified(workspace.root(), &path) else {
+        panic!("rewritten file observation");
+    };
+    // Model a coarse filesystem that reports the rewrite with the same stat
+    // identity the row recorded. Shape and stat checks alone necessarily pass.
+    row.fingerprint = rewritten.fingerprint;
+    let sampled = EndpointInstant::from_stored_nanos(
+        SECOND
+            .bucket(rewritten.fingerprint.ctime_ns)
+            .saturating_add(SECOND.nanos()),
+    );
+
+    assert_eq!(
+        prove_row(
+            workspace.root(),
+            SECOND,
+            sampled,
+            &crypto,
+            1024,
+            &path,
+            &row,
+        ),
+        None,
+        "coarse timestamp proof must validate the bytes, not only matching metadata"
+    );
+}
+
+#[test]
 fn a_bucket_floors_downwards_on_both_sides_of_the_epoch() {
     assert_eq!(SECOND.bucket(1_400_000_000), 1_000_000_000);
     assert_eq!(SECOND.bucket(-1), -1_000_000_000);
@@ -121,8 +169,9 @@ fn a_bucket_floors_downwards_on_both_sides_of_the_epoch() {
 #[test]
 fn the_endpoint_clock_reads_the_workspace_volume_and_leaves_nothing_behind() {
     let workspace = TempWorkspace::new("endpoint-clock").expect("temp workspace");
-    let engine_dir = workspace.root().join(".bowline");
-    let sampled = sample_endpoint_clock(&engine_dir, workspace.root()).expect("clock sample");
+    let endpoint = workspace.root().join("view");
+    std::fs::create_dir(&endpoint).expect("endpoint root");
+    let sampled = sample_endpoint_clock(&endpoint, &endpoint).expect("clock sample");
 
     // A reading of the volume's own clock, not of the process wall clock: the
     // only thing both must agree on is being a plausible current instant.
@@ -133,8 +182,25 @@ fn the_endpoint_clock_reads_the_workspace_volume_and_leaves_nothing_behind() {
     assert!(sampled.nanos() > wall - 60_000_000_000);
     assert!(sampled.nanos() < wall + 60_000_000_000);
     assert!(
-        !engine_dir.join(CLOCK_PROBE_LEAF).exists(),
-        "the clock probe leaves nothing behind"
+        std::fs::read_dir(&endpoint)
+            .expect("endpoint entries")
+            .next()
+            .is_none(),
+        "the private clock probe leaves nothing behind"
+    );
+}
+
+#[test]
+fn endpoint_clock_does_not_touch_a_project_file_with_the_old_probe_name() {
+    let workspace = TempWorkspace::new("endpoint-clock-collision").expect("temp workspace");
+    let project_file = workspace.root().join(CLOCK_PROBE_LEAF);
+    std::fs::write(&project_file, b"project content").expect("project file");
+
+    sample_endpoint_clock(workspace.root(), workspace.root()).expect("clock sample");
+
+    assert_eq!(
+        std::fs::read(project_file).expect("project file remains"),
+        b"project content"
     );
 }
 
@@ -168,6 +234,68 @@ fn the_probe_measures_the_workspace_volume() {
         !engine_dir.join(TIMESTAMP_PROBE_LEAF).exists(),
         "the probe leaves nothing behind"
     );
+}
+
+#[test]
+fn reserved_probe_root_is_private_and_stays_on_the_workspace_volume() {
+    use std::os::unix::fs::MetadataExt;
+
+    let workspace = TempWorkspace::new("endpoint-reserved-probe").expect("temp workspace");
+    let probe_root = prepare_endpoint_probe_root(workspace.root()).expect("prepare probe root");
+    assert_eq!(
+        fs::metadata(workspace.root())
+            .expect("workspace metadata")
+            .dev(),
+        fs::metadata(&probe_root).expect("probe metadata").dev()
+    );
+    let relative = probe_root
+        .strip_prefix(workspace.root())
+        .expect("probe lives beneath workspace")
+        .to_string_lossy();
+    assert!(crate::policy::is_private_workspace_state_path(&relative));
+}
+
+#[test]
+fn reserved_probe_root_rejects_a_different_volume() {
+    use std::os::unix::fs::MetadataExt;
+
+    let workspace = TempWorkspace::new("endpoint-reserved-probe-volume").expect("temp workspace");
+    let workspace_dev = fs::metadata(workspace.root())
+        .expect("workspace metadata")
+        .dev();
+    let foreign = fs::metadata("/dev").expect("/dev metadata");
+    assert_ne!(
+        workspace_dev,
+        foreign.dev(),
+        "test requires distinct volumes"
+    );
+    assert!(validate_endpoint_probe_location(&foreign, workspace_dev).is_err());
+}
+
+#[test]
+fn reserved_probe_root_never_adopts_an_existing_directory() {
+    let workspace = TempWorkspace::new("endpoint-reserved-probe-owner").expect("temp workspace");
+    let colliding = workspace
+        .root()
+        .join(format!("{ENDPOINT_PROBE_STATE_PREFIX}user.tmp"));
+    fs::create_dir(&colliding).expect("create colliding directory");
+    fs::write(colliding.join("user.txt"), b"user data").expect("write user data");
+
+    let prepared = prepare_endpoint_probe_root(workspace.root()).expect("prepare probe root");
+    assert_ne!(prepared, colliding);
+    assert_eq!(
+        fs::read(colliding.join("user.txt")).expect("read user data"),
+        b"user data"
+    );
+}
+
+#[test]
+fn reserved_probe_root_reuses_only_a_valid_owned_directory() {
+    let workspace = TempWorkspace::new("endpoint-reserved-probe-reuse").expect("temp workspace");
+    let first = prepare_endpoint_probe_root(workspace.root()).expect("prepare first probe root");
+    let second = prepare_endpoint_probe_root(workspace.root()).expect("reuse probe root");
+    assert_eq!(first, second);
+    validate_endpoint_probe_owner(&second).expect("valid owner marker");
 }
 
 #[test]
@@ -250,6 +378,105 @@ fn the_probe_agrees_with_a_hand_run_experiment_on_this_volume() {
     assert_eq!(
         probed.normalization(),
         NormalizationForm::from_folds(normalization_folds)
+    );
+}
+
+#[test]
+fn capability_cache_is_partitioned_by_endpoint_directory_identity() {
+    let exact = EndpointCapabilities {
+        names: NameFolding::EXACT,
+        timestamps: TimestampGranularity::NANOSECOND,
+    };
+    let folding = EndpointCapabilities {
+        names: NameFolding::new(NormalizationForm::Insensitive, CaseForm::Insensitive),
+        timestamps: TimestampGranularity::TWO_SECONDS,
+    };
+    let mut cache = std::collections::BTreeMap::new();
+    let first_identity = EndpointIdentity {
+        volume: 11,
+        directory: 101,
+    };
+    let second_identity = EndpointIdentity {
+        volume: 11,
+        directory: 202,
+    };
+    let first = cache_capabilities(&mut cache, first_identity, exact);
+    let second = cache_capabilities(&mut cache, second_identity, folding);
+    let cached = cache_capabilities(&mut cache, first_identity, folding);
+
+    assert_eq!(first, exact);
+    assert_eq!(second, folding);
+    assert_eq!(cached, exact);
+    assert_eq!(cache.len(), 2);
+}
+
+#[test]
+fn root_replacement_refresh_overwrites_a_reused_endpoint_identity() {
+    let old = EndpointCapabilities {
+        names: NameFolding::EXACT,
+        timestamps: TimestampGranularity::NANOSECOND,
+    };
+    let replacement = EndpointCapabilities {
+        names: NameFolding::new(NormalizationForm::Insensitive, CaseForm::Insensitive),
+        timestamps: TimestampGranularity::TWO_SECONDS,
+    };
+    let identity = EndpointIdentity {
+        volume: 11,
+        directory: 101,
+    };
+    let mut cache = std::collections::BTreeMap::new();
+    cache_capabilities(&mut cache, identity, old);
+
+    let refreshed = refresh_cached_capabilities(&mut cache, identity, replacement);
+    let cached = cache_capabilities(&mut cache, identity, old);
+
+    assert_eq!(refreshed, replacement);
+    assert_eq!(cached, replacement);
+}
+
+#[test]
+fn capability_probe_uses_a_private_ephemeral_directory_and_leaves_nothing() {
+    let workspace = TempWorkspace::new("endpoint-capabilities").expect("temp workspace");
+    let endpoint = workspace.root().join("view");
+    std::fs::create_dir(&endpoint).expect("endpoint root");
+
+    let capabilities = probe_endpoint_capabilities(&endpoint);
+    assert!(matches!(
+        capabilities.timestamps,
+        TimestampGranularity::NANOSECOND
+            | TimestampGranularity::SECOND
+            | TimestampGranularity::TWO_SECONDS
+    ));
+    assert!(
+        std::fs::read_dir(&endpoint)
+            .expect("endpoint entries")
+            .next()
+            .is_none(),
+        "the endpoint probe directory is removed"
+    );
+}
+
+#[test]
+fn private_probe_cleanup_never_recursively_deletes_unexpected_content() {
+    let workspace = TempWorkspace::new("endpoint-probe-injection").expect("temp workspace");
+    let injected = with_private_probe_dir(workspace.root(), |probe_dir| {
+        std::fs::write(probe_dir.join("unexpected.txt"), b"keep me")?;
+        Ok(())
+    });
+
+    assert!(
+        injected.is_err(),
+        "a non-empty probe directory fails closed"
+    );
+    let probe_dir = std::fs::read_dir(workspace.root())
+        .expect("workspace entries")
+        .next()
+        .expect("preserved probe directory")
+        .expect("probe entry")
+        .path();
+    assert_eq!(
+        std::fs::read(probe_dir.join("unexpected.txt")).expect("unexpected content remains"),
+        b"keep me"
     );
 }
 

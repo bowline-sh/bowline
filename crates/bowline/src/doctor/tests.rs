@@ -77,7 +77,7 @@ fn seeded_context(tag: &str) -> (PathBuf, DoctorContext) {
             removals: BTreeSet::new(),
         };
         store
-            .commit_push_success(&commit, &ManifestKey::new("m_head"), 3)
+            .commit_push_success(&commit, &ManifestKey::new("m_head"), 3, &BTreeSet::new())
             .expect("seed push");
     }
     let store = ManifestStore::open_read_only(&db).expect("reopen read-only");
@@ -191,7 +191,7 @@ fn case_fold_collision_is_detected_and_reported_as_a_count() {
             removals: BTreeSet::new(),
         };
         store
-            .commit_push_success(&commit, &ManifestKey::new("m_head"), 1)
+            .commit_push_success(&commit, &ManifestKey::new("m_head"), 1, &BTreeSet::new())
             .expect("seed push");
     }
     let store = ManifestStore::open_read_only(&db).expect("reopen read-only");

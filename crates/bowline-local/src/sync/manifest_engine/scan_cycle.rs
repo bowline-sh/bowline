@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use super::endpoint::probe_name_folding;
+use super::endpoint::{prepare_endpoint_probe_root, refresh_endpoint_capabilities};
 use super::stat_walk::{StatWalk, path_is_at_or_below, stat_walk, stat_walk_subtrees};
 use super::workspace_root::{self, RootFault};
 use super::{
@@ -49,7 +49,12 @@ impl ManifestEngine {
                     // is measured again rather than carried over. A probe that ran
                     // against a missing root answered with the safe default; this
                     // is where it gets a real answer.
-                    self.ctx.names = probe_name_folding(&self.ctx.engine_dir());
+                    let endpoint_probe_root = prepare_endpoint_probe_root(&self.ctx.workspace_root)
+                        .map_err(|error| CycleError::Fatal(EngineError::Io(error)))?;
+                    let capabilities = refresh_endpoint_capabilities(&endpoint_probe_root);
+                    self.ctx.endpoint_probe_root = endpoint_probe_root;
+                    self.ctx.names = capabilities.names;
+                    self.ctx.timestamps = capabilities.timestamps;
                     self.set_degradation(Degradation::FullScanRequired(
                         FullScanReason::RootReplaced,
                     ));
@@ -78,6 +83,7 @@ impl ManifestEngine {
             .store
             .all_files()
             .map_err(|error| CycleError::Fatal(EngineError::Store(error)))?;
+        self.counters.record_ancestor_rows_read(ancestor.len());
         let walk =
             stat_walk(&self.ctx.workspace_root, &policy, &ancestor).map_err(walk_cycle_error)?;
         self.counters.record_stat_walk(walk.scanned, walk.hashes);
@@ -133,8 +139,9 @@ impl ManifestEngine {
                 .map_err(|error| CycleError::Fatal(EngineError::Io(error)))?;
         let ancestor = self
             .store
-            .all_files()
+            .files_in_scopes(&self.dirty_subtrees)
             .map_err(|error| CycleError::Fatal(EngineError::Store(error)))?;
+        self.counters.record_ancestor_rows_read(ancestor.len());
         let walk = stat_walk_subtrees(
             &self.ctx.workspace_root,
             &policy,

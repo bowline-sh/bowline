@@ -12,29 +12,28 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use bowline_core::git_paths::classify_git_path;
+use bowline_core::git_paths::{classify_git_path, is_immutable_git_object_payload};
 
 use crate::sync::manifest_engine::manifest::WorkspacePath;
 
-/// How many ops one cached `.git/refs` walk covers before it is walked again. A
-/// refs lock taken partway through a long plan must still stop the ops after it;
-/// walking the tree on every op is what made the check quadratic in the first
-/// place. Nothing else in the lock probe is cached — see [`GitLockCache`].
+/// How many immutable-object ops one cached `.git/refs` walk covers before it is
+/// walked again. Ref, HEAD, index, packed-ref, and other mutable Git operations
+/// always invalidate this answer first; walking the tree for every loose object
+/// is what made the check quadratic in the first place.
 const GIT_LOCK_REPROBE_OPS: u32 = 256;
 
 /// Per-repo git-lock state for the length of one apply plan.
 ///
-/// Only the RECURSIVE `.git/refs` walk is cached, because only it is expensive: a
-/// first pull materializes tens of thousands of `.git/objects/**` entries and
-/// used to walk the refs tree once per op. The three single-file locks
+/// Only content-addressed object payload operations may reuse the recursive
+/// `.git/refs` verdict, because both initial materialization and post-GC cleanup
+/// can touch tens of thousands of them. Any operation that exposes mutable Git
+/// state forces a fresh recursive verdict before it applies. The three
+/// single-file locks
 /// (`index.lock`, `HEAD.lock`, `packed-refs.lock`) are three stats, so they are
 /// re-probed on EVERY op and no "unlocked" answer for them is ever cached.
 ///
-/// That asymmetry is the whole design: `index.lock` is the lock `git add`,
-/// `git commit`, `git checkout` and `git rebase` take, so a verdict cached across
-/// the following 255 ops meant Bowline kept writing remote opaque Git state into
-/// a repo with a live Git transaction — the corruption this guard exists to
-/// prevent. Three stats per op close that window while keeping the amortization.
+/// That asymmetry is the whole design: object payloads retain the cheap path,
+/// while a ref lock taken after them stops the next ref-related operation.
 #[derive(Default)]
 pub(crate) struct GitLockCache {
     refs_locked: BTreeMap<String, bool>,
@@ -63,6 +62,9 @@ impl GitLockCache {
         if single_file_lock_present(&git_path) {
             return true;
         }
+        if requires_fresh_refs_probe(path) {
+            self.refs_locked.remove(&git_dir);
+        }
         if let Some(locked) = self.refs_locked.get(&git_dir) {
             return *locked;
         }
@@ -79,6 +81,10 @@ impl GitLockCache {
     pub(crate) fn probes(&self) -> u32 {
         self.probes
     }
+}
+
+fn requires_fresh_refs_probe(path: &WorkspacePath) -> bool {
+    !is_immutable_git_object_payload(path.as_str())
 }
 
 /// Whether a Git lock is active for the repo containing `path`. While active,

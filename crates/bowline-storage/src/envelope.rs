@@ -1,4 +1,8 @@
-use std::{error::Error, fmt, io::Cursor};
+use std::{
+    error::Error,
+    fmt,
+    io::{Cursor, Read, Write},
+};
 
 use chacha20poly1305::{
     Key, KeyInit, XChaCha20Poly1305, XNonce,
@@ -11,6 +15,9 @@ use crate::{ObjectKind, canonical_framing::CanonicalFrame};
 
 mod nonce;
 mod padding;
+mod segmented;
+
+pub use segmented::{SegmentedOpenStats, SegmentedSealStats};
 
 /// v3 is the convergent layout: a deterministic nonce (see [`nonce`]) over a
 /// length-padded plaintext (see [`padding`]). The magic and version both move so
@@ -26,6 +33,8 @@ const ENVELOPE_AAD_DOMAIN: &str = "bowline-storage-envelope-v2";
 const ENVELOPE_VERSION: u16 = 3;
 const NONCE_LEN: usize = 24;
 const HEADER_LEN: usize = ENVELOPE_MAGIC.len() + 2 + 4 + NONCE_LEN;
+pub(crate) const DEFAULT_MAX_DECODED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const DECODE_BUFFER_BYTES: usize = 64 * 1024;
 
 /// The key that decrypts every sealed object on this device.
 ///
@@ -168,12 +177,72 @@ pub fn open(
     key: StorageKey,
     context: &EnvelopeContext,
 ) -> Result<Vec<u8>, EnvelopeError> {
+    open_bounded(envelope, key, context, DEFAULT_MAX_DECODED_BYTES)
+}
+
+/// Open an envelope while refusing decoded plaintext beyond `max_decoded_bytes`.
+///
+/// The decoder reads at most one byte beyond the bound, which proves an object
+/// is oversized without first materializing the rest of an authenticated
+/// compression bomb.
+pub fn open_bounded(
+    envelope: &[u8],
+    key: StorageKey,
+    context: &EnvelopeContext,
+    max_decoded_bytes: u64,
+) -> Result<Vec<u8>, EnvelopeError> {
     open_with_associated_data(
         envelope,
         &key,
         context.key_epoch,
         &context.associated_data(),
+        max_decoded_bytes,
     )
+}
+
+/// Seal a reader as fixed-size, independently authenticated segments.
+///
+/// Unlike [`seal`], this keeps memory bounded by one segment and writes each
+/// completed frame immediately. It is intended for workspace file blobs; small
+/// metadata objects continue to use the compact single-frame envelope.
+pub fn seal_segmented(
+    reader: &mut dyn Read,
+    writer: &mut dyn Write,
+    key: StorageKey,
+    context: &EnvelopeContext,
+) -> Result<SegmentedSealStats, EnvelopeError> {
+    segmented::seal(
+        reader,
+        writer,
+        &key,
+        context.key_epoch,
+        &context.associated_data(),
+    )
+}
+
+/// Open a segmented envelope directly into `writer`.
+///
+/// Every segment is authenticated before any of its plaintext is written, and
+/// aggregate decoded bytes are bounded while decoding.
+pub fn open_segmented(
+    reader: &mut dyn Read,
+    writer: &mut dyn Write,
+    key: StorageKey,
+    context: &EnvelopeContext,
+    max_decoded_bytes: u64,
+) -> Result<SegmentedOpenStats, EnvelopeError> {
+    segmented::open(
+        reader,
+        writer,
+        &key,
+        context.key_epoch,
+        &context.associated_data(),
+        max_decoded_bytes,
+    )
+}
+
+pub fn is_segmented_envelope(prefix: &[u8]) -> bool {
+    segmented::has_magic(prefix)
 }
 
 pub(crate) fn open_with_associated_data(
@@ -181,6 +250,7 @@ pub(crate) fn open_with_associated_data(
     key: &StorageKey,
     key_epoch: u32,
     associated_data: &[u8],
+    max_decoded_bytes: u64,
 ) -> Result<Vec<u8>, EnvelopeError> {
     let fixed_header_len = ENVELOPE_MAGIC.len() + 2 + 4;
     if envelope.len() < fixed_header_len {
@@ -211,8 +281,36 @@ pub(crate) fn open_with_associated_data(
     let padded = Zeroizing::new(open_sealed_body(envelope, key, associated_data)?);
     let compressed = padding::unpad(&padded).ok_or(EnvelopeError::PaddingCorrupt)?;
 
-    zstd::stream::decode_all(Cursor::new(compressed))
-        .map_err(|_| EnvelopeError::DecompressionFailed)
+    decode_bounded(compressed, max_decoded_bytes)
+}
+
+fn decode_bounded(compressed: &[u8], maximum: u64) -> Result<Vec<u8>, EnvelopeError> {
+    let mut decoder = zstd::stream::read::Decoder::new(Cursor::new(compressed))
+        .map_err(|_| EnvelopeError::DecompressionFailed)?;
+    let mut plaintext = Vec::new();
+    let mut buffer = [0_u8; DECODE_BUFFER_BYTES];
+    let mut decoded = 0_u64;
+
+    loop {
+        let remaining_with_probe = maximum.saturating_sub(decoded).saturating_add(1);
+        let read_limit = remaining_with_probe.min(DECODE_BUFFER_BYTES as u64) as usize;
+        let read = decoder
+            .read(&mut buffer[..read_limit])
+            .map_err(|_| EnvelopeError::DecompressionFailed)?;
+        if read == 0 {
+            return Ok(plaintext);
+        }
+        decoded = decoded
+            .checked_add(read as u64)
+            .ok_or(EnvelopeError::DecodedSizeExceeded {
+                maximum,
+                decoded: u64::MAX,
+            })?;
+        if decoded > maximum {
+            return Err(EnvelopeError::DecodedSizeExceeded { maximum, decoded });
+        }
+        plaintext.extend_from_slice(&buffer[..read]);
+    }
 }
 
 fn open_sealed_body(
@@ -250,11 +348,17 @@ pub enum EnvelopeError {
     PlaintextTooLarge,
     PaddingCorrupt,
     DecompressionFailed,
+    DecodedSizeExceeded { maximum: u64, decoded: u64 },
     Truncated,
     UnknownFormat,
     UnsupportedVersion(u16),
     WrongContext,
     VerificationFailed,
+    ReadFailed,
+    WriteFailed,
+    InvalidSegment,
+    SegmentOutOfOrder,
+    TrailingData,
 }
 
 impl fmt::Display for EnvelopeError {
@@ -270,6 +374,12 @@ impl fmt::Display for EnvelopeError {
             }
             Self::PaddingCorrupt => formatter.write_str("envelope padding frame is malformed"),
             Self::DecompressionFailed => formatter.write_str("envelope decompression failed"),
+            Self::DecodedSizeExceeded { maximum, .. } => {
+                write!(
+                    formatter,
+                    "envelope decoded plaintext exceeds {maximum} bytes"
+                )
+            }
             Self::Truncated => formatter.write_str("encrypted envelope is truncated"),
             Self::UnknownFormat => formatter.write_str("encrypted envelope has unknown format"),
             Self::UnsupportedVersion(version) => {
@@ -284,6 +394,13 @@ impl fmt::Display for EnvelopeError {
             Self::VerificationFailed => {
                 formatter.write_str("encrypted envelope verification failed")
             }
+            Self::ReadFailed => formatter.write_str("segmented envelope read failed"),
+            Self::WriteFailed => formatter.write_str("segmented envelope write failed"),
+            Self::InvalidSegment => formatter.write_str("segmented envelope frame is invalid"),
+            Self::SegmentOutOfOrder => {
+                formatter.write_str("segmented envelope frames are out of order")
+            }
+            Self::TrailingData => formatter.write_str("segmented envelope has trailing data"),
         }
     }
 }
@@ -312,6 +429,24 @@ mod tests {
             open(sealed.as_bytes(), key.clone(), &context).expect("opened"),
             b"source bytes"
         );
+    }
+
+    #[test]
+    fn compression_bomb_stops_after_one_byte_beyond_the_decode_bound() {
+        let key = StorageKey::deterministic(7);
+        let context = test_context("compression-bomb");
+        let plaintext = vec![b'x'; 4 * 1024 * 1024];
+        let sealed = seal(&plaintext, key.clone(), &context).expect("sealed");
+        let maximum = 1024;
+
+        assert!(sealed.as_bytes().len() < plaintext.len() / 100);
+        assert!(matches!(
+            open_bounded(sealed.as_bytes(), key, &context, maximum),
+            Err(EnvelopeError::DecodedSizeExceeded {
+                maximum: 1024,
+                decoded: 1025,
+            })
+        ));
     }
 
     /// The content-addressing contract: `blake3(sealed)` is the object key, so

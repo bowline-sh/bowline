@@ -49,6 +49,10 @@ pub(super) fn workspace_ref_from_dto(
             &verifier,
             &head_signature,
         )?;
+    } else if snapshot_id.is_some() || updated_by_device_id.is_some() || head_signature.is_some() {
+        return Err(shape_error(
+            "version-0 genesis ref must not carry snapshot id, head signature, or updated device id",
+        ));
     }
     Ok(WorkspaceRef {
         workspace_id,

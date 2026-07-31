@@ -20,9 +20,9 @@ use bowline_local::sync::manifest_engine::aux_index::{
 };
 use bowline_local::sync::manifest_engine::manifest::ManifestKey;
 use bowline_local::work_views::{
-    WorkViewError, append_work_event, display_path, expand_display_path, open_store,
-    overlay_aux_engine_truth, reconcile_aux_work_views, validate_work_view_name, visible_path,
-    work_view_id,
+    WorkViewError, acquire_work_view_transition_lock, append_work_event, display_path,
+    expand_display_path, open_store, overlay_aux_engine_truth, reconcile_aux_work_views,
+    validate_work_view_name, visible_path, work_view_id,
 };
 
 use super::{AuxState, WorkCommandError, WorkCreateArgs, WorkCreateRpcResult, call_work_rpc};
@@ -41,6 +41,7 @@ pub fn run_work_create(
         return Err(WorkViewError::UnknownBaseSnapshot { selector }.into());
     }
     let store = open_store(db_path.as_deref())?;
+    let _transition_lock = acquire_work_view_transition_lock(&store)?;
     let workspace = store
         .current_workspace()
         .map_err(WorkViewError::from)?
@@ -122,6 +123,8 @@ pub fn run_work_create(
             base_manifest_key: ManifestKey::new(base.clone()),
             overlay_manifest_key: ManifestKey::new(base.clone()),
             lifecycle: AuxLifecycle::Active,
+            generation:
+                bowline_local::sync::manifest_engine::aux_index::WorkViewGeneration::INITIAL,
         },
     );
     aux_state.write()?;

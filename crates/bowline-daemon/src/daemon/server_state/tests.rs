@@ -1,5 +1,5 @@
 use crate::daemon::server_state::{
-    CachedDaemonStatus, device_trust_status_facts, requested_root_matches,
+    CachedDaemonStatus, WorkViewOperationLocks, device_trust_status_facts, requested_root_matches,
     resolve_project_status_scope,
 };
 use crate::daemon::{DaemonRuntime, DaemonServerState, StatusSubscription};
@@ -30,6 +30,31 @@ use std::time::Instant;
 use time::OffsetDateTime;
 
 struct FailingNotificationSender;
+
+#[test]
+fn work_view_operation_locks_are_keyed_by_workspace_and_view_path() {
+    let locks = WorkViewOperationLocks::default();
+    let workspace = WorkspaceId::new("ws_primary");
+    let same_first = locks
+        .get(&workspace, Path::new("/workspace/.work/app/fix"))
+        .expect("first lock");
+    let same_second = locks
+        .get(&workspace, Path::new("/workspace/.work/app/fix"))
+        .expect("same lock");
+    let other_view = locks
+        .get(&workspace, Path::new("/workspace/.work/app/other"))
+        .expect("other view lock");
+    let other_workspace = locks
+        .get(
+            &WorkspaceId::new("ws_other"),
+            Path::new("/workspace/.work/app/fix"),
+        )
+        .expect("other workspace lock");
+
+    assert!(Arc::ptr_eq(&same_first, &same_second));
+    assert!(!Arc::ptr_eq(&same_first, &other_view));
+    assert!(!Arc::ptr_eq(&same_first, &other_workspace));
+}
 
 impl NotificationSender for FailingNotificationSender {
     fn send(
