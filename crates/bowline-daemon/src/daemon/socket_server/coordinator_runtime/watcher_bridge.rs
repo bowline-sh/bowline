@@ -24,7 +24,7 @@ const WATCHER_BRIDGE_SOURCE_FIELD: &str = "sync.change_rx";
 const WATCHER_BRIDGE_WORKER_FIELD: &str = "worker";
 const WATCHER_FORWARD_POLL: Duration = Duration::from_millis(100);
 const WATCHER_OVERFLOW_ACTIVITY_POLL: Duration = Duration::from_millis(5);
-const WATCHER_OVERFLOW_QUIET_PERIOD: Duration = Duration::from_millis(100);
+const WATCHER_OVERFLOW_QUIET_PERIOD: Duration = Duration::from_millis(1_500);
 const WATCHER_OVERFLOW_DRAIN_LIMIT: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
