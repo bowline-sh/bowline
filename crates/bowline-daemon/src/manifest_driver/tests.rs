@@ -154,17 +154,25 @@ fn watcher_overflow_recovery_preempts_its_fifo_fence() {
 
     await_stat_walks(&counters, 1);
     std::fs::write(root.join("recovered.txt"), b"recovered\n").expect("recovery fixture");
-    engine_counters.request_watcher_overflow_recovery();
+    engine_counters.begin_watcher_overflow_recovery();
     driver.send(EngineEvent::Paths(BTreeSet::from([WorkspacePath::new(
         "obsolete.txt",
     )])));
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(
+        counters.snapshot().stat_walks,
+        1,
+        "stale watcher paths cannot start a cycle while the burst is draining"
+    );
 
-    // The bridge's FIFO fence has deliberately not been sent yet. The shared
-    // generation must wake ahead of that tail marker and run the recovery scan.
-    await_stat_walks(&counters, 2);
+    engine_counters.request_watcher_overflow_recovery();
     driver.send(EngineEvent::FullScanRequired(
         FullScanReason::WatcherOverflow,
     ));
+
+    // Releasing the hold folds the covering scan before its FIFO wake and the
+    // stale path event that originally armed the ordinary debounce.
+    await_stat_walks(&counters, 2);
 
     drop(driver);
     let _ = std::fs::remove_dir_all(temp);

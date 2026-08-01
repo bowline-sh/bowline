@@ -641,6 +641,8 @@ struct WatcherOverflowPriority {
     queued_fences: u64,
 }
 
+const WATCHER_OVERFLOW_HOLD_POLL: Duration = Duration::from_millis(5);
+
 impl WatcherOverflowPriority {
     fn refresh<C: Clock>(
         &mut self,
@@ -719,9 +721,13 @@ pub fn run_engine_loop<O, R, C>(
     let counters = engine.counters();
     let mut watcher_overflow_priority = WatcherOverflowPriority::default();
     loop {
-        let received = match engine.next_timeout(clock.now_millis()) {
-            Some(timeout) => inbox.recv_timeout(timeout),
-            None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        let received = if counters.watcher_overflow_recovery_pending() {
+            inbox.recv_timeout(WATCHER_OVERFLOW_HOLD_POLL)
+        } else {
+            match engine.next_timeout(clock.now_millis()) {
+                Some(timeout) => inbox.recv_timeout(timeout),
+                None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            }
         };
         match received {
             Ok(EngineEvent::Shutdown) => {
@@ -744,6 +750,9 @@ pub fn run_engine_loop<O, R, C>(
                 sink.publish(engine.snapshot());
                 return;
             }
+        }
+        if counters.watcher_overflow_recovery_pending() {
+            continue;
         }
         if engine.announce_due_work(clock) {
             sink.publish(engine.snapshot());

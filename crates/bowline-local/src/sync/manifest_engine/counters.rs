@@ -18,6 +18,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// with the engine thread that writes it.
 #[derive(Debug, Default)]
 pub struct EngineCounters {
+    /// Watcher-overflow epochs observed by the bridge before it drains the
+    /// native burst. While this is ahead of the recovery generation, the
+    /// driver must not start ordinary due work from stale watcher paths.
+    watcher_overflow_active_generation: AtomicU64,
     /// Level-triggered generation for watcher-overflow recovery. The watcher
     /// bridge advances it before waking the engine so a recovery scan can
     /// preempt obsolete path events already sitting in the ordinary FIFO.
@@ -159,6 +163,22 @@ impl EngineCounters {
     pub fn request_watcher_overflow_recovery(&self) {
         self.watcher_overflow_recovery_generation
             .fetch_add(1, Ordering::Release);
+    }
+
+    /// Begin one bounded watcher-overflow epoch before draining its burst.
+    pub fn begin_watcher_overflow_recovery(&self) {
+        self.watcher_overflow_active_generation
+            .fetch_add(1, Ordering::Release);
+    }
+
+    /// Whether the bridge is still collapsing a native burst for which the
+    /// covering full-scan fence has not yet been emitted.
+    pub fn watcher_overflow_recovery_pending(&self) -> bool {
+        self.watcher_overflow_active_generation
+            .load(Ordering::Acquire)
+            > self
+                .watcher_overflow_recovery_generation
+                .load(Ordering::Acquire)
     }
 
     /// The latest asserted watcher recovery generation.

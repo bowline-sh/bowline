@@ -303,6 +303,11 @@ fn forward_overflow_recovery(request: OverflowRecoveryRequest<'_>) -> bool {
         shutdown,
         counters,
     } = request;
+    // Hold the engine before draining: the first few native events can reach
+    // its FIFO before saturation becomes visible. Without this early phase,
+    // their normal debounce can start an obsolete sync cycle while the bridge
+    // is still collapsing the burst, delaying the covering scan behind IO.
+    counters.begin_watcher_overflow_recovery();
     let mut source_connected = true;
     let mut limited_signal = initial_signal.and_then(|signal| match signal {
         WatcherSignal::Limited { reason } => Some(WatcherSignal::Limited { reason }),
