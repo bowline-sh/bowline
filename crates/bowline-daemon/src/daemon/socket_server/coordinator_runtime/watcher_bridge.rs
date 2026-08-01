@@ -23,8 +23,9 @@ type WatcherBridgeWorker = Box<dyn FnOnce() + Send + 'static>;
 const WATCHER_BRIDGE_SOURCE_FIELD: &str = "sync.change_rx";
 const WATCHER_BRIDGE_WORKER_FIELD: &str = "worker";
 const WATCHER_FORWARD_POLL: Duration = Duration::from_millis(100);
-const WATCHER_OVERFLOW_QUIET_PERIOD: Duration = Duration::from_millis(5);
-const WATCHER_OVERFLOW_DRAIN_LIMIT: Duration = Duration::from_millis(100);
+const WATCHER_OVERFLOW_ACTIVITY_POLL: Duration = Duration::from_millis(5);
+const WATCHER_OVERFLOW_QUIET_PERIOD: Duration = Duration::from_millis(100);
+const WATCHER_OVERFLOW_DRAIN_LIMIT: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub(in crate::daemon) enum WatcherBridgeStartError {
@@ -309,12 +310,15 @@ fn forward_overflow_recovery(request: OverflowRecoveryRequest<'_>) -> bool {
         | WatcherSignal::Changed { .. }
         | WatcherSignal::Recoverable => None,
     });
-    // Native backends can keep delivering one kernel burst after the bounded
-    // channel first saturates. Keep the recovery lane asserted through a short
-    // quiet period so that whole burst collapses behind one full-scan fence.
-    // The absolute limit keeps a continuously active producer from postponing
-    // recovery or daemon shutdown indefinitely.
-    let drain_deadline = Instant::now() + WATCHER_OVERFLOW_DRAIN_LIMIT;
+    // Dropped callback events bypass this channel by design, so channel
+    // emptiness alone cannot identify the end of a native burst. The shared
+    // generation advances for both queued and coalesced overflow activity;
+    // close the lane only after that generation and the channel stay quiet.
+    // The absolute limit keeps a continuously active producer bounded.
+    let started_at = Instant::now();
+    let drain_deadline = started_at + WATCHER_OVERFLOW_DRAIN_LIMIT;
+    let mut quiet_since = started_at;
+    let mut observed_generation = overflow_lane.activity_generation();
     loop {
         if shutdown.load(Ordering::Acquire) {
             return false;
@@ -323,19 +327,30 @@ fn forward_overflow_recovery(request: OverflowRecoveryRequest<'_>) -> bool {
         if now >= drain_deadline {
             break;
         }
-        let quiet_wait = WATCHER_OVERFLOW_QUIET_PERIOD.min(drain_deadline - now);
+        let quiet_wait = WATCHER_OVERFLOW_ACTIVITY_POLL.min(drain_deadline - now);
         match source.recv_timeout(quiet_wait) {
             Ok(WatcherSignal::Limited { reason }) => {
                 limited_signal = Some(WatcherSignal::Limited { reason });
+                quiet_since = Instant::now();
             }
             Ok(WatcherSignal::OverflowLane(_))
             | Ok(WatcherSignal::Changed { .. })
-            | Ok(WatcherSignal::Recoverable) => {}
-            Err(mpsc::RecvTimeoutError::Timeout) => break,
+            | Ok(WatcherSignal::Recoverable) => {
+                quiet_since = Instant::now();
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 source_connected = false;
                 break;
             }
+        }
+        let activity_generation = overflow_lane.activity_generation();
+        if activity_generation != observed_generation {
+            observed_generation = activity_generation;
+            quiet_since = Instant::now();
+        }
+        if Instant::now().duration_since(quiet_since) >= WATCHER_OVERFLOW_QUIET_PERIOD {
+            break;
         }
     }
 

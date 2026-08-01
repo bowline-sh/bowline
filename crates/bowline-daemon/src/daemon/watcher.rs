@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 
 use bowline_core::git_paths::{is_git_derivable_volatile_path, is_git_directory_path};
@@ -33,10 +33,12 @@ pub(super) enum WatcherSignal {
 #[derive(Debug, Default)]
 pub(super) struct WatcherOverflowLane {
     recovery_requested: AtomicBool,
+    activity_generation: AtomicU64,
 }
 
 impl WatcherOverflowLane {
     pub(super) fn request_recovery(&self) {
+        self.record_recovery_activity();
         self.recovery_requested.store(true, Ordering::Release);
     }
 
@@ -46,6 +48,14 @@ impl WatcherOverflowLane {
 
     pub(super) fn take_recovery_request(&self) -> bool {
         self.recovery_requested.swap(false, Ordering::AcqRel)
+    }
+
+    pub(super) fn record_recovery_activity(&self) {
+        self.activity_generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(super) fn activity_generation(&self) -> u64 {
+        self.activity_generation.load(Ordering::Acquire)
     }
 }
 
@@ -109,6 +119,7 @@ pub(super) fn send_watcher_signal(
             WatcherSignal::Changed { .. } | WatcherSignal::Recoverable
         )
     {
+        overflow_lane.record_recovery_activity();
         return;
     }
     match change_tx.try_send(signal) {
@@ -656,6 +667,7 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(1);
         let overflow_lane = overflow_lane();
         overflow_lane.request_recovery();
+        let generation_before = overflow_lane.activity_generation();
 
         super::send_watcher_signal(
             &sender,
@@ -669,6 +681,11 @@ mod tests {
         assert!(
             matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)),
             "a latched recovery scan covers ordinary follow-on callback events"
+        );
+        assert_eq!(
+            overflow_lane.activity_generation(),
+            generation_before + 1,
+            "coalesced callbacks remain visible to the recovery quiet window"
         );
     }
 

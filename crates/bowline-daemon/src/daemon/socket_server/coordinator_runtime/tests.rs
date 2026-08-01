@@ -325,6 +325,52 @@ fn watcher_overflow_latch_wakes_bridge_after_source_channel_drains() {
 }
 
 #[test]
+fn coalesced_callback_activity_delays_the_overflow_fence_until_quiet() {
+    let temp = crate::daemon::tests::unique_temp_dir("watcher-overflow-activity");
+    let root = temp.join("Code");
+    fs::create_dir_all(&root).expect("workspace root");
+    let overflow_lane = Arc::new(WatcherOverflowLane::default());
+    let (signal_tx, signal_rx) = mpsc::sync_channel(8);
+    signal_tx
+        .send(WatcherSignal::OverflowLane(Arc::clone(&overflow_lane)))
+        .expect("overflow lane");
+    overflow_lane.request_recovery();
+
+    let (engine_tx, engine_rx) = mpsc::channel();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let worker_shutdown = Arc::clone(&shutdown);
+    let counters = EngineCounters::shared();
+    let worker_counters = Arc::clone(&counters);
+    let worker = std::thread::spawn(move || {
+        forward_watcher_signals(signal_rx, engine_tx, root, worker_shutdown, worker_counters);
+    });
+    let activity_lane = Arc::clone(&overflow_lane);
+    let activity = std::thread::spawn(move || {
+        for _ in 0..16 {
+            std::thread::sleep(Duration::from_millis(25));
+            activity_lane.record_recovery_activity();
+        }
+    });
+
+    assert!(
+        engine_rx.recv_timeout(Duration::from_millis(250)).is_err(),
+        "active coalesced callbacks keep the recovery lane open"
+    );
+    activity.join().expect("activity producer");
+    assert!(matches!(
+        engine_rx.recv_timeout(Duration::from_millis(300)),
+        Ok(EngineEvent::FullScanRequired(
+            bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
+        ))
+    ));
+
+    shutdown.store(true, Ordering::Release);
+    drop(signal_tx);
+    worker.join().expect("bridge worker");
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
 fn continuously_replenished_overflow_emits_fence_and_stops_promptly() {
     let temp = crate::daemon::tests::unique_temp_dir("watcher-overflow-live-producer");
     let root = temp.join("Code");
@@ -379,7 +425,7 @@ fn continuously_replenished_overflow_emits_fence_and_stops_promptly() {
         );
     });
     assert!(matches!(
-        engine_rx.recv_timeout(Duration::from_secs(1)),
+        engine_rx.recv_timeout(Duration::from_secs(3)),
         Ok(EngineEvent::FullScanRequired(
             bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
         ))
