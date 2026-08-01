@@ -103,6 +103,14 @@ pub(super) fn send_watcher_signal(
             reason: error.to_string(),
         },
     };
+    if overflow_lane.recovery_requested()
+        && matches!(
+            &signal,
+            WatcherSignal::Changed { .. } | WatcherSignal::Recoverable
+        )
+    {
+        return;
+    }
     match change_tx.try_send(signal) {
         Ok(()) => {}
         Err(mpsc::TrySendError::Full(_)) => {
@@ -641,6 +649,27 @@ mod tests {
             "a saturated native callback must return without channel capacity"
         );
         assert!(overflow_lane.recovery_requested());
+    }
+
+    #[test]
+    fn asserted_overflow_lane_coalesces_follow_on_callback_events() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let overflow_lane = overflow_lane();
+        overflow_lane.request_recovery();
+
+        super::send_watcher_signal(
+            &sender,
+            &overflow_lane,
+            Ok(
+                Event::new(EventKind::Modify(notify::event::ModifyKind::Any))
+                    .add_path("/ws/follow-up.txt".into()),
+            ),
+        );
+
+        assert!(
+            matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "a latched recovery scan covers ordinary follow-on callback events"
+        );
     }
 
     #[test]

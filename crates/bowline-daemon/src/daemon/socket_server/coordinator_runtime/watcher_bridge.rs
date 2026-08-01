@@ -23,6 +23,8 @@ type WatcherBridgeWorker = Box<dyn FnOnce() + Send + 'static>;
 const WATCHER_BRIDGE_SOURCE_FIELD: &str = "sync.change_rx";
 const WATCHER_BRIDGE_WORKER_FIELD: &str = "worker";
 const WATCHER_FORWARD_POLL: Duration = Duration::from_millis(100);
+const WATCHER_OVERFLOW_QUIET_PERIOD: Duration = Duration::from_millis(5);
+const WATCHER_OVERFLOW_DRAIN_LIMIT: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 pub(in crate::daemon) enum WatcherBridgeStartError {
@@ -301,30 +303,36 @@ fn forward_overflow_recovery(request: OverflowRecoveryRequest<'_>) -> bool {
         counters,
     } = request;
     let mut source_connected = true;
-    let initial_signal_count = usize::from(initial_signal.is_some());
     let mut limited_signal = initial_signal.and_then(|signal| match signal {
         WatcherSignal::Limited { reason } => Some(WatcherSignal::Limited { reason }),
         WatcherSignal::OverflowLane(_)
         | WatcherSignal::Changed { .. }
         | WatcherSignal::Recoverable => None,
     });
-    // At overflow, at most one full channel capacity can predate the recovery
-    // request. Drain that fixed snapshot only. A producer replenishing the
-    // channel cannot postpone the fence; remaining events stay FIFO-ordered
-    // behind it and are forwarded normally.
-    for _ in initial_signal_count..crate::daemon::WATCHER_DRAIN_BUDGET {
+    // Native backends can keep delivering one kernel burst after the bounded
+    // channel first saturates. Keep the recovery lane asserted through a short
+    // quiet period so that whole burst collapses behind one full-scan fence.
+    // The absolute limit keeps a continuously active producer from postponing
+    // recovery or daemon shutdown indefinitely.
+    let drain_deadline = Instant::now() + WATCHER_OVERFLOW_DRAIN_LIMIT;
+    loop {
         if shutdown.load(Ordering::Acquire) {
             return false;
         }
-        match source.try_recv() {
+        let now = Instant::now();
+        if now >= drain_deadline {
+            break;
+        }
+        let quiet_wait = WATCHER_OVERFLOW_QUIET_PERIOD.min(drain_deadline - now);
+        match source.recv_timeout(quiet_wait) {
             Ok(WatcherSignal::Limited { reason }) => {
                 limited_signal = Some(WatcherSignal::Limited { reason });
             }
             Ok(WatcherSignal::OverflowLane(_))
             | Ok(WatcherSignal::Changed { .. })
             | Ok(WatcherSignal::Recoverable) => {}
-            Err(mpsc::TryRecvError::Empty) => break,
-            Err(mpsc::TryRecvError::Disconnected) => {
+            Err(mpsc::RecvTimeoutError::Timeout) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
                 source_connected = false;
                 break;
             }
