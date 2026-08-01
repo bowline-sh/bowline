@@ -44,19 +44,13 @@ pub(crate) fn snapshot_stale_bases_from_inputs(
         }
         let latest_snapshot_id = latest_snapshot_ids.get(&project.id).cloned();
         let Some(latest_snapshot_id) = latest_snapshot_id else {
+            // Project snapshot heads are optional metadata used only to compare
+            // work-view bases. Their absence says nothing about ordinary source
+            // freshness: newly discovered and rematerialized projects have no
+            // head until one is explicitly recorded, while the Git observer is
+            // still authoritative for the project itself.
             if project_id.is_some() {
-                stale_bases.push(StaleBaseStatus::snapshot(
-                    FreshnessVerdict::Unknown,
-                    format!(
-                        "{} has no local project snapshot yet; freshness cannot be proven.",
-                        project.path
-                    ),
-                    Some(project.id.clone()),
-                    Some(project.path.clone()),
-                    None,
-                    None,
-                    Some(STALE_BASE_REMEDY_COMMAND.to_string()),
-                ));
+                stale_bases.push(git_freshness_status(project));
             }
             continue;
         };
@@ -87,39 +81,43 @@ pub(crate) fn snapshot_stale_bases_from_inputs(
         }
 
         if project_id.is_some() && stale_bases.len() == project_stale_count {
-            let (verdict, summary, remedy) = match project.git_observer_state {
-                GitObserverState::Ok => (
-                    FreshnessVerdict::Current,
-                    format!("Git observation for {} is current.", project.path),
-                    None,
-                ),
-                GitObserverState::Partial => (
-                    FreshnessVerdict::Unknown,
-                    format!(
-                        "Git observation for {} is partial; freshness cannot be proven.",
-                        project.path
-                    ),
-                    Some(GIT_OBSERVATION_REMEDY_COMMAND.to_string()),
-                ),
-                GitObserverState::Unavailable => (
-                    FreshnessVerdict::Unknown,
-                    format!(
-                        "Git observation for {} is unavailable; freshness cannot be proven.",
-                        project.path
-                    ),
-                    Some(GIT_OBSERVATION_REMEDY_COMMAND.to_string()),
-                ),
-            };
-            stale_bases.push(StaleBaseStatus::git(
-                verdict,
-                summary,
-                Some(project.id.clone()),
-                Some(project.path.clone()),
-                remedy,
-            ));
+            stale_bases.push(git_freshness_status(project));
         }
     }
     Ok(stale_bases)
+}
+
+fn git_freshness_status(project: &ProjectRecord) -> StaleBaseStatus {
+    let (verdict, summary, remedy) = match project.git_observer_state {
+        GitObserverState::Ok => (
+            FreshnessVerdict::Current,
+            format!("Git observation for {} is current.", project.path),
+            None,
+        ),
+        GitObserverState::Partial => (
+            FreshnessVerdict::Unknown,
+            format!(
+                "Git observation for {} is partial; freshness cannot be proven.",
+                project.path
+            ),
+            Some(GIT_OBSERVATION_REMEDY_COMMAND.to_string()),
+        ),
+        GitObserverState::Unavailable => (
+            FreshnessVerdict::Unknown,
+            format!(
+                "Git observation for {} is unavailable; freshness cannot be proven.",
+                project.path
+            ),
+            Some(GIT_OBSERVATION_REMEDY_COMMAND.to_string()),
+        ),
+    };
+    StaleBaseStatus::git(
+        verdict,
+        summary,
+        Some(project.id.clone()),
+        Some(project.path.clone()),
+        remedy,
+    )
 }
 
 pub(crate) fn freshness_for_stale_bases(stale_bases: &[StaleBaseStatus]) -> FreshnessVerdict {

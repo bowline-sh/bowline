@@ -127,6 +127,48 @@ fn scoped_project_observed_git_freshness_is_current() {
 }
 
 #[test]
+fn scoped_project_without_snapshot_uses_git_freshness() {
+    let temp = TempWorkspace::new("status-no-project-snapshot").expect("temp workspace");
+    let db_path = temp.root().join("state").join("local.sqlite3");
+    let workspace_id = WorkspaceId::new("ws_code");
+    let project_id = ProjectId::new("proj_web");
+    let store = MetadataStore::open(&db_path).expect("metadata opens");
+    seed_workspace_root(&store, &workspace_id);
+    store
+        .insert_project(
+            &project_id,
+            &workspace_id,
+            "root_code",
+            "apps/web",
+            "2026-06-23T12:00:00Z",
+        )
+        .expect("project insert");
+
+    let output = compose_status(StatusOptions {
+        db_path: Some(db_path),
+        requested_path: Some("apps/web".to_string()),
+        workspace_scope: false,
+        generated_at: "2026-06-23T12:00:00Z".to_string(),
+    })
+    .expect("status composes");
+
+    // Setup readiness remains limited until the project records its first pack;
+    // the missing head must not independently create blocking attention.
+    assert_eq!(output.status.level, StatusLevel::Limited);
+    assert!(
+        output
+            .status
+            .attention_items
+            .iter()
+            .all(|item| !item.contains("snapshot") && !item.contains("freshness"))
+    );
+    assert_eq!(output.freshness, FreshnessVerdict::Current);
+    assert_eq!(output.stale_bases.len(), 1);
+    assert_eq!(output.stale_bases[0].axis, FreshnessAxis::Git);
+    assert_eq!(output.stale_bases[0].verdict, FreshnessVerdict::Current);
+}
+
+#[test]
 fn scoped_project_unavailable_git_observation_is_unknown() {
     let temp = TempWorkspace::new("status-unavailable-git-freshness").expect("temp workspace");
     let db_path = temp.root().join("state").join("local.sqlite3");
