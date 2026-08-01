@@ -24,8 +24,8 @@ use bowline_control_plane::{HostedControlPlaneClient, SignedUrlHttpClient};
 use bowline_core::ids::{DeviceId, WorkspaceId};
 use bowline_local::sync::manifest_engine::{
     Clock, Degradation, EngineContext, EngineCounters, EngineEvent, EngineIo, EnginePhase,
-    EngineSnapshot, ManifestEngine, ManifestStore, RemoteObjects, RemoteRef, SyncBarrierId,
-    SystemClock,
+    EngineSnapshot, FullScanReason, ManifestEngine, ManifestStore, RemoteObjects, RemoteRef,
+    SyncBarrierId, SystemClock,
 };
 
 use crate::manifest_transport::{
@@ -635,6 +635,55 @@ pub struct ManifestDriverConfig {
     pub trust_refresh: SignerTrustRefresh,
 }
 
+#[derive(Default)]
+struct WatcherOverflowPriority {
+    applied_generation: u64,
+    queued_fences: u64,
+}
+
+impl WatcherOverflowPriority {
+    fn refresh<C: Clock>(
+        &mut self,
+        engine: &mut ManifestEngine,
+        counters: &EngineCounters,
+        clock: &C,
+    ) {
+        let latest = counters.watcher_overflow_recovery_generation();
+        let new_fences = latest.saturating_sub(self.applied_generation);
+        if new_fences == 0 {
+            return;
+        }
+        self.applied_generation = latest;
+        self.queued_fences = self.queued_fences.saturating_add(new_fences);
+        engine.on_event(
+            EngineEvent::FullScanRequired(FullScanReason::WatcherOverflow),
+            clock,
+        );
+    }
+
+    fn subsumes(&mut self, event: &EngineEvent) -> bool {
+        if self.queued_fences == 0 {
+            return false;
+        }
+        match event {
+            // These watcher events precede the queued fence that asserted this
+            // generation. The priority full scan re-observes all of them.
+            EngineEvent::Paths(_) | EngineEvent::RecursivePaths(_) => true,
+            EngineEvent::FullScanRequired(FullScanReason::WatcherOverflow) => {
+                self.queued_fences -= 1;
+                true
+            }
+            EngineEvent::FullScanRequired(_)
+            | EngineEvent::RefChanged
+            | EngineEvent::RefObserved(_)
+            | EngineEvent::ConnectivityRestored
+            | EngineEvent::SyncBarrier(_)
+            | EngineEvent::ConfirmMassDeletion
+            | EngineEvent::Shutdown => false,
+        }
+    }
+}
+
 /// Run the engine loop, publishing a snapshot after startup and after every
 /// due-work cycle. This is the daemon's snapshot-observing composition of the
 /// engine's finer `start`/`on_event`/`run_due_work` API; it differs from
@@ -667,6 +716,8 @@ pub fn run_engine_loop<O, R, C>(
     let snapshot = engine.snapshot();
     sink.publish(snapshot.clone());
     sink.complete_barriers(engine.take_completed_barriers(), &snapshot);
+    let counters = engine.counters();
+    let mut watcher_overflow_priority = WatcherOverflowPriority::default();
     loop {
         let received = match engine.next_timeout(clock.now_millis()) {
             Some(timeout) => inbox.recv_timeout(timeout),
@@ -679,10 +730,15 @@ pub fn run_engine_loop<O, R, C>(
                 return;
             }
             Ok(event) => {
-                engine.on_event(event, clock);
+                watcher_overflow_priority.refresh(&mut engine, &counters, clock);
+                if !watcher_overflow_priority.subsumes(&event) {
+                    engine.on_event(event, clock);
+                }
                 sink.publish(engine.snapshot());
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                watcher_overflow_priority.refresh(&mut engine, &counters, clock);
+            }
             Err(RecvTimeoutError::Disconnected) => {
                 engine.on_event(EngineEvent::Shutdown, clock);
                 sink.publish(engine.snapshot());

@@ -386,6 +386,12 @@ fn forward_engine_event(
             bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
         )
     );
+    if recovered_watcher_overflow {
+        // The ordinary engine channel is shared with watcher paths already in
+        // flight. Assert the level-triggered recovery first so the engine folds
+        // the full scan ahead of that stale FIFO tail when this send wakes it.
+        counters.request_watcher_overflow_recovery();
+    }
     if events.send(event).is_err() {
         return false;
     }

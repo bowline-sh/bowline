@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 use bowline_core::ids::DeviceId;
 use bowline_local::sync::manifest_engine::{
     BlobKey, BlobReaderUpload, BlobUpload, CasOutcome, EngineConfig, EngineContext, EngineCounters,
-    EnginePhase, KeyEpoch, ManifestKey, ManifestStore, ManifestUpload, RefObservation,
-    RemoteObjects, RemoteRef, TransportError, WorkspaceCrypto, probe_name_folding,
-    probe_timestamp_granularity,
+    EngineEvent, EnginePhase, FullScanReason, KeyEpoch, ManifestKey, ManifestStore, ManifestUpload,
+    RefObservation, RemoteObjects, RemoteRef, TransportError, WorkspaceCrypto, WorkspacePath,
+    probe_name_folding, probe_timestamp_granularity,
 };
+use std::collections::BTreeSet;
 
 /// A transport for an empty genesis workspace: the ref is absent, so the engine
 /// pulls nothing, has no dirty paths to push, and settles into `Idle`.
@@ -130,6 +131,54 @@ fn driver_reaches_idle_on_an_empty_genesis_workspace() {
 
     drop(driver);
     let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn watcher_overflow_recovery_preempts_its_fifo_fence() {
+    let temp = std::env::temp_dir().join(format!(
+        "bowline-manifest-driver-overflow-{}-{}",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    ));
+    let root = temp.join("Code");
+    std::fs::create_dir_all(&root).expect("workspace root");
+    let engine = test_engine(root.clone(), temp.join(MANIFEST_ENGINE_DB_FILE));
+    let counters = engine.counters();
+    let engine_counters = counters.clone();
+    let driver = ManifestDriver::spawn(move |inbox, sink| {
+        let transport = EmptyGenesisTransport;
+        let clock = SystemClock::default();
+        run_engine_loop(engine, &transport, &transport, &clock, &inbox, &sink);
+    })
+    .expect("driver spawns");
+
+    await_stat_walks(&counters, 1);
+    std::fs::write(root.join("recovered.txt"), b"recovered\n").expect("recovery fixture");
+    engine_counters.request_watcher_overflow_recovery();
+    driver.send(EngineEvent::Paths(BTreeSet::from([WorkspacePath::new(
+        "obsolete.txt",
+    )])));
+
+    // The bridge's FIFO fence has deliberately not been sent yet. The shared
+    // generation must wake ahead of that tail marker and run the recovery scan.
+    await_stat_walks(&counters, 2);
+    driver.send(EngineEvent::FullScanRequired(
+        FullScanReason::WatcherOverflow,
+    ));
+
+    drop(driver);
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+fn await_stat_walks(counters: &EngineCounters, expected: u64) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while counters.snapshot().stat_walks < expected {
+        assert!(
+            Instant::now() < deadline,
+            "engine did not reach {expected} stat walks"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]

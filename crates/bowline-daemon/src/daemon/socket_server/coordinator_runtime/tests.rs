@@ -229,6 +229,11 @@ fn watcher_overflow_collapses_backlog_and_preserves_follow_up_edit() {
         "the saturated pre-overflow backlog collapses into one recovery fence"
     );
     assert_eq!(counters.snapshot().watcher_overflow_recoveries, 1);
+    assert_eq!(
+        counters.watcher_overflow_recovery_generation(),
+        1,
+        "the bridge asserts engine priority before publishing the FIFO fence"
+    );
 
     // Model another native loss while the engine may still be executing the
     // first scan. A level-triggered lane must re-arm a second fence; clearing
@@ -245,6 +250,7 @@ fn watcher_overflow_collapses_backlog_and_preserves_follow_up_edit() {
         "one re-armed loss produces exactly one additional fence"
     );
     assert_eq!(counters.snapshot().watcher_overflow_recoveries, 2);
+    assert_eq!(counters.watcher_overflow_recovery_generation(), 2);
 
     let follow_up = root.join("follow-up.txt");
     fs::write(&follow_up, b"after overflow").expect("follow-up edit");

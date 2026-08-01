@@ -18,6 +18,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// with the engine thread that writes it.
 #[derive(Debug, Default)]
 pub struct EngineCounters {
+    /// Level-triggered generation for watcher-overflow recovery. The watcher
+    /// bridge advances it before waking the engine so a recovery scan can
+    /// preempt obsolete path events already sitting in the ordinary FIFO.
+    watcher_overflow_recovery_generation: AtomicU64,
     /// Full stat-walk passes performed (the C5 safety audit and startup seed).
     pub stat_walks: AtomicU64,
     /// Paths stat-ed across all walks (the C5 "10k stat-walk" budget subject).
@@ -149,6 +153,18 @@ impl EngineCounters {
     pub fn record_watcher_overflow_recovery(&self) {
         self.watcher_overflow_recoveries
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Assert an engine-priority watcher recovery before enqueueing its wake.
+    pub fn request_watcher_overflow_recovery(&self) {
+        self.watcher_overflow_recovery_generation
+            .fetch_add(1, Ordering::Release);
+    }
+
+    /// The latest asserted watcher recovery generation.
+    pub fn watcher_overflow_recovery_generation(&self) -> u64 {
+        self.watcher_overflow_recovery_generation
+            .load(Ordering::Acquire)
     }
 
     /// A plain-value copy for crossing the thread boundary into the daemon
