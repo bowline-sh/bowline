@@ -172,7 +172,7 @@ impl Default for RefObserverHealth {
 pub struct RefObserverHealthHandle(Arc<Mutex<RefObserverHealth>>);
 
 impl RefObserverHealthHandle {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(Arc::new(Mutex::new(RefObserverHealth::default())))
     }
 
@@ -197,7 +197,7 @@ impl RefObserverHealthHandle {
         );
     }
 
-    pub(super) fn transition(
+    pub(crate) fn transition(
         &self,
         state: RefObserverState,
         consecutive_failures: u32,
@@ -270,6 +270,9 @@ impl RefChangeSubscription {
         let worker = thread::Builder::new()
             .name("bowline-manifest-ref-bridge".to_string())
             .spawn(move || {
+                let _lifecycle = RefObserverWorkerLifecycle {
+                    health: worker_health.clone(),
+                };
                 run_ref_bridge(RefBridge {
                     starter: &mut starter,
                     events: &events,
@@ -295,6 +298,17 @@ impl RefChangeSubscription {
         self.worker
             .as_ref()
             .is_none_or(std::thread::JoinHandle::is_finished)
+    }
+}
+
+struct RefObserverWorkerLifecycle {
+    health: RefObserverHealthHandle,
+}
+
+impl Drop for RefObserverWorkerLifecycle {
+    fn drop(&mut self) {
+        self.health
+            .transition(RefObserverState::Stopped, 0, false, None);
     }
 }
 

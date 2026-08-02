@@ -17,8 +17,9 @@ pub(super) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 /// authenticated, trusted hosted context and verified the encrypted head.
 const AUTH_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
-/// A daemon can be between supervisor start and engine attach while a device is
-/// already authenticated. Retry that startup boundary without reintroducing
+/// A daemon can be between supervisor start and engine attach, or between
+/// engine attach and the remote observer's first reactive value, while a device
+/// is already authenticated. Retry that startup boundary without reintroducing
 /// sync-state polling; convergence itself remains one reactive barrier call.
 const DAEMON_STARTUP_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 

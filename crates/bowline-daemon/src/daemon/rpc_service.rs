@@ -290,6 +290,9 @@ fn barrier_error(
         SyncBarrierError::Unavailable { .. } | SyncBarrierError::EngineStopped => {
             rpc_error(DaemonRpcErrorCode::Unavailable, error.as_str(), true)
         }
+        SyncBarrierError::ObserverUnavailable => {
+            rpc_error(DaemonRpcErrorCode::PermissionDenied, error.as_str(), false)
+        }
         SyncBarrierError::WorkspaceNotServed => {
             rpc_error(DaemonRpcErrorCode::NotFound, error.as_str(), false)
         }

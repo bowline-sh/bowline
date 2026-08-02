@@ -47,6 +47,37 @@ struct EngineEndpoint {
     generation: u64,
     events: Sender<EngineEvent>,
     pending: Arc<Mutex<BTreeMap<SyncBarrierId, Sender<EngineSnapshot>>>>,
+    observer: ObserverEndpoint,
+}
+
+#[derive(Debug)]
+enum ObserverEndpoint {
+    NotRequired,
+    Starting,
+    LiveHealth(RefObserverHealthHandle),
+}
+
+#[derive(Clone)]
+enum ObserverBarrierGuard {
+    NotRequired,
+    LiveHealth(RefObserverHealthHandle),
+}
+
+impl ObserverBarrierGuard {
+    fn require_live(&self) -> Result<(), SyncBarrierError> {
+        let Self::LiveHealth(health) = self else {
+            return Ok(());
+        };
+        match health.readiness() {
+            RefObserverReadiness::Live => Ok(()),
+            RefObserverReadiness::Retrying => Err(SyncBarrierError::Unavailable {
+                reason: "remote manifest observer has not delivered its initial value",
+            }),
+            RefObserverReadiness::UntrustedSigner | RefObserverReadiness::Unauthenticated => {
+                Err(SyncBarrierError::ObserverUnavailable)
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -102,6 +133,7 @@ impl EngineSnapshotSink {
         &self,
         events: Sender<EngineEvent>,
         pending: Arc<Mutex<BTreeMap<SyncBarrierId, Sender<EngineSnapshot>>>>,
+        observer_required: bool,
     ) -> u64 {
         let generation = self.0.next_generation.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut endpoint) = self.0.endpoint.lock() {
@@ -109,9 +141,23 @@ impl EngineSnapshotSink {
                 generation,
                 events,
                 pending,
+                observer: if observer_required {
+                    ObserverEndpoint::Starting
+                } else {
+                    ObserverEndpoint::NotRequired
+                },
             });
         }
         generation
+    }
+
+    fn attach_ref_observer_health(&self, generation: u64, health: RefObserverHealthHandle) {
+        if let Ok(mut endpoint) = self.0.endpoint.lock()
+            && let Some(endpoint) = endpoint.as_mut()
+            && endpoint.generation == generation
+        {
+            endpoint.observer = ObserverEndpoint::LiveHealth(health);
+        }
     }
 
     fn unregister_engine_endpoint(&self, generation: u64) {
@@ -161,7 +207,7 @@ impl EngineSnapshotHandle {
     /// performs an on-demand disk scan and hosted-ref read, then wakes this
     /// waiter only after that specific request has settled.
     pub fn request_sync_barrier(&self) -> Result<SyncBarrierWaiter, SyncBarrierError> {
-        let (id, events, pending) = {
+        let (id, events, pending, observer) = {
             let endpoint = self
                 .0
                 .endpoint
@@ -172,10 +218,23 @@ impl EngineSnapshotHandle {
             let endpoint = endpoint.as_ref().ok_or(SyncBarrierError::Unavailable {
                 reason: "manifest sync engine is unavailable",
             })?;
+            let observer = match &endpoint.observer {
+                ObserverEndpoint::NotRequired => ObserverBarrierGuard::NotRequired,
+                ObserverEndpoint::Starting => {
+                    return Err(SyncBarrierError::Unavailable {
+                        reason: "remote manifest observer is starting",
+                    });
+                }
+                ObserverEndpoint::LiveHealth(health) => {
+                    ObserverBarrierGuard::LiveHealth(health.clone())
+                }
+            };
+            observer.require_live()?;
             (
                 SyncBarrierId(self.0.next_barrier_id.fetch_add(1, Ordering::Relaxed)),
                 endpoint.events.clone(),
                 Arc::clone(&endpoint.pending),
+                observer,
             )
         };
         let (completion, receiver) = mpsc::channel();
@@ -195,6 +254,7 @@ impl EngineSnapshotHandle {
             id,
             receiver,
             pending,
+            observer,
         })
     }
 
@@ -261,6 +321,10 @@ pub enum SyncBarrierError {
     /// to it yet, or its barrier state is momentarily unusable. Either way a
     /// caller holding a deadline should ask again.
     Unavailable { reason: &'static str },
+    /// The remote observer is present but cannot become live without an account
+    /// or device-trust change. Retrying the same barrier would hide the action
+    /// the user must take, so this remains distinct from startup unavailability.
+    ObserverUnavailable,
     /// This daemon serves no sync workspace at all. Waiting cannot change that,
     /// so it must never be reported as a daemon that is still coming up.
     WorkspaceNotServed,
@@ -278,6 +342,9 @@ impl SyncBarrierError {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Unavailable { reason } => reason,
+            Self::ObserverUnavailable => {
+                "remote manifest observer requires authentication or signer trust"
+            }
             Self::WorkspaceNotServed => "daemon is not serving a sync workspace",
             Self::Cancelled => "the sync barrier request was cancelled",
             Self::TimedOut => "sync barrier did not converge before the deadline",
@@ -304,6 +371,7 @@ pub struct SyncBarrierWaiter {
     id: SyncBarrierId,
     receiver: Receiver<EngineSnapshot>,
     pending: Arc<Mutex<BTreeMap<SyncBarrierId, Sender<EngineSnapshot>>>>,
+    observer: ObserverBarrierGuard,
 }
 
 impl SyncBarrierWaiter {
@@ -321,6 +389,7 @@ impl SyncBarrierWaiter {
     ) -> Result<EngineSnapshot, SyncBarrierError> {
         let deadline = std::time::Instant::now() + timeout;
         loop {
+            self.observer.require_live()?;
             if cancelled() {
                 return Err(SyncBarrierError::Cancelled);
             }
@@ -329,7 +398,10 @@ impl SyncBarrierWaiter {
                 return Err(SyncBarrierError::TimedOut);
             }
             match self.receiver.recv_timeout(remaining.min(SYNC_BARRIER_POLL)) {
-                Ok(snapshot) => return Ok(snapshot),
+                Ok(snapshot) => {
+                    self.observer.require_live()?;
+                    return Ok(snapshot);
+                }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     return Err(SyncBarrierError::EngineStopped);
@@ -445,10 +517,25 @@ impl ManifestDriver {
     where
         F: FnOnce(Receiver<EngineEvent>, EngineSnapshotSink) + Send + 'static,
     {
+        Self::spawn_with_sink_observer_requirement(sink, handle, false, run)
+    }
+
+    fn spawn_with_sink_observer_requirement<F>(
+        sink: EngineSnapshotSink,
+        handle: EngineSnapshotHandle,
+        observer_required: bool,
+        run: F,
+    ) -> io::Result<Self>
+    where
+        F: FnOnce(Receiver<EngineEvent>, EngineSnapshotSink) + Send + 'static,
+    {
         let (events, inbox) = mpsc::channel();
         let barrier_pending = Arc::new(Mutex::new(BTreeMap::new()));
-        let endpoint_generation =
-            sink.register_engine_endpoint(events.clone(), Arc::clone(&barrier_pending));
+        let endpoint_generation = sink.register_engine_endpoint(
+            events.clone(),
+            Arc::clone(&barrier_pending),
+            observer_required,
+        );
         let thread_sink = sink.clone();
         let thread = match thread::Builder::new()
             .name("bowline-manifest-engine".to_string())
@@ -501,16 +588,17 @@ impl ManifestDriver {
         let workspace_id = config.workspace_id.clone();
         let device_id = config.device_id.clone();
         let http = config.http;
-        let mut driver = Self::spawn_with_sink(sink, handle, move |inbox, sink| {
-            let transport = ManifestTransport::with_http_client(
-                &*transport_client,
-                workspace_id,
-                device_id,
-                http,
-            );
-            let clock = SystemClock::default();
-            run_engine_loop(engine, &transport, &transport, &clock, &inbox, &sink);
-        })?;
+        let mut driver =
+            Self::spawn_with_sink_observer_requirement(sink, handle, true, move |inbox, sink| {
+                let transport = ManifestTransport::with_http_client(
+                    &*transport_client,
+                    workspace_id,
+                    device_id,
+                    http,
+                );
+                let clock = SystemClock::default();
+                run_engine_loop(engine, &transport, &transport, &clock, &inbox, &sink);
+            })?;
         let subscription = RefChangeSubscription::spawn(
             config.client,
             config.workspace_id.as_str().to_string(),
@@ -518,7 +606,11 @@ impl ManifestDriver {
             config.reconnect_delay,
             config.trust_refresh,
         );
-        driver.ref_observer_health = Some(subscription.health_handle());
+        let observer_health = subscription.health_handle();
+        driver
+            .endpoint_sink
+            .attach_ref_observer_health(driver.endpoint_generation, observer_health.clone());
+        driver.ref_observer_health = Some(observer_health);
         driver.ref_subscription = Some(subscription);
         driver.counters = counters;
         Ok(driver)

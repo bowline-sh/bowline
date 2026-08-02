@@ -1,5 +1,9 @@
 use crate::manifest_driver::{
     MANIFEST_ENGINE_DB_FILE, ManifestDriver, SyncBarrierError, run_engine_loop,
+    shared_engine_snapshot,
+};
+use crate::manifest_transport::{
+    RefObserverFailure, RefObserverFailureStage, RefObserverHealthHandle, RefObserverState,
 };
 use bowline_local::sync::manifest_engine::Degradation;
 use bowline_local::sync::manifest_engine::ManifestEngine;
@@ -18,6 +22,54 @@ use std::collections::BTreeSet;
 /// A transport for an empty genesis workspace: the ref is absent, so the engine
 /// pulls nothing, has no dirty paths to push, and settles into `Idle`.
 struct EmptyGenesisTransport;
+
+#[test]
+fn sync_barrier_reads_live_observer_health_before_and_during_convergence() {
+    let (sink, handle) = shared_engine_snapshot();
+    let driver = ManifestDriver::spawn_with_sink_observer_requirement(
+        sink.clone(),
+        handle.clone(),
+        true,
+        |inbox, _sink| {
+            while !matches!(inbox.recv(), Ok(EngineEvent::Shutdown) | Err(_)) {}
+        },
+    )
+    .expect("observer-gated driver spawns");
+
+    assert!(matches!(
+        handle.request_sync_barrier(),
+        Err(SyncBarrierError::Unavailable { .. })
+    ));
+
+    let health = RefObserverHealthHandle::new();
+    health.transition(RefObserverState::Live, 0, false, None);
+    sink.attach_ref_observer_health(driver.endpoint_generation, health.clone());
+    let waiter = handle
+        .request_sync_barrier()
+        .expect("a live observer admits an exact barrier");
+
+    health.transition(RefObserverState::Retrying, 1, false, None);
+    assert!(matches!(
+        waiter.wait(Duration::from_secs(1), || false),
+        Err(SyncBarrierError::Unavailable { .. })
+    ));
+
+    health.transition(
+        RefObserverState::Retrying,
+        1,
+        false,
+        Some(RefObserverFailure {
+            stage: RefObserverFailureStage::Authentication,
+            message: "injected authentication refusal".to_string(),
+        }),
+    );
+    assert!(matches!(
+        handle.request_sync_barrier(),
+        Err(SyncBarrierError::ObserverUnavailable)
+    ));
+
+    drop(driver);
+}
 
 impl RemoteObjects for EmptyGenesisTransport {
     fn put_blob(&self, _upload: BlobUpload<'_>) -> Result<(), TransportError> {
