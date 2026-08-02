@@ -29,8 +29,8 @@ const WATCHER_OVERFLOW_ACTIVITY_POLL: Duration = Duration::from_millis(5);
 // one kernel overflow into several serial full scans and can consume the whole
 // edit budget. Wait across that delivery gap while retaining a hard ceiling for
 // a genuinely continuous producer.
-const WATCHER_OVERFLOW_QUIET_PERIOD: Duration = Duration::from_secs(3);
-const WATCHER_OVERFLOW_DRAIN_LIMIT: Duration = Duration::from_secs(5);
+const WATCHER_OVERFLOW_QUIET_PERIOD: Duration = Duration::from_secs(5);
+const WATCHER_OVERFLOW_DRAIN_LIMIT: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 pub(in crate::daemon) enum WatcherBridgeStartError {

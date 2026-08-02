@@ -219,7 +219,7 @@ fn watcher_overflow_collapses_backlog_and_preserves_follow_up_edit() {
     });
 
     assert!(matches!(
-        engine_rx.recv_timeout(Duration::from_millis(3_300)),
+        engine_rx.recv_timeout(Duration::from_millis(5_300)),
         Ok(EngineEvent::FullScanRequired(
             bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
         ))
@@ -240,7 +240,7 @@ fn watcher_overflow_collapses_backlog_and_preserves_follow_up_edit() {
     // the first request cannot erase this later loss.
     overflow_lane.request_recovery();
     assert!(matches!(
-        engine_rx.recv_timeout(Duration::from_millis(3_300)),
+        engine_rx.recv_timeout(Duration::from_millis(5_300)),
         Ok(EngineEvent::FullScanRequired(
             bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
         ))
@@ -318,7 +318,7 @@ fn watcher_overflow_latch_wakes_bridge_after_source_channel_drains() {
     // the timeout path after the ordinary source queue is already empty.
     overflow_lane.request_recovery();
     assert!(matches!(
-        engine_rx.recv_timeout(Duration::from_millis(3_300)),
+        engine_rx.recv_timeout(Duration::from_millis(5_300)),
         Ok(EngineEvent::FullScanRequired(
             bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
         ))
@@ -364,7 +364,7 @@ fn coalesced_callback_activity_delays_the_overflow_fence_until_quiet() {
     );
     activity.join().expect("activity producer");
     assert!(matches!(
-        engine_rx.recv_timeout(Duration::from_millis(3_300)),
+        engine_rx.recv_timeout(Duration::from_millis(5_300)),
         Ok(EngineEvent::FullScanRequired(
             bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
         ))
@@ -431,7 +431,7 @@ fn continuously_replenished_overflow_emits_fence_and_stops_promptly() {
         );
     });
     assert!(matches!(
-        engine_rx.recv_timeout(Duration::from_millis(5_300)),
+        engine_rx.recv_timeout(Duration::from_millis(10_300)),
         Ok(EngineEvent::FullScanRequired(
             bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
         ))
