@@ -24,8 +24,13 @@ const WATCHER_BRIDGE_SOURCE_FIELD: &str = "sync.change_rx";
 const WATCHER_BRIDGE_WORKER_FIELD: &str = "worker";
 const WATCHER_FORWARD_POLL: Duration = Duration::from_millis(100);
 const WATCHER_OVERFLOW_ACTIVITY_POLL: Duration = Duration::from_millis(5);
-const WATCHER_OVERFLOW_QUIET_PERIOD: Duration = Duration::from_millis(1_500);
-const WATCHER_OVERFLOW_DRAIN_LIMIT: Duration = Duration::from_secs(2);
+// macOS can deliver a stopped daemon's finite FSEvents burst in several waves
+// separated by more than a second. Closing the lane between those waves turns
+// one kernel overflow into several serial full scans and can consume the whole
+// edit budget. Wait across that delivery gap while retaining a hard ceiling for
+// a genuinely continuous producer.
+const WATCHER_OVERFLOW_QUIET_PERIOD: Duration = Duration::from_secs(3);
+const WATCHER_OVERFLOW_DRAIN_LIMIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 pub(in crate::daemon) enum WatcherBridgeStartError {
