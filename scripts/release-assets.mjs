@@ -16,7 +16,7 @@ const releaseDistRoot = process.env.BOWLINE_RELEASE_DIST_ROOT
   ? path.resolve(process.env.BOWLINE_RELEASE_DIST_ROOT)
   : path.join(sourceRoot, "dist", "public-release");
 const releaseAssetPattern =
-  /^(install\.sh|checksums\.txt|checksums\.txt\.sig|release-manifest\.json|release-manifest\.json\.sig|appcast\.xml|BowlineMenuBar\.pkg|Bowline-.+\.app\.zip|bowline-.+\.tar\.(?:gz|xz))$/u;
+  /^(install\.sh|checksums\.txt|checksums\.txt\.sig|release-manifest\.json|release-manifest\.json\.sig|appcast\.xml|Bowline-.+\.app\.zip|bowline-.+\.tar\.(?:gz|xz))$/u;
 const generatedReleaseRootAssets = new Set([
   "checksums.txt",
   "checksums.txt.sig",
@@ -241,9 +241,9 @@ async function stageMacosArtifacts(version, publish) {
   const dist = releaseDist(version);
   const macosDist = path.join(sourceRoot, "dist", "macos");
   const required = ["Bowline-aarch64-apple-darwin.app.zip", "appcast.xml"];
-  const optional = ["BowlineMenuBar.pkg"];
   const staged = [];
-  for (const name of [...required, ...optional]) {
+  await rm(path.join(dist, "BowlineMenuBar.pkg"), { force: true });
+  for (const name of required) {
     const source = path.join(macosDist, name);
     const target = path.join(dist, name);
     await rm(target, { force: true });
@@ -381,7 +381,6 @@ function manifestKey(name) {
   if (name === "checksums.txt.sig") return "checksums_sig";
   if (name === "release-manifest.json") return "manifest";
   if (name === "appcast.xml") return "macos_appcast";
-  if (name === "BowlineMenuBar.pkg") return "macos_pkg";
   if (name === "Bowline-aarch64-apple-darwin.app.zip") {
     return "macos_app_aarch64";
   }
@@ -413,7 +412,6 @@ function contentType(name) {
   if (name.endsWith(".txt") || name.endsWith(".sig")) return "text/plain";
   if (name.endsWith(".zip")) return "application/zip";
   if (name.endsWith(".xz")) return "application/x-xz";
-  if (name.endsWith(".pkg")) return "application/octet-stream";
   return "application/octet-stream";
 }
 
@@ -576,6 +574,7 @@ function readReceiptFile(receiptPath) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  assertV2PublicationOnly(args);
   assertReleaseVersion(args.version, sourceRoot);
   const keyFile = signingKeyFile(args.publish);
   step(`start v${args.version}${args.publish ? " publish" : " dry run"}`);
@@ -655,6 +654,14 @@ async function main() {
       2,
     ),
   );
+}
+
+export function assertV2PublicationOnly(args) {
+  if (args.publish) {
+    throw new Error(
+      "direct legacy publication is disabled; use the authorized release-journal v3 executor",
+    );
+  }
 }
 
 if (isEntrypoint(import.meta.url)) {

@@ -165,7 +165,9 @@ fn project_convergence_replaces_every_workspace_convergence_surface() {
         revision: 43,
         phase: EnginePhase::Syncing,
         observed_ref: None,
-        applied_manifest: None,
+        applied_ref: bowline_local::sync::manifest_engine::EngineRef::Genesis,
+        materialization_revision:
+            bowline_local::sync::manifest_engine::MaterializationRevision::INITIAL,
         pending_intents: 0,
         dirty: 1,
         dirty_paths: Arc::new(BTreeSet::from([sibling])),

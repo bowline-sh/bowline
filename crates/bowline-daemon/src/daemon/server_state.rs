@@ -11,6 +11,7 @@ use time::OffsetDateTime;
 use crate::daemon::{ContinuousSyncRuntime, DaemonRuntime, SyncArgs};
 
 mod device_trust;
+mod exact_barrier;
 mod projection;
 
 #[cfg(test)]
@@ -245,6 +246,7 @@ pub(super) struct DaemonServerState {
     coordinator_metrics: Mutex<Option<Arc<super::coordinator::CoordinatorMetrics>>>,
     manifest_counters: Mutex<Option<Arc<bowline_local::sync::manifest_engine::EngineCounters>>>,
     manifest_snapshot: Option<bowline_daemon::manifest_driver::EngineSnapshotHandle>,
+    recovery_coordinator: Option<Arc<bowline_daemon::watcher_recovery::WatcherRecoveryCoordinator>>,
     rpc_executor: Mutex<Option<Weak<super::rpc_service::RpcExecutor>>>,
     work_view_operation_locks: WorkViewOperationLocks,
     engine_work_wake_pending: AtomicBool,
@@ -305,6 +307,10 @@ impl DaemonServerState {
                 .sync
                 .as_ref()
                 .map(ContinuousSyncRuntime::manifest_snapshot_handle),
+            recovery_coordinator: runtime
+                .sync
+                .as_ref()
+                .map(|sync| Arc::clone(&sync.recovery_coordinator)),
             rpc_executor: Mutex::new(None),
             work_view_operation_locks: WorkViewOperationLocks::default(),
             engine_work_wake_pending: AtomicBool::new(false),
@@ -385,24 +391,6 @@ impl DaemonServerState {
         snapshot.status.requested_path = Some(scope.requested.to_string_lossy().into_owned());
         snapshot.status.resolved_project_root = Some(scope.root.to_string_lossy().into_owned());
         Some(snapshot)
-    }
-
-    /// Wait for an exact convergence boundary. `cancelled` is polled throughout
-    /// the wait so a disconnected or expired request releases its RPC worker
-    /// instead of parking it for the whole timeout.
-    pub(super) fn request_sync_barrier(
-        &self,
-        timeout: Duration,
-        cancelled: impl FnMut() -> bool,
-    ) -> Result<
-        bowline_local::sync::manifest_engine::EngineSnapshot,
-        bowline_daemon::manifest_driver::SyncBarrierError,
-    > {
-        self.manifest_snapshot
-            .as_ref()
-            .ok_or(bowline_daemon::manifest_driver::SyncBarrierError::WorkspaceNotServed)?
-            .request_sync_barrier()?
-            .wait(timeout, cancelled)
     }
 
     /// The engine's latest published snapshot, or `None` when this daemon is not
@@ -494,10 +482,16 @@ impl DaemonServerState {
             .lock()
             .ok()
             .and_then(|slot| slot.as_ref().map(|counters| counters.snapshot().to_json()));
+        let recovery = self
+            .recovery_coordinator
+            .as_ref()
+            .and_then(|coordinator| coordinator.snapshot().ok())
+            .and_then(|snapshot| serde_json::to_value(snapshot.as_ref()).ok());
         serde_json::json!({
             "coordinator": coordinator,
             "rpc": rpc,
             "engine": engine,
+            "recovery": recovery,
             "shutdown": {
                 "phase": self.shutdown_phase().as_str(),
                 "reason": self.shutdown_reason().map(ShutdownReason::as_str),

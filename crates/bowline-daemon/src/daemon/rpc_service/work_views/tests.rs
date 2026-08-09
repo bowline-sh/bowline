@@ -338,6 +338,7 @@ impl Fixture {
     fn env(&self) -> WorkViewEngineEnv<'_, FakeRemote, FakeRemote> {
         WorkViewEngineEnv {
             crypto: &self.crypto,
+            workspace_id: bowline_core::ids::WorkspaceId::new("ws_code"),
             device_id: DeviceId::new("device_work_rpc"),
             objects: &self.remote,
             refs: &self.remote,
@@ -387,6 +388,7 @@ fn view_engine_probes_the_materialized_view_volume_not_daemon_state() {
     let (_store, context) = view_engine(
         &fixture.root,
         &fixture.state_root,
+        &bowline_core::ids::WorkspaceId::new("ws_code"),
         &fixture.crypto,
         &DeviceId::new("device_work_rpc"),
         &view_dir,

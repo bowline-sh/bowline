@@ -15,6 +15,8 @@ use crate::{
 
 pub type ControlPlaneResult<T> = Result<T, ControlPlaneError>;
 
+pub const MAX_OBJECT_TRANSFER_BATCH: usize = 64;
+
 pub trait WorkspaceControlPlaneClient {
     /// Establish the workspace by seeding a version-0 genesis ref with no head.
     /// Pure establishment: no snapshot precondition and no head. The first real
@@ -83,6 +85,21 @@ pub trait ObjectControlPlaneClient {
         request: UploadIntentRequest,
     ) -> ControlPlaneResult<UploadIntentOutcome>;
 
+    fn reserve_object_uploads_batch(
+        &self,
+        requests: Vec<UploadIntentRequest>,
+    ) -> ControlPlaneResult<Vec<UploadIntentOutcome>> {
+        if requests.len() > MAX_OBJECT_TRANSFER_BATCH {
+            return Err(ControlPlaneError::Internal {
+                reason: "object upload reservation batch exceeds 64 items",
+            });
+        }
+        requests
+            .into_iter()
+            .map(|request| self.create_upload_intent(request))
+            .collect()
+    }
+
     fn create_download_intent(
         &self,
         request: DownloadIntentRequest,
@@ -125,6 +142,21 @@ pub trait ObjectControlPlaneClient {
         &self,
         commit: ObjectMetadataCommit,
     ) -> ControlPlaneResult<bowline_storage::ObjectMetadata>;
+
+    fn commit_uploaded_object_metadata_batch(
+        &self,
+        commits: Vec<ObjectMetadataCommit>,
+    ) -> ControlPlaneResult<Vec<bowline_storage::ObjectMetadata>> {
+        if commits.len() > MAX_OBJECT_TRANSFER_BATCH {
+            return Err(ControlPlaneError::Internal {
+                reason: "object metadata commit batch exceeds 64 items",
+            });
+        }
+        commits
+            .into_iter()
+            .map(|commit| self.commit_uploaded_object_metadata(commit))
+            .collect()
+    }
 }
 
 pub trait DeviceControlPlaneClient {

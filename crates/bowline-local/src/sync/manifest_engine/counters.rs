@@ -18,14 +18,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// with the engine thread that writes it.
 #[derive(Debug, Default)]
 pub struct EngineCounters {
-    /// Watcher-overflow epochs observed by the bridge before it drains the
-    /// native burst. While this is ahead of the recovery generation, the
-    /// driver must not start ordinary due work from stale watcher paths.
-    watcher_overflow_active_generation: AtomicU64,
-    /// Level-triggered generation for watcher-overflow recovery. The watcher
-    /// bridge advances it before waking the engine so a recovery scan can
-    /// preempt obsolete path events already sitting in the ordinary FIFO.
-    watcher_overflow_recovery_generation: AtomicU64,
     /// Full stat-walk passes performed (the C5 safety audit and startup seed).
     pub stat_walks: AtomicU64,
     /// Paths stat-ed across all walks (the C5 "10k stat-walk" budget subject).
@@ -78,9 +70,6 @@ pub struct EngineCounters {
     /// so a churning path that keeps being deferred is visible, distinct from a
     /// lost-CAS retry.
     pub push_skips: AtomicU64,
-    /// Full-scan recovery fences successfully emitted after watcher overflow.
-    /// Counts collapsed recovery epochs, not individual native events lost.
-    pub watcher_overflow_recoveries: AtomicU64,
 }
 
 impl EngineCounters {
@@ -154,39 +143,6 @@ impl EngineCounters {
         self.push_skips.fetch_add(paths, Ordering::Relaxed);
     }
 
-    pub fn record_watcher_overflow_recovery(&self) {
-        self.watcher_overflow_recoveries
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Assert an engine-priority watcher recovery before enqueueing its wake.
-    pub fn request_watcher_overflow_recovery(&self) {
-        self.watcher_overflow_recovery_generation
-            .fetch_add(1, Ordering::Release);
-    }
-
-    /// Begin one bounded watcher-overflow epoch before draining its burst.
-    pub fn begin_watcher_overflow_recovery(&self) {
-        self.watcher_overflow_active_generation
-            .fetch_add(1, Ordering::Release);
-    }
-
-    /// Whether the bridge is still collapsing a native burst for which the
-    /// covering full-scan fence has not yet been emitted.
-    pub fn watcher_overflow_recovery_pending(&self) -> bool {
-        self.watcher_overflow_active_generation
-            .load(Ordering::Acquire)
-            > self
-                .watcher_overflow_recovery_generation
-                .load(Ordering::Acquire)
-    }
-
-    /// The latest asserted watcher recovery generation.
-    pub fn watcher_overflow_recovery_generation(&self) -> u64 {
-        self.watcher_overflow_recovery_generation
-            .load(Ordering::Acquire)
-    }
-
     /// A plain-value copy for crossing the thread boundary into the daemon
     /// status/metrics surface (mirrors [`ManifestEngine::snapshot`]).
     pub fn snapshot(&self) -> CountersSnapshot {
@@ -209,7 +165,6 @@ impl EngineCounters {
             retries: self.retries.load(Ordering::Relaxed),
             apply_ops: self.apply_ops.load(Ordering::Relaxed),
             push_skips: self.push_skips.load(Ordering::Relaxed),
-            watcher_overflow_recoveries: self.watcher_overflow_recoveries.load(Ordering::Relaxed),
         }
     }
 }
@@ -236,7 +191,6 @@ pub struct CountersSnapshot {
     pub retries: u64,
     pub apply_ops: u64,
     pub push_skips: u64,
-    pub watcher_overflow_recoveries: u64,
 }
 
 impl CountersSnapshot {
@@ -262,7 +216,6 @@ impl CountersSnapshot {
             "retries": self.retries,
             "applyOps": self.apply_ops,
             "pushSkips": self.push_skips,
-            "watcherOverflowRecoveries": self.watcher_overflow_recoveries,
         })
     }
 }
@@ -277,17 +230,5 @@ mod tests {
         counters.record_ancestor_rows_read(3);
 
         assert_eq!(counters.snapshot().to_json()["ancestorRowsRead"], 3);
-    }
-
-    #[test]
-    fn watcher_overflow_recoveries_are_visible_in_metrics_json() {
-        let counters = EngineCounters::default();
-        counters.record_watcher_overflow_recovery();
-        counters.record_watcher_overflow_recovery();
-
-        assert_eq!(
-            counters.snapshot().to_json()["watcherOverflowRecoveries"],
-            2
-        );
     }
 }

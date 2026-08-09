@@ -9,6 +9,7 @@ use super::delta::{LocalDelta, local_vs_record};
 use super::git_contract::git_apply_rank;
 use super::intents::PreimagePayload;
 use super::{FsOp, FsOpKind, PullDeps, PullError, PullScope};
+use crate::sync::manifest_engine::EngineRef;
 use crate::sync::manifest_engine::engine_test_support::{Event, TestEngine};
 use crate::sync::manifest_engine::manifest::{FileMode, ManifestEntry, ManifestKey, WorkspacePath};
 use crate::sync::manifest_engine::unsyncable::UnsyncableReason;
@@ -1194,6 +1195,8 @@ fn kill9_with_index_lock_present() {
 
     let outcome = engine.pull();
     assert!(outcome.deferred.contains(&wp(".git/refs/heads/main")));
+    assert!(matches!(&outcome.observed_ref, EngineRef::Head(_)));
+    assert!(outcome.applied_manifest_key.is_none());
     assert!(!engine.exists(".git/refs/heads/main"));
 }
 
@@ -1637,47 +1640,46 @@ fn chmod_path(path: &std::path::Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod path");
 }
 
-// ---- Finding B: first-pull Git-lock deferral must not commit the head -------
-
 #[test]
 fn first_pull_deferred_by_git_lock_materializes_after_lock_clears() {
-    // A FIRST pull (no prior applied head) with an active Git lock defers the
-    // path. It must NOT record the incoming head as applied — otherwise the next
-    // pull short-circuits at `already_current` and the deferred path never lands.
     let mut engine = TestEngine::new("first-pull-git-lock");
-    engine.write(".git/index.lock", b""); // git mid-operation
+    let path = wp(".git/refs/heads/main");
+    engine.write(".git/index.lock", b"");
     let entry = engine.remote_file(b"new ref bytes");
     engine.publish(&[(".git/refs/heads/main", entry)]);
 
     let outcome = engine.pull();
-    assert!(outcome.deferred.contains(&wp(".git/refs/heads/main")));
+    assert!(outcome.deferred.contains(&path));
     assert!(!engine.exists(".git/refs/heads/main"));
-    assert!(
-        engine
-            .store
-            .engine_state()
-            .expect("state")
-            .applied_manifest_key
-            .is_none(),
-        "a first pull that deferred everything records no applied head"
-    );
+    let durable = engine.store.engine_state().expect("state");
+    assert!(durable.applied_manifest_key.is_none());
 
-    // The lock clears; the next pull must re-derive and materialize the path.
     engine.remove(".git/index.lock");
     let outcome = engine.pull();
-    assert!(
-        !outcome.already_current,
-        "the deferred head is not already current"
-    );
+    assert!(!outcome.already_current);
     assert_eq!(engine.read(".git/refs/heads/main"), b"new ref bytes");
+    let durable = engine.store.engine_state().expect("state");
+    assert!(durable.applied_manifest_key.is_some());
+    let applied = crate::sync::manifest_engine::RefObservation {
+        version: outcome.ref_version.expect("applied version"),
+        manifest_key: outcome.applied_manifest_key.expect("applied key"),
+    };
+    assert_eq!(outcome.observed_ref, EngineRef::Head(applied));
+}
+
+#[test]
+fn authoritative_genesis_is_reported_separately_from_the_applied_head() {
+    let mut engine = TestEngine::new("observed-genesis-applied-head");
+    engine.write("local.txt", b"local");
+    let _published = engine.push(&["local.txt"]);
+    engine.remote.force_genesis();
+
+    let outcome = engine.pull();
+    let durable = engine.store.engine_state().expect("durable frontier");
+    assert_eq!(outcome.observed_ref, EngineRef::Genesis);
     assert!(
-        engine
-            .store
-            .engine_state()
-            .expect("state")
-            .applied_manifest_key
-            .is_some(),
-        "once nothing defers, the head is recorded applied"
+        durable.applied_manifest_key.is_some(),
+        "Genesis observation must not erase applied materialization"
     );
 }
 

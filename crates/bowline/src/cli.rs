@@ -292,7 +292,7 @@ impl Command {
 }
 
 pub(super) fn default_socket_path() -> PathBuf {
-    default_control_socket_path().unwrap_or_else(|_| PathBuf::from(DEFAULT_SOCKET_FALLBACK))
+    crate::wire::control_socket_path().unwrap_or_else(|_| PathBuf::from(DEFAULT_SOCKET_FALLBACK))
 }
 
 mod args;

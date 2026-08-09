@@ -66,6 +66,7 @@ fn create_and_reopen_round_trips_files_and_state() {
     let state = store.engine_state().expect("state");
     assert_eq!(state.applied_manifest_key, Some(ManifestKey::new("m_head")));
     assert_eq!(state.last_ref_version, Some(7));
+    assert_eq!(state.materialization_revision.get(), 1);
     // A push is a verified observation of the hosted head: the freshness ratchet
     // advances with it, so a device that only ever pushes is still rollback-safe.
     assert_eq!(state.highest_verified_ref_version, Some(7));
@@ -133,6 +134,7 @@ fn engine_state_singleton_is_enforced() {
         Some(ManifestKey::new("m_a"))
     );
     assert_eq!(state.applied_manifest_key, Some(ManifestKey::new("m_a")));
+    assert_eq!(state.materialization_revision.get(), 1);
 
     // The CHECK constraint refuses any non-singleton row.
     assert!(
@@ -173,6 +175,7 @@ fn push_success_is_atomic() {
     let state = store.engine_state().expect("state");
     assert_eq!(state.applied_manifest_key, Some(ManifestKey::new("m_base")));
     assert_eq!(state.last_ref_version, Some(1));
+    assert_eq!(state.materialization_revision.get(), 1);
 }
 
 #[test]
@@ -214,6 +217,7 @@ fn pull_outcome_commits_rows_and_intents_atomically() {
         Some(ManifestKey::new("m_pulled"))
     );
     assert_eq!(state.last_ref_version, Some(12));
+    assert_eq!(state.materialization_revision.get(), 1);
     assert_eq!(state.highest_verified_ref_version, Some(12));
     assert_eq!(
         state.highest_verified_manifest_key,
@@ -237,6 +241,94 @@ fn pull_outcome_commits_rows_and_intents_atomically() {
     assert!(result.is_err());
     assert_eq!(store.all_files().expect("files"), before_files);
     assert_eq!(store.pending_intents().expect("intents"), before_intents);
+}
+
+#[test]
+fn applied_ref_pair_and_materialization_revision_are_structural() {
+    let (_workspace, path) = store_path("store-applied-frontier");
+    let mut store = ManifestStore::open(&path).expect("open");
+
+    assert_eq!(
+        store
+            .engine_state()
+            .expect("genesis")
+            .applied_ref()
+            .expect("pair"),
+        super::super::EngineRef::Genesis
+    );
+    assert!(
+        store
+            .connection
+            .execute(
+                "INSERT INTO engine_state (singleton, applied_manifest_key) VALUES (1, 'partial')",
+                [],
+            )
+            .is_err(),
+        "a key without a version is not a representable durable frontier"
+    );
+
+    store
+        .commit_push_success(
+            &commit_of(&[("one", file_record(1))]),
+            &ManifestKey::new("m_one"),
+            1,
+            &BTreeSet::new(),
+        )
+        .expect("first frontier");
+    store
+        .record_ref_advance(&ManifestKey::new("m_one"), 2)
+        .expect("ABA version frontier");
+    let state = store.engine_state().expect("state");
+    assert_eq!(state.materialization_revision.get(), 2);
+    assert_eq!(
+        state.applied_ref().expect("exact pair"),
+        super::super::EngineRef::Head(super::super::RefObservation {
+            version: 2,
+            manifest_key: ManifestKey::new("m_one"),
+        })
+    );
+}
+
+#[test]
+fn materialization_revision_overflow_rolls_back_the_whole_frontier() {
+    let (_workspace, path) = store_path("store-materialization-overflow");
+    let mut store = ManifestStore::open(&path).expect("open");
+    store
+        .commit_push_success(
+            &commit_of(&[("base", file_record(1))]),
+            &ManifestKey::new("m_base"),
+            1,
+            &BTreeSet::new(),
+        )
+        .expect("base frontier");
+    store
+        .connection
+        .execute(
+            "UPDATE engine_state SET materialization_revision = ?1 WHERE singleton = 1",
+            [i64::MAX],
+        )
+        .expect("seed finite domain edge");
+    let before_files = store.all_files().expect("files");
+
+    let error = store
+        .commit_push_success(
+            &commit_of(&[("new", file_record(2))]),
+            &ManifestKey::new("m_new"),
+            2,
+            &BTreeSet::new(),
+        )
+        .expect_err("overflow is terminal");
+    assert!(matches!(
+        error,
+        ManifestStoreError::ValueOutOfRange {
+            field: "materialization_revision"
+        }
+    ));
+    assert_eq!(store.all_files().expect("files"), before_files);
+    let state = store.engine_state().expect("state");
+    assert_eq!(state.applied_manifest_key, Some(ManifestKey::new("m_base")));
+    assert_eq!(state.last_ref_version, Some(1));
+    assert_eq!(state.materialization_revision.get(), i64::MAX as u64);
 }
 
 #[test]

@@ -14,6 +14,8 @@ mod side_lanes;
 #[cfg(test)]
 mod tests;
 pub(in crate::daemon) mod watcher_bridge;
+#[cfg(test)]
+mod watcher_overflow_recovery_tests;
 
 use watcher_bridge::{WatcherBridge, WatcherBridgeStart, stop_and_join_watcher};
 

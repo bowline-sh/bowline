@@ -255,7 +255,7 @@ fn streaming_precondition_response_verifies_without_consuming_put_body() {
 }
 
 #[test]
-fn buffered_put_overwrites_when_existing_object_hash_mismatches() {
+fn buffered_put_blocks_when_existing_object_hash_mismatches() {
     let desired = b"desired-sealed-bytes".to_vec();
     let foreign = b"foreign-or-resealed".to_vec();
     let key = ObjectKey::new(format!("b_{}", "e0".repeat(32))).expect("object key");
@@ -271,7 +271,7 @@ fn buffered_put_overwrites_when_existing_object_hash_mismatches() {
     );
     let store = SignedUrlByteStore::new(&control_plane, "ws_put_412_mismatch");
 
-    let metadata = store
+    let error = store
         .put(PutObjectRequest {
             key: key.clone(),
             kind: StorageObjectKind::WorkspaceFileV1,
@@ -282,14 +282,69 @@ fn buffered_put_overwrites_when_existing_object_hash_mismatches() {
             key_epoch: 1,
             created_by_device_id: None,
         })
-        .expect("hash mismatch must recover via overwrite");
+        .expect_err("an immutable key mismatch must block instead of overwrite");
 
-    assert_eq!(metadata.key, key);
-    assert_eq!(metadata.hash, ObjectHash::of_bytes(&desired).as_str());
+    assert!(matches!(
+        error,
+        ByteStoreError::IntegrityViolation {
+            key: mismatched,
+            ..
+        } if mismatched == key
+    ));
     let metrics = store.metrics();
     assert_eq!(metrics.conditional_write_conflict_count, 1);
     assert_eq!(metrics.verification_failure_count, 1);
-    assert_eq!(metrics.put_count, 1);
+    assert_eq!(metrics.convex_action_count, 2);
+    assert_eq!(metrics.put_count, 0);
+}
+
+#[test]
+fn streaming_put_blocks_when_existing_object_hash_mismatches() {
+    let desired = Arc::new(vec![0x5a; 256 * 1024]);
+    let foreign = Arc::new(vec![0xa5; desired.len()]);
+    let key = ObjectKey::new(format!("b_{}", "e1".repeat(32))).expect("object key");
+    let source = ConditionalRetryTestSource {
+        bytes: desired.clone(),
+        first_upload_bytes: None,
+        opens: AtomicUsize::new(0),
+    };
+    let control_plane = crate::FakeControlPlaneClient::default();
+    control_plane.create_workspace("ws_streaming_412_mismatch");
+    control_plane.set_signed_url_override(
+        "upload",
+        early_signed_url_response("412 Precondition Failed"),
+    );
+    control_plane.set_signed_url_override(
+        "verify-upload",
+        owned_signed_url_response("200 OK", foreign),
+    );
+    let store = SignedUrlByteStore::new(&control_plane, "ws_streaming_412_mismatch");
+
+    let error = store
+        .put(PutObjectRequest {
+            key: key.clone(),
+            kind: StorageObjectKind::WorkspaceFileV1,
+            content_id: ObjectContentId::new("cid_streaming_412_mismatch"),
+            source: PutObjectSource::Reader(&source),
+            byte_len: desired.len() as u64,
+            expected_hash: ObjectHash::of_bytes(&desired),
+            key_epoch: 1,
+            created_by_device_id: None,
+        })
+        .expect_err("an immutable key mismatch must block instead of overwrite");
+
+    assert!(matches!(
+        error,
+        ByteStoreError::IntegrityViolation {
+            key: mismatched,
+            ..
+        } if mismatched == key
+    ));
+    let metrics = store.metrics();
+    assert_eq!(metrics.conditional_write_conflict_count, 1);
+    assert_eq!(metrics.verification_failure_count, 1);
+    assert_eq!(metrics.convex_action_count, 2);
+    assert_eq!(metrics.put_count, 0);
 }
 
 fn sequenced_put_server(responses: &[(&str, &[u8])]) -> String {

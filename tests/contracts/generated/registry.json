@@ -74,6 +74,26 @@
     "DaemonRpcResponse",
     "DaemonRpcEvent",
     "DaemonRpcCancel",
+    "DaemonSyncBarrierObserverState",
+    "DaemonSyncBarrierRefIdentity",
+    "DaemonSyncBarrierRecoveryLifecycle",
+    "DaemonSyncBarrierWorkspaceState",
+    "DaemonSyncBarrierNativeLoss",
+    "DaemonSyncBarrierProcessIdentity",
+    "DaemonSyncBarrierConvergenceSource",
+    "DaemonSyncBarrierEngineConvergence",
+    "DaemonSyncBarrierObserverLiveness",
+    "DaemonSyncBarrierObserverConvergence",
+    "DaemonSyncBarrierDarwinCursorReplay",
+    "DaemonSyncBarrierDarwinFreshStream",
+    "DaemonSyncBarrierDarwinCoverageStart",
+    "DaemonSyncBarrierDarwinCoverage",
+    "DaemonSyncBarrierLinuxCoverage",
+    "DaemonSyncBarrierNativeCoverage",
+    "DaemonSyncBarrierRecoveryClosure",
+    "DaemonSyncBarrierCoordinatorFrontier",
+    "DaemonSyncBarrierWorkspaceStatus",
+    "DaemonSyncBarrierResult",
     "DaemonStatusScopeParams",
     "DaemonStatusSnapshotResult",
     "DaemonStatusSubscribeResult",
@@ -143,6 +163,10 @@
     "HostedObjectsMarkObjectRetentionStateRequest",
     "HostedObjectsCreateStorageGcDeleteIntentRequest",
     "HostedObjectsCommitUploadedObjectMetadataRequest",
+    "HostedObjectsReserveObjectUploadsBatchRequest",
+    "HostedObjectsReserveObjectUploadsBatchResponse",
+    "HostedObjectsCommitUploadedObjectMetadataBatchRequest",
+    "HostedObjectsCommitUploadedObjectMetadataBatchResponse",
     "HostedObjectQueriesGetObjectMetadataRequest",
     "HostedUploadIntentOutcome",
     "HostedUploadReservation",
@@ -268,6 +292,25 @@
       "unavailable",
       "permission_denied",
       "internal"
+    ],
+    "DaemonSyncBarrierNativeLoss": [
+      "user_dropped",
+      "kernel_dropped",
+      "event_ids_wrapped",
+      "root_changed",
+      "stream_stopped",
+      "non_monotonic_cursor",
+      "queue_overflow",
+      "backend_failure"
+    ],
+    "DaemonSyncBarrierObserverState": [
+      "live"
+    ],
+    "DaemonSyncBarrierRecoveryLifecycle": [
+      "nominal"
+    ],
+    "DaemonSyncBarrierWorkspaceState": [
+      "ready"
     ],
     "DaemonSyncResourceKind": [
       "workspace-sync",
@@ -842,6 +885,13 @@
       "response": "HostedObjectMetadata"
     },
     {
+      "convex": "objects:commitUploadedObjectMetadataBatch",
+      "id": "objects.commitUploadedObjectMetadataBatch",
+      "kind": "action",
+      "request": "HostedObjectsCommitUploadedObjectMetadataBatchRequest",
+      "response": "HostedObjectsCommitUploadedObjectMetadataBatchResponse"
+    },
+    {
       "convex": "objects:createDownloadIntent",
       "id": "objects.createDownloadIntent",
       "kind": "action",
@@ -875,6 +925,13 @@
       "kind": "action",
       "request": "HostedObjectsMarkObjectRetentionStateRequest",
       "response": "HostedObjectMetadata"
+    },
+    {
+      "convex": "objects:reserveObjectUploadsBatch",
+      "id": "objects.reserveObjectUploadsBatch",
+      "kind": "action",
+      "request": "HostedObjectsReserveObjectUploadsBatchRequest",
+      "response": "HostedObjectsReserveObjectUploadsBatchResponse"
     },
     {
       "convex": "recovery:authorizeDeviceWithRecovery",
@@ -998,5 +1055,5 @@
   ],
   "machineContractVersion": 8,
   "registryVersion": 1,
-  "schemaHash": "eb0c32bf7bd65f209743e4812c06f8bf97ac008b60ac117958d1cc21fbeb8f88"
+  "schemaHash": "b0b53cff526d947c34b317e79cc82aca032bb60295359f46ca9a57d7e45714a5"
 }

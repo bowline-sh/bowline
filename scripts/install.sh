@@ -351,6 +351,30 @@ acquire_install_lock() {
   fail "shlock or flock is required for transactional installation"
 }
 
+# A daemon that is briefly slow to answer must not read as an absent daemon.
+# One unanswered probe used to retire the restart, so a transiently busy daemon
+# left the user installed on disk and still serving the previous version with
+# nothing but a console note. Only an answered status decides, and a status that
+# never answers is reported rather than assumed to mean nothing is running.
+probe_daemon_status() {
+  attempts=5
+  delay=0.2
+  if [ "${BOWLINE_INSTALL_TEST_HOOKS:-0}" = "1" ]; then
+    attempts="${BOWLINE_INSTALL_TEST_PROBE_ATTEMPTS:-5}"
+    delay="${BOWLINE_INSTALL_TEST_PROBE_DELAY:-0.02}"
+  fi
+  attempt=0
+  while [ "$attempt" -lt "$attempts" ]; do
+    if run_bowline "$INSTALL_DIR/bowline" daemon status --json \
+      >"$TMPDIR/old-daemon-status.json" 2>/dev/null; then
+      return 0
+    fi
+    sleep "$delay"
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 capture_previous_install() {
   if [ -x "$INSTALL_DIR/bowline" ]; then
     PREVIOUS_CLI_LINK="$(readlink "$INSTALL_DIR/bowline" 2>/dev/null || true)"
@@ -359,13 +383,15 @@ capture_previous_install() {
       cp -p "$INSTALL_DIR/bowline" "$PREVIOUS_CLI"
     fi
     OLD_DAEMON_VERSION="$(cli_reported_daemon_version "$INSTALL_DIR/bowline")"
-    if run_bowline "$INSTALL_DIR/bowline" daemon status --json >"$TMPDIR/old-daemon-status.json" 2>/dev/null; then
+    if probe_daemon_status; then
       old_daemon_state="$(daemon_status_state "$TMPDIR/old-daemon-status.json")"
       case "$old_daemon_state" in
         running | starting | stopping | version-skew | unreachable)
           OLD_DAEMON_ACTIVE="1"
           ;;
       esac
+    else
+      note "daemon status never answered; installing without a daemon restart"
     fi
   fi
   if [ -x "$INSTALL_DIR/bowline-daemon" ]; then
@@ -449,9 +475,14 @@ wait_for_daemon_version() {
   observed="unavailable"
   attempts=40
   delay=0.25
+  # The test budget bounds a forked stub daemon's startup, not a real service
+  # manager's. At 4x0.01s a loaded host missed the window, so a rollback restart
+  # reported failure after it had already killed the previous daemon and the
+  # suite continued with nothing serving. The ceiling is wall-clock tolerant
+  # because the loop still returns on the first healthy probe.
   if [ "${BOWLINE_INSTALL_TEST_HOOKS:-0}" = "1" ]; then
-    attempts="${BOWLINE_INSTALL_TEST_HEALTH_ATTEMPTS:-4}"
-    delay="${BOWLINE_INSTALL_TEST_HEALTH_DELAY:-0.01}"
+    attempts="${BOWLINE_INSTALL_TEST_HEALTH_ATTEMPTS:-60}"
+    delay="${BOWLINE_INSTALL_TEST_HEALTH_DELAY:-0.05}"
   fi
   attempt=0
   while [ "$attempt" -lt "$attempts" ]; do

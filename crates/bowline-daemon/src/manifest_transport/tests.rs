@@ -6,17 +6,19 @@ use std::thread;
 use std::time::Duration;
 
 use bowline_control_plane::{
-    ControlPlaneError, ControlPlaneTimestamp, FakeControlPlaneClient, ObjectKind, RejectionCode,
-    WorkspaceRef, WorkspaceRefStreamConnectionState, WorkspaceRefStreamEvent,
-    workspace_ref_stream_shutdown_pair,
+    ControlPlaneError, ControlPlaneTimestamp, DependencyFailureClass, FakeControlPlaneClient,
+    ObjectKind, RejectionCode, WorkspaceRef, WorkspaceRefStreamConnectionState,
+    WorkspaceRefStreamEvent, workspace_ref_stream_shutdown_pair,
 };
 use bowline_core::ids::{ContentId, DeviceId, SnapshotId, WorkspaceId};
 use bowline_local::sync::manifest_engine::{
-    BlobReaderUpload, BlobUpload, CasOutcome, EngineEvent, KeyEpoch, ManifestUpload,
-    RefVersionLookup, RemoteObjects, RemoteRef, physical_blob_key, physical_manifest_key,
+    BlobPrefetchRequest, BlobReaderUpload, BlobUpload, CasOutcome, EngineEvent, KeyEpoch,
+    ManifestBatchUpload, ManifestUpload, RefVersionLookup, RemoteObjects, RemoteRef,
+    TransportFailureClass, physical_blob_key, physical_manifest_key,
 };
 use bowline_storage::{
-    ObjectKey, ObjectKind as StorageObjectKind, ObjectMetadata, RetentionState, stable_object_hash,
+    ByteStoreError, ObjectKey, ObjectKind as StorageObjectKind, ObjectMetadata, RetentionState,
+    stable_object_hash,
 };
 
 use super::object_uploader::{CommittedMetadataExpectation, validate_committed_metadata};
@@ -26,8 +28,8 @@ use super::ref_observer::{
 };
 use super::{
     ManifestTransport, ReconnectAttempt, ReconnectDelay, RefChangeSubscription, RefObserverFailure,
-    RefObserverFailureStage, RefObserverHealthHandle, RefObserverReadiness, RefObserverState,
-    SignerTrustRefresh,
+    RefObserverFailureCode, RefObserverFailureStage, RefObserverHealthHandle, RefObserverReadiness,
+    RefObserverRemediationKind, RefObserverState, SignerTrustRefresh,
 };
 use crate::device_trust::TrustRefreshOutcome;
 
@@ -43,6 +45,20 @@ fn transport(
         WorkspaceId::new(WORKSPACE),
         DeviceId::new(DEVICE),
     )
+}
+
+#[test]
+fn immutable_object_violation_remains_integrity_across_the_daemon_adapter() {
+    let key = ObjectKey::new(format!("b_{}", "ea".repeat(32))).expect("object key");
+    let error = super::helpers::byte_store_error(
+        "put-blob",
+        ByteStoreError::IntegrityViolation {
+            key,
+            reason: "existing bytes differ",
+        },
+    );
+
+    assert_eq!(error.failure_class(), TransportFailureClass::Integrity);
 }
 
 // ---- signed-URL test servers (mirror crates/bowline-control-plane/src/transfer/tests.rs) ----
@@ -206,6 +222,82 @@ fn put_blob_defers_every_round_trip_to_the_publishing_barrier() {
             .iter()
             .any(|pointer| pointer.object_key == manifest_key.as_str())
     );
+}
+
+#[test]
+fn two_hundred_fifty_six_blobs_use_four_ordered_metadata_batches() {
+    let control_plane = ready_workspace();
+    control_plane.set_signed_url_override("upload", concurrent_put_server("200 OK"));
+    let content_id = content_id();
+    let transport = transport(&control_plane);
+
+    for index in 0..256_u16 {
+        let sealed = format!("sealed-batch-object-{index:03}").into_bytes();
+        let key = physical_blob_key(&sealed);
+        transport
+            .put_blob(BlobUpload {
+                key: &key,
+                content_id: &content_id,
+                key_epoch: KeyEpoch::new(1),
+                sealed: &sealed,
+            })
+            .expect("queued blob upload succeeds");
+    }
+
+    assert_eq!(
+        control_plane.upload_reservation_batch_sizes(),
+        vec![64, 64, 64, 64]
+    );
+    assert_eq!(
+        control_plane.metadata_commit_batch_sizes(),
+        vec![64, 64, 64, 64]
+    );
+    assert_eq!(control_plane.object_pointers(WORKSPACE).len(), 256);
+}
+
+#[test]
+fn peer_prefetch_rejects_one_object_larger_than_the_total_byte_budget() {
+    let control_plane = ready_workspace();
+    let transport = transport(&control_plane);
+    let error = transport
+        .prefetch_blobs(&[BlobPrefetchRequest {
+            key: physical_blob_key(b"oversized-prefetch"),
+            byte_len: super::MAX_PREFETCH_BYTES + 1,
+        }])
+        .expect_err("an oversized object cannot enter the bounded prefetch pool");
+
+    assert_eq!(error.operation, "prefetch-blob");
+    assert!(
+        error
+            .detail
+            .contains("exceeded the bounded prefetch budget")
+    );
+}
+
+#[test]
+fn manifest_nodes_share_the_same_bounded_metadata_batch_transport() {
+    let control_plane = ready_workspace();
+    control_plane.set_signed_url_override("upload", concurrent_put_server("200 OK"));
+    let content_id = content_id();
+    let uploads = (0..65_u8)
+        .map(|index| {
+            let sealed = format!("sealed-manifest-node-{index:02}").into_bytes();
+            ManifestBatchUpload {
+                key: physical_manifest_key(&sealed),
+                content_id: content_id.clone(),
+                key_epoch: KeyEpoch::new(1),
+                sealed,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    transport(&control_plane)
+        .put_manifests(&uploads)
+        .expect("manifest node batch succeeds");
+
+    assert_eq!(control_plane.upload_reservation_batch_sizes(), vec![64, 1]);
+    assert_eq!(control_plane.metadata_commit_batch_sizes(), vec![64, 1]);
+    assert_eq!(control_plane.object_pointers(WORKSPACE).len(), 65);
 }
 
 /// A queued blob must never survive a ref move: the ref is what makes a manifest
@@ -614,7 +706,7 @@ fn read_ref_treats_genesis_as_no_head() {
 
 #[test]
 fn ref_subscription_emits_ref_changed_and_reconnects() {
-    let (events_tx, events_rx) = mpsc::channel();
+    let (events_tx, events_rx) = crossbeam_channel::bounded(64);
     let starter_calls = Arc::new(AtomicUsize::new(0));
     let calls = Arc::clone(&starter_calls);
 
@@ -653,7 +745,7 @@ fn ref_subscription_emits_ref_changed_and_reconnects() {
 #[test]
 fn ref_observer_becomes_live_only_after_initial_value() {
     let (stream_tx, stream_rx) = mpsc::channel();
-    let (events_tx, events_rx) = mpsc::channel();
+    let (events_tx, events_rx) = crossbeam_channel::bounded(64);
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = Arc::clone(&shutdown);
     let health = RefObserverHealthHandle::new();
@@ -698,7 +790,7 @@ fn ref_observer_becomes_live_only_after_initial_value() {
 #[test]
 fn live_ref_observer_carries_a_verified_real_head_after_initial_authority() {
     let (stream_tx, stream_rx) = mpsc::channel();
-    let (events_tx, events_rx) = mpsc::channel();
+    let (events_tx, events_rx) = crossbeam_channel::bounded(64);
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = Arc::clone(&shutdown);
     let health = RefObserverHealthHandle::new();
@@ -770,30 +862,32 @@ fn a_refused_credential_is_classified_apart_from_a_transport_drop() {
 /// the condition stays reported instead of flickering back to a neutral
 /// "connecting" on every backoff cycle.
 #[test]
-fn a_refused_credential_reports_unauthenticated_while_retrying() {
+fn a_refused_credential_reports_action_required_until_remediated() {
     let health = RefObserverHealthHandle::new();
     assert_eq!(health.readiness(), RefObserverReadiness::Retrying);
 
     health.transition(
-        RefObserverState::Retrying,
+        RefObserverState::Blocked,
         1,
         true,
         Some(RefObserverFailure {
             stage: RefObserverFailureStage::Authentication,
-            message: "control-plane rejected request".to_string(),
+            class: DependencyFailureClass::AuthenticationRequired,
+            code: RefObserverFailureCode::AuthenticationRequired,
         }),
     );
-    assert_eq!(health.readiness(), RefObserverReadiness::Unauthenticated);
-
-    health.connecting(1);
     assert_eq!(
         health.readiness(),
-        RefObserverReadiness::Unauthenticated,
-        "reopening under the same dead credential is not recovery"
+        RefObserverReadiness::Blocked {
+            class: DependencyFailureClass::AuthenticationRequired,
+            code: RefObserverFailureCode::AuthenticationRequired,
+        }
     );
-
-    health.transition(RefObserverState::Live, 0, false, None);
-    assert_eq!(health.readiness(), RefObserverReadiness::Live);
+    let remediation = health
+        .remediation_for_current_block(RefObserverRemediationKind::AuthenticationRestored)
+        .expect("current block issues exact remediation evidence");
+    assert!(health.remediation_completed(remediation));
+    assert_eq!(health.readiness(), RefObserverReadiness::Retrying);
 }
 
 /// A dropped websocket keeps the ordinary retrying condition; only a refusal
@@ -808,7 +902,8 @@ fn a_transport_drop_stays_ordinary_retrying() {
         true,
         Some(RefObserverFailure {
             stage: RefObserverFailureStage::Stream,
-            message: "workspace-ref subscription ended".to_string(),
+            class: DependencyFailureClass::Retryable,
+            code: RefObserverFailureCode::StreamUnavailable,
         }),
     );
 
@@ -819,11 +914,14 @@ fn a_transport_drop_stays_ordinary_retrying() {
 /// it — but the schedule it asks for carries the authentication stage, which is
 /// what keeps it off the fast transport ceiling.
 #[test]
-fn a_refused_subscription_backs_off_on_the_authentication_schedule() {
-    let (events_tx, _events_rx) = mpsc::channel();
+fn a_refused_subscription_blocks_without_a_time_based_retry() {
+    let (events_tx, _events_rx) = crossbeam_channel::bounded(64);
+    let starts = Arc::new(AtomicUsize::new(0));
+    let counted_starts = Arc::clone(&starts);
     let requested = Arc::new(Mutex::new(Vec::<ReconnectAttempt>::new()));
     let recorded = Arc::clone(&requested);
     let starter: StreamStarter = Box::new(move |stream_tx| {
+        counted_starts.fetch_add(1, Ordering::SeqCst);
         let (shutdown, _cancellation) = workspace_ref_stream_shutdown_pair();
         let worker = thread::Builder::new()
             .name("test-refused-ref-stream".to_string())
@@ -851,32 +949,23 @@ fn a_refused_subscription_backs_off_on_the_authentication_schedule() {
     );
     let health = subscription.health_handle();
     for _ in 0..500 {
-        if requested.lock().expect("schedule requests").len() >= 2 {
+        if health.current().state == RefObserverState::Blocked {
             break;
         }
         thread::sleep(Duration::from_millis(1));
     }
     let readiness = health.readiness();
     let attempts = requested.lock().expect("schedule requests").clone();
+    assert!(attempts.is_empty(), "authority loss never enters backoff");
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        readiness,
+        RefObserverReadiness::Blocked {
+            class: DependencyFailureClass::AuthenticationRequired,
+            code: RefObserverFailureCode::AuthenticationRequired,
+        }
+    );
     drop(subscription);
-
-    assert!(
-        attempts.len() >= 2,
-        "the bridge keeps retrying a refused credential: {attempts:?}"
-    );
-    assert!(
-        attempts
-            .iter()
-            .all(|attempt| attempt.stage == RefObserverFailureStage::Authentication),
-        "every refused attempt asks for the authentication schedule: {attempts:?}"
-    );
-    assert!(
-        attempts
-            .windows(2)
-            .all(|pair| pair[0].consecutive_failures < pair[1].consecutive_failures),
-        "a refusal never resets the failure count: {attempts:?}"
-    );
-    assert_eq!(readiness, RefObserverReadiness::Unauthenticated);
 }
 
 /// A bridge whose signer trust never changes, for the tests that are not about
@@ -923,7 +1012,7 @@ fn stream_learning_after_first_attempt(
 /// user action.
 #[test]
 fn a_device_trusted_after_startup_is_learned_without_a_restart() {
-    let (events_tx, events_rx) = mpsc::channel();
+    let (events_tx, events_rx) = crossbeam_channel::bounded(64);
     let refreshed = Arc::new(Mutex::new(Vec::<DeviceId>::new()));
     let recorded_refresh = Arc::clone(&refreshed);
     let trust_refresh: SignerTrustRefresh = Arc::new(move |device_id| {
@@ -980,7 +1069,7 @@ fn a_device_trusted_after_startup_is_learned_without_a_restart() {
 /// as the fix.
 #[test]
 fn a_signer_the_control_plane_disowns_is_reported_apart_from_a_retry() {
-    let (events_tx, _events_rx) = mpsc::channel();
+    let (events_tx, _events_rx) = crossbeam_channel::bounded(64);
     let refreshes = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&refreshes);
     let trust_refresh: SignerTrustRefresh = Arc::new(move |_device_id| {
@@ -1010,7 +1099,7 @@ fn a_signer_the_control_plane_disowns_is_reported_apart_from_a_retry() {
         RefChangeSubscription::spawn_with_starter(starter, events_tx, delay, trust_refresh);
     let health = subscription.health_handle();
     for _ in 0..500 {
-        if requested.lock().expect("schedule requests").len() >= 2 {
+        if health.current().state == RefObserverState::Blocked {
             break;
         }
         thread::sleep(Duration::from_millis(1));
@@ -1020,19 +1109,17 @@ fn a_signer_the_control_plane_disowns_is_reported_apart_from_a_retry() {
     drop(subscription);
 
     assert!(
-        attempts.len() >= 2,
-        "the observer keeps watching: {attempts:?}"
+        attempts.is_empty(),
+        "authorization loss never enters backoff"
     );
-    assert!(
-        attempts.iter().all(|attempt| attempt.stage
-            == RefObserverFailureStage::UntrustedSigner(DeviceId::new("device_stranger"))),
-        "every refused attempt names the signer it cannot trust: {attempts:?}"
+    assert_eq!(
+        readiness,
+        RefObserverReadiness::Blocked {
+            class: DependencyFailureClass::AuthorizationLost,
+            code: RefObserverFailureCode::AuthorizationLost,
+        }
     );
-    assert_eq!(readiness, RefObserverReadiness::UntrustedSigner);
-    assert!(
-        refreshes.load(Ordering::SeqCst) >= 1,
-        "the observer asks; the trust handle is what bounds how often it costs a call"
-    );
+    assert_eq!(refreshes.load(Ordering::SeqCst), 1);
 }
 
 /// Learning a signer skips the backoff because it is progress. If the head stays
@@ -1041,7 +1128,7 @@ fn a_signer_the_control_plane_disowns_is_reported_apart_from_a_retry() {
 /// progress rather than reopening the subscription in a tight loop.
 #[test]
 fn learning_a_signer_that_never_helps_falls_back_to_the_backoff() {
-    let (events_tx, _events_rx) = mpsc::channel();
+    let (events_tx, _events_rx) = crossbeam_channel::bounded(64);
     let trust_refresh: SignerTrustRefresh = Arc::new(|_device_id| TrustRefreshOutcome::Learned);
     let requested = Arc::new(Mutex::new(Vec::<ReconnectAttempt>::new()));
     let recorded = Arc::clone(&requested);
@@ -1085,7 +1172,8 @@ fn learning_a_signer_that_never_helps_falls_back_to_the_backoff() {
 fn a_repeating_failure_is_logged_on_a_thinning_schedule() {
     let failure = RefObserverFailure {
         stage: RefObserverFailureStage::UntrustedSigner(DeviceId::new("device_stranger")),
-        message: "workspace head is signed by a device this host cannot verify".to_string(),
+        class: DependencyFailureClass::AuthorizationLost,
+        code: RefObserverFailureCode::AuthorizationLost,
     };
     let mut history = AttemptHistory::default();
     let mut logged = 0_u32;
@@ -1107,14 +1195,15 @@ fn a_repeating_failure_is_logged_on_a_thinning_schedule() {
     // never hide something new.
     let different = RefObserverFailure {
         stage: RefObserverFailureStage::Stream,
-        message: "workspace-ref subscription ended".to_string(),
+        class: DependencyFailureClass::Retryable,
+        code: RefObserverFailureCode::StreamUnavailable,
     };
     assert!(should_log_observer_failure(&different, &history));
 }
 
 fn drain_one_stream_error(error: ControlPlaneError) -> RefObserverFailure {
     let (stream_tx, stream_rx) = mpsc::channel();
-    let (events_tx, _events_rx) = mpsc::channel();
+    let (events_tx, _events_rx) = crossbeam_channel::bounded(64);
     let shutdown = AtomicBool::new(false);
     let health = RefObserverHealthHandle::new();
     stream_tx
@@ -1137,7 +1226,7 @@ fn drain_one_stream_error(error: ControlPlaneError) -> RefObserverFailure {
 #[test]
 fn ref_observer_times_out_without_initial_value() {
     let (_stream_tx, stream_rx) = mpsc::channel();
-    let (events_tx, _events_rx) = mpsc::channel();
+    let (events_tx, _events_rx) = crossbeam_channel::bounded(64);
     let shutdown = AtomicBool::new(false);
     let health = RefObserverHealthHandle::new();
 
@@ -1165,7 +1254,7 @@ fn ref_observer_times_out_without_initial_value() {
 #[test]
 fn websocket_reconnect_keeps_subscription_and_requires_a_fresh_value() {
     let (stream_tx, stream_rx) = mpsc::channel();
-    let (events_tx, events_rx) = mpsc::channel();
+    let (events_tx, events_rx) = crossbeam_channel::bounded(64);
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = Arc::clone(&shutdown);
     let health = RefObserverHealthHandle::new();

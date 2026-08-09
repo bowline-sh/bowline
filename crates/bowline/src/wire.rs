@@ -2,7 +2,9 @@ use super::*;
 
 use std::fmt;
 
-use bowline_core::wire::generated::{DaemonStatusScopeParams, DaemonStatusSnapshotResult};
+use bowline_core::wire::generated::{
+    DaemonStatusScopeParams, DaemonStatusSnapshotResult, DaemonSyncBarrierResult,
+};
 use bowline_core::wire::{StatusTransportError, status_command_from_wire, status_command_to_wire};
 use bowline_daemon_rpc::{
     ClientError, ClientOptions, DaemonClient, DaemonReachability, RetryDisposition, VersionSkew,
@@ -13,12 +15,6 @@ use serde::Deserialize;
 #[serde(rename_all = "camelCase")]
 struct DaemonInfo {
     daemon_version: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SyncBarrierResult {
-    convergence_revision: u64,
 }
 
 #[derive(Debug)]
@@ -154,10 +150,10 @@ pub(super) fn await_daemon_sync_barrier(
     socket: &Path,
     workspace_id: &WorkspaceId,
     timeout: Duration,
-) -> Result<u64, DaemonRpcError> {
+) -> Result<DaemonSyncBarrierResult, DaemonRpcError> {
     let client = connect(socket)?;
     let timeout_ms = timeout.as_millis().min(u128::from(u64::MAX)) as u64;
-    let result: SyncBarrierResult = call(
+    call(
         &client,
         "sync.barrier",
         &serde_json::json!({
@@ -165,8 +161,7 @@ pub(super) fn await_daemon_sync_barrier(
             "timeoutMs": timeout_ms.max(1),
         }),
         timeout,
-    )?;
-    Ok(result.convergence_revision)
+    )
 }
 
 /// Read the removal batch the engine is currently refusing. Read-only: the

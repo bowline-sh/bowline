@@ -17,6 +17,7 @@ use super::{
     Clock, CycleError, EngineIo, MAX_PUSH_ATTEMPTS, ManifestEngine, RefObservation, RemoteObjects,
     RemoteRef, WorkspacePath, push_cycle_error,
 };
+use super::{DirtySeq, PUBLISH_BATCH_MAX};
 
 impl ManifestEngine {
     /// The publishing half of a cycle: a bounded push-with-one-retry over the
@@ -49,6 +50,7 @@ impl ManifestEngine {
             if attempts > 1 {
                 self.counters.record_retry();
             }
+            let batch = self.publish_batch();
             let deps = PushDeps {
                 ctx: &self.ctx,
                 objects: io.objects,
@@ -63,7 +65,7 @@ impl ManifestEngine {
             let outcome = match push::push_dirty_paths_authorized(
                 &mut self.store,
                 &deps,
-                &self.dirty,
+                &batch,
                 deletions.clone(),
                 observation.watcher_evidence(),
             ) {
@@ -91,7 +93,10 @@ impl ManifestEngine {
                         version: ref_version,
                         manifest_key: manifest_key.clone(),
                     });
-                    self.applied_manifest = Some(manifest_key);
+                    self.applied_ref = super::EngineRef::Head(RefObservation {
+                        version: ref_version,
+                        manifest_key,
+                    });
                     // Retain exactly the paths the scan could not settle (actively
                     // being written); everything published leaves the dirty set.
                     self.retain_skipped(skipped);
@@ -127,6 +132,71 @@ impl ManifestEngine {
         if !skipped.is_empty() {
             self.counters.record_push_skip(skipped.len() as u64);
         }
-        self.dirty = Arc::new(skipped);
+        // Whatever this cycle did not carry is not a skip -- it was never
+        // offered. It stays dirty so the rescheduled cycle takes it, and it is
+        // not counted as churn.
+        let leftover: BTreeSet<WorkspacePath> = self
+            .dirty
+            .iter()
+            .filter(|path| !self.published_batch.contains(*path))
+            .cloned()
+            .collect();
+        let retained: BTreeSet<WorkspacePath> = skipped.union(&leftover).cloned().collect();
+        self.dirty_seen.retain(|path, _| retained.contains(path));
+        self.dirty = Arc::new(retained);
+        self.published_batch = BTreeSet::new();
+    }
+
+    /// The paths this cycle will publish.
+    ///
+    /// A publish that carries the whole backlog makes a fresh edit wait for it:
+    /// the release proof measured two publishes in three and a half minutes, and
+    /// a file written after a burst sat behind the burst's own backlog. Bound the
+    /// batch and take the newest and oldest halves, so a new edit goes out in the
+    /// next cycle while the backlog still drains in a bounded number of them.
+    ///
+    /// Removals are never split. The mass-deletion breaker judges one push
+    /// against the whole workspace, so a batch carrying part of a removal set
+    /// could pass under the threshold that the full set would trip. When the
+    /// dirty set contains anything already gone from disk, this publishes all of
+    /// it and lets the breaker see exactly what it sees today.
+    fn publish_batch(&mut self) -> Arc<BTreeSet<WorkspacePath>> {
+        if self.dirty.len() <= PUBLISH_BATCH_MAX {
+            self.published_batch = self.dirty.as_ref().clone();
+            return Arc::clone(&self.dirty);
+        }
+        let root = &self.ctx.workspace_root;
+        if self
+            .dirty
+            .iter()
+            .any(|path| !root.join(path.as_str()).symlink_metadata().is_ok())
+        {
+            self.published_batch = self.dirty.as_ref().clone();
+            return Arc::clone(&self.dirty);
+        }
+        let mut ordered: Vec<(DirtySeq, WorkspacePath)> = self
+            .dirty
+            .iter()
+            .map(|path| {
+                (
+                    self.dirty_seen
+                        .get(path)
+                        .copied()
+                        .unwrap_or(DirtySeq::INITIAL),
+                    path.clone(),
+                )
+            })
+            .collect();
+        ordered.sort();
+        let half = PUBLISH_BATCH_MAX / 2;
+        let mut batch: BTreeSet<WorkspacePath> = BTreeSet::new();
+        for (_, path) in ordered.iter().take(half) {
+            batch.insert(path.clone());
+        }
+        for (_, path) in ordered.iter().rev().take(PUBLISH_BATCH_MAX - half) {
+            batch.insert(path.clone());
+        }
+        self.published_batch = batch.clone();
+        Arc::new(batch)
     }
 }

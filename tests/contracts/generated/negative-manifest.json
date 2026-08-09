@@ -1511,6 +1511,446 @@
       "missingField": "requestId"
     },
     {
+      "declaration": "DaemonSyncBarrierObserverState",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierObserverState.unknown"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRefIdentity",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRefIdentity.missing.version",
+      "missingField": "version"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRefIdentity",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRefIdentity.null.manifestKey",
+      "nullField": "manifestKey"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryLifecycle",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryLifecycle.unknown"
+    },
+    {
+      "declaration": "DaemonSyncBarrierWorkspaceState",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierWorkspaceState.unknown"
+    },
+    {
+      "declaration": "DaemonSyncBarrierNativeLoss",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierNativeLoss.unknown"
+    },
+    {
+      "declaration": "DaemonSyncBarrierProcessIdentity",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierProcessIdentity.missing.bootId",
+      "missingField": "bootId"
+    },
+    {
+      "declaration": "DaemonSyncBarrierProcessIdentity",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierProcessIdentity.missing.sessionId",
+      "missingField": "sessionId"
+    },
+    {
+      "declaration": "DaemonSyncBarrierProcessIdentity",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierProcessIdentity.missing.startedAt",
+      "missingField": "startedAt"
+    },
+    {
+      "declaration": "DaemonSyncBarrierConvergenceSource",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierConvergenceSource.missing.processIdentity",
+      "missingField": "processIdentity"
+    },
+    {
+      "declaration": "DaemonSyncBarrierConvergenceSource",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierConvergenceSource.missing.workspaceIdentity",
+      "missingField": "workspaceIdentity"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.missing.source",
+      "missingField": "source"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.missing.barrierId",
+      "missingField": "barrierId"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.missing.endpointGeneration",
+      "missingField": "endpointGeneration"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.missing.engineRevision",
+      "missingField": "engineRevision"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.missing.materializationRevision",
+      "missingField": "materializationRevision"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.missing.admittedAt",
+      "missingField": "admittedAt"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.missing.completedAt",
+      "missingField": "completedAt"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.missing.observedRef",
+      "missingField": "observedRef"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.missing.appliedRef",
+      "missingField": "appliedRef"
+    },
+    {
+      "declaration": "DaemonSyncBarrierObserverLiveness",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierObserverLiveness.missing.state",
+      "missingField": "state"
+    },
+    {
+      "declaration": "DaemonSyncBarrierObserverLiveness",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierObserverLiveness.missing.endpointGeneration",
+      "missingField": "endpointGeneration"
+    },
+    {
+      "declaration": "DaemonSyncBarrierObserverLiveness",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierObserverLiveness.missing.lifecycleRevision",
+      "missingField": "lifecycleRevision"
+    },
+    {
+      "declaration": "DaemonSyncBarrierObserverLiveness",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierObserverLiveness.missing.observedAt",
+      "missingField": "observedAt"
+    },
+    {
+      "declaration": "DaemonSyncBarrierObserverLiveness",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierObserverLiveness.missing.observedRef",
+      "missingField": "observedRef"
+    },
+    {
+      "declaration": "DaemonSyncBarrierObserverConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierObserverConvergence.missing.source",
+      "missingField": "source"
+    },
+    {
+      "declaration": "DaemonSyncBarrierObserverConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierObserverConvergence.missing.admission",
+      "missingField": "admission"
+    },
+    {
+      "declaration": "DaemonSyncBarrierObserverConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierObserverConvergence.missing.completion",
+      "missingField": "completion"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCursorReplay",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCursorReplay.missing.coveredLastSafe",
+      "missingField": "coveredLastSafe"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCursorReplay",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCursorReplay.missing.replayFrom",
+      "missingField": "replayFrom"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCursorReplay",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCursorReplay.missing.recoveryCause",
+      "missingField": "recoveryCause"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinFreshStream",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinFreshStream.missing.freshFrom",
+      "missingField": "freshFrom"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinFreshStream",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinFreshStream.missing.discontinuity",
+      "missingField": "discontinuity"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.missing.boundaryId",
+      "missingField": "boundaryId"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.missing.coveredEpoch",
+      "missingField": "coveredEpoch"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.missing.liveEpoch",
+      "missingField": "liveEpoch"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.missing.coverageStart",
+      "missingField": "coverageStart"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.missing.historyThrough",
+      "missingField": "historyThrough"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.missing.historyDone",
+      "missingField": "historyDone"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.missing.mustScanSubdirs",
+      "missingField": "mustScanSubdirs"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.missing.sealedThrough",
+      "missingField": "sealedThrough"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.missing.flushGeneration",
+      "missingField": "flushGeneration"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.missing.lossGeneration",
+      "missingField": "lossGeneration"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.missing.callbackGeneration",
+      "missingField": "callbackGeneration"
+    },
+    {
+      "declaration": "DaemonSyncBarrierLinuxCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierLinuxCoverage.missing.boundaryId",
+      "missingField": "boundaryId"
+    },
+    {
+      "declaration": "DaemonSyncBarrierLinuxCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierLinuxCoverage.missing.streamEpoch",
+      "missingField": "streamEpoch"
+    },
+    {
+      "declaration": "DaemonSyncBarrierLinuxCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierLinuxCoverage.missing.watcherReadyControlId",
+      "missingField": "watcherReadyControlId"
+    },
+    {
+      "declaration": "DaemonSyncBarrierLinuxCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierLinuxCoverage.missing.callbackDrainControlId",
+      "missingField": "callbackDrainControlId"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.missing.processIdentity",
+      "missingField": "processIdentity"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.missing.incidentId",
+      "missingField": "incidentId"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.missing.closingAttemptId",
+      "missingField": "closingAttemptId"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.missing.attemptCount",
+      "missingField": "attemptCount"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.missing.scanCount",
+      "missingField": "scanCount"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.missing.capturedActivityWatermark",
+      "missingField": "capturedActivityWatermark"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.missing.finalActivityWatermark",
+      "missingField": "finalActivityWatermark"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.missing.authoritativeScanRevision",
+      "missingField": "authoritativeScanRevision"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.missing.nativeBoundary",
+      "missingField": "nativeBoundary"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.missing.closingRecoveryRevision",
+      "missingField": "closingRecoveryRevision"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.missing.closedAt",
+      "missingField": "closedAt"
+    },
+    {
+      "declaration": "DaemonSyncBarrierCoordinatorFrontier",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierCoordinatorFrontier.missing.lifecycle",
+      "missingField": "lifecycle"
+    },
+    {
+      "declaration": "DaemonSyncBarrierCoordinatorFrontier",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierCoordinatorFrontier.missing.recoverySnapshotRevision",
+      "missingField": "recoverySnapshotRevision"
+    },
+    {
+      "declaration": "DaemonSyncBarrierCoordinatorFrontier",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierCoordinatorFrontier.missing.closingRecoveryRevision",
+      "missingField": "closingRecoveryRevision"
+    },
+    {
+      "declaration": "DaemonSyncBarrierCoordinatorFrontier",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierCoordinatorFrontier.missing.activityWatermark",
+      "missingField": "activityWatermark"
+    },
+    {
+      "declaration": "DaemonSyncBarrierWorkspaceStatus",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierWorkspaceStatus.missing.state",
+      "missingField": "state"
+    },
+    {
+      "declaration": "DaemonSyncBarrierWorkspaceStatus",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierWorkspaceStatus.missing.observedAt",
+      "missingField": "observedAt"
+    },
+    {
+      "declaration": "DaemonSyncBarrierResult",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierResult.missing.barrierId",
+      "missingField": "barrierId"
+    },
+    {
+      "declaration": "DaemonSyncBarrierResult",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierResult.missing.processIdentity",
+      "missingField": "processIdentity"
+    },
+    {
+      "declaration": "DaemonSyncBarrierResult",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierResult.missing.workspaceIdentity",
+      "missingField": "workspaceIdentity"
+    },
+    {
+      "declaration": "DaemonSyncBarrierResult",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierResult.missing.engineConvergence",
+      "missingField": "engineConvergence"
+    },
+    {
+      "declaration": "DaemonSyncBarrierResult",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierResult.missing.observer",
+      "missingField": "observer"
+    },
+    {
+      "declaration": "DaemonSyncBarrierResult",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierResult.missing.coordinatorNominalFrontier",
+      "missingField": "coordinatorNominalFrontier"
+    },
+    {
+      "declaration": "DaemonSyncBarrierResult",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierResult.missing.recoveryClosure",
+      "missingField": "recoveryClosure"
+    },
+    {
+      "declaration": "DaemonSyncBarrierResult",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierResult.missing.workspaceStatus",
+      "missingField": "workspaceStatus"
+    },
+    {
+      "declaration": "DaemonSyncBarrierResult",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierResult.missing.linearizedAt",
+      "missingField": "linearizedAt"
+    },
+    {
       "declaration": "DaemonStatusScopeParams",
       "expectation": "reject",
       "id": "DaemonStatusScopeParams.null.workspaceRoot",
@@ -3728,6 +4168,18 @@
       "expectation": "reject",
       "id": "HostedObjectsCommitUploadedObjectMetadataRequest.missing.workspaceId",
       "missingField": "workspaceId"
+    },
+    {
+      "declaration": "HostedObjectsReserveObjectUploadsBatchRequest",
+      "expectation": "reject",
+      "id": "HostedObjectsReserveObjectUploadsBatchRequest.missing.requests",
+      "missingField": "requests"
+    },
+    {
+      "declaration": "HostedObjectsCommitUploadedObjectMetadataBatchRequest",
+      "expectation": "reject",
+      "id": "HostedObjectsCommitUploadedObjectMetadataBatchRequest.missing.requests",
+      "missingField": "requests"
     },
     {
       "declaration": "HostedObjectQueriesGetObjectMetadataRequest",
@@ -6496,6 +6948,462 @@
       "valuePath": "/boundary-values.json#/DaemonRpcCancel.requestId.maxLength.invalid"
     },
     {
+      "declaration": "DaemonSyncBarrierRefIdentity",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRefIdentity.version.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRefIdentity.version.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRefIdentity",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRefIdentity.version.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRefIdentity.version.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRefIdentity",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRefIdentity.manifestKey.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRefIdentity.manifestKey.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierProcessIdentity",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierProcessIdentity.bootId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierProcessIdentity.bootId.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierProcessIdentity",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierProcessIdentity.sessionId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierProcessIdentity.sessionId.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierProcessIdentity",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierProcessIdentity.startedAt.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierProcessIdentity.startedAt.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierConvergenceSource",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierConvergenceSource.workspaceIdentity.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierConvergenceSource.workspaceIdentity.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.barrierId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierEngineConvergence.barrierId.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.endpointGeneration.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierEngineConvergence.endpointGeneration.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.endpointGeneration.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierEngineConvergence.endpointGeneration.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.engineRevision.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierEngineConvergence.engineRevision.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.engineRevision.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierEngineConvergence.engineRevision.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.materializationRevision.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierEngineConvergence.materializationRevision.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.materializationRevision.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierEngineConvergence.materializationRevision.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.admittedAt.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierEngineConvergence.admittedAt.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierEngineConvergence",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierEngineConvergence.completedAt.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierEngineConvergence.completedAt.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierObserverLiveness",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierObserverLiveness.endpointGeneration.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierObserverLiveness.endpointGeneration.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierObserverLiveness",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierObserverLiveness.endpointGeneration.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierObserverLiveness.endpointGeneration.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierObserverLiveness",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierObserverLiveness.lifecycleRevision.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierObserverLiveness.lifecycleRevision.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierObserverLiveness",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierObserverLiveness.lifecycleRevision.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierObserverLiveness.lifecycleRevision.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierObserverLiveness",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierObserverLiveness.observedAt.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierObserverLiveness.observedAt.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCursorReplay",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCursorReplay.coveredLastSafe.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCursorReplay.coveredLastSafe.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCursorReplay",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCursorReplay.coveredLastSafe.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCursorReplay.coveredLastSafe.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCursorReplay",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCursorReplay.replayFrom.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCursorReplay.replayFrom.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCursorReplay",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCursorReplay.replayFrom.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCursorReplay.replayFrom.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinFreshStream",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinFreshStream.freshFrom.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinFreshStream.freshFrom.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinFreshStream",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinFreshStream.freshFrom.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinFreshStream.freshFrom.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.boundaryId.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.boundaryId.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.boundaryId.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.boundaryId.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.coveredEpoch.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.coveredEpoch.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.coveredEpoch.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.coveredEpoch.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.liveEpoch.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.liveEpoch.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.liveEpoch.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.liveEpoch.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.historyThrough.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.historyThrough.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.historyThrough.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.historyThrough.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.sealedThrough.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.sealedThrough.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.sealedThrough.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.sealedThrough.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.flushGeneration.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.flushGeneration.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.flushGeneration.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.flushGeneration.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.lossGeneration.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.lossGeneration.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.lossGeneration.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.lossGeneration.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.callbackGeneration.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.callbackGeneration.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierDarwinCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierDarwinCoverage.callbackGeneration.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierDarwinCoverage.callbackGeneration.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierLinuxCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierLinuxCoverage.boundaryId.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierLinuxCoverage.boundaryId.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierLinuxCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierLinuxCoverage.boundaryId.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierLinuxCoverage.boundaryId.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierLinuxCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierLinuxCoverage.streamEpoch.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierLinuxCoverage.streamEpoch.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierLinuxCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierLinuxCoverage.streamEpoch.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierLinuxCoverage.streamEpoch.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierLinuxCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierLinuxCoverage.watcherReadyControlId.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierLinuxCoverage.watcherReadyControlId.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierLinuxCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierLinuxCoverage.watcherReadyControlId.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierLinuxCoverage.watcherReadyControlId.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierLinuxCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierLinuxCoverage.callbackDrainControlId.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierLinuxCoverage.callbackDrainControlId.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierLinuxCoverage",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierLinuxCoverage.callbackDrainControlId.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierLinuxCoverage.callbackDrainControlId.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.incidentId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.incidentId.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.closingAttemptId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.closingAttemptId.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.attemptCount.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.attemptCount.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.attemptCount.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.attemptCount.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.scanCount.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.scanCount.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.scanCount.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.scanCount.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.capturedActivityWatermark.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.capturedActivityWatermark.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.capturedActivityWatermark.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.capturedActivityWatermark.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.finalActivityWatermark.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.finalActivityWatermark.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.finalActivityWatermark.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.finalActivityWatermark.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.authoritativeScanRevision.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.authoritativeScanRevision.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.authoritativeScanRevision.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.authoritativeScanRevision.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.closingRecoveryRevision.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.closingRecoveryRevision.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.closingRecoveryRevision.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.closingRecoveryRevision.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierRecoveryClosure",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierRecoveryClosure.closedAt.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierRecoveryClosure.closedAt.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierCoordinatorFrontier",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierCoordinatorFrontier.recoverySnapshotRevision.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierCoordinatorFrontier.recoverySnapshotRevision.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierCoordinatorFrontier",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierCoordinatorFrontier.recoverySnapshotRevision.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierCoordinatorFrontier.recoverySnapshotRevision.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierCoordinatorFrontier",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierCoordinatorFrontier.closingRecoveryRevision.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierCoordinatorFrontier.closingRecoveryRevision.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierCoordinatorFrontier",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierCoordinatorFrontier.closingRecoveryRevision.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierCoordinatorFrontier.closingRecoveryRevision.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierCoordinatorFrontier",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierCoordinatorFrontier.activityWatermark.minimum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierCoordinatorFrontier.activityWatermark.minimum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierCoordinatorFrontier",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierCoordinatorFrontier.activityWatermark.maximum.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierCoordinatorFrontier.activityWatermark.maximum.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierWorkspaceStatus",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierWorkspaceStatus.observedAt.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierWorkspaceStatus.observedAt.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierResult",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierResult.barrierId.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierResult.barrierId.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierResult",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierResult.workspaceIdentity.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierResult.workspaceIdentity.maxLength.invalid"
+    },
+    {
+      "declaration": "DaemonSyncBarrierResult",
+      "expectation": "reject",
+      "id": "DaemonSyncBarrierResult.linearizedAt.maxLength.invalid",
+      "valuePath": "/boundary-values.json#/DaemonSyncBarrierResult.linearizedAt.maxLength.invalid"
+    },
+    {
       "declaration": "DaemonStatusScopeParams",
       "expectation": "reject",
       "id": "DaemonStatusScopeParams.workspaceRoot.maxLength.invalid",
@@ -8596,6 +9504,18 @@
       "valuePath": "/boundary-values.json#/HostedObjectsCommitUploadedObjectMetadataRequest.workspaceId.maxLength.invalid"
     },
     {
+      "declaration": "HostedObjectsReserveObjectUploadsBatchRequest",
+      "expectation": "reject",
+      "id": "HostedObjectsReserveObjectUploadsBatchRequest.requests.maxItems.invalid",
+      "valuePath": "/boundary-values.json#/HostedObjectsReserveObjectUploadsBatchRequest.requests.maxItems.invalid"
+    },
+    {
+      "declaration": "HostedObjectsCommitUploadedObjectMetadataBatchRequest",
+      "expectation": "reject",
+      "id": "HostedObjectsCommitUploadedObjectMetadataBatchRequest.requests.maxItems.invalid",
+      "valuePath": "/boundary-values.json#/HostedObjectsCommitUploadedObjectMetadataBatchRequest.requests.maxItems.invalid"
+    },
+    {
       "declaration": "HostedObjectQueriesGetObjectMetadataRequest",
       "expectation": "reject",
       "id": "HostedObjectQueriesGetObjectMetadataRequest.objectKey.maxLength.invalid",
@@ -9934,5 +10854,5 @@
       "valuePath": "/boundary-values.json#/HostedDashboardListDashboardRecoveryEnvelopesResponse.revision.maximum.invalid"
     }
   ],
-  "schemaHash": "eb0c32bf7bd65f209743e4812c06f8bf97ac008b60ac117958d1cc21fbeb8f88"
+  "schemaHash": "b0b53cff526d947c34b317e79cc82aca032bb60295359f46ca9a57d7e45714a5"
 }

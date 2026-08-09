@@ -6,6 +6,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+arc-swap = "1.7"
 blake3 = "1.8"
 bowline-control-plane = { path = "../bowline-control-plane", features = ["hosted-convex"] }
 bowline-core = { path = "../bowline-core" }
@@ -17,10 +18,13 @@ notify = "8.2.0"
 rustix = { version = "1.1.4", features = ["process"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-time = { version = "0.3", features = ["formatting"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 uds = "0.4"
 
 [dev-dependencies]
+bowline-local = { path = "../bowline-local", features = ["test-support"] }
+loom = "0.7.2"
+proptest = "1.9.0"
 rusqlite = { version = "0.37", features = ["bundled"] }
 
 [lib]

@@ -7,7 +7,8 @@ pub(super) use install::daemon_service_install;
 #[cfg(test)]
 pub(super) use install::{
     daemon_service_active_from_status, install_daemon_service_with_takeover,
-    previous_active_service_definition, stop_unmanaged_daemon, wait_for_stable_socket_absence,
+    previous_active_service_definition, stop_unmanaged_daemon,
+    wait_for_stable_socket_absence_with_test_probe,
 };
 
 pub(super) fn print_daemon_service_install(socket: &Path, json: bool) -> ExitCode {

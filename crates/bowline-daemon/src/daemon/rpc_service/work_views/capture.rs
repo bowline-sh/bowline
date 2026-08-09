@@ -31,6 +31,7 @@ pub(super) fn capture_view<O: RemoteObjects, R: RemoteRef>(
     let (mut store, ctx) = view_engine(
         &env.workspace_root,
         &env.state_root,
+        &env.workspace_id,
         env.crypto,
         &env.device_id,
         view_dir,

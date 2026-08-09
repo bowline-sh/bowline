@@ -16,10 +16,7 @@ use sha2::{Digest, Sha256};
 mod deadline;
 mod streaming_upload;
 use deadline::{signed_url_connect_timeout, signed_url_transfer_timeout};
-use streaming_upload::{
-    StreamingPutRequest, send_streaming_put, send_streaming_put_with_create_only,
-    verify_matching_readers,
-};
+use streaming_upload::{send_streaming_put, verify_matching_readers};
 
 use crate::{
     ControlPlaneClient, ControlPlaneError, DownloadIntentRequest, ObjectKind as ControlObjectKind,
@@ -140,6 +137,28 @@ impl<'a, C: ControlPlaneClient> SignedUrlByteStore<'a, C> {
         Ok(outcome)
     }
 
+    /// Perform the create-only transfer using an upload reservation obtained by
+    /// a caller's batch request. The reservation is still checked against the
+    /// immutable object request before its signed URL is used.
+    pub fn put_object_with_upload_intent(
+        &self,
+        request: PutObjectRequest<'_>,
+        intent: UploadIntentOutcome,
+    ) -> Result<PutOutcome, ByteStoreError> {
+        let PutObjectSource::Bytes(bytes) = request.source else {
+            return Err(ByteStoreError::UnsupportedOperation(
+                "batched upload requires buffered bytes",
+            ));
+        };
+        let outcome = self.put_bytes_after_intent(&request, bytes, intent)?;
+        let mut metrics = self.metrics.borrow_mut();
+        metrics.put_count += 1;
+        if matches!(outcome, PutOutcome::Uploaded(_)) {
+            metrics.bytes_uploaded += request.byte_len;
+        }
+        Ok(outcome)
+    }
+
     /// Upload the buffered form of an object. The identity is checked before
     /// the PUT starts so wrong bytes never reach R2 under a content-addressed
     /// key; the mid-stream check on the reader path is the same guarantee.
@@ -157,12 +176,41 @@ impl<'a, C: ControlPlaneClient> SignedUrlByteStore<'a, C> {
             });
         }
         let checksum_sha256 = Sha256Checksum::for_bytes(bytes);
-        let intent = match self.create_upload_intent(request, checksum_sha256.clone())? {
+        let intent = self.create_upload_intent(request, checksum_sha256)?;
+        self.put_bytes_after_intent(request, bytes, intent)
+    }
+
+    fn put_bytes_after_intent(
+        &self,
+        request: &PutObjectRequest<'_>,
+        bytes: &[u8],
+        intent: UploadIntentOutcome,
+    ) -> Result<PutOutcome, ByteStoreError> {
+        if bytes.len() as u64 != request.byte_len
+            || ObjectHash::of_bytes(bytes) != request.expected_hash
+        {
+            return Err(ByteStoreError::CorruptObject {
+                key: request.key.clone(),
+                reason: "buffered upload bytes did not match immutable identity",
+            });
+        }
+        let checksum_sha256 = Sha256Checksum::for_bytes(bytes);
+        let intent = match intent {
             UploadIntentOutcome::Reserved(intent) => intent,
             UploadIntentOutcome::AlreadyCommitted(committed) => {
                 return Ok(PutOutcome::AlreadyCommitted(committed));
             }
         };
+        if intent.workspace_id.as_str() != self.workspace_id
+            || intent.object_key != request.key.as_str()
+            || intent.object_kind != ControlObjectKind::from(request.kind)
+            || intent.byte_len != request.byte_len
+        {
+            return Err(ByteStoreError::CorruptObject {
+                key: request.key.clone(),
+                reason: "upload reservation does not match immutable object request",
+            });
+        }
 
         let response = self
             .http
@@ -177,16 +225,11 @@ impl<'a, C: ControlPlaneClient> SignedUrlByteStore<'a, C> {
         if status == reqwest::StatusCode::PRECONDITION_FAILED {
             self.metrics.borrow_mut().conditional_write_conflict_count += 1;
             if let Err(error) = self.verify_existing_upload(request, bytes) {
-                // Random-nonce envelopes re-seal the same logical object to
-                // different ciphertext under the same content-id key. Greenfield
-                // R2 residue can also leave a foreign object at that key. Either
-                // way, create-only 412 + hash mismatch must recover by overwrite
-                // rather than wedging preparation in referenced-by-upload.
                 if !matches!(error, ByteStoreError::CorruptObject { .. }) {
                     return Err(error);
                 }
                 self.metrics.borrow_mut().verification_failure_count += 1;
-                return self.overwrite_object_bytes(request, bytes);
+                return Err(immutable_identity_violation(request));
             }
         } else if !status.is_success() {
             return Err(ByteStoreError::HttpStatus {
@@ -237,12 +280,7 @@ impl<'a, C: ControlPlaneClient> SignedUrlByteStore<'a, C> {
                 if !matches!(error, ByteStoreError::CorruptObject { .. }) {
                     return Err(error);
                 }
-                drop(metrics);
-                // Same recovery as the buffered put path: re-seal / R2 residue
-                // under a content-id key must overwrite after hash mismatch.
-                let outcome = self.overwrite_object_reader(request, source)?;
-                self.record_streamed_peak();
-                return Ok(outcome);
+                return Err(immutable_identity_violation(request));
             }
         } else if !status.is_success() {
             return Err(ByteStoreError::HttpStatus {
@@ -278,75 +316,6 @@ impl<'a, C: ControlPlaneClient> SignedUrlByteStore<'a, C> {
                 .with_object_key(request.key.as_str()),
             )
             .map_err(|error| map_control_error(TransferOperation::Upload, error))
-    }
-
-    fn overwrite_object_bytes(
-        &self,
-        request: &PutObjectRequest<'_>,
-        bytes: &[u8],
-    ) -> Result<PutOutcome, ByteStoreError> {
-        let checksum_sha256 = Sha256Checksum::for_bytes(bytes);
-        let intent = match self.create_upload_intent(request, checksum_sha256.clone())? {
-            UploadIntentOutcome::Reserved(intent) => intent,
-            // Another writer committed the object between the failed create-only
-            // PUT and this recovery. The commit verified R2's checksum against
-            // the reservation, so the stored bytes are the ones this key names
-            // and there is nothing left to overwrite.
-            UploadIntentOutcome::AlreadyCommitted(committed) => {
-                return Ok(PutOutcome::AlreadyCommitted(committed));
-            }
-        };
-        let response = self
-            .http
-            .put(&intent.signed_url.url)
-            .timeout(signed_url_transfer_timeout(Some(request.byte_len)))
-            .header("x-amz-checksum-sha256", checksum_sha256.as_str())
-            .body(bytes.to_vec())
-            .send()
-            .map_err(|error| map_http_error(TransferOperation::Upload, error))?;
-        if !response.status().is_success() {
-            return Err(ByteStoreError::HttpStatus {
-                key: request.key.clone(),
-                operation: TransferOperation::Upload,
-                status: response.status().as_u16(),
-            });
-        }
-        Ok(PutOutcome::Uploaded(uploaded_metadata(request)))
-    }
-
-    fn overwrite_object_reader(
-        &self,
-        request: &PutObjectRequest<'_>,
-        source: &dyn ReopenableObjectSource,
-    ) -> Result<PutOutcome, ByteStoreError> {
-        let checksum_sha256 = sha256_checksum_source(source)?;
-        let intent = match self.create_upload_intent(request, checksum_sha256.clone())? {
-            UploadIntentOutcome::Reserved(intent) => intent,
-            // Same race as the buffered overwrite path.
-            UploadIntentOutcome::AlreadyCommitted(committed) => {
-                return Ok(PutOutcome::AlreadyCommitted(committed));
-            }
-        };
-        let response = send_streaming_put_with_create_only(
-            &self.http,
-            &intent.signed_url.url,
-            StreamingPutRequest {
-                key: &request.key,
-                source,
-                byte_len: request.byte_len,
-                expected_hash: request.expected_hash.as_str(),
-                checksum_sha256: checksum_sha256.as_str(),
-                create_only: false,
-            },
-        )?;
-        if !response.status().is_success() {
-            return Err(ByteStoreError::HttpStatus {
-                key: request.key.clone(),
-                operation: TransferOperation::Upload,
-                status: response.status().as_u16(),
-            });
-        }
-        Ok(PutOutcome::Uploaded(uploaded_metadata(request)))
     }
 
     fn verify_existing_upload(
@@ -415,6 +384,13 @@ impl<'a, C: ControlPlaneClient> SignedUrlByteStore<'a, C> {
                 .with_content_id(request.content_id.as_str()),
             )
             .map_err(|error| map_control_error(TransferOperation::Upload, error))
+    }
+}
+
+fn immutable_identity_violation(request: &PutObjectRequest<'_>) -> ByteStoreError {
+    ByteStoreError::IntegrityViolation {
+        key: request.key.clone(),
+        reason: "existing bytes do not match the content-addressed key",
     }
 }
 

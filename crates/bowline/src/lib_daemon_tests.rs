@@ -397,20 +397,20 @@ fn managed_service_takeover_rejects_an_unsafe_socket_path() {
 fn managed_service_takeover_requires_stable_socket_absence() {
     let temp = tempfile_dir("bowline-service-takeover-race");
     let socket = temp.join("daemon.sock");
-    let racing_socket = socket.clone();
-    let writer = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(20));
-        std::fs::write(racing_socket, b"late owner").expect("create racing socket path");
-    });
+    let path_created = std::cell::Cell::new(false);
 
-    let error = super::wait_for_stable_socket_absence(
+    let error = super::wait_for_stable_socket_absence_with_test_probe(
         &socket,
         Duration::from_millis(100),
         Duration::from_millis(10),
+        || {
+            if !path_created.replace(true) {
+                std::fs::write(&socket, b"late owner").expect("create racing socket path");
+            }
+        },
     )
     .expect_err("a path appearing during the stable-absence window blocks takeover");
 
-    writer.join().expect("racing writer");
     assert!(error.contains("cannot be safely replaced"));
     let _ = std::fs::remove_dir_all(temp);
 }

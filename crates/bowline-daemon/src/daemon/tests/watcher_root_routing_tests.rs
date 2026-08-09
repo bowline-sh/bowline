@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use crate::daemon::send_watcher_signal;
 #[cfg(target_os = "linux")]
 use crate::daemon::socket_server::{WatcherBridge, WatcherBridgeStart};
-#[cfg(target_os = "macos")]
 use crate::daemon::start_sync_watcher;
 #[cfg(target_os = "linux")]
 use crate::daemon::sync::{ContinuousSyncRuntime, DaemonRuntime};
@@ -41,8 +40,8 @@ fn daemon_runtime_with_sync(sync: ContinuousSyncRuntime) -> DaemonRuntime {
     }
 }
 
-/// A manifest driver whose thread records forwarded engine events instead of
-/// running the real engine, so the watcher bridge's output is observable.
+/// A manifest driver whose watcher accumulator remains observable without
+/// running the real engine, so the bridge's bounded handoff can be asserted.
 #[cfg(target_os = "linux")]
 fn recording_driver() -> (
     bowline_daemon::manifest_driver::ManifestDriver,
@@ -50,13 +49,26 @@ fn recording_driver() -> (
 ) {
     let recorded = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&recorded);
-    let driver = bowline_daemon::manifest_driver::ManifestDriver::spawn(move |inbox, _snapshot| {
-        while let Ok(event) = inbox.recv() {
-            if matches!(event, EngineEvent::Shutdown) {
-                break;
-            }
-            if let Ok(mut recorded) = sink.lock() {
-                recorded.push(event);
+    let driver = bowline_daemon::manifest_driver::ManifestDriver::spawn(move |inbox, snapshot| {
+        let Some(ingress) = snapshot.watcher_ingress_endpoint() else {
+            return;
+        };
+        let watcher_wake = ingress.wake_receiver();
+        loop {
+            crossbeam_channel::select! {
+                recv(inbox) -> event => match event {
+                    Ok(EngineEvent::Shutdown) | Err(_) => break,
+                    Ok(event) => {
+                        if let Ok(mut recorded) = sink.lock() {
+                            recorded.push(event);
+                        }
+                    }
+                },
+                recv(watcher_wake) -> _ => {
+                    if let Ok(mut recorded) = sink.lock() {
+                        recorded.extend(ingress.drain().into_events());
+                    }
+                },
             }
         }
     })
@@ -69,13 +81,13 @@ fn await_recorded_paths(recorded: &Arc<Mutex<Vec<EngineEvent>>>, path: &str) {
     let deadline = Instant::now() + Duration::from_secs(2);
     let wanted = WorkspacePath::new(path.to_string());
     loop {
-        if let Ok(events) = recorded.lock()
-            && events.iter().any(|event| match event {
+        if recorded.lock().is_ok_and(|events| {
+            events.iter().any(|event| match event {
                 EngineEvent::Paths(paths) => paths.contains(&wanted),
                 EngineEvent::FullScanRequired(_) => true,
                 _ => false,
             })
-        {
+        }) {
             return;
         }
         assert!(
@@ -94,16 +106,22 @@ fn linux_nested_edit_reaches_engine_through_watcher_bridge() {
     let project = root.join("project");
     fs::create_dir_all(project.join("src/deep")).expect("project subtree");
     fs::write(project.join("src/deep/lib.rs"), "pub fn before() {}\n").expect("seed file");
+    let (watcher, signals) = start_sync_watcher(
+        &root,
+        bowline_daemon::watcher_coverage::WatcherCoverageIds::new(),
+    )
+    .expect("native watcher starts with watcher-ready coverage");
     let mut sync = watcher_test_runtime(
         root.clone(),
         fixture.state_root.clone(),
         fixture.workspace_id.as_str(),
     );
-    assert!(
-        sync.ensure_watcher_armed(Instant::now()),
-        "the native watcher arms on a real workspace root"
-    );
-    let (driver, recorded) = recording_driver();
+    // This test owns native path routing, not startup recovery. Supplying the
+    // ready native stream directly keeps the open startup incident from
+    // withholding ordinary events while its synthetic driver cannot publish
+    // an engine convergence receipt.
+    sync.watcher = crate::daemon::sync::WatcherHost::armed_with_signals(signals);
+    let (driver, ingress) = recording_driver();
     sync.manifest_engine = crate::daemon::sync::ManifestEngineHost::Active(driver);
     let mut runtime = daemon_runtime_with_sync(sync);
     let WatcherBridgeStart::Started(bridge) =
@@ -113,14 +131,9 @@ fn linux_nested_edit_reaches_engine_through_watcher_bridge() {
     };
 
     fs::write(project.join("src/deep/lib.rs"), "pub fn after() {}\n").expect("nested user edit");
-    await_recorded_paths(&recorded, "project/src/deep/lib.rs");
+    await_recorded_paths(&ingress, "project/src/deep/lib.rs");
 
-    runtime
-        .sync
-        .as_mut()
-        .expect("sync runtime remains")
-        .watcher
-        .disarm(Instant::now());
+    drop(watcher);
     bridge.join().expect("watcher bridge joins");
     drop(runtime);
     let _ = fs::remove_dir_all(fixture.temp);
@@ -147,7 +160,7 @@ fn linux_close_after_write_reaches_engine() {
         fixture.workspace_id.as_str(),
     );
     sync.watcher = crate::daemon::sync::WatcherHost::armed_with_signals(signal_rx);
-    let (driver, recorded) = recording_driver();
+    let (driver, ingress) = recording_driver();
     sync.manifest_engine = crate::daemon::sync::ManifestEngineHost::Active(driver);
     let mut runtime = daemon_runtime_with_sync(sync);
     let WatcherBridgeStart::Started(bridge) =
@@ -156,7 +169,7 @@ fn linux_close_after_write_reaches_engine() {
         panic!("watcher receiver creates bridge");
     };
 
-    await_recorded_paths(&recorded, ".env");
+    await_recorded_paths(&ingress, ".env");
 
     bridge.join().expect("watcher bridge joins");
     drop(runtime);
@@ -168,7 +181,11 @@ fn linux_close_after_write_reaches_engine() {
 fn macos_watcher_kernel_arms_recursive_root_watch() {
     let fixture = watcher_fixture("bowline-daemon-watch-macos-kernel", "ws_watch_macos_kernel");
     fs::create_dir_all(fixture.root.join("project/src")).expect("project subtree");
-    let (watcher, receiver) = start_sync_watcher(&fixture.root).expect("watcher starts");
+    let (watcher, receiver) = start_sync_watcher(
+        &fixture.root,
+        bowline_daemon::watcher_coverage::WatcherCoverageIds::new(),
+    )
+    .expect("watcher starts");
 
     fs::write(fixture.root.join("project/src/lib.rs"), "pub fn a() {}\n").expect("nested write");
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -192,7 +209,11 @@ fn macos_watcher_kernel_arms_recursive_root_watch() {
 #[test]
 fn macos_dense_git_init_emits_recursive_engine_roots() {
     let fixture = watcher_fixture("bowline-daemon-watch-macos-dense-git", "ws_watch_macos_git");
-    let (watcher, receiver) = start_sync_watcher(&fixture.root).expect("watcher starts");
+    let (watcher, receiver) = start_sync_watcher(
+        &fixture.root,
+        bowline_daemon::watcher_coverage::WatcherCoverageIds::new(),
+    )
+    .expect("watcher starts");
 
     // `start_sync_watcher` returns before FSEvents has finished arming, so the
     // dense burst below can land entirely in the unarmed window and never be

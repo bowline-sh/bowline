@@ -9,7 +9,7 @@
 use std::error::Error;
 use std::fmt;
 
-use super::{CycleError, ManifestStoreError, PullError, PushError};
+use super::{CycleError, ManifestStoreError, PullError, PushError, TransportFailureClass};
 
 /// Classify a failed push.
 ///
@@ -20,7 +20,10 @@ use super::{CycleError, ManifestStoreError, PullError, PushError};
 /// a genuine fault — but adding one must remain a decision, not a default.
 pub(super) fn push_cycle_error(error: PushError) -> CycleError {
     match error {
-        PushError::Transport(_) => CycleError::Transport,
+        PushError::Transport(error) => match error.failure_class() {
+            TransportFailureClass::Retryable => CycleError::Transport,
+            TransportFailureClass::Integrity => CycleError::Integrity,
+        },
         PushError::MassDeletionRefused {
             removals, entries, ..
         } => CycleError::MassDeletionBlocked { removals, entries },
@@ -81,7 +84,10 @@ pub(super) fn pull_cycle_error(error: PullError) -> CycleError {
 /// behind a durable intent, to fail every startup after it.
 pub(super) fn classify_pull_error(error: &PullError) -> CycleError {
     match error {
-        PullError::Transport(_) => CycleError::Transport,
+        PullError::Transport(error) => match error.failure_class() {
+            TransportFailureClass::Retryable => CycleError::Transport,
+            TransportFailureClass::Integrity => CycleError::Integrity,
+        },
         PullError::RefRegressed { .. } | PullError::RefForked { .. } => CycleError::Integrity,
         PullError::Path(_) => CycleError::PathScoped,
         PullError::EngineScratchIo(_)
@@ -140,5 +146,21 @@ impl Error for EngineError {
             Self::Pull(error) => Some(error),
             Self::Internal => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::manifest_engine::TransportError;
+
+    #[test]
+    fn immutable_object_violation_stalls_the_engine_as_integrity() {
+        let error = PushError::Transport(TransportError::integrity(
+            "put-blob",
+            "immutable object identity mismatch",
+        ));
+
+        assert!(matches!(push_cycle_error(error), CycleError::Integrity));
     }
 }

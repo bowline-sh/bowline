@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use std::collections::BTreeSet;
 
-use super::pull_apply::{PullScope, pull_from_observation};
+use super::pull_apply::PullScope;
 use super::push::WatcherEvidence;
 use super::{
-    Clock, CycleError, DEBOUNCE_MS, EngineIo, ManifestEngine, PullDeps, RefObservation,
+    Clock, CycleError, DEBOUNCE_MS, EngineIo, EngineRef, ManifestEngine, PullDeps, RefObservation,
     RemoteObjects, RemoteRef, WorkspacePath, pull, pull_cycle_error,
 };
 
@@ -104,17 +104,14 @@ impl ManifestEngine {
                 observation.scope(&self.dirty)
             },
         };
-        let observed = if self.force_ref_read {
-            self.pending_ref_hint = None;
-            None
-        } else {
-            self.pending_ref_hint.take()
-        };
+        // A subscription observation is a wake-up, not a durable snapshot of
+        // the head this potentially expensive pull should apply. The publisher
+        // may advance again while the notification is in flight; confirming
+        // authority here skips obsolete intermediate heads instead of spending
+        // an entire apply cycle chasing each one in sequence.
+        self.pending_ref_hint = None;
         self.force_ref_read = false;
-        let result = match observed {
-            Some(observed) => pull_from_observation(&mut self.store, &deps, observed),
-            None => pull(&mut self.store, &deps),
-        };
+        let result = pull(&mut self.store, &deps);
         if result.is_err() {
             // An unconsumed/failed hint is never replayed as authority. The
             // retry re-reads synchronously to resolve transport ambiguity.
@@ -123,15 +120,20 @@ impl ManifestEngine {
         let outcome = result.map_err(pull_cycle_error)?;
         self.startup_reconcile = false;
         self.startup_pending.clear();
-        if let (Some(version), Some(key)) =
-            (outcome.ref_version, outcome.applied_manifest_key.clone())
-        {
-            self.head_ref = Some(RefObservation {
+        self.head_ref = match &outcome.observed_ref {
+            EngineRef::Genesis => None,
+            EngineRef::Head(observed) => Some(observed.clone()),
+        };
+        self.applied_ref = match (outcome.ref_version, outcome.applied_manifest_key.clone()) {
+            (Some(version), Some(manifest_key)) => EngineRef::Head(RefObservation {
                 version,
-                manifest_key: key,
-            });
-        }
-        self.applied_manifest = outcome.applied_manifest_key;
+                manifest_key,
+            }),
+            (None, None) => EngineRef::Genesis,
+            // A partial pair is not authoritative. `refresh_and_bump` will read
+            // the durable pair and project StoreUnavailable if it is corrupt.
+            (Some(_), None) | (None, Some(_)) => self.applied_ref.clone(),
+        };
         // Kept-local divergences and freshly materialized asides must push back.
         Arc::make_mut(&mut self.dirty).extend(outcome.push_again);
         Arc::make_mut(&mut self.dirty).extend(outcome.conflict_asides);

@@ -17,9 +17,9 @@ use super::engine_test_support::{
     DriverHarness, FakeRemote, TestClock, engine_io, open_engine_store, test_context, test_crypto,
 };
 use super::{
-    Degradation, ENGINE_STATE_DIR, EngineConfig, EngineEvent, EnginePhase, FullScanReason,
-    ManifestEngine, ManifestEntry, ManifestKey, RECOVERY_STATE_DIR, RefObservation, SyncBarrierId,
-    WorkspaceCrypto, WorkspacePath,
+    Degradation, ENGINE_STATE_DIR, EngineConfig, EngineConvergenceBarrierId,
+    EngineEndpointGeneration, EngineEvent, EnginePhase, FullScanReason, ManifestEngine,
+    ManifestEntry, ManifestKey, RECOVERY_STATE_DIR, RefObservation, WorkspaceCrypto, WorkspacePath,
 };
 use crate::workspace::TempWorkspace;
 
@@ -165,21 +165,55 @@ fn remote_wake_is_non_ready_before_and_during_its_pull_cycle() {
 }
 
 #[test]
-fn verified_ref_observation_skips_the_redundant_ref_read() {
-    let mut harness = DriverHarness::new("driver-ref-observation-fast-path", "device-a");
+fn local_publish_cycle_exposes_only_general_cycle_activity() {
+    let mut harness = DriverHarness::new("driver-local-cycle-ownership", "device-a");
     harness.start();
-    harness.write("fast.txt", b"reactive");
-    harness.edit(&["fast.txt"]);
-    let observed = harness.remote.current_ref().expect("published head");
+    harness.write("local.txt", b"local edit");
+    harness.event(EngineEvent::Paths(path_set(&["local.txt"])));
+    harness.clock.advance(1_001);
+
+    assert!(harness.engine.announce_due_work(&harness.clock));
+    let active = harness.engine.snapshot();
+    assert!(active.cycle_active);
+}
+
+#[test]
+fn verified_ref_observation_confirms_and_applies_the_latest_head() {
+    let mut harness = DriverHarness::new("driver-ref-observation-latest-head", "device-a");
+    harness.start();
+    harness.write("base.txt", b"base");
+    harness.edit(&["base.txt"]);
+
+    let crypto = test_crypto();
+    let mut manifest = harness
+        .remote
+        .decoded_manifest(&crypto)
+        .expect("initial head");
+    manifest.entries.insert(
+        WorkspacePath::new("lagging.txt"),
+        harness.remote.publish_blob(&crypto, b"lagging head"),
+    );
+    harness.remote.publish_manifest(&crypto, &manifest);
+    let lagging = harness.remote.current_ref().expect("lagging head");
+    manifest.entries.insert(
+        WorkspacePath::new("latest.txt"),
+        harness.remote.publish_blob(&crypto, b"latest head"),
+    );
+    harness.remote.publish_manifest(&crypto, &manifest);
     let reads_before = harness.remote.read_ref_count();
 
-    harness.event(EngineEvent::RefObserved(observed));
+    harness.event(EngineEvent::RefObserved(lagging));
     harness.run_due();
 
     assert_eq!(
         harness.remote.read_ref_count(),
-        reads_before,
-        "a verified reactive observation is consumed without a duplicate query"
+        reads_before + 1,
+        "the reactive wake confirms the current authoritative head"
+    );
+    assert_eq!(
+        harness.read("latest.txt"),
+        b"latest head",
+        "one pull skips the obsolete observed head and applies the current one"
     );
 }
 
@@ -330,15 +364,18 @@ fn sync_barrier_finds_a_change_before_its_watcher_event_and_acknowledges_exactly
     producer.start();
     producer.write("missed.txt", b"written before watcher delivery");
 
-    let barrier = SyncBarrierId(41);
-    producer.event(EngineEvent::SyncBarrier(barrier));
+    let barrier = EngineConvergenceBarrierId(41);
+    let generation = EngineEndpointGeneration(9);
+    producer.event(EngineEvent::EngineConvergenceBarrier {
+        id: barrier,
+        endpoint_generation: generation,
+    });
     producer.run_due();
 
-    assert_eq!(
-        producer.engine.take_completed_barriers(),
-        BTreeSet::from([barrier]),
-        "the exact barrier completes after its forced scan and ref read"
-    );
+    let receipts = producer.engine.take_completed_barriers();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].barrier_id(), barrier);
+    assert_eq!(receipts[0].endpoint_generation(), generation);
     let mut peer = DriverHarness::new("driver-sync-barrier-peer", "device-b");
     swap_remote(&mut peer, &producer);
     peer.start();
@@ -346,6 +383,35 @@ fn sync_barrier_finds_a_change_before_its_watcher_event_and_acknowledges_exactly
         peer_read(&peer, "missed.txt"),
         b"written before watcher delivery"
     );
+}
+
+#[test]
+fn cancelled_barrier_is_removed_only_from_its_admitting_endpoint_generation() {
+    let mut producer = DriverHarness::new("driver-cancelled-barrier", "device-a");
+    producer.start();
+
+    let barrier = EngineConvergenceBarrierId(42);
+    let generation = EngineEndpointGeneration(9);
+    producer.event(EngineEvent::EngineConvergenceBarrier {
+        id: barrier,
+        endpoint_generation: generation,
+    });
+    producer.event(EngineEvent::CancelEngineConvergenceBarrier {
+        id: barrier,
+        endpoint_generation: EngineEndpointGeneration(10),
+    });
+    assert_eq!(
+        producer.engine.pending_barriers.get(&barrier),
+        Some(&generation)
+    );
+
+    producer.event(EngineEvent::CancelEngineConvergenceBarrier {
+        id: barrier,
+        endpoint_generation: generation,
+    });
+    assert!(!producer.engine.pending_barriers.contains_key(&barrier));
+    producer.run_due();
+    assert!(producer.engine.take_completed_barriers().is_empty());
 }
 
 #[test]

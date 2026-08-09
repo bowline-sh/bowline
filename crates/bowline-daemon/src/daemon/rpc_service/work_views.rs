@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use bowline_core::ids::DeviceId;
+use bowline_core::ids::{DeviceId, WorkspaceId};
 use bowline_core::wire::generated::DaemonRpcErrorCode;
 
 use crate::daemon::rpc_service::{
@@ -149,6 +149,7 @@ fn changes_wire(changes: Vec<WorkViewChange>) -> Vec<WorkChangeWire> {
 /// traits so tests drive the same code against an in-memory remote.
 pub(super) struct WorkViewEngineEnv<'a, O: RemoteObjects, R: RemoteRef> {
     pub(super) crypto: &'a WorkspaceCrypto,
+    pub(super) workspace_id: WorkspaceId,
     pub(super) device_id: DeviceId,
     pub(super) objects: &'a O,
     pub(super) refs: &'a R,
@@ -225,6 +226,7 @@ fn view_engine_dir(state_root: &Path, workspace_root: &Path, view_dir: &Path) ->
 fn view_engine(
     workspace_root: &Path,
     state_root: &Path,
+    workspace_id: &WorkspaceId,
     env_crypto: &WorkspaceCrypto,
     device_id: &DeviceId,
     view_dir: &Path,
@@ -239,6 +241,8 @@ fn view_engine(
         .map_err(WorkViewRpcError::engine)?;
     let capabilities = probe_endpoint_capabilities(view_dir);
     let ctx = EngineContext {
+        process_identity: super::super::sync::engine_process_identity(),
+        workspace_identity: workspace_id.clone(),
         crypto: env_crypto.clone(),
         device_id: device_id.clone(),
         names: capabilities.names,
@@ -310,6 +314,7 @@ fn materialize_existing_view<O: RemoteObjects, R: RemoteRef>(
     let (mut store, view_ctx) = view_engine(
         &env.workspace_root,
         &env.state_root,
+        &env.workspace_id,
         env.crypto,
         &env.device_id,
         view_dir,
@@ -358,6 +363,7 @@ pub(super) fn create_project_view<O: RemoteObjects, R: RemoteRef>(
     let (mut store, ctx) = view_engine(
         &env.workspace_root,
         &env.state_root,
+        &env.workspace_id,
         env.crypto,
         &env.device_id,
         view_dir,
@@ -743,6 +749,7 @@ macro_rules! with_transport_env {
         );
         let $env = WorkViewEngineEnv {
             crypto: &rpc.crypto,
+            workspace_id: rpc.workspace_id.clone(),
             device_id: rpc.device_id.clone(),
             objects: &transport,
             refs: &transport,

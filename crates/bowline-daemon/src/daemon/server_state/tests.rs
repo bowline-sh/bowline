@@ -243,6 +243,35 @@ fn rpc_instance_identity_is_the_sync_claimant_identity() {
 }
 
 #[test]
+fn daemon_metrics_projects_the_versioned_authoritative_recovery_snapshot() {
+    let state_root = crate::daemon::tests::unique_temp_dir("recovery-metrics");
+    let root = state_root.join("Code");
+    fs::create_dir_all(&root).expect("workspace root");
+    let runtime = DaemonRuntime {
+        sync: Some(crate::daemon::tests::watcher_test_runtime(
+            root,
+            state_root.clone(),
+            "ws_recovery_metrics",
+        )),
+        notify_approvals: false,
+        notification_dedupe: Arc::new(Mutex::new(NotificationDedupe::default())),
+        next_notification_poll: Instant::now(),
+        pending_notification_status: None,
+    };
+    let state = DaemonServerState::new(&runtime).expect("daemon state");
+
+    let recovery = state.runtime_metrics()["recovery"].clone();
+    assert_eq!(recovery["documentKind"], "watcher-recovery-snapshot");
+    assert_eq!(recovery["schemaVersion"], 3);
+    assert_eq!(recovery["workspaceId"], "ws_recovery_metrics");
+    assert_eq!(recovery["lifecycle"], "recovering");
+    assert_eq!(recovery["primaryCause"], "startup_reconciliation");
+    assert!(recovery.get("failureCode").is_none());
+
+    let _ = fs::remove_dir_all(state_root);
+}
+
+#[test]
 fn pending_device_trust_adds_canonical_status_and_local_action_affordances() {
     let trust = DeviceApprovalRequestList {
         pending_requests: vec![bowline_control_plane::DeviceRequest {

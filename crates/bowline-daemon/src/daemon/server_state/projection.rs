@@ -14,7 +14,6 @@ use bowline_core::wire::generated::DeviceApprovalAffordance;
 use bowline_local::metadata::DEFAULT_DATABASE_FILE;
 
 use bowline_daemon::manifest_transport::RefObserverReadiness;
-use bowline_daemon::status_projection::EngineStatusCollector;
 use bowline_daemon::status_projection::StatusProjectionService;
 use bowline_daemon::status_projection::{
     DaemonInstanceId, DaemonStatusProjection, ProjectionServiceConfig, SafetyRefreshInterval,
@@ -25,6 +24,10 @@ use bowline_daemon::status_projection::{
     SharedStatusSourceHandle, StatusSourceCollector, StatusSourceFacts, StatusSourceState,
     StatusSourceStateFacts,
 };
+use bowline_daemon::status_projection::{
+    EngineStatusCollector, ObservationAuthority, ObservationAuthoritySource,
+};
+use bowline_daemon::watcher_recovery::RecoveryLifecycle;
 
 use crate::daemon::server_state::CachedDaemonStatus;
 use crate::daemon::sync::{
@@ -316,7 +319,18 @@ pub(super) fn start_projection(
         .as_ref()
         .map(|sync| sync.manifest_snapshot_handle())
     {
-        collectors.push(Box::new(EngineStatusCollector::new(handle)));
+        // Convergence readiness composes engine work with whether the watcher is
+        // still delivering. Without the second half an engine that is being told
+        // nothing looks exactly like an engine with nothing to do.
+        let collector = match runtime.sync.as_ref() {
+            Some(sync) => EngineStatusCollector::new(handle).with_observation_authority(Box::new(
+                RecoveryObservationAuthority {
+                    coordinator: Arc::clone(&sync.recovery_coordinator),
+                },
+            )),
+            None => EngineStatusCollector::new(handle),
+        };
+        collectors.push(Box::new(collector));
     }
     collectors.push(Box::new(sync_collector));
     collectors.push(Box::new(device_collector));
@@ -370,11 +384,12 @@ pub(super) fn runtime_adapter_facts(runtime: &DaemonRuntime) -> RuntimeAdapterFa
         };
     };
     // Remote readiness requires an initial Convex subscription value, not merely
-    // a running driver thread. The watcher kernel is armed while it holds its
-    // notify watch (the engine recovers any lost fidelity with a full stat walk).
+    // a running driver thread. Watcher readiness is owned by the recovery
+    // coordinator: an installed kernel is necessary but cannot hide an open or
+    // blocked recovery incident.
     RuntimeAdapterFacts {
         observer: adapter_source_state(observer_source_state(sync.manifest_observer_readiness())),
-        watcher: adapter_source_state(armed_source_state(sync.watcher.is_armed())),
+        watcher: adapter_source_state(watcher_source_state(sync)),
     }
 }
 
@@ -390,17 +405,21 @@ pub(super) fn observer_source_state(readiness: RefObserverReadiness) -> StatusSo
         // cannot do is trust the device that moved the head. Reported
         // unavailable for the same reason a refused session is: no amount of
         // waiting makes those heads readable.
-        RefObserverReadiness::UntrustedSigner | RefObserverReadiness::Unauthenticated => {
-            StatusSourceState::Unavailable
-        }
+        RefObserverReadiness::Blocked { .. } => StatusSourceState::Unavailable,
     }
 }
 
-fn armed_source_state(armed: bool) -> StatusSourceState {
-    if armed {
-        StatusSourceState::Ready
-    } else {
-        StatusSourceState::Degraded
+fn watcher_source_state(sync: &crate::daemon::ContinuousSyncRuntime) -> StatusSourceState {
+    if !sync.watcher.is_armed() {
+        return StatusSourceState::Degraded;
+    }
+    match sync.recovery_coordinator.snapshot() {
+        Ok(snapshot) => match snapshot.lifecycle() {
+            RecoveryLifecycle::Nominal => StatusSourceState::Ready,
+            RecoveryLifecycle::Recovering => StatusSourceState::Degraded,
+            RecoveryLifecycle::Blocked => StatusSourceState::Unavailable,
+        },
+        Err(_) => StatusSourceState::Unavailable,
     }
 }
 
@@ -492,5 +511,50 @@ pub(super) fn device_trust_status_facts(
         facts,
         items,
         approvals,
+    }
+}
+
+/// Observation authority as the watcher-recovery coordinator sees it.
+///
+/// Only recovery lifecycle is read here, not the callback overflow latch, which
+/// lives inside the bridge thread. That is sound only because the bridge holds
+/// the invariant that a nominal coordinator implies no asserted overflow
+/// request: it reopens recovery when it finds that pairing. If that backstop is
+/// ever removed, a stuck latch would become invisible here again.
+struct RecoveryObservationAuthority {
+    coordinator: Arc<bowline_daemon::watcher_recovery::WatcherRecoveryCoordinator>,
+}
+
+// The coordinator is not Debug and should not become Debug just to satisfy a
+// collector bound, so name the source without leaking its interior.
+impl std::fmt::Debug for RecoveryObservationAuthority {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RecoveryObservationAuthority")
+            .finish_non_exhaustive()
+    }
+}
+
+impl ObservationAuthoritySource for RecoveryObservationAuthority {
+    fn authority(&self) -> ObservationAuthority {
+        match self.coordinator.snapshot() {
+            Ok(snapshot) => ObservationAuthority {
+                recovery_open: snapshot.lifecycle() != RecoveryLifecycle::Nominal,
+                overflow_pending: false,
+            },
+            // An unreadable coordinator is not evidence of authority. Fail closed
+            // so status cannot claim ready on a recovery state nobody can read.
+            Err(_) => ObservationAuthority {
+                recovery_open: true,
+                overflow_pending: false,
+            },
+        }
+    }
+
+    fn revision(&self) -> u64 {
+        self.coordinator
+            .snapshot()
+            .map(|snapshot| snapshot.snapshot_revision().get())
+            .unwrap_or_default()
     }
 }

@@ -26,7 +26,8 @@ pub use device_proofs::{
     recovery_envelope_payload_proof_subject_parts, recovery_envelope_proof_subject,
 };
 pub use errors::{
-    CompareAndSwapError, ControlPlaneError, RejectionCode, Retryability, WireContractFailure,
+    CompareAndSwapError, ControlPlaneError, DependencyFailureClass, RejectionCode, Retryability,
+    WireContractFailure,
 };
 pub use fake::FakeControlPlaneClient;
 pub use gc::{

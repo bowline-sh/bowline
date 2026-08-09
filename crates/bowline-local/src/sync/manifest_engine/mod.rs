@@ -34,6 +34,8 @@ pub(crate) mod work_view_lock;
 pub mod workspace_root;
 
 mod cycle_outcome;
+mod dirty_set;
+use dirty_set::{DirtySeq, PUBLISH_BATCH_MAX};
 mod entry_record;
 mod events;
 mod publish_cycle;
@@ -42,6 +44,8 @@ mod remote;
 mod scan_cycle;
 mod state;
 
+#[cfg(feature = "test-support")]
+pub mod empty_genesis;
 #[cfg(test)]
 mod engine_test_remotes;
 #[cfg(test)]
@@ -66,6 +70,8 @@ mod scale_fixture;
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+#[cfg(test)]
+mod upload_durability_tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -82,7 +88,10 @@ pub use endpoint::{
     probe_name_folding, probe_timestamp_granularity, refresh_endpoint_capabilities,
     sample_endpoint_clock,
 };
-pub use events::{DeletionConfirmation, EngineEvent, FullScanReason, SyncBarrierId};
+pub use events::{
+    DeletionConfirmation, EngineConvergenceBarrierId, EngineEndpointGeneration, EngineEvent,
+    FullScanReason,
+};
 pub use fs_guard::{
     ObserveOutcome, Observed, ParentChain, ParentChainMode, observe_classified,
     prepare_parent_chain, read_file_bounded,
@@ -111,18 +120,23 @@ pub use push::{
 };
 use ref_observation::LocalObservation;
 pub use remote::{
-    BlobReaderUpload, BlobUpload, CasOutcome, ManifestUpload, RefObservation, RefVersionLookup,
-    RemoteObjects, RemoteRef, TransportError,
+    BlobPrefetchRequest, BlobReaderUpload, BlobUpload, CasOutcome, ManifestBatchUpload,
+    ManifestUpload, PrefetchedBlobs, RefObservation, RefVersionLookup, RemoteObjects, RemoteRef,
+    TransportError, TransportFailureClass,
 };
+pub use scan_cycle::{AuthoritativeScanError, AuthoritativeScanReceipt, AuthoritativeScanRevision};
 pub use stat_walk::{
     StatWalk, project_view_verification_paths, stat_walk, stat_walk_project_view,
     stat_walk_subtrees,
 };
 use state::StateSig;
-pub use state::{Degradation, EnginePhase, EngineSnapshot};
+pub use state::{
+    Degradation, EngineConvergenceReceipt, EnginePhase, EngineProcessIdentity, EngineRef,
+    EngineSnapshot,
+};
 pub use store::{
     AncestorCommit, EngineState, FileRecord, Intent, IntentOperationKind, ManifestStore,
-    ManifestStoreError, StatFingerprint,
+    ManifestStoreError, MaterializationRevision, StatFingerprint,
 };
 pub use tree_transport::{
     FetchTreeRequest, FetchedTree, PruneBasis, PublishTreeRequest, StoreNodeLedger, TreeError,
@@ -234,6 +248,14 @@ pub struct ManifestEngine {
     counters: Arc<EngineCounters>,
 
     dirty: Arc<BTreeSet<WorkspacePath>>,
+    /// When each dirty path was last observed. A publish that cannot carry the
+    /// whole set sends the newest and oldest halves, so a fresh edit is never
+    /// stuck behind a backlog and a backlog never starves.
+    dirty_seen: BTreeMap<WorkspacePath, DirtySeq>,
+    next_dirty_seq: DirtySeq,
+    /// What the in-flight publish carried, so the remainder can be retained
+    /// without being counted as churn.
+    published_batch: BTreeSet<WorkspacePath>,
     dirty_subtrees: Arc<BTreeSet<WorkspacePath>>,
     scan_required: bool,
     pull_needed: bool,
@@ -264,7 +286,8 @@ pub struct ManifestEngine {
     // `EngineSnapshot.observed_ref` it feeds, so this internal init is not
     // mistaken for the old convergence engine's single `observed_ref` authority.
     head_ref: Option<RefObservation>,
-    applied_manifest: Option<ManifestKey>,
+    applied_ref: EngineRef,
+    materialization_revision: MaterializationRevision,
     pending_intents: usize,
     pending_intent_paths: Arc<BTreeSet<WorkspacePath>>,
     last_success_at: Option<u64>,
@@ -274,8 +297,8 @@ pub struct ManifestEngine {
     /// `block_mass_deletion` and cleared only by `set_degradation`.
     pub(super) refused_removals: Arc<BTreeSet<WorkspacePath>>,
     last_sig: Option<StateSig>,
-    pending_barriers: BTreeSet<SyncBarrierId>,
-    completed_barriers: BTreeSet<SyncBarrierId>,
+    pending_barriers: BTreeMap<EngineConvergenceBarrierId, EngineEndpointGeneration>,
+    completed_barriers: BTreeMap<EngineConvergenceBarrierId, EngineConvergenceReceipt>,
 }
 
 impl ManifestEngine {
@@ -288,6 +311,9 @@ impl ManifestEngine {
             ctx,
             counters,
             dirty: Arc::new(BTreeSet::new()),
+            dirty_seen: BTreeMap::new(),
+            next_dirty_seq: DirtySeq::INITIAL,
+            published_batch: BTreeSet::new(),
             dirty_subtrees: Arc::new(BTreeSet::new()),
             scan_required: false,
             pull_needed: false,
@@ -308,7 +334,8 @@ impl ManifestEngine {
             revision: 0,
             phase: EnginePhase::Starting,
             head_ref: None,
-            applied_manifest: None,
+            applied_ref: EngineRef::Genesis,
+            materialization_revision: MaterializationRevision::INITIAL,
             pending_intents: 0,
             pending_intent_paths: Arc::new(BTreeSet::new()),
             last_success_at: None,
@@ -316,8 +343,8 @@ impl ManifestEngine {
             unsyncable: Arc::new(BTreeMap::new()),
             refused_removals: Arc::new(BTreeSet::new()),
             last_sig: None,
-            pending_barriers: BTreeSet::new(),
-            completed_barriers: BTreeSet::new(),
+            pending_barriers: BTreeMap::new(),
+            completed_barriers: BTreeMap::new(),
         }
     }
 
@@ -327,7 +354,8 @@ impl ManifestEngine {
             revision: self.revision,
             phase: self.phase,
             observed_ref: self.head_ref.clone(),
-            applied_manifest: self.applied_manifest.clone(),
+            applied_ref: self.applied_ref.clone(),
+            materialization_revision: self.materialization_revision,
             pending_intents: self.pending_intents,
             dirty: self.dirty.len().saturating_add(self.dirty_subtrees.len()),
             dirty_paths: Arc::clone(&self.dirty),
@@ -379,8 +407,10 @@ impl ManifestEngine {
     /// Drain barriers completed by the most recent successful convergence
     /// cycle. The daemon driver uses these acknowledgements to wake exact RPC
     /// waiters; they are deliberately not part of public status state.
-    pub fn take_completed_barriers(&mut self) -> BTreeSet<SyncBarrierId> {
+    pub fn take_completed_barriers(&mut self) -> Vec<EngineConvergenceReceipt> {
         std::mem::take(&mut self.completed_barriers)
+            .into_values()
+            .collect()
     }
 
     /// The next scheduled wakeup as a timeout from `now`, or `None` when the
@@ -534,16 +564,36 @@ impl ManifestEngine {
                 self.debounce_deadline = Some(now);
                 self.preempt_backoff();
             }
-            EngineEvent::SyncBarrier(id) => {
+            EngineEvent::EngineConvergenceBarrier {
+                id,
+                endpoint_generation,
+            } => {
                 self.pending_ref_hint = None;
                 self.force_ref_read = true;
-                self.pending_barriers.insert(id);
+                self.pending_barriers.insert(id, endpoint_generation);
                 self.scan_required = true;
                 self.pull_needed = true;
                 self.unattributed_pull_pending = true;
-                self.set_degradation(Degradation::FullScanRequired(FullScanReason::SyncBarrier));
+                self.set_degradation(Degradation::FullScanRequired(
+                    FullScanReason::EngineConvergenceBarrier,
+                ));
                 self.debounce_deadline = Some(now);
                 self.preempt_backoff();
+            }
+            EngineEvent::CancelEngineConvergenceBarrier {
+                id,
+                endpoint_generation,
+            } => {
+                if self.pending_barriers.get(&id) == Some(&endpoint_generation) {
+                    self.pending_barriers.remove(&id);
+                }
+                if self
+                    .completed_barriers
+                    .get(&id)
+                    .is_some_and(|receipt| receipt.endpoint_generation() == endpoint_generation)
+                {
+                    self.completed_barriers.remove(&id);
+                }
             }
             EngineEvent::ConfirmMassDeletion => {
                 // `confirm_mass_deletion` owns the whole transition (arm, clear,
@@ -662,9 +712,6 @@ impl ManifestEngine {
                 } else {
                     EnginePhase::Syncing
                 };
-                if self.phase == EnginePhase::Idle {
-                    self.completed_barriers.append(&mut self.pending_barriers);
-                }
             }
             Err(error) => {
                 if let Err(fatal) = self.absorb_cycle_error(error, now) {
@@ -674,6 +721,19 @@ impl ManifestEngine {
             }
         }
         self.refresh_and_bump(io);
+        let snapshot = self.snapshot();
+        if snapshot.is_exactly_converged() {
+            for (id, endpoint_generation) in std::mem::take(&mut self.pending_barriers) {
+                if let Some(receipt) = snapshot.convergence_receipt(
+                    self.ctx.process_identity.clone(),
+                    self.ctx.workspace_identity.clone(),
+                    endpoint_generation,
+                    id,
+                ) {
+                    self.completed_barriers.insert(id, receipt);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -778,7 +838,7 @@ impl ManifestEngine {
         self.guard_root()?;
         let mut observation = LocalObservation::Reactive;
         if self.scan_required {
-            self.full_scan(io)?;
+            self.full_scan()?;
             self.scan_required = false;
             Arc::make_mut(&mut self.dirty_subtrees).clear();
             observation = LocalObservation::FreshlyWalked;
@@ -817,15 +877,17 @@ impl ManifestEngine {
     /// Put watcher- and walk-reported paths into the spelling the engine's own
     /// path space uses, so a macOS NFD event and the NFC entry a peer published
     /// name one dirty path rather than two (see [`endpoint::NameFolding`]).
-    pub(super) fn absorb_dirty(&mut self, paths: BTreeSet<WorkspacePath>) {
-        let folded = self.canonical_paths(paths);
-        Arc::make_mut(&mut self.dirty).extend(folded);
-    }
-
-    fn canonical_paths(&self, paths: BTreeSet<WorkspacePath>) -> BTreeSet<WorkspacePath> {
-        paths
-            .into_iter()
-            .map(|path| self.ctx.names.canonical_spelling(&path))
-            .collect()
+    /// Arm the next cycle for the publish window a recovery attempt just
+    /// released.
+    ///
+    /// Paths absorbed from an authoritative scan never arm a deadline, so the
+    /// window between two recovery attempts would otherwise find nothing due
+    /// and publish nothing, leaving the release pointless.
+    pub fn schedule_recovered_work<C: Clock>(&mut self, clock: &C) {
+        if self.dirty.is_empty() {
+            return;
+        }
+        self.debounce_deadline = Some(clock.now_millis());
+        self.bump_revision_if_changed();
     }
 }

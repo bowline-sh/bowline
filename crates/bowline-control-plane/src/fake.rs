@@ -94,6 +94,8 @@ struct FakeControlPlaneState {
     device_public_key_proofs: BTreeMap<(WorkspaceId, DeviceId), String>,
     device_held_key_epochs: BTreeMap<(WorkspaceId, DeviceId), u32>,
     upload_intent_requests: Vec<UploadIntentRequest>,
+    upload_reservation_batch_sizes: Vec<usize>,
+    metadata_commit_batch_sizes: Vec<usize>,
     upload_reservations: BTreeMap<(WorkspaceId, String), UploadReservation>,
     upload_idempotency_keys: BTreeMap<String, String>,
     committed_object_keys: BTreeSet<(WorkspaceId, String)>,
@@ -157,6 +159,22 @@ impl FakeControlPlaneClient {
             .expect("fake control plane poisoned")
             .upload_intent_requests
             .len()
+    }
+
+    pub fn upload_reservation_batch_sizes(&self) -> Vec<usize> {
+        self.state
+            .lock()
+            .expect("fake control plane poisoned")
+            .upload_reservation_batch_sizes
+            .clone()
+    }
+
+    pub fn metadata_commit_batch_sizes(&self) -> Vec<usize> {
+        self.state
+            .lock()
+            .expect("fake control plane poisoned")
+            .metadata_commit_batch_sizes
+            .clone()
     }
 
     pub fn set_signed_url_override(&self, action: &str, url: String) {

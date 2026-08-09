@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Write;
 use std::path::Path;
@@ -28,11 +29,67 @@ pub struct ManifestUpload<'a> {
     pub sealed: &'a [u8],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestBatchUpload {
+    pub key: ManifestKey,
+    pub content_id: ContentId,
+    pub key_epoch: KeyEpoch,
+    pub sealed: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BlobPrefetchRequest {
+    pub key: BlobKey,
+    pub byte_len: u64,
+}
+
+pub type PrefetchedBlobs = BTreeMap<BlobKey, Vec<u8>>;
+
 pub trait RemoteObjects {
     fn put_blob(&self, upload: BlobUpload<'_>) -> Result<(), TransportError>;
     fn put_blob_reader(&self, upload: BlobReaderUpload<'_>) -> Result<(), TransportError>;
     fn put_manifest(&self, upload: ManifestUpload<'_>) -> Result<(), TransportError>;
+
+    /// Block until every blob accepted by `put_blob` is durably stored.
+    ///
+    /// A transport may queue uploads and drain them in parallel, in which case
+    /// `put_blob` returning `Ok` means accepted, not stored. The engine records
+    /// sealed blobs in a durable ledger whose whole contract is that each row
+    /// names a completed PUT -- a later push consults it and skips re-uploading.
+    /// Recording before the bytes exist would let a drain failure strand them:
+    /// the rows survive, the retry skips the upload, and the manifest published
+    /// afterwards names a blob no peer can ever fetch. Content is
+    /// end-to-end encrypted, so no server-side check can catch that; this
+    /// ordering is the entire guarantee.
+    ///
+    /// The default is exact for transports that store synchronously.
+    fn ensure_uploads_settled(&self) -> Result<(), TransportError> {
+        Ok(())
+    }
+    fn put_manifests(&self, uploads: &[ManifestBatchUpload]) -> Result<(), TransportError> {
+        for upload in uploads {
+            self.put_manifest(ManifestUpload {
+                key: &upload.key,
+                content_id: &upload.content_id,
+                key_epoch: upload.key_epoch,
+                sealed: &upload.sealed,
+            })?;
+        }
+        Ok(())
+    }
     fn get_blob(&self, key: &BlobKey) -> Result<Vec<u8>, TransportError>;
+    fn prefetch_blobs(
+        &self,
+        requests: &[BlobPrefetchRequest],
+    ) -> Result<PrefetchedBlobs, TransportError> {
+        let mut blobs = BTreeMap::new();
+        for request in requests {
+            if !blobs.contains_key(&request.key) {
+                blobs.insert(request.key.clone(), self.get_blob(&request.key)?);
+            }
+        }
+        Ok(blobs)
+    }
     fn get_blob_to_writer(
         &self,
         key: &BlobKey,
@@ -92,6 +149,7 @@ pub trait RemoteRef {
 pub struct TransportError {
     pub operation: &'static str,
     pub detail: String,
+    class: TransportFailureClass,
 }
 
 impl TransportError {
@@ -99,8 +157,27 @@ impl TransportError {
         Self {
             operation,
             detail: detail.into(),
+            class: TransportFailureClass::Retryable,
         }
     }
+
+    pub fn integrity(operation: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            operation,
+            detail: detail.into(),
+            class: TransportFailureClass::Integrity,
+        }
+    }
+
+    pub const fn failure_class(&self) -> TransportFailureClass {
+        self.class
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportFailureClass {
+    Retryable,
+    Integrity,
 }
 
 impl fmt::Display for TransportError {

@@ -3,6 +3,7 @@ use super::*;
 use std::time::{Duration, Instant};
 
 use bowline_core::introspection::WorkspaceReadiness;
+use bowline_core::wire::generated::DaemonSyncBarrierResult;
 use bowline_daemon_rpc::RetryDisposition;
 use serde::Serialize;
 
@@ -171,9 +172,9 @@ impl BarrierError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum WaitOutcome {
-    Reached,
+    Reached(Option<Box<DaemonSyncBarrierResult>>),
     /// The budget was spent without reaching the requested rung. The retained
     /// cause names what the wait was still waiting on; `None` means a live
     /// engine simply never converged.
@@ -206,6 +207,8 @@ struct SyncWaitOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     convergence_revision: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_exact_barrier: Option<DaemonSyncBarrierResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<SyncWaitError>,
 }
 
@@ -227,7 +230,7 @@ pub(super) fn print_sync_wait(args: SyncWaitArgs, json: bool, socket: &Path) -> 
 
 fn await_ready(
     deadline: Instant,
-    mut barrier: impl FnMut(Duration) -> Result<u64, DaemonRpcError>,
+    mut barrier: impl FnMut(Duration) -> Result<DaemonSyncBarrierResult, DaemonRpcError>,
     mut timeout_observation: impl FnMut() -> ReadinessObservation,
     mut sleep: impl FnMut(Duration),
 ) -> (ReadinessObservation, WaitOutcome) {
@@ -238,13 +241,13 @@ fn await_ready(
             return (timeout_observation(), timed_out_outcome(last_error));
         }
         match barrier(remaining) {
-            Ok(revision) => {
+            Ok(receipt) => {
                 return (
                     ReadinessObservation {
                         state: WorkspaceReadiness::Ready,
-                        convergence_revision: Some(revision),
+                        convergence_revision: Some(receipt.engine_convergence.engine_revision),
                     },
-                    WaitOutcome::Reached,
+                    WaitOutcome::Reached(Some(Box::new(receipt))),
                 );
             }
             Err(error) => {
@@ -287,7 +290,7 @@ fn wait_for_authentication_state(
                 args,
                 observed,
                 started.elapsed(),
-                WaitOutcome::Reached,
+                WaitOutcome::Reached(None),
                 json,
             );
         }
@@ -359,7 +362,7 @@ fn sync_wait_output(
     outcome: WaitOutcome,
 ) -> SyncWaitOutput {
     let error = match &outcome {
-        WaitOutcome::Reached => None,
+        WaitOutcome::Reached(_) => None,
         WaitOutcome::TimedOut(cause) => Some(timeout_error(args, observed, cause.as_ref())),
         WaitOutcome::Failed(failed) => Some(SyncWaitError {
             code: failed.failure.code(),
@@ -370,19 +373,24 @@ fn sync_wait_output(
             next_action: failed.failure.next_action(),
         }),
     };
+    let workspace_exact_barrier = match &outcome {
+        WaitOutcome::Reached(receipt) => receipt.as_deref().cloned(),
+        WaitOutcome::TimedOut(_) | WaitOutcome::Failed(_) => None,
+    };
     SyncWaitOutput {
         contract_version: CONTRACT_VERSION,
         generated_at: generated_at(),
         workspace_id: args.workspace_id.clone(),
         requested_state: args.target_state,
         observed_state: observed.state,
-        reached: outcome == WaitOutcome::Reached,
+        reached: matches!(outcome, WaitOutcome::Reached(_)),
         // `timedOut` means exactly one thing: the budget ran out before the
         // requested rung was reached. A wait that returns early because the
         // daemon refused the call is not a timeout and must never claim to be.
         timed_out: matches!(outcome, WaitOutcome::TimedOut(_)),
         waited_ms: waited.as_millis().min(u128::from(u64::MAX)) as u64,
         convergence_revision: observed.convergence_revision,
+        workspace_exact_barrier,
         error,
     }
 }
@@ -511,12 +519,113 @@ mod tests {
         }
     }
 
+    fn exact_barrier_result(convergence_revision: u64) -> DaemonSyncBarrierResult {
+        let process = serde_json::json!({
+            "bootId": "process-boot:11",
+            "sessionId": "process-session:17",
+            "startedAt": "2026-08-03T00:00:00Z"
+        });
+        let source = serde_json::json!({
+            "processIdentity": process,
+            "workspaceIdentity": "ws_code_test"
+        });
+        let reference = serde_json::json!({
+            "version": 42,
+            "manifestKey": format!("m_{}", "a".repeat(64))
+        });
+        let engine = serde_json::json!({
+            "source": source,
+            "barrierId": "barrier:29",
+            "endpointGeneration": 23,
+            "engineRevision": convergence_revision,
+            "materializationRevision": 11,
+            "admittedAt": "2026-08-03T00:00:01Z",
+            "completedAt": "2026-08-03T00:00:02Z",
+            "observedRef": reference,
+            "appliedRef": reference
+        });
+        let observer = serde_json::json!({
+            "source": source,
+            "admission": {
+                "state": "live",
+                "endpointGeneration": 23,
+                "lifecycleRevision": 31,
+                "observedAt": "2026-08-03T00:00:01Z",
+                "observedRef": reference
+            },
+            "completion": {
+                "state": "live",
+                "endpointGeneration": 23,
+                "lifecycleRevision": 31,
+                "observedAt": "2026-08-03T00:00:02Z",
+                "observedRef": reference
+            }
+        });
+        serde_json::from_value(serde_json::json!({
+            "barrierId": "workspace-barrier:29",
+            "processIdentity": process,
+            "workspaceIdentity": "ws_code_test",
+            "engineConvergence": engine,
+            "observer": observer,
+            "coordinatorNominalFrontier": {
+                "lifecycle": "nominal",
+                "recoverySnapshotRevision": 19,
+                "closingRecoveryRevision": 19,
+                "activityWatermark": 91
+            },
+            "recoveryClosure": {
+                "processIdentity": process,
+                "incidentId": "incident:3",
+                "closingAttemptId": "attempt:4",
+                "attemptCount": 4,
+                "scanCount": 4,
+                "capturedActivityWatermark": 91,
+                "finalActivityWatermark": 91,
+                "authoritativeScanRevision": 12,
+                "nativeBoundary": {
+                    "kind": "inotify-live-drain",
+                    "boundaryId": 7,
+                    "streamEpoch": 2,
+                    "watcherReadyControlId": 7,
+                    "callbackDrainControlId": 7
+                },
+                "closingRecoveryRevision": 19,
+                "closedAt": "2026-08-03T00:00:02Z"
+            },
+            "workspaceStatus": {
+                "state": "ready",
+                "observedAt": "2026-08-03T00:00:02Z"
+            },
+            "linearizedAt": "2026-08-03T00:00:02Z"
+        }))
+        .expect("the exact barrier fixture must satisfy the generated wire contract")
+    }
+
+    #[test]
+    fn successful_ready_wait_preserves_the_exact_barrier_receipt() {
+        let receipt = exact_barrier_result(42);
+        let (observed, outcome) = await_ready(
+            Instant::now() + Duration::from_secs(1),
+            |_| Ok(receipt.clone()),
+            pending_observation,
+            |_| {},
+        );
+
+        let output = sync_wait_output(
+            &wait_args(Duration::from_secs(1)),
+            observed,
+            Duration::from_millis(20),
+            outcome,
+        );
+        assert_eq!(output.workspace_exact_barrier, Some(receipt));
+    }
+
     #[test]
     fn successful_ready_barrier_does_not_repeat_authentication_observation() {
         let mut observations = 0;
         let (observed, outcome) = await_ready(
             Instant::now() + Duration::from_secs(1),
-            |_| Ok(42),
+            |_| Ok(exact_barrier_result(42)),
             || {
                 observations += 1;
                 pending_observation()
@@ -524,7 +633,7 @@ mod tests {
             |_| {},
         );
 
-        assert_eq!(outcome, WaitOutcome::Reached);
+        assert!(matches!(outcome, WaitOutcome::Reached(Some(_))));
         assert_eq!(observations, 0);
         assert_eq!(observed.state, WorkspaceReadiness::Ready);
         assert_eq!(observed.convergence_revision, Some(42));
@@ -541,7 +650,7 @@ mod tests {
                 if attempts == 1 {
                     Err(transport_error(io::ErrorKind::NotFound))
                 } else {
-                    Ok(7)
+                    Ok(exact_barrier_result(7))
                 }
             },
             || {
@@ -551,7 +660,7 @@ mod tests {
             |_| {},
         );
 
-        assert_eq!(outcome, WaitOutcome::Reached);
+        assert!(matches!(outcome, WaitOutcome::Reached(Some(_))));
         assert_eq!(attempts, 2);
         assert_eq!(observations, 0);
         assert_eq!(observed.convergence_revision, Some(7));
@@ -575,14 +684,14 @@ mod tests {
                         "manifest sync engine is unavailable",
                     ))
                 } else {
-                    Ok(19)
+                    Ok(exact_barrier_result(19))
                 }
             },
             || panic!("a wait that can still converge must not fall back to trust polling"),
             |interval| slept += interval,
         );
 
-        assert_eq!(outcome, WaitOutcome::Reached);
+        assert!(matches!(outcome, WaitOutcome::Reached(Some(_))));
         assert_eq!(attempts, 4);
         assert_eq!(observed.state, WorkspaceReadiness::Ready);
         assert_eq!(observed.convergence_revision, Some(19));

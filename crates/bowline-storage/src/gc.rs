@@ -130,6 +130,7 @@ fn failure_kind(error: &ByteStoreError) -> StorageGcFailureKind {
         | ByteStoreError::ObjectAlreadyExists(_)
         | ByteStoreError::MissingObject { .. }
         | ByteStoreError::CorruptObject { .. }
+        | ByteStoreError::IntegrityViolation { .. }
         | ByteStoreError::CorruptJournal { .. }
         | ByteStoreError::RangeOutOfBounds { .. } => StorageGcFailureKind::Corrupt,
     }

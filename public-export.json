@@ -18,6 +18,7 @@
     "crates/bowline-daemon",
     "crates/bowline-daemon-rpc",
     "crates/bowline-local",
+    "crates/bowline-release-durability",
     "crates/bowline-storage",
     "docs/architecture/oss-composition-and-build-boundaries.md",
     "docs/architecture/trust-contract.md",

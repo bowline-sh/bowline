@@ -12,7 +12,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm --filter @bowline/contracts exec tsc --build tsconfig.json --force && vitest run convex-tests",
+    "test": "vitest run convex-tests",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

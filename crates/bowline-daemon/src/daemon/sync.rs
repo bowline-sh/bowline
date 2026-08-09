@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use bowline_core::ids::{DeviceId, WorkspaceId};
@@ -11,6 +11,11 @@ use time::OffsetDateTime;
 
 use bowline_daemon::manifest_transport::{
     ReconnectAttempt, RefObserverFailureStage, RefObserverReadiness,
+};
+use bowline_daemon::watcher_recovery::{
+    BackoffPolicy, RecoveryInstant, RecoveryMoment, RecoveryProcessBootId, RecoveryProcessIdentity,
+    RecoveryProcessSessionId, RecoverySourceIdentity, RecoveryTimestamp,
+    WatcherRecoveryCoordinator,
 };
 
 use crate::daemon::{
@@ -26,6 +31,77 @@ mod policy_cache;
 mod status_publish;
 mod watcher_host;
 mod workspace_key;
+
+static RECOVERY_PROCESS_IDENTITY: OnceLock<RecoveryProcessIdentity> = OnceLock::new();
+
+/// Process-local conversion from callback-safe monotonic time into the typed
+/// recovery clock domain. The callback never waits or performs filesystem or
+/// network I/O; wall time is retained only for diagnostic receipts.
+#[derive(Debug)]
+pub(in crate::daemon) struct RecoveryClock {
+    monotonic_origin: Instant,
+}
+
+impl RecoveryClock {
+    pub(in crate::daemon) fn new() -> Self {
+        Self {
+            monotonic_origin: Instant::now(),
+        }
+    }
+
+    pub(in crate::daemon) fn now(&self) -> RecoveryMoment {
+        let elapsed_ms =
+            u64::try_from(self.monotonic_origin.elapsed().as_millis()).unwrap_or(u64::MAX);
+        RecoveryMoment::new(
+            RecoveryTimestamp::from_datetime(OffsetDateTime::now_utc()),
+            RecoveryInstant::from_millis(elapsed_ms),
+        )
+    }
+}
+
+pub(super) fn recovery_process_identity() -> RecoveryProcessIdentity {
+    RECOVERY_PROCESS_IDENTITY
+        .get_or_init(|| {
+            let started_at = RecoveryTimestamp::from_datetime(OffsetDateTime::now_utc());
+            let process_nonce = format!(
+                "{}:{}",
+                std::process::id(),
+                OffsetDateTime::now_utc().unix_timestamp_nanos()
+            );
+            let identifier = |domain: &str| {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(domain.as_bytes());
+                hasher.update(&[0]);
+                hasher.update(process_nonce.as_bytes());
+                let bytes = hasher.finalize();
+                let mut prefix = [0_u8; 8];
+                prefix.copy_from_slice(&bytes.as_bytes()[..8]);
+                u64::from_be_bytes(prefix).max(1)
+            };
+            RecoveryProcessIdentity::new(
+                RecoveryProcessBootId::new(identifier("bowline.recovery.process-boot.v1"))
+                    .expect("hashed process boot identity is nonzero"),
+                RecoveryProcessSessionId::new(identifier("bowline.recovery.process-session.v1"))
+                    .expect("hashed process session identity is nonzero"),
+                started_at,
+            )
+        })
+        .clone()
+}
+
+pub(in crate::daemon) fn engine_process_identity()
+-> bowline_local::sync::manifest_engine::EngineProcessIdentity {
+    let identity = recovery_process_identity();
+    let started_at = identity
+        .started_at()
+        .to_rfc3339()
+        .expect("a recovery process timestamp always formats as RFC 3339");
+    bowline_local::sync::manifest_engine::EngineProcessIdentity::from_parts(
+        identity.boot_id().to_string(),
+        identity.session_id().to_string(),
+        started_at,
+    )
+}
 
 pub(in crate::daemon) use policy_cache::{drain_policy, invalidate_policy_cache_for_path};
 pub(in crate::daemon) use watcher_host::WatcherHost;
@@ -76,6 +152,11 @@ pub(super) struct StatusPublishCompletion {
 /// kernel feeding it, and the hosted status publisher.
 pub(super) struct ContinuousSyncRuntime {
     pub(super) args: SyncArgs,
+    /// The single recovery authority for this workspace process. It lives above
+    /// watcher, driver, and observer tasks so reconstructing any of them retains
+    /// the same incident and attempt history.
+    pub(super) recovery_coordinator: Arc<WatcherRecoveryCoordinator>,
+    pub(super) recovery_clock: Arc<RecoveryClock>,
     /// The filesystem watcher kernel. A watcher that fails to arm is a
     /// degradation with a retry deadline, never a silent absence — nothing else
     /// in the engine detects local edits.
@@ -177,6 +258,12 @@ pub(in crate::daemon) fn remote_observer_reconnect_delay(attempt: ReconnectAttem
         // Still learning: the next attempt is expected to succeed as soon as the
         // trust read behind it lands, so this keeps the transport schedule.
         | RefObserverFailureStage::UnknownSigner(_) => REMOTE_OBSERVER_RECONNECT_MAX,
+        // These stages transition the observer to Blocked and never invoke the
+        // reconnect schedule. Keep the callback total for defensive callers;
+        // the duration cannot authorize a retry.
+        RefObserverFailureStage::Authorization
+        | RefObserverFailureStage::Integrity
+        | RefObserverFailureStage::FatalContract => REMOTE_OBSERVER_RECONNECT_MAX,
     };
     let exponent = attempt
         .consecutive_failures
@@ -195,14 +282,12 @@ impl DaemonRuntime {
             .is_some_and(|sync| sync.retry_manifest_engine(now))
     }
 
-    /// A sender for feeding watcher-derived engine events, or `None` when no
-    /// manifest driver is running.
-    pub(super) fn manifest_event_sender(
+    pub(super) fn manifest_watcher_ingress(
         &self,
-    ) -> Option<std::sync::mpsc::Sender<bowline_local::sync::manifest_engine::EngineEvent>> {
+    ) -> Option<bowline_daemon::manifest_driver::WatcherIngressHandle> {
         self.sync
             .as_ref()
-            .and_then(ContinuousSyncRuntime::manifest_event_sender)
+            .and_then(ContinuousSyncRuntime::manifest_watcher_ingress)
     }
 
     pub(super) fn prepare_projection_status(
@@ -304,11 +389,22 @@ impl ContinuousSyncRuntime {
             std::process::id(),
             OffsetDateTime::now_utc().unix_timestamp_nanos()
         );
+        let recovery_clock = Arc::new(RecoveryClock::new());
+        let recovery_coordinator = Arc::new(WatcherRecoveryCoordinator::startup_reconciliation(
+            RecoverySourceIdentity::new(recovery_process_identity(), args.workspace_id.clone()),
+            recovery_clock.now(),
+            BackoffPolicy::standard(),
+        ));
         let now = Instant::now();
         let mut watcher = WatcherHost::unarmed(now);
         // A failure here logs and schedules a retry; it never leaves the daemon
         // silently blind. The scheduler re-arms on every engine drive.
-        watcher.ensure_armed(&args.root, now);
+        watcher.ensure_armed(
+            &args.root,
+            now,
+            Arc::clone(&recovery_coordinator),
+            Arc::clone(&recovery_clock),
+        );
         let hosted_context = Arc::new(HostedContextCache::new());
         let hosted_resolver = hosted_context_resolver(hosted_context);
         let manifest_snapshot = bowline_daemon::manifest_driver::shared_engine_snapshot();
@@ -320,6 +416,8 @@ impl ContinuousSyncRuntime {
         Self {
             claimant_id,
             args,
+            recovery_coordinator,
+            recovery_clock,
             watcher,
             status_publisher: hosted_status_publisher_with_context(hosted_resolver.clone()),
             next_status_publish: Instant::now(),
@@ -402,9 +500,9 @@ impl ContinuousSyncRuntime {
             && driver.has_finished_required_worker()
         {
             eprintln!("bowline-daemon manifest sync worker exited unexpectedly; rebuilding");
-            self.manifest_snapshot
-                .0
-                .publish(bowline_daemon::manifest_driver::host_status_snapshot());
+            self.manifest_snapshot.0.take_over_with_host_status(
+                bowline_daemon::manifest_driver::host_status_snapshot(),
+            );
             self.manifest_engine = ManifestEngineHost::PendingRebuild {
                 next_attempt: now,
                 backoff: None,
@@ -443,7 +541,12 @@ impl ContinuousSyncRuntime {
     /// Arm the watcher kernel if it is down and its backoff has elapsed. Returns
     /// `true` when signals are available for a bridge to consume.
     pub(super) fn ensure_watcher_armed(&mut self, now: Instant) -> bool {
-        self.watcher.ensure_armed(&self.args.root, now)
+        self.watcher.ensure_armed(
+            &self.args.root,
+            now,
+            Arc::clone(&self.recovery_coordinator),
+            Arc::clone(&self.recovery_clock),
+        )
     }
 
     /// The earliest instant at which any degraded part of this runtime wants to
@@ -481,11 +584,21 @@ impl ContinuousSyncRuntime {
 
     /// A sender for feeding watcher-derived engine events, or `None` when no driver
     /// is running.
+    #[cfg(test)]
     pub(super) fn manifest_event_sender(
         &self,
-    ) -> Option<std::sync::mpsc::Sender<bowline_local::sync::manifest_engine::EngineEvent>> {
+    ) -> Option<crossbeam_channel::Sender<bowline_local::sync::manifest_engine::EngineEvent>> {
         match &self.manifest_engine {
             ManifestEngineHost::Active(driver) => Some(driver.event_sender()),
+            ManifestEngineHost::PendingRebuild { .. } => None,
+        }
+    }
+
+    pub(super) fn manifest_watcher_ingress(
+        &self,
+    ) -> Option<bowline_daemon::manifest_driver::WatcherIngressHandle> {
+        match &self.manifest_engine {
+            ManifestEngineHost::Active(driver) => Some(driver.watcher_ingress()),
             ManifestEngineHost::PendingRebuild { .. } => None,
         }
     }
@@ -559,6 +672,8 @@ fn build_manifest_driver(
     };
     let capabilities = probe_endpoint_capabilities(&endpoint_probe_root);
     let context = EngineContext {
+        process_identity: engine_process_identity(),
+        workspace_identity: args.workspace_id.clone(),
         crypto: workspace_key.workspace_crypto(&args.workspace_id),
         device_id: args.device_id.clone(),
         // Probed here, once, because this is where the daemon accepts the
@@ -581,8 +696,6 @@ fn build_manifest_driver(
         context,
         client: Arc::clone(&hosted.client),
         http: hosted.http.clone(),
-        workspace_id: args.workspace_id.clone(),
-        device_id: args.device_id.clone(),
         reconnect_delay,
         trust_refresh,
     };

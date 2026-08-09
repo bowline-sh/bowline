@@ -22,13 +22,16 @@
 //! every point where an object could become referenced. See
 //! [`upload_pipeline`] for the ordering contract that makes deferral safe.
 
+use std::collections::BTreeMap;
+
 use bowline_control_plane::{
     CompareAndSwapError, ControlPlaneClient, SignedUrlByteStore, SignedUrlHttpClient, WorkspaceRef,
 };
 use bowline_core::ids::{DeviceId, SnapshotId, WorkspaceId};
 use bowline_local::sync::manifest_engine::{
-    BlobKey, BlobReaderUpload, BlobUpload, CasOutcome, ManifestKey, ManifestUpload, RefObservation,
-    RefVersionLookup, RemoteObjects, RemoteRef, TransportError,
+    BlobKey, BlobPrefetchRequest, BlobReaderUpload, BlobUpload, CasOutcome, ManifestBatchUpload,
+    ManifestKey, ManifestUpload, PrefetchedBlobs, RefObservation, RefVersionLookup, RemoteObjects,
+    RemoteRef, TransportError,
 };
 use bowline_storage::ObjectKey;
 
@@ -40,7 +43,10 @@ mod object_uploader;
 mod upload_pipeline;
 
 use object_uploader::{BufferedUpload, ObjectUploader, StreamedUpload, UploadKind};
-use upload_pipeline::{QueueAdmission, QueuedUpload, UploadQueue, drain_in_parallel};
+use upload_pipeline::{QueueAdmission, QueuedUpload, UploadQueue, map_slice_in_parallel};
+
+const DOWNLOAD_CONCURRENCY: usize = 32;
+const MAX_PREFETCH_BYTES: u64 = 32 * 1024 * 1024;
 
 // ---- object + ref transport -------------------------------------------------
 
@@ -82,18 +88,7 @@ impl<'a, C: ControlPlaneClient + Sync> ManifestTransport<'a, C> {
     /// and before any read, so a caller can never observe a half-flushed queue.
     fn drain_queue(&self) -> Result<(), TransportError> {
         let jobs = self.queue.take();
-        // Borrow only the `Sync` half: the queue's `RefCell` belongs to the
-        // engine thread and must never cross into a worker.
-        let uploader = &self.uploader;
-        drain_in_parallel(&jobs, |job| {
-            uploader.upload_buffered(BufferedUpload {
-                kind: job.kind,
-                content_id: &job.content_id,
-                key: &job.key,
-                sealed: &job.sealed,
-                key_epoch: job.key_epoch,
-            })
-        })
+        self.uploader.upload_buffered_batch(&jobs)
     }
 }
 
@@ -125,6 +120,14 @@ impl<C: ControlPlaneClient + Sync> RemoteObjects for ManifestTransport<'_, C> {
         })
     }
 
+    fn ensure_uploads_settled(&self) -> Result<(), TransportError> {
+        // `put_blob` accepts into a queue, so the engine's durable "this blob is
+        // stored" ledger must not be written until that queue has drained. A
+        // failure here fails the cycle before any row claims a PUT that never
+        // happened.
+        self.drain_queue()
+    }
+
     fn put_manifest(&self, upload: ManifestUpload<'_>) -> Result<(), TransportError> {
         // The manifest is the only thing that names a blob, so this is the
         // barrier: every queued blob's metadata row must exist before the
@@ -139,9 +142,82 @@ impl<C: ControlPlaneClient + Sync> RemoteObjects for ManifestTransport<'_, C> {
         })
     }
 
+    fn put_manifests(&self, uploads: &[ManifestBatchUpload]) -> Result<(), TransportError> {
+        self.drain_queue()?;
+        let queued = uploads
+            .iter()
+            .map(|upload| QueuedUpload {
+                kind: UploadKind::Manifest,
+                content_id: upload.content_id.clone(),
+                key: upload.key.as_str().to_string(),
+                sealed: upload.sealed.clone(),
+                key_epoch: upload.key_epoch,
+            })
+            .collect::<Vec<_>>();
+        self.uploader.upload_buffered_batch(&queued)
+    }
+
     fn get_blob(&self, key: &BlobKey) -> Result<Vec<u8>, TransportError> {
         self.drain_queue()?;
         self.uploader.download("get-blob", key.as_str())
+    }
+
+    fn prefetch_blobs(
+        &self,
+        requests: &[BlobPrefetchRequest],
+    ) -> Result<PrefetchedBlobs, TransportError> {
+        self.drain_queue()?;
+        let mut unique = BTreeMap::new();
+        for request in requests {
+            unique
+                .entry(request.key.clone())
+                .and_modify(|byte_len: &mut u64| *byte_len = (*byte_len).max(request.byte_len))
+                .or_insert(request.byte_len);
+        }
+        let requests = unique
+            .into_iter()
+            .map(|(key, byte_len)| BlobPrefetchRequest { key, byte_len })
+            .collect::<Vec<_>>();
+        if requests
+            .iter()
+            .any(|request| request.byte_len > MAX_PREFETCH_BYTES)
+        {
+            return Err(TransportError::new(
+                "prefetch-blob",
+                "one sealed blob exceeded the bounded prefetch budget",
+            ));
+        }
+        let mut prefetched = BTreeMap::new();
+        let mut batch_start = 0;
+        let uploader = &self.uploader;
+        while batch_start < requests.len() {
+            let mut batch_end = batch_start;
+            let mut batch_bytes = 0_u64;
+            while batch_end < requests.len() && batch_end - batch_start < DOWNLOAD_CONCURRENCY {
+                let next = requests[batch_end].byte_len;
+                if batch_end > batch_start && batch_bytes.saturating_add(next) > MAX_PREFETCH_BYTES
+                {
+                    break;
+                }
+                batch_bytes = batch_bytes.saturating_add(next);
+                batch_end += 1;
+            }
+            let batch = &requests[batch_start..batch_end];
+            let downloaded =
+                map_slice_in_parallel(batch, DOWNLOAD_CONCURRENCY, |_index, request| {
+                    let bytes = uploader.download("prefetch-blob", request.key.as_str())?;
+                    if bytes.len() as u64 > request.byte_len {
+                        return Err(TransportError::new(
+                            "prefetch-blob",
+                            "sealed blob exceeded its declared transfer budget",
+                        ));
+                    }
+                    Ok((request.key.clone(), bytes))
+                })?;
+            prefetched.extend(downloaded);
+            batch_start = batch_end;
+        }
+        Ok(prefetched)
     }
 
     fn get_blob_to_writer(
@@ -352,9 +428,13 @@ fn manifest_key_from_snapshot(snapshot_id: &SnapshotId) -> Option<ManifestKey> {
 mod ref_observer;
 
 pub use ref_observer::{
-    ReconnectAttempt, ReconnectDelay, RefChangeSubscription, RefObserverFailure,
-    RefObserverFailureStage, RefObserverHealth, RefObserverHealthHandle, RefObserverReadiness,
-    RefObserverState, SignerTrustRefresh,
+    ReconnectAttempt, ReconnectDelay, RefChangeSubscription, RefObserverAuthoritySource,
+    RefObserverEndpointGeneration, RefObserverFailure, RefObserverFailureCode,
+    RefObserverFailureStage, RefObserverFrontier, RefObserverHealth, RefObserverHealthHandle,
+    RefObserverLifecycleRevision, RefObserverProcessIdentity, RefObserverReadiness,
+    RefObserverRemediation, RefObserverRemediationKind, RefObserverSnapshot,
+    RefObserverSnapshotHandle, RefObserverState, SignerTrustRefresh, VerifiedWorkspaceRef,
+    VerifiedWorkspaceRefView,
 };
 
 #[cfg(test)]

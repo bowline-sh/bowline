@@ -14,7 +14,7 @@ use super::super::manifest::{
     KeyEpoch, MAX_WORKSPACE_PATH_DEPTH, Manifest, ManifestEntry, ManifestError, ManifestKey,
     WorkspaceCrypto, physical_manifest_key, seal_tree_node,
 };
-use super::super::push::{ManifestUpload, RemoteObjects};
+use super::super::push::{ManifestBatchUpload, RemoteObjects};
 use super::{TreeError, TreeNodeLedger};
 
 /// Everything one publish needs. A params struct because a publish legitimately
@@ -48,8 +48,12 @@ pub fn publish_tree<O: RemoteObjects, L: TreeNodeLedger>(
         tree: &tree,
         hashes: &hashes,
         ledger: request.ledger,
+        pending_uploads: Vec::new(),
+        pending_ledger: Vec::new(),
     };
-    publisher.publish(&DirPath::root(), 0)
+    let root = publisher.publish(&DirPath::root(), 0)?;
+    publisher.commit_pending()?;
+    Ok(root)
 }
 
 struct NodePublisher<'a, O: RemoteObjects, L: TreeNodeLedger> {
@@ -60,6 +64,8 @@ struct NodePublisher<'a, O: RemoteObjects, L: TreeNodeLedger> {
     tree: &'a DirectoryTree,
     hashes: &'a BTreeMap<DirPath, SubtreeHash>,
     ledger: &'a mut L,
+    pending_uploads: Vec<ManifestBatchUpload>,
+    pending_ledger: Vec<(SubtreeHash, ManifestKey)>,
 }
 
 impl<O: RemoteObjects, L: TreeNodeLedger> NodePublisher<'_, O, L> {
@@ -77,8 +83,8 @@ impl<O: RemoteObjects, L: TreeNodeLedger> NodePublisher<'_, O, L> {
             return Ok(key);
         }
         let entries = self.build_entries(dir, depth)?;
-        let key = self.seal_and_upload(TreeNode::new(self.key_epoch, entries))?;
-        self.ledger.record(hash, key.clone());
+        let key = self.seal_node(TreeNode::new(self.key_epoch, entries))?;
+        self.pending_ledger.push((hash, key.clone()));
         Ok(key)
     }
 
@@ -111,22 +117,32 @@ impl<O: RemoteObjects, L: TreeNodeLedger> NodePublisher<'_, O, L> {
         Ok(entries)
     }
 
-    fn seal_and_upload(&self, node: TreeNode) -> Result<ManifestKey, TreeError> {
+    fn seal_node(&mut self, node: TreeNode) -> Result<ManifestKey, TreeError> {
         let plaintext = node.to_canonical_bytes().map_err(TreeError::Manifest)?;
         let content_id = self.crypto.tree_node_content_id(&plaintext);
         let sealed = seal_tree_node(self.crypto, &plaintext).map_err(TreeError::Manifest)?;
         let key = physical_manifest_key(sealed.as_bytes());
-        self.objects
-            .put_manifest(ManifestUpload {
-                key: &key,
-                content_id: &content_id,
-                key_epoch: self.key_epoch,
-                sealed: sealed.as_bytes(),
-            })
-            .map_err(TreeError::Transport)?;
-        self.counters
-            .record_manifest_upload(sealed.as_bytes().len() as u64);
+        self.pending_uploads.push(ManifestBatchUpload {
+            key: key.clone(),
+            content_id,
+            key_epoch: self.key_epoch,
+            sealed: sealed.into_bytes(),
+        });
         Ok(key)
+    }
+
+    fn commit_pending(&mut self) -> Result<(), TreeError> {
+        self.objects
+            .put_manifests(&self.pending_uploads)
+            .map_err(TreeError::Transport)?;
+        for upload in &self.pending_uploads {
+            self.counters
+                .record_manifest_upload(upload.sealed.len() as u64);
+        }
+        for (hash, key) in std::mem::take(&mut self.pending_ledger) {
+            self.ledger.record(hash, key);
+        }
+        Ok(())
     }
 
     fn subtree_hash(&self, dir: &DirPath) -> Result<&SubtreeHash, TreeError> {

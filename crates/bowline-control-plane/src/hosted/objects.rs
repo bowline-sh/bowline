@@ -1,19 +1,22 @@
 use super::generated::{
     HostedObjectKind, HostedObjectMetadata, HostedObjectPointerInput,
-    HostedObjectQueriesGetObjectMetadataRequest, HostedObjectsCommitUploadedObjectMetadataRequest,
-    HostedObjectsCreateDownloadIntentRequest, HostedObjectsCreateStorageGcDeleteIntentRequest,
-    HostedObjectsCreateUploadIntentRequest, HostedObjectsCreateUploadIntentResponse,
-    HostedObjectsCreateUploadVerificationIntentRequest,
-    HostedObjectsMarkObjectRetentionStateRequest,
+    HostedObjectQueriesGetObjectMetadataRequest,
+    HostedObjectsCommitUploadedObjectMetadataBatchRequest,
+    HostedObjectsCommitUploadedObjectMetadataRequest, HostedObjectsCreateDownloadIntentRequest,
+    HostedObjectsCreateStorageGcDeleteIntentRequest, HostedObjectsCreateUploadIntentRequest,
+    HostedObjectsCreateUploadIntentResponse, HostedObjectsCreateUploadVerificationIntentRequest,
+    HostedObjectsMarkObjectRetentionStateRequest, HostedObjectsReserveObjectUploadsBatchRequest,
     HostedRetentionDeleteObjectMetadataAfterGcRequest, HostedRetentionListStorageGcObjectsRequest,
     HostedRetentionState, HostedStorageGcObjectRef, HostedUploadIntentOutcome,
     ObjectQueriesGetObjectMetadata, ObjectsCommitUploadedObjectMetadata,
-    ObjectsCreateDownloadIntent, ObjectsCreateStorageGcDeleteIntent, ObjectsCreateUploadIntent,
+    ObjectsCommitUploadedObjectMetadataBatch, ObjectsCreateDownloadIntent,
+    ObjectsCreateStorageGcDeleteIntent, ObjectsCreateUploadIntent,
     ObjectsCreateUploadVerificationIntent, ObjectsMarkObjectRetentionState,
-    RetentionDeleteObjectMetadataAfterGc, RetentionListStorageGcObjects,
+    ObjectsReserveObjectUploadsBatch, RetentionDeleteObjectMetadataAfterGc,
+    RetentionListStorageGcObjects,
 };
 use super::*;
-use crate::{ObjectControlPlaneClient, UploadIntentOutcome};
+use crate::{MAX_OBJECT_TRANSFER_BATCH, ObjectControlPlaneClient, UploadIntentOutcome};
 
 impl ObjectControlPlaneClient for HostedControlPlaneClient {
     fn create_upload_intent(
@@ -50,6 +53,55 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
         };
         let response = self.call::<ObjectsCreateUploadIntent>(&typed_request)?;
         upload_intent_outcome_from_dto(response)
+    }
+
+    fn reserve_object_uploads_batch(
+        &self,
+        requests: Vec<UploadIntentRequest>,
+    ) -> ControlPlaneResult<Vec<UploadIntentOutcome>> {
+        if requests.len() > MAX_OBJECT_TRANSFER_BATCH {
+            return Err(ControlPlaneError::Internal {
+                reason: "object upload reservation batch exceeds 64 items",
+            });
+        }
+        let requests = requests
+            .into_iter()
+            .map(|request| {
+                let object_key = request.object_key.clone().unwrap_or_else(|| {
+                    self.generated_object_key(request.object_kind, &request.workspace_id)
+                });
+                let proof_subject = upload_intent_proof_subject(
+                    &object_key,
+                    request.object_kind,
+                    request.byte_len,
+                    &request.checksum_sha256,
+                    request.content_id.as_ref(),
+                );
+                Ok(HostedObjectsCreateUploadIntentRequest {
+                    authority_format_version: CURRENT_SNAPSHOT_AUTHORITY_FORMAT_VERSION,
+                    byte_length: request.byte_len,
+                    checksum_sha256: request.checksum_sha256.as_str().to_string(),
+                    content_id: request
+                        .content_id
+                        .map(|content_id| content_id.as_str().to_string()),
+                    created_by_device_id: self.device_id.as_str().to_string(),
+                    created_by_device_proof: self.device_proof(
+                        &request.workspace_id,
+                        "create-upload-intent",
+                        &proof_subject,
+                    )?,
+                    kind: object_kind_to_dto(request.object_kind),
+                    object_key,
+                    workspace_id: request.workspace_id.as_str().to_string(),
+                })
+            })
+            .collect::<ControlPlaneResult<Vec<_>>>()?;
+        self.call::<ObjectsReserveObjectUploadsBatch>(
+            &HostedObjectsReserveObjectUploadsBatchRequest { requests },
+        )?
+        .into_iter()
+        .map(upload_intent_outcome_from_dto)
+        .collect()
     }
 
     fn create_download_intent(
@@ -259,6 +311,40 @@ impl ObjectControlPlaneClient for HostedControlPlaneClient {
             workspace_id: commit.workspace_id.as_str().to_string(),
         };
         object_metadata_from_dto(self.call::<ObjectsCommitUploadedObjectMetadata>(&typed_request)?)
+    }
+
+    fn commit_uploaded_object_metadata_batch(
+        &self,
+        commits: Vec<ObjectMetadataCommit>,
+    ) -> ControlPlaneResult<Vec<ObjectMetadata>> {
+        if commits.len() > MAX_OBJECT_TRANSFER_BATCH {
+            return Err(ControlPlaneError::Internal {
+                reason: "object metadata commit batch exceeds 64 items",
+            });
+        }
+        let requests = commits
+            .into_iter()
+            .map(|commit| {
+                self.require_local_device(&commit.committed_by_device_id)?;
+                let proof_subject = object_metadata_proof_subject(&commit.object);
+                Ok(HostedObjectsCommitUploadedObjectMetadataRequest {
+                    committed_by_device_id: commit.committed_by_device_id.as_str().to_string(),
+                    committed_by_device_proof: self.device_proof(
+                        &commit.workspace_id,
+                        "commit-uploaded-object-metadata",
+                        &proof_subject,
+                    )?,
+                    object: object_pointer_to_dto(&commit.object),
+                    workspace_id: commit.workspace_id.as_str().to_string(),
+                })
+            })
+            .collect::<ControlPlaneResult<Vec<_>>>()?;
+        self.call::<ObjectsCommitUploadedObjectMetadataBatch>(
+            &HostedObjectsCommitUploadedObjectMetadataBatchRequest { requests },
+        )?
+        .into_iter()
+        .map(object_metadata_from_dto)
+        .collect()
     }
 }
 

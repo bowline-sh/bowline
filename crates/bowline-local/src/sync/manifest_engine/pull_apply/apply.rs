@@ -24,12 +24,14 @@ use super::materialize::{
     set_mode, stage_write_temp,
 };
 use super::naming::{quarantine_leaf, quarantine_name};
+mod applied_outcome;
+
+use super::prefetch::{apply_windows, prefetch_objects};
 use super::{
     FsOp, FsOpKind, LocalRead, MergePlan, PullDeps, PullError, PullOutcome, entry_mode,
     observe_syncable, read_local_content, record_for_entry,
 };
 use crate::sync::manifest_engine::aux_index::AUX_INDEX_PATH;
-use crate::sync::manifest_engine::endpoint::prove_rows;
 use crate::sync::manifest_engine::fs_guard::{
     AnchoredLeafKind, Observed, ParentChain, ParentChainMode, is_recovery_owner_record_name,
     open_private_root, prepare_parent_chain,
@@ -37,12 +39,16 @@ use crate::sync::manifest_engine::fs_guard::{
 use crate::sync::manifest_engine::manifest::{
     EntryKind, ManifestEntry, ManifestKey, WorkspacePath,
 };
-use crate::sync::manifest_engine::push::{EngineContext, RemoteObjects, RemoteRef, now_unix_ns};
+use crate::sync::manifest_engine::push::{EngineContext, now_unix_ns};
+use crate::sync::manifest_engine::remote::{RemoteObjects, RemoteRef};
 use crate::sync::manifest_engine::store::{
-    AncestorCommit, FileRecord, Intent, IntentOperationKind, ManifestStore,
+    AncestorCommit, Intent, IntentOperationKind, ManifestStore,
 };
 use crate::sync::manifest_engine::unsyncable::{UnsyncableReason, UnsyncableRecord};
 use crate::sync::manifest_engine::work_view_lock::acquire_work_view_transition_lock;
+use crate::sync::manifest_engine::{EngineRef, RefObservation};
+use applied_outcome::prove_commit;
+pub(crate) use applied_outcome::{Applied, record_applied};
 
 // ---- apply transaction ------------------------------------------------------
 
@@ -55,6 +61,10 @@ pub(crate) fn apply_plan<O: RemoteObjects, R: RemoteRef>(
 ) -> Result<PullOutcome, PullError> {
     let prior = store.engine_state()?;
     let mut outcome = PullOutcome {
+        observed_ref: EngineRef::Head(RefObservation {
+            version: ref_version,
+            manifest_key: manifest_key.clone(),
+        }),
         applied_manifest_key: Some(manifest_key.clone()),
         ref_version: Some(ref_version),
         push_again: plan.push_again,
@@ -98,29 +108,43 @@ pub(crate) fn apply_plan<O: RemoteObjects, R: RemoteRef>(
     // mutable Git state. The three fixed locks are also stat-ed on every op, so
     // any Git transaction taken mid-apply defers the next exposing operation.
     let mut git_locks = GitLockCache::default();
-    for op in fs_ops {
-        if git_locks.is_active(&deps.ctx.workspace_root, &op.path) {
-            outcome.deferred.insert(op.path.clone());
-            // Deferral means this path has not settled against the incoming
-            // head. Keep its three-way base unchanged so the retry derives the
-            // same merge row instead of misclassifying the remote entry as a
-            // fresh creation.
-            commit.upserts.remove(&op.path);
-            commit.removals.remove(&op.path);
-            continue;
-        }
-        // The id is listed BEFORE the op runs, so a path-scoped refusal retires
-        // its intent in the same outcome transaction. Leaving the intent open
-        // would hand the identical failure to crash recovery on every restart —
-        // the shape that turns one racing file into a device that never starts.
-        intent_ids.push(op.path.clone());
-        let applied = match apply_op(store, deps, &op, manifest_key) {
-            Ok(applied) => applied,
-            Err(PullError::Path(fault)) => Applied::Unsyncable(fault.path, fault.record),
-            Err(error) => return Err(error),
+
+    // Prefetch follows the sort, one window at a time, so the first file installs
+    // after its own window's blobs rather than the whole plan's. Windows never
+    // reorder: the delete/parent/Git-rank ordering above still holds across them.
+    for window in apply_windows(&fs_ops) {
+        let prefetched_objects =
+            prefetch_objects(window, deps.objects).map_err(PullError::Transport)?;
+        let apply_deps = PullDeps {
+            ctx: deps.ctx,
+            objects: &prefetched_objects,
+            refs: deps.refs,
+            scope: deps.scope,
         };
-        deps.ctx.counters.record_apply_ops(1);
-        record_applied(&mut commit, &mut outcome, applied);
+        for op in window {
+            if git_locks.is_active(&deps.ctx.workspace_root, &op.path) {
+                outcome.deferred.insert(op.path.clone());
+                // Deferral means this path has not settled against the incoming
+                // head. Keep its three-way base unchanged so the retry derives the
+                // same merge row instead of misclassifying the remote entry as a
+                // fresh creation.
+                commit.upserts.remove(&op.path);
+                commit.removals.remove(&op.path);
+                continue;
+            }
+            // The id is listed BEFORE the op runs, so a path-scoped refusal retires
+            // its intent in the same outcome transaction. Leaving the intent open
+            // would hand the identical failure to crash recovery on every restart —
+            // the shape that turns one racing file into a device that never starts.
+            intent_ids.push(op.path.clone());
+            let applied = match apply_op(store, &apply_deps, op, manifest_key) {
+                Ok(applied) => applied,
+                Err(PullError::Path(fault)) => Applied::Unsyncable(fault.path, fault.record),
+                Err(error) => return Err(error),
+            };
+            deps.ctx.counters.record_apply_ops(1);
+            record_applied(&mut commit, &mut outcome, applied);
+        }
     }
 
     // Paths the apply itself refused. Durable BEFORE the outcome commits, for the
@@ -163,63 +187,6 @@ pub(crate) fn apply_plan<O: RemoteObjects, R: RemoteRef>(
     // for anything. Drop them in the same step that retired the intents.
     release_quarantine(deps.ctx, &intent_ids);
     Ok(outcome)
-}
-
-/// Stamp every row this apply adopted with the endpoint instant that proves it,
-/// immediately before the transaction that commits them.
-///
-/// Here rather than where the rows are built because an installed file's own
-/// mtime is stamped by the volume AFTER the row was decided, so only a reading
-/// taken once the writes are done can prove anything about it — and a row that
-/// cannot be proved is read on the next push instead of trusted
-/// (see [`crate::sync::manifest_engine::endpoint`]).
-fn prove_commit(ctx: &EngineContext, commit: &mut AncestorCommit) {
-    prove_rows(
-        &ctx.workspace_root,
-        ctx.endpoint_probe_root(),
-        ctx.timestamps,
-        &ctx.crypto,
-        ctx.config.max_seal_bytes,
-        commit.upserts.iter_mut(),
-    );
-}
-
-pub(crate) enum Applied {
-    Upsert(WorkspacePath, FileRecord),
-    Remove(WorkspacePath),
-    Aside(WorkspacePath),
-    KeptLocal(WorkspacePath),
-    /// The op could not be carried out for a condition about this path alone.
-    /// The path is FROZEN, exactly as the merge matrix freezes `L::Unreadable`:
-    /// no filesystem op, no ancestor change, and no re-push — the engine knows
-    /// nothing new about local content it could not observe or write.
-    Unsyncable(WorkspacePath, UnsyncableRecord),
-}
-
-pub(crate) fn record_applied(
-    commit: &mut AncestorCommit,
-    outcome: &mut PullOutcome,
-    applied: Applied,
-) {
-    match applied {
-        Applied::Upsert(path, record) => {
-            outcome.installed.insert(path.clone());
-            commit.upserts.insert(path, record);
-        }
-        Applied::Remove(path) => {
-            outcome.deleted.insert(path.clone());
-            commit.removals.insert(path);
-        }
-        Applied::Aside(path) => {
-            outcome.conflict_asides.insert(path);
-        }
-        Applied::KeptLocal(path) => {
-            outcome.push_again.insert(path);
-        }
-        Applied::Unsyncable(path, record) => {
-            outcome.unsyncable.insert(path, record);
-        }
-    }
 }
 
 /// Apply one filesystem op through the intent-journalled transaction. The

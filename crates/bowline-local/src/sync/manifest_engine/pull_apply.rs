@@ -1,11 +1,7 @@
 //! Pull, the three-way merge matrix, and startup/freshness (Plan 109 Step 5).
-//!
-//! This module *decides* the reconciliation; the sibling [`apply`] module
-//! *executes* it (the apply transaction, crash recovery, and the Git contract),
-//! and [`materialize`] holds the leaf filesystem primitives apply composes — the
-//! split is forced by the 900-line source gate at the natural decide/execute
-//! (and orchestrate/materialize) domain seams. [`intents`] owns the serde
-//! payloads persisted in the intent journal.
+//! This module decides reconciliation; [`apply`] executes its transaction and
+//! crash recovery, [`materialize`] owns filesystem leaves, and [`intents`] owns
+//! the journal payloads.
 //!
 //! Binding contract (the merge matrix, `classify`): eleven ancestor×local×remote
 //! rows, each a named test. Local bytes are always canonical; a divergent remote
@@ -24,7 +20,7 @@ pub mod git_contract;
 pub(crate) mod intents;
 pub mod materialize;
 pub mod naming;
-
+pub(crate) mod prefetch;
 use apply::apply_plan;
 // The entry<->row projection has its own module; re-exported here because every
 // child module reaches it as `super::entry_mode` and friends.
@@ -36,6 +32,7 @@ pub(crate) use delta::{LocalRead, read_local_content};
 use git_contract::is_git_lock_path;
 use intents::PreimagePayload;
 
+use super::EngineRef;
 use super::fs_guard::{
     ObserveOutcome, Observed, observe_classified, symlink_target_lands_in_workspace,
 };
@@ -116,11 +113,10 @@ impl PullScope<'_> {
     }
 }
 
-/// What a pull achieved. `push_again` are paths the driver must reschedule for
-/// push (kept-local divergences and freshly materialized asides); `deferred` are
-/// paths skipped because a Git lock was active (auto-rescan after it clears).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PullOutcome {
+    /// Authoritative ref observed, independent of the applied frontier.
+    pub observed_ref: EngineRef,
     pub applied_manifest_key: Option<ManifestKey>,
     pub ref_version: Option<u64>,
     pub installed: BTreeSet<WorkspacePath>,
@@ -153,21 +149,6 @@ pub fn pull<O: RemoteObjects, R: RemoteRef>(
     pull_observed(store, deps, observed)
 }
 
-/// Pull from a ref observation that the transport has already authenticated.
-///
-/// This is the steady-state reactive fast path. It deliberately shares the
-/// same freshness and apply path as [`pull`]; only the redundant synchronous
-/// ref query is skipped. Startup, reconnect recovery, barriers, and ambiguous
-/// retries continue to call [`pull`].
-pub(crate) fn pull_from_observation<O: RemoteObjects, R: RemoteRef>(
-    store: &mut ManifestStore,
-    deps: &PullDeps<'_, O, R>,
-    observed: RefObservation,
-) -> Result<PullOutcome, PullError> {
-    recover_intents(store, deps)?;
-    pull_observed(store, deps, Some(observed))
-}
-
 fn pull_observed<O: RemoteObjects, R: RemoteRef>(
     store: &mut ManifestStore,
     deps: &PullDeps<'_, O, R>,
@@ -175,7 +156,10 @@ fn pull_observed<O: RemoteObjects, R: RemoteRef>(
 ) -> Result<PullOutcome, PullError> {
     let Some(head) = observed else {
         // No ref exists yet: genesis is a push concern; a pull is a no-op.
-        return Ok(PullOutcome::default());
+        return Ok(PullOutcome {
+            observed_ref: EngineRef::Genesis,
+            ..PullOutcome::default()
+        });
     };
     enforce_freshness(store, &head)?;
 
@@ -191,6 +175,7 @@ fn pull_observed<O: RemoteObjects, R: RemoteRef>(
             store.record_ref_advance(&head.manifest_key, head.version)?;
         }
         return Ok(PullOutcome {
+            observed_ref: EngineRef::Head(head.clone()),
             applied_manifest_key: Some(head.manifest_key),
             ref_version: Some(head.version),
             already_current: true,

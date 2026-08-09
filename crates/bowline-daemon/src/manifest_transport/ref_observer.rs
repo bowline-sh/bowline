@@ -5,26 +5,28 @@
 //! surface reads, the reconnect schedule's inputs, and the trust refresh that
 //! lets a running daemon learn a device trusted after it started.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crossbeam_channel::Sender as EngineEventSender;
+
 use bowline_control_plane::{
-    ControlPlaneError, HostedControlPlaneClient, Retryability, WorkspaceRefStreamConnectionState,
-    WorkspaceRefStreamEvent, WorkspaceRefStreamShutdown, workspace_ref_stream_shutdown_pair,
+    ControlPlaneError, DependencyFailureClass, HostedControlPlaneClient,
+    WorkspaceRefStreamConnectionState, WorkspaceRefStreamEvent, WorkspaceRefStreamShutdown,
+    workspace_ref_stream_shutdown_pair,
 };
-use bowline_core::ids::DeviceId;
-use bowline_local::sync::manifest_engine::EngineEvent;
+use bowline_core::ids::{DeviceId, WorkspaceId};
+use bowline_local::sync::manifest_engine::{EngineEvent, EngineProcessIdentity, RefObservation};
 
 use super::head_observation;
-use crate::device_trust::TrustRefreshOutcome;
+use crate::device_trust::{TrustRefreshError, TrustRefreshOutcome};
 
-/// What the reconnect schedule gets to reason about. The stage is part of it
-/// because a refused credential and a dropped websocket deserve different
-/// patience: reopening recovers the second on its own, and only burns another
-/// account-session registration on the first.
+/// What the reconnect schedule gets to reason about. Only retryable failures
+/// reach it; terminal stages remain representable so schedule implementations
+/// stay exhaustive and fail safely if a future caller violates that boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconnectAttempt {
     pub consecutive_failures: u32,
@@ -63,156 +65,16 @@ pub(super) struct StreamAttempt {
 pub(super) type StreamStarter =
     Box<dyn FnMut(StreamEventSender) -> std::io::Result<StreamAttempt> + Send>;
 
-/// Lifecycle of the reactive hosted-ref observer. `Live` is reached only after
-/// Convex has delivered the subscription's initial value; owning a worker thread
-/// is not sufficient evidence that remote changes can reach the engine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefObserverState {
-    Connecting,
-    Live,
-    Retrying,
-    Stopped,
-}
+#[path = "ref_observer/frontier.rs"]
+mod frontier;
 
-/// The operation that ended the most recent observer attempt.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RefObserverFailureStage {
-    Start,
-    InitialValue,
-    Stream,
-    /// The control plane refused this device's account credentials. Distinct
-    /// from `Stream` because reconnecting alone cannot clear it: the client has
-    /// already replaced the session once and been refused again.
-    Authentication,
-    /// The workspace head was signed by a device this host has not learned yet.
-    /// The named device is what the bridge refreshes trust for; the ordinary
-    /// case is a second device that enrolled while this daemon was running.
-    UnknownSigner(DeviceId),
-    /// The workspace head was signed by a device the control plane does not
-    /// authorize in this workspace. Distinct from `UnknownSigner` because the
-    /// question has been asked and answered: no reconnect and no further trust
-    /// read can make that head verifiable here.
-    UntrustedSigner(DeviceId),
-}
-
-/// Which observer condition the status surface should report. `Live` is the only
-/// healthy answer. `Unauthenticated` is separated from `Retrying` because it is
-/// the one condition a reconnect cannot clear, and a daemon that silently stops
-/// receiving remote heads is the failure this whole path exists to prevent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefObserverReadiness {
-    Live,
-    Retrying,
-    /// The remote head is signed by a device this host is not allowed to trust.
-    /// Like `Unauthenticated`, retrying cannot clear it; unlike it, this host's
-    /// own credentials are fine and the workspace's device trust is what has to
-    /// change.
-    UntrustedSigner,
-    Unauthenticated,
-}
-
-/// Structured failure retained for diagnostics and rate-limited logging.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RefObserverFailure {
-    pub stage: RefObserverFailureStage,
-    pub message: String,
-}
-
-/// Current observer health. The revision changes on every lifecycle transition
-/// so connection loss is visible even while the engine remains idle.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RefObserverHealth {
-    pub revision: u64,
-    pub state: RefObserverState,
-    pub consecutive_failures: u32,
-    pub reconnects: u64,
-    pub last_failure: Option<RefObserverFailure>,
-}
-
-impl RefObserverHealth {
-    /// The last failure outlives the retry that follows it, so a credential
-    /// refusal stays reported while the bridge is between attempts instead of
-    /// flickering back to a neutral "connecting" every backoff cycle.
-    pub fn readiness(&self) -> RefObserverReadiness {
-        if self.state == RefObserverState::Live {
-            return RefObserverReadiness::Live;
-        }
-        match self.last_failure.as_ref().map(|failure| &failure.stage) {
-            Some(RefObserverFailureStage::Authentication) => RefObserverReadiness::Unauthenticated,
-            Some(RefObserverFailureStage::UntrustedSigner(_)) => {
-                RefObserverReadiness::UntrustedSigner
-            }
-            Some(
-                RefObserverFailureStage::Start
-                | RefObserverFailureStage::InitialValue
-                | RefObserverFailureStage::Stream
-                // Not yet answered: the bridge is still trying to learn this
-                // signer, which a retry can complete.
-                | RefObserverFailureStage::UnknownSigner(_),
-            )
-            | None => RefObserverReadiness::Retrying,
-        }
-    }
-}
-
-impl Default for RefObserverHealth {
-    fn default() -> Self {
-        Self {
-            revision: 0,
-            state: RefObserverState::Connecting,
-            consecutive_failures: 0,
-            reconnects: 0,
-            last_failure: None,
-        }
-    }
-}
-
-/// Cloneable, lock-bounded view of the observer lifecycle.
-#[derive(Clone, Debug)]
-pub struct RefObserverHealthHandle(Arc<Mutex<RefObserverHealth>>);
-
-impl RefObserverHealthHandle {
-    pub(crate) fn new() -> Self {
-        Self(Arc::new(Mutex::new(RefObserverHealth::default())))
-    }
-
-    pub fn current(&self) -> RefObserverHealth {
-        self.0
-            .lock()
-            .map(|health| health.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn readiness(&self) -> RefObserverReadiness {
-        self.current().readiness()
-    }
-
-    pub(super) fn connecting(&self, consecutive_failures: u32) {
-        let last_failure = self.current().last_failure;
-        self.transition(
-            RefObserverState::Connecting,
-            consecutive_failures,
-            false,
-            last_failure,
-        );
-    }
-
-    pub(crate) fn transition(
-        &self,
-        state: RefObserverState,
-        consecutive_failures: u32,
-        reconnect: bool,
-        last_failure: Option<RefObserverFailure>,
-    ) {
-        if let Ok(mut health) = self.0.lock() {
-            health.revision = health.revision.saturating_add(1);
-            health.state = state;
-            health.consecutive_failures = consecutive_failures;
-            health.reconnects = health.reconnects.saturating_add(u64::from(reconnect));
-            health.last_failure = last_failure;
-        }
-    }
-}
+pub use frontier::{
+    RefObserverAuthoritySource, RefObserverEndpointGeneration, RefObserverFailure,
+    RefObserverFailureCode, RefObserverFailureStage, RefObserverFrontier, RefObserverHealth,
+    RefObserverHealthHandle, RefObserverLifecycleRevision, RefObserverProcessIdentity,
+    RefObserverReadiness, RefObserverRemediation, RefObserverRemediationKind, RefObserverSnapshot,
+    RefObserverSnapshotHandle, RefObserverState, VerifiedWorkspaceRef, VerifiedWorkspaceRefView,
+};
 
 /// Bridges the hosted workspace-ref subscription into engine wakeups. A
 /// signature-verified real head received during a live subscription is carried
@@ -223,18 +85,27 @@ impl RefObserverHealthHandle {
 pub struct RefChangeSubscription {
     shutdown: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
-    health: RefObserverHealthHandle,
+    snapshot: RefObserverSnapshotHandle,
 }
 
 impl RefChangeSubscription {
-    /// Subscribe over a hosted control-plane client.
-    pub fn spawn(
+    /// Subscribe for one exact engine endpoint. Endpoint reconstruction creates
+    /// a new subscription and handle; an old worker can therefore never publish
+    /// into a replacement endpoint's frontier.
+    pub(crate) fn spawn_for_endpoint(
         client: Arc<HostedControlPlaneClient>,
         workspace_id: String,
-        events: Sender<EngineEvent>,
+        process_identity: EngineProcessIdentity,
+        events: EngineEventSender<EngineEvent>,
         reconnect_delay: ReconnectDelay,
         trust_refresh: SignerTrustRefresh,
+        endpoint_generation: RefObserverEndpointGeneration,
     ) -> Self {
+        let authority_source = RefObserverAuthoritySource::issue(
+            process_identity,
+            WorkspaceId::new(workspace_id.clone()),
+            endpoint_generation,
+        );
         let starter: StreamStarter = Box::new(move |stream_tx| {
             let (shutdown, cancellation) = workspace_ref_stream_shutdown_pair();
             let client = Arc::clone(&client);
@@ -254,24 +125,68 @@ impl RefChangeSubscription {
                 })?;
             Ok(StreamAttempt { shutdown, worker })
         });
-        Self::spawn_with_starter(starter, events, reconnect_delay, trust_refresh)
+        Self::spawn_with_starter_for_source(
+            starter,
+            events,
+            reconnect_delay,
+            trust_refresh,
+            authority_source,
+        )
     }
 
+    #[cfg(test)]
     pub(super) fn spawn_with_starter(
-        mut starter: StreamStarter,
-        events: Sender<EngineEvent>,
+        starter: StreamStarter,
+        events: EngineEventSender<EngineEvent>,
         reconnect_delay: ReconnectDelay,
         trust_refresh: SignerTrustRefresh,
     ) -> Self {
+        Self::spawn_with_starter_for_endpoint(
+            starter,
+            events,
+            reconnect_delay,
+            trust_refresh,
+            RefObserverEndpointGeneration::new(1),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn spawn_with_starter_for_endpoint(
+        starter: StreamStarter,
+        events: EngineEventSender<EngineEvent>,
+        reconnect_delay: ReconnectDelay,
+        trust_refresh: SignerTrustRefresh,
+        endpoint_generation: RefObserverEndpointGeneration,
+    ) -> Self {
+        Self::spawn_with_starter_for_source(
+            starter,
+            events,
+            reconnect_delay,
+            trust_refresh,
+            RefObserverAuthoritySource::issue(
+                EngineProcessIdentity::current(),
+                WorkspaceId::new("ws_ref_observer_test"),
+                endpoint_generation,
+            ),
+        )
+    }
+
+    fn spawn_with_starter_for_source(
+        mut starter: StreamStarter,
+        events: EngineEventSender<EngineEvent>,
+        reconnect_delay: ReconnectDelay,
+        trust_refresh: SignerTrustRefresh,
+        authority_source: RefObserverAuthoritySource,
+    ) -> Self {
         let shutdown = Arc::new(AtomicBool::new(false));
         let worker_shutdown = Arc::clone(&shutdown);
-        let health = RefObserverHealthHandle::new();
-        let worker_health = health.clone();
+        let snapshot = RefObserverSnapshotHandle::for_source(authority_source);
+        let worker_snapshot = snapshot.clone();
         let worker = thread::Builder::new()
             .name("bowline-manifest-ref-bridge".to_string())
             .spawn(move || {
                 let _lifecycle = RefObserverWorkerLifecycle {
-                    health: worker_health.clone(),
+                    snapshot: worker_snapshot.clone(),
                 };
                 run_ref_bridge(RefBridge {
                     starter: &mut starter,
@@ -279,19 +194,23 @@ impl RefChangeSubscription {
                     reconnect_delay: &reconnect_delay,
                     trust_refresh: &trust_refresh,
                     shutdown: &worker_shutdown,
-                    health: &worker_health,
+                    snapshot: &worker_snapshot,
                 })
             })
             .expect("ref-change subscription bridge thread spawns");
         Self {
             shutdown,
             worker: Some(worker),
-            health,
+            snapshot,
         }
     }
 
     pub fn health_handle(&self) -> RefObserverHealthHandle {
-        self.health.clone()
+        self.snapshot.clone()
+    }
+
+    pub fn snapshot_handle(&self) -> RefObserverSnapshotHandle {
+        self.snapshot.clone()
     }
 
     pub fn is_finished(&self) -> bool {
@@ -302,24 +221,21 @@ impl RefChangeSubscription {
 }
 
 struct RefObserverWorkerLifecycle {
-    health: RefObserverHealthHandle,
+    snapshot: RefObserverSnapshotHandle,
 }
 
 impl Drop for RefObserverWorkerLifecycle {
     fn drop(&mut self) {
-        self.health
-            .transition(RefObserverState::Stopped, 0, false, None);
+        self.snapshot.stopped();
     }
 }
 
 impl Drop for RefChangeSubscription {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::SeqCst);
+        self.snapshot.request_shutdown(&self.shutdown);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
-        self.health
-            .transition(RefObserverState::Stopped, 0, false, None);
     }
 }
 
@@ -339,11 +255,11 @@ pub(super) enum DrainOutcome {
 /// because the loop, the recovery step and the backoff all need the same set.
 struct RefBridge<'a> {
     starter: &'a mut StreamStarter,
-    events: &'a Sender<EngineEvent>,
+    events: &'a EngineEventSender<EngineEvent>,
     reconnect_delay: &'a ReconnectDelay,
     trust_refresh: &'a SignerTrustRefresh,
     shutdown: &'a AtomicBool,
-    health: &'a RefObserverHealthHandle,
+    snapshot: &'a RefObserverSnapshotHandle,
 }
 
 /// How many attempts have failed in a row, what was last written to the log, and
@@ -372,6 +288,8 @@ enum FailureRecovery {
     /// Wait out the backoff for this failure, as reclassified by the recovery
     /// attempt.
     BackOff(RefObserverFailure),
+    /// Authority, integrity, or contract failure. Time cannot repair it.
+    Blocked(RefObserverFailure),
 }
 
 fn run_ref_bridge(bridge: RefBridge<'_>) {
@@ -381,37 +299,38 @@ fn run_ref_bridge(bridge: RefBridge<'_>) {
         reconnect_delay,
         trust_refresh,
         shutdown,
-        health,
+        snapshot,
     } = bridge;
     let mut history = AttemptHistory::default();
     while !shutdown.load(Ordering::SeqCst) {
         let (stream_tx, stream_rx) = mpsc::channel();
         let attempt = match starter(stream_tx) {
             Ok(attempt) => attempt,
-            Err(error) => {
+            Err(_error) => {
                 history.failures = history.failures.saturating_add(1);
                 let failure = RefObserverFailure {
                     stage: RefObserverFailureStage::Start,
-                    message: error.to_string(),
+                    class: DependencyFailureClass::Retryable,
+                    code: RefObserverFailureCode::StartUnavailable,
                 };
                 if !back_off_after_failure(
                     &failure,
                     &mut history,
                     reconnect_delay,
                     shutdown,
-                    health,
+                    snapshot,
                 ) {
                     break;
                 }
                 continue;
             }
         };
-        health.connecting(history.failures);
+        snapshot.connecting(history.failures);
         let outcome = drain_stream(
             &stream_rx,
             events,
             shutdown,
-            health,
+            snapshot,
             REF_SUBSCRIPTION_FIRST_VALUE_TIMEOUT,
         );
         drop(attempt.shutdown);
@@ -429,7 +348,7 @@ fn run_ref_bridge(bridge: RefBridge<'_>) {
                     FailureRecovery::RetryNow => {
                         history.failures = 0;
                         history.immediate_retries = history.immediate_retries.saturating_add(1);
-                        health.transition(RefObserverState::Connecting, 0, true, None);
+                        snapshot.transition(RefObserverState::Connecting, 0, true, None);
                     }
                     FailureRecovery::BackOff(failure) => {
                         history.immediate_retries = 0;
@@ -443,10 +362,22 @@ fn run_ref_bridge(bridge: RefBridge<'_>) {
                             &mut history,
                             reconnect_delay,
                             shutdown,
-                            health,
+                            snapshot,
                         ) {
                             break;
                         }
+                    }
+                    FailureRecovery::Blocked(failure) => {
+                        history.failures = history.failures.saturating_add(1);
+                        if should_log_observer_failure(&failure, &history) {
+                            log_observer_failure(&failure, history.failures);
+                            history.last_logged = Some(failure.clone());
+                        }
+                        snapshot.blocked(failure, history.failures);
+                        if !snapshot.wait_for_authority_restore(shutdown) {
+                            break;
+                        }
+                        history = AttemptHistory::default();
                     }
                 }
             }
@@ -467,17 +398,19 @@ fn recover_from_failure(
     history: &AttemptHistory,
 ) -> FailureRecovery {
     let RefObserverFailureStage::UnknownSigner(device_id) = &failure.stage else {
-        return FailureRecovery::BackOff(failure);
+        return if failure.class == DependencyFailureClass::Retryable {
+            FailureRecovery::BackOff(failure)
+        } else {
+            FailureRecovery::Blocked(failure)
+        };
     };
     let outcome = trust_refresh(device_id);
     if outcome.learned() {
         if history.immediate_retries >= MAX_IMMEDIATE_TRUST_RETRIES {
             return FailureRecovery::BackOff(RefObserverFailure {
                 stage: failure.stage.clone(),
-                message: format!(
-                    "{}: trust for this device is installed and the head is still unverifiable",
-                    failure.message
-                ),
+                class: DependencyFailureClass::Retryable,
+                code: RefObserverFailureCode::UnknownSigner,
             });
         }
         eprintln!(
@@ -486,14 +419,41 @@ fn recover_from_failure(
         );
         return FailureRecovery::RetryNow;
     }
-    let stage = if outcome.refused() {
-        RefObserverFailureStage::UntrustedSigner(device_id.clone())
-    } else {
-        failure.stage.clone()
-    };
+    if outcome.refused() {
+        return FailureRecovery::Blocked(RefObserverFailure {
+            stage: RefObserverFailureStage::UntrustedSigner(device_id.clone()),
+            class: DependencyFailureClass::AuthorizationLost,
+            code: RefObserverFailureCode::AuthorizationLost,
+        });
+    }
+    if matches!(&outcome, TrustRefreshOutcome::RateLimited) {
+        return FailureRecovery::BackOff(RefObserverFailure {
+            stage: failure.stage,
+            class: DependencyFailureClass::Retryable,
+            code: RefObserverFailureCode::UnknownSigner,
+        });
+    }
+    if let TrustRefreshOutcome::Unavailable(error) = outcome {
+        let failure = match error {
+            TrustRefreshError::ControlPlane(error) => observer_failure(&error),
+            TrustRefreshError::Persist(_) | TrustRefreshError::CachePoisoned { .. } => {
+                RefObserverFailure {
+                    stage: RefObserverFailureStage::FatalContract,
+                    class: DependencyFailureClass::FatalContract,
+                    code: RefObserverFailureCode::FatalContract,
+                }
+            }
+        };
+        return if failure.class == DependencyFailureClass::Retryable {
+            FailureRecovery::BackOff(failure)
+        } else {
+            FailureRecovery::Blocked(failure)
+        };
+    }
     FailureRecovery::BackOff(RefObserverFailure {
-        stage,
-        message: format!("{}: {outcome}", failure.message),
+        stage: failure.stage,
+        class: DependencyFailureClass::Retryable,
+        code: RefObserverFailureCode::UnknownSigner,
     })
 }
 
@@ -504,9 +464,9 @@ fn back_off_after_failure(
     history: &mut AttemptHistory,
     reconnect_delay: &ReconnectDelay,
     shutdown: &AtomicBool,
-    health: &RefObserverHealthHandle,
+    snapshot: &RefObserverSnapshotHandle,
 ) -> bool {
-    health.transition(
+    snapshot.transition(
         RefObserverState::Retrying,
         history.failures,
         true,
@@ -523,7 +483,7 @@ fn back_off_after_failure(
     if !sleep_until_shutdown(delay, shutdown) {
         return false;
     }
-    health.connecting(history.failures);
+    snapshot.connecting(history.failures);
     true
 }
 
@@ -548,9 +508,9 @@ pub(super) fn should_log_observer_failure(
 
 pub(super) fn drain_stream(
     stream_rx: &Receiver<WorkspaceRefStreamEvent>,
-    events: &Sender<EngineEvent>,
+    events: &EngineEventSender<EngineEvent>,
     shutdown: &AtomicBool,
-    health: &RefObserverHealthHandle,
+    snapshot: &RefObserverSnapshotHandle,
     first_value_timeout: Duration,
 ) -> DrainOutcome {
     let mut received_any_value = false;
@@ -579,27 +539,36 @@ pub(super) fn drain_stream(
                 websocket_connected = false;
                 received_initial_value = false;
                 value_wait_started = Instant::now();
-                health.connecting(health.current().consecutive_failures);
+                snapshot.connecting(snapshot.current().consecutive_failures);
             }
             Ok(WorkspaceRefStreamEvent::ConnectionState(
                 WorkspaceRefStreamConnectionState::Connecting,
-            )) => health.connecting(health.current().consecutive_failures),
+            )) => snapshot.connecting(snapshot.current().consecutive_failures),
             Ok(WorkspaceRefStreamEvent::ConnectionState(
                 WorkspaceRefStreamConnectionState::Connected,
             )) => websocket_connected = true,
             Ok(WorkspaceRefStreamEvent::Ref(Ok(workspace_ref))) => {
                 let requires_authoritative_read = !received_initial_value;
-                if !received_initial_value {
-                    health.transition(RefObserverState::Live, 0, false, None);
-                }
+                let (verified_ref, observation) = match verified_stream_ref(workspace_ref) {
+                    Ok(verified) => verified,
+                    Err(failure) => {
+                        return DrainOutcome::Reconnect {
+                            received_value: received_any_value,
+                            failure,
+                        };
+                    }
+                };
+                // This is the observer's linearization point: liveness and the
+                // initial verified authority become visible in one immutable
+                // snapshot. No separate health event can be paired with a ref
+                // from another endpoint or lifecycle.
+                snapshot.live_with_ref(verified_ref);
                 received_any_value = true;
                 received_initial_value = true;
                 let event = if requires_authoritative_read {
                     EngineEvent::RefChanged
                 } else {
-                    workspace_ref
-                        .and_then(head_observation)
-                        .map_or(EngineEvent::RefChanged, EngineEvent::RefObserved)
+                    observation.map_or(EngineEvent::RefChanged, EngineEvent::RefObserved)
                 };
                 if events.send(event).is_err() {
                     return DrainOutcome::DriverGone;
@@ -608,10 +577,7 @@ pub(super) fn drain_stream(
             Ok(WorkspaceRefStreamEvent::Ref(Err(error))) => {
                 return DrainOutcome::Reconnect {
                     received_value: received_any_value,
-                    failure: RefObserverFailure {
-                        stage: observer_failure_stage(&error),
-                        message: error.to_string(),
-                    },
+                    failure: observer_failure(&error),
                 };
             }
             Err(RecvTimeoutError::Timeout) => {
@@ -620,10 +586,8 @@ pub(super) fn drain_stream(
                         received_value: received_any_value,
                         failure: RefObserverFailure {
                             stage: RefObserverFailureStage::InitialValue,
-                            message: format!(
-                                "no initial subscription value within {:?}",
-                                first_value_timeout
-                            ),
+                            class: DependencyFailureClass::Retryable,
+                            code: RefObserverFailureCode::InitialValueTimeout,
                         },
                     };
                 }
@@ -633,7 +597,8 @@ pub(super) fn drain_stream(
                     received_value: received_any_value,
                     failure: RefObserverFailure {
                         stage: RefObserverFailureStage::Stream,
-                        message: "workspace-ref subscription ended".to_string(),
+                        class: DependencyFailureClass::Retryable,
+                        code: RefObserverFailureCode::StreamUnavailable,
                     },
                 };
             }
@@ -643,24 +608,68 @@ pub(super) fn drain_stream(
 
 /// The control plane has already replaced the account session once before it
 /// surfaces `AuthExpired` here, so this is a refusal of the identity rather than
-/// a stream fault. Classified through `retryability` because that is the single
-/// classification point for control-plane failures.
-fn observer_failure_stage(error: &ControlPlaneError) -> RefObserverFailureStage {
-    match error.retryability() {
-        Retryability::AuthExpired => RefObserverFailureStage::Authentication,
-        Retryability::TrustRefreshRequired => error
-            .unknown_signing_device()
-            .map_or(RefObserverFailureStage::Stream, |(_, device_id)| {
-                RefObserverFailureStage::UnknownSigner(device_id.clone())
-            }),
-        Retryability::Retryable | Retryability::Fatal => RefObserverFailureStage::Stream,
+/// a stream fault. The common dependency class is the single classification
+/// point; this adapter adds only the observer-specific signer-refresh stage.
+fn observer_failure(error: &ControlPlaneError) -> RefObserverFailure {
+    if let Some((_, device_id)) = error.unknown_signing_device() {
+        return RefObserverFailure {
+            stage: RefObserverFailureStage::UnknownSigner(device_id.clone()),
+            // The bridge performs one explicit authority refresh before this
+            // class becomes terminal or retryable.
+            class: DependencyFailureClass::AuthorizationLost,
+            code: RefObserverFailureCode::UnknownSigner,
+        };
     }
+    let class = error.dependency_failure_class();
+    let (stage, code) = match class {
+        DependencyFailureClass::Retryable => (
+            RefObserverFailureStage::Stream,
+            RefObserverFailureCode::StreamUnavailable,
+        ),
+        DependencyFailureClass::AuthenticationRequired => (
+            RefObserverFailureStage::Authentication,
+            RefObserverFailureCode::AuthenticationRequired,
+        ),
+        DependencyFailureClass::AuthorizationLost => (
+            RefObserverFailureStage::Authorization,
+            RefObserverFailureCode::AuthorizationLost,
+        ),
+        DependencyFailureClass::Integrity => (
+            RefObserverFailureStage::Integrity,
+            RefObserverFailureCode::Integrity,
+        ),
+        DependencyFailureClass::FatalContract => (
+            RefObserverFailureStage::FatalContract,
+            RefObserverFailureCode::FatalContract,
+        ),
+    };
+    RefObserverFailure { stage, class, code }
+}
+
+fn verified_stream_ref(
+    workspace_ref: Option<bowline_control_plane::WorkspaceRef>,
+) -> Result<(VerifiedWorkspaceRef, Option<RefObservation>), RefObserverFailure> {
+    let Some(workspace_ref) = workspace_ref else {
+        return Ok((VerifiedWorkspaceRef::genesis(), None));
+    };
+    if workspace_ref.version == 0 && workspace_ref.snapshot_id.is_none() {
+        return Ok((VerifiedWorkspaceRef::genesis(), None));
+    }
+    let observation = head_observation(workspace_ref).ok_or(RefObserverFailure {
+        stage: RefObserverFailureStage::Integrity,
+        class: DependencyFailureClass::Integrity,
+        code: RefObserverFailureCode::Integrity,
+    })?;
+    Ok((
+        VerifiedWorkspaceRef::from_observation(observation.clone()),
+        Some(observation),
+    ))
 }
 
 fn log_observer_failure(failure: &RefObserverFailure, consecutive_failures: u32) {
     eprintln!(
-        "bowline-daemon reactive ref observer {:?} failure #{consecutive_failures}: {}",
-        failure.stage, failure.message
+        "bowline-daemon reactive ref observer {:?} failure #{consecutive_failures} ({:?})",
+        failure.stage, failure.code
     );
 }
 

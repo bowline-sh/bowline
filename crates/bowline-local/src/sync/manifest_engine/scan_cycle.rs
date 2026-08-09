@@ -18,6 +18,61 @@ use super::{
     RemoteObjects, RemoteRef, WorkspacePath,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Engine revision produced by one authoritative local filesystem scan.
+pub struct AuthoritativeScanRevision(u64);
+
+impl AuthoritativeScanRevision {
+    /// Return the engine revision captured after the scan merged local reality.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Receipt for a scan performed while distributed engine cycles are paused.
+pub struct AuthoritativeScanReceipt {
+    revision: AuthoritativeScanRevision,
+    dirty_paths: usize,
+}
+
+impl AuthoritativeScanReceipt {
+    /// Return the exact post-scan engine revision.
+    pub const fn revision(self) -> AuthoritativeScanRevision {
+        self.revision
+    }
+
+    /// Return the dirty paths retained for later normal convergence.
+    pub const fn dirty_paths(self) -> usize {
+        self.dirty_paths
+    }
+}
+
+#[derive(Debug)]
+/// Local-only coverage scan failure. No transport or observer is involved.
+pub enum AuthoritativeScanError {
+    /// A distributed cycle is still active and must finish before scanning.
+    CycleActive,
+    /// The workspace root is absent or no longer carries the expected identity.
+    RootUnavailable(RootFault),
+    /// The engine store or filesystem scan failed unexpectedly.
+    Fatal(EngineError),
+}
+
+impl std::fmt::Display for AuthoritativeScanError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CycleActive => formatter.write_str("manifest engine cycle is active"),
+            Self::RootUnavailable(fault) => {
+                write!(formatter, "workspace root is unavailable: {fault:?}")
+            }
+            Self::Fatal(error) => write!(formatter, "authoritative scan failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for AuthoritativeScanError {}
+
 impl ManifestEngine {
     /// Prove the workspace root before any scan, pull, or push.
     ///
@@ -73,10 +128,7 @@ impl ManifestEngine {
             .map_err(|error| CycleError::Fatal(EngineError::Store(error)))
     }
 
-    pub(super) fn full_scan<O: RemoteObjects, R: RemoteRef, C: Clock>(
-        &mut self,
-        _io: &EngineIo<'_, O, R, C>,
-    ) -> Result<(), CycleError> {
+    pub(super) fn full_scan(&mut self) -> Result<(), CycleError> {
         let policy = crate::policy::UserPolicy::load(&self.ctx.workspace_root)
             .map_err(|error| CycleError::Fatal(EngineError::Io(error)))?;
         let ancestor = self
@@ -90,6 +142,51 @@ impl ManifestEngine {
         self.record_walk_unsyncable(&walk, WalkScope::WholeWorkspace)?;
         self.absorb_dirty(walk.dirty);
         Ok(())
+    }
+
+    /// Merge one authoritative local scan into the existing dirty set without
+    /// pulling, uploading, publishing, applying, or observing remote state.
+    pub fn authoritative_local_scan(
+        &mut self,
+    ) -> Result<AuthoritativeScanReceipt, AuthoritativeScanError> {
+        if self.cycle_active {
+            return Err(AuthoritativeScanError::CycleActive);
+        }
+        self.phase = super::EnginePhase::Syncing;
+        self.cycle_active = true;
+        self.bump_revision_if_changed();
+        let result = self.guard_root().and_then(|()| self.full_scan());
+        self.cycle_active = false;
+        match result {
+            Ok(()) => {
+                self.scan_required = false;
+                Arc::make_mut(&mut self.dirty_subtrees).clear();
+                if matches!(self.degradation, Degradation::FullScanRequired(_)) {
+                    self.set_degradation(Degradation::Nominal);
+                }
+                self.phase = super::EnginePhase::Syncing;
+                self.refresh_durable_state();
+                self.bump_revision_if_changed();
+                Ok(AuthoritativeScanReceipt {
+                    revision: AuthoritativeScanRevision(self.revision),
+                    dirty_paths: self.dirty.len(),
+                })
+            }
+            Err(CycleError::RootUnavailable(fault)) => {
+                self.set_degradation(Degradation::RootUnavailable(fault));
+                self.scan_required = true;
+                self.phase = super::EnginePhase::Stalled;
+                self.bump_revision_if_changed();
+                Err(AuthoritativeScanError::RootUnavailable(fault))
+            }
+            Err(CycleError::Fatal(error)) => Err(AuthoritativeScanError::Fatal(error)),
+            Err(
+                CycleError::Transport
+                | CycleError::Integrity
+                | CycleError::MassDeletionBlocked { .. }
+                | CycleError::PathScoped,
+            ) => Err(AuthoritativeScanError::Fatal(EngineError::Internal)),
+        }
     }
 
     /// Persist a walk's unsyncable verdict, clearing the entries it is entitled

@@ -172,6 +172,274 @@
     },
     "subscriptionId": "subscription-1"
   },
+  "DaemonSyncBarrierConvergenceSource": {
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "workspaceIdentity": "fixture"
+  },
+  "DaemonSyncBarrierCoordinatorFrontier": {
+    "activityWatermark": 0,
+    "closingRecoveryRevision": 0,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverageStart": {
+    "coveredLastSafe": 0,
+    "kind": "cursor-replay",
+    "recoveryCause": null,
+    "replayFrom": 0
+  },
+  "DaemonSyncBarrierDarwinCursorReplay": {
+    "coveredLastSafe": 0,
+    "recoveryCause": null,
+    "replayFrom": 0
+  },
+  "DaemonSyncBarrierDarwinFreshStream": {
+    "discontinuity": "user_dropped",
+    "freshFrom": 0
+  },
+  "DaemonSyncBarrierEngineConvergence": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierLinuxCoverage": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierNativeCoverage": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "kind": "fsevents-post-scan-seal",
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierNativeLoss": [
+    "user_dropped",
+    "kernel_dropped",
+    "event_ids_wrapped",
+    "root_changed",
+    "stream_stopped",
+    "non_monotonic_cursor",
+    "queue_overflow",
+    "backend_failure"
+  ],
+  "DaemonSyncBarrierObserverConvergence": {
+    "admission": {
+      "endpointGeneration": 1,
+      "lifecycleRevision": 1,
+      "observedAt": "fixture",
+      "observedRef": {
+        "version": 42
+      },
+      "state": "live"
+    },
+    "completion": {
+      "endpointGeneration": 1,
+      "lifecycleRevision": 1,
+      "observedAt": "fixture",
+      "observedRef": {
+        "version": 42
+      },
+      "state": "live"
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierObserverLiveness": {
+    "endpointGeneration": 1,
+    "lifecycleRevision": 1,
+    "observedAt": "fixture",
+    "observedRef": {
+      "version": 42
+    },
+    "state": "live"
+  },
+  "DaemonSyncBarrierObserverState": [
+    "live"
+  ],
+  "DaemonSyncBarrierProcessIdentity": {
+    "bootId": "fixture",
+    "sessionId": "fixture",
+    "startedAt": "fixture"
+  },
+  "DaemonSyncBarrierRecoveryClosure": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryLifecycle": [
+    "nominal"
+  ],
+  "DaemonSyncBarrierRefIdentity": {
+    "version": 42
+  },
+  "DaemonSyncBarrierResult": {
+    "barrierId": "fixture",
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "linearizedAt": "fixture",
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "recoveryClosure": null,
+    "workspaceIdentity": "fixture",
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierWorkspaceState": [
+    "ready"
+  ],
+  "DaemonSyncBarrierWorkspaceStatus": {
+    "observedAt": "fixture",
+    "state": "ready"
+  },
   "DaemonSyncResource": {
     "kind": "workspace-sync",
     "workspaceId": "ws_fixture"
@@ -724,6 +992,10 @@
     "requestedByDeviceProof": "proof_head_metadata",
     "workspaceId": "ws_code"
   },
+  "HostedObjectsCommitUploadedObjectMetadataBatchRequest": {
+    "requests": []
+  },
+  "HostedObjectsCommitUploadedObjectMetadataBatchResponse": [],
   "HostedObjectsCommitUploadedObjectMetadataRequest": {
     "committedByDeviceId": "device_1",
     "committedByDeviceProof": "proof_commit_metadata",
@@ -804,6 +1076,10 @@
     "retentionState": "retained",
     "workspaceId": "ws_code"
   },
+  "HostedObjectsReserveObjectUploadsBatchRequest": {
+    "requests": []
+  },
+  "HostedObjectsReserveObjectUploadsBatchResponse": [],
   "HostedProjectionMetadata": {
     "generatedAt": "2026-07-14T12:00:00Z",
     "repairState": "current",

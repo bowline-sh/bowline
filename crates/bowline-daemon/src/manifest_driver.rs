@@ -12,31 +12,67 @@
 //! shared hosted client; tests supply a fake transport through the same
 //! [`ManifestDriver::spawn`] seam.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender as EventSender};
 
 use bowline_control_plane::{HostedControlPlaneClient, SignedUrlHttpClient};
-use bowline_core::ids::{DeviceId, WorkspaceId};
 use bowline_local::sync::manifest_engine::{
-    Clock, Degradation, EngineContext, EngineCounters, EngineEvent, EngineIo, EnginePhase,
-    EngineSnapshot, FullScanReason, ManifestEngine, ManifestStore, RemoteObjects, RemoteRef,
-    SyncBarrierId, SystemClock,
+    Clock, EngineContext, EngineConvergenceBarrierId, EngineConvergenceReceipt, EngineCounters,
+    EngineEndpointGeneration, EngineEvent, EngineIo, EngineSnapshot, ManifestEngine, ManifestStore,
+    RemoteObjects, RemoteRef, SystemClock,
 };
 
 use crate::manifest_transport::{
-    ManifestTransport, ReconnectDelay, RefChangeSubscription, RefObserverHealth,
-    RefObserverHealthHandle, RefObserverReadiness, SignerTrustRefresh,
+    ManifestTransport, ReconnectDelay, RefChangeSubscription, RefObserverEndpointGeneration,
+    RefObserverHealth, RefObserverReadiness, RefObserverSnapshotHandle, SignerTrustRefresh,
 };
+
+#[path = "manifest_driver/barrier_wait.rs"]
+mod barrier_wait;
+#[path = "manifest_driver/control_registry.rs"]
+mod control_registry;
+#[path = "manifest_driver/exact_observer.rs"]
+mod exact_observer;
+#[path = "manifest_driver/identity.rs"]
+mod identity;
+#[path = "manifest_driver/snapshot_status.rs"]
+mod snapshot_status;
+#[path = "manifest_driver/watcher_ingress.rs"]
+mod watcher_ingress;
+pub use barrier_wait::{
+    EngineConvergenceBarrierError, EngineConvergenceBarrierWaiter,
+    EngineObserverConvergenceReceipt, ExactBarrierTimestamp, SyncBarrierError, SyncBarrierWaiter,
+};
+pub use control_registry::{
+    CoverageScanError, CoverageScanFailure, CoverageScanLease, CoverageScanWaiter, WalkStartHook,
+};
+use control_registry::{RecoveryControlAction, WorkspaceControlRegistry};
+use exact_observer::{ObserverBarrierGuard, ObserverEndpoint};
+use identity::validate_engine_context_identity;
+use snapshot_status::starting_snapshot;
+pub use snapshot_status::{EngineCommandError, host_status_snapshot};
+#[cfg(test)]
+pub(super) const HOST_STATUS_REVISION: u64 = snapshot_status::HOST_STATUS_REVISION;
+#[doc(hidden)]
+pub use watcher_ingress::{WatcherIngressAccumulator, WatcherIngressSnapshot};
+pub use watcher_ingress::{WatcherIngressHandle, WatcherIngressLoss, WatcherIngressObservation};
 
 /// The engine's own database file, kept at the daemon state root (never inside
 /// the synced workspace — the engine never writes ordinary workspace files
 /// outside user space).
 pub const MANIFEST_ENGINE_DB_FILE: &str = "manifest_engine.sqlite3";
+
+/// Bound cross-thread wakeups so native watcher pressure remains in the
+/// callback lane, where saturation has an authoritative full-scan recovery
+/// path. The engine already coalesces one dirty set; an unbounded second queue
+/// only delays newer edits behind stale observations.
+const MANIFEST_ENGINE_INBOX_CAPACITY: usize = 1;
 
 /// The live engine's inbox, registered while a driver thread is running.
 /// A status reader holds an [`EngineSnapshotHandle`] whether or not an engine
@@ -44,40 +80,17 @@ pub const MANIFEST_ENGINE_DB_FILE: &str = "manifest_engine.sqlite3";
 /// `Unavailable` when the slot is empty.
 #[derive(Debug)]
 struct EngineEndpoint {
-    generation: u64,
-    events: Sender<EngineEvent>,
-    pending: Arc<Mutex<BTreeMap<SyncBarrierId, Sender<EngineSnapshot>>>>,
+    generation: EngineEndpointGeneration,
+    events: EventSender<EngineEvent>,
+    controls: Arc<WorkspaceControlRegistry>,
+    watcher_ingress: Arc<watcher_ingress::WatcherIngressAccumulator>,
+    pending: Arc<Mutex<BTreeMap<EngineConvergenceBarrierId, Sender<EngineBarrierCompletion>>>>,
     observer: ObserverEndpoint,
 }
 
-#[derive(Debug)]
-enum ObserverEndpoint {
-    NotRequired,
-    Starting,
-    LiveHealth(RefObserverHealthHandle),
-}
-
-#[derive(Clone)]
-enum ObserverBarrierGuard {
-    NotRequired,
-    LiveHealth(RefObserverHealthHandle),
-}
-
-impl ObserverBarrierGuard {
-    fn require_live(&self) -> Result<(), SyncBarrierError> {
-        let Self::LiveHealth(health) = self else {
-            return Ok(());
-        };
-        match health.readiness() {
-            RefObserverReadiness::Live => Ok(()),
-            RefObserverReadiness::Retrying => Err(SyncBarrierError::Unavailable {
-                reason: "remote manifest observer has not delivered its initial value",
-            }),
-            RefObserverReadiness::UntrustedSigner | RefObserverReadiness::Unauthenticated => {
-                Err(SyncBarrierError::ObserverUnavailable)
-            }
-        }
-    }
+#[derive(Debug, Clone)]
+struct EngineBarrierCompletion {
+    receipt: EngineConvergenceReceipt,
 }
 
 #[derive(Debug)]
@@ -89,86 +102,242 @@ struct EngineShared {
 }
 
 #[derive(Clone)]
-pub struct EngineSnapshotSink(Arc<EngineShared>);
+pub struct EngineSnapshotSink {
+    shared: Arc<EngineShared>,
+    generation: Option<EngineEndpointGeneration>,
+}
 
 impl EngineSnapshotSink {
     /// Publish the latest snapshot for status readers. Public so the daemon can
     /// publish a host-status snapshot (e.g. `limited` while the driver is waiting
     /// to rebuild) into the same slot the driver will later take over.
     pub fn publish(&self, snapshot: EngineSnapshot) {
-        if let Ok(mut current) = self.0.snapshot.lock() {
+        let Ok(endpoint) = self.shared.endpoint.lock() else {
+            return;
+        };
+        if !self.owns_endpoint(&endpoint) {
+            return;
+        }
+        if let Ok(mut current) = self.shared.snapshot.lock() {
             *current = snapshot;
         }
     }
 
-    fn complete_barriers(
-        &self,
-        completed: impl IntoIterator<Item = SyncBarrierId>,
-        snapshot: &EngineSnapshot,
-    ) {
-        let pending = self.0.endpoint.lock().ok().and_then(|endpoint| {
-            endpoint
-                .as_ref()
-                .map(|endpoint| Arc::clone(&endpoint.pending))
-        });
-        let Some(pending) = pending else {
+    fn owns_endpoint(&self, endpoint: &Option<EngineEndpoint>) -> bool {
+        let current = endpoint.as_ref().map(|endpoint| endpoint.generation);
+        match self.generation {
+            Some(expected) => current == Some(expected),
+            None => current.is_none(),
+        }
+    }
+
+    /// Atomically replace any live engine endpoint with a non-ready host state.
+    ///
+    /// Demotion cannot be expressed as `publish` followed by dropping a driver:
+    /// that ordering either lets a stale endpoint overwrite the host snapshot or
+    /// leaves its last Ready state visible. Taking endpoint and snapshot locks in
+    /// the established order makes the takeover one state transition.
+    pub fn take_over_with_host_status(&self, snapshot: EngineSnapshot) {
+        if self.generation.is_some() {
+            return;
+        }
+        let Ok(mut endpoint) = self.shared.endpoint.lock() else {
             return;
         };
+        let Ok(mut current) = self.shared.snapshot.lock() else {
+            return;
+        };
+        let previous = endpoint.take();
+        *current = snapshot;
+        drop(current);
+        if let Some(previous) = previous
+            && let Ok(mut pending) = previous.pending.lock()
+        {
+            pending.clear();
+            previous.controls.disconnect();
+            previous.watcher_ingress.disconnect();
+        }
+    }
+
+    fn complete_barriers(&self, completed: impl IntoIterator<Item = EngineConvergenceReceipt>) {
+        let Some(expected_generation) = self.generation else {
+            return;
+        };
+        let Ok(endpoint) = self.shared.endpoint.lock() else {
+            return;
+        };
+        let Some(endpoint) = endpoint
+            .as_ref()
+            .filter(|endpoint| endpoint.generation == expected_generation)
+        else {
+            return;
+        };
+        let pending = Arc::clone(&endpoint.pending);
         let Ok(mut pending) = pending.lock() else {
             return;
         };
-        for id in completed {
+        for receipt in completed {
+            if receipt.endpoint_generation() != expected_generation {
+                continue;
+            }
+            let id = receipt.barrier_id();
             if let Some(waiter) = pending.remove(&id) {
-                let _waiter_gone = waiter.send(snapshot.clone());
+                let _waiter_gone = waiter.send(EngineBarrierCompletion { receipt });
             }
         }
     }
 
     /// A read handle onto the same slot this sink publishes into.
     pub fn handle(&self) -> EngineSnapshotHandle {
-        EngineSnapshotHandle(Arc::clone(&self.0))
+        EngineSnapshotHandle(Arc::clone(&self.shared))
     }
 
     fn register_engine_endpoint(
         &self,
-        events: Sender<EngineEvent>,
-        pending: Arc<Mutex<BTreeMap<SyncBarrierId, Sender<EngineSnapshot>>>>,
+        generation: EngineEndpointGeneration,
+        events: EventSender<EngineEvent>,
+        controls: Arc<WorkspaceControlRegistry>,
+        watcher_ingress: Arc<watcher_ingress::WatcherIngressAccumulator>,
+        pending: Arc<Mutex<BTreeMap<EngineConvergenceBarrierId, Sender<EngineBarrierCompletion>>>>,
         observer_required: bool,
-    ) -> u64 {
-        let generation = self.0.next_generation.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut endpoint) = self.0.endpoint.lock() {
-            *endpoint = Some(EngineEndpoint {
-                generation,
-                events,
-                pending,
-                observer: if observer_required {
-                    ObserverEndpoint::Starting
-                } else {
-                    ObserverEndpoint::NotRequired
-                },
-            });
+    ) -> io::Result<()> {
+        let mut endpoint = self
+            .shared
+            .endpoint
+            .lock()
+            .map_err(|_| io::Error::other("engine endpoint state is unavailable"))?;
+        let mut snapshot = self
+            .shared
+            .snapshot
+            .lock()
+            .map_err(|_| io::Error::other("engine snapshot state is unavailable"))?;
+        let previous = endpoint.replace(EngineEndpoint {
+            generation,
+            events,
+            controls,
+            watcher_ingress,
+            pending,
+            observer: if observer_required {
+                ObserverEndpoint::Starting
+            } else {
+                ObserverEndpoint::NotRequired
+            },
+        });
+        *snapshot = starting_snapshot();
+        drop(snapshot);
+        if let Some(previous) = previous
+            && let Ok(mut pending) = previous.pending.lock()
+        {
+            pending.clear();
         }
-        generation
+        Ok(())
     }
 
-    fn attach_ref_observer_health(&self, generation: u64, health: RefObserverHealthHandle) {
-        if let Ok(mut endpoint) = self.0.endpoint.lock()
+    fn allocate_engine_endpoint_generation(&self) -> io::Result<EngineEndpointGeneration> {
+        allocate_identity(&self.shared.next_generation)
+            .map(EngineEndpointGeneration)
+            .ok_or_else(|| io::Error::other("engine endpoint generation exhausted"))
+    }
+
+    fn attach_ref_observer_snapshot(
+        &self,
+        generation: EngineEndpointGeneration,
+        snapshot: RefObserverSnapshotHandle,
+    ) {
+        let observer_generation = snapshot
+            .current()
+            .authority_source
+            .endpoint_generation()
+            .get();
+        if let Ok(mut endpoint) = self.shared.endpoint.lock()
             && let Some(endpoint) = endpoint.as_mut()
             && endpoint.generation == generation
+            && observer_generation == generation.0
         {
-            endpoint.observer = ObserverEndpoint::LiveHealth(health);
+            endpoint.observer = ObserverEndpoint::Snapshot(snapshot);
         }
     }
 
-    fn unregister_engine_endpoint(&self, generation: u64) {
-        if let Ok(mut endpoint) = self.0.endpoint.lock()
-            && endpoint
-                .as_ref()
-                .is_some_and(|endpoint| endpoint.generation == generation)
+    fn unregister_engine_endpoint(&self, generation: EngineEndpointGeneration) {
+        let Ok(mut endpoint) = self.shared.endpoint.lock() else {
+            return;
+        };
+        if !endpoint
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.generation == generation)
         {
-            *endpoint = None;
+            return;
+        }
+        let Ok(mut snapshot) = self.shared.snapshot.lock() else {
+            return;
+        };
+        if let Some(previous) = endpoint.take() {
+            previous.controls.disconnect();
+            previous.watcher_ingress.disconnect();
+        }
+        *snapshot = starting_snapshot();
+    }
+
+    fn control_registry(&self) -> Option<Arc<WorkspaceControlRegistry>> {
+        let endpoint = self.shared.endpoint.lock().ok()?;
+        let current = endpoint.as_ref()?;
+        self.owns_endpoint(&endpoint)
+            .then(|| Arc::clone(&current.controls))
+    }
+
+    #[doc(hidden)]
+    pub fn watcher_ingress_endpoint(&self) -> Option<Arc<WatcherIngressAccumulator>> {
+        let endpoint = self.shared.endpoint.lock().ok()?;
+        let current = endpoint.as_ref()?;
+        self.owns_endpoint(&endpoint)
+            .then(|| Arc::clone(&current.watcher_ingress))
+    }
+
+    fn request_engine_barrier(
+        &self,
+        endpoint: &EngineEndpoint,
+    ) -> Result<EngineConvergenceBarrierWaiter, EngineConvergenceBarrierError> {
+        let id = EngineConvergenceBarrierId(
+            allocate_identity(&self.shared.next_barrier_id)
+                .ok_or(EngineConvergenceBarrierError::IdentityExhausted)?,
+        );
+        let (completion, receiver) = mpsc::channel();
+        let pending = Arc::clone(&endpoint.pending);
+        let mut registered =
+            pending
+                .lock()
+                .map_err(|_| EngineConvergenceBarrierError::Unavailable {
+                    reason: "sync barrier state is unavailable",
+                })?;
+        registered.insert(id, completion);
+        if let Err(error) = endpoint.controls.register_barrier(id, endpoint.generation) {
+            registered.remove(&id);
+            return Err(error);
+        }
+        drop(registered);
+        Ok(EngineConvergenceBarrierWaiter {
+            id,
+            generation: endpoint.generation,
+            receiver,
+            pending,
+            controls: Arc::clone(&endpoint.controls),
+        })
+    }
+
+    fn for_generation(&self, generation: EngineEndpointGeneration) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+            generation: Some(generation),
         }
     }
+}
+
+fn allocate_identity(counter: &AtomicU64) -> Option<u64> {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .ok()
 }
 
 /// A fresh, externally-owned snapshot slot seeded with the `Starting` snapshot.
@@ -183,7 +352,10 @@ pub fn shared_engine_snapshot() -> (EngineSnapshotSink, EngineSnapshotHandle) {
         next_generation: AtomicU64::new(1),
     });
     (
-        EngineSnapshotSink(Arc::clone(&shared)),
+        EngineSnapshotSink {
+            shared: Arc::clone(&shared),
+            generation: None,
+        },
         EngineSnapshotHandle(shared),
     )
 }
@@ -192,306 +364,22 @@ pub fn shared_engine_snapshot() -> (EngineSnapshotSink, EngineSnapshotHandle) {
 #[derive(Clone, Debug)]
 pub struct EngineSnapshotHandle(Arc<EngineShared>);
 
-impl EngineSnapshotHandle {
-    /// The most recently published snapshot, or a synthesized `Starting`
-    /// snapshot if the lock is momentarily poisoned (never blocks status).
-    pub fn current(&self) -> EngineSnapshot {
-        self.0
-            .snapshot
-            .lock()
-            .map(|snapshot| snapshot.clone())
-            .unwrap_or_else(|_| starting_snapshot())
-    }
-
-    /// Request an exact convergence boundary from the active engine. The engine
-    /// performs an on-demand disk scan and hosted-ref read, then wakes this
-    /// waiter only after that specific request has settled.
-    pub fn request_sync_barrier(&self) -> Result<SyncBarrierWaiter, SyncBarrierError> {
-        let (id, events, pending, observer) = {
-            let endpoint = self
-                .0
-                .endpoint
-                .lock()
-                .map_err(|_| SyncBarrierError::Unavailable {
-                    reason: "sync barrier state is unavailable",
-                })?;
-            let endpoint = endpoint.as_ref().ok_or(SyncBarrierError::Unavailable {
-                reason: "manifest sync engine is unavailable",
-            })?;
-            let observer = match &endpoint.observer {
-                ObserverEndpoint::NotRequired => ObserverBarrierGuard::NotRequired,
-                ObserverEndpoint::Starting => {
-                    return Err(SyncBarrierError::Unavailable {
-                        reason: "remote manifest observer is starting",
-                    });
-                }
-                ObserverEndpoint::LiveHealth(health) => {
-                    ObserverBarrierGuard::LiveHealth(health.clone())
-                }
-            };
-            observer.require_live()?;
-            (
-                SyncBarrierId(self.0.next_barrier_id.fetch_add(1, Ordering::Relaxed)),
-                endpoint.events.clone(),
-                Arc::clone(&endpoint.pending),
-                observer,
-            )
-        };
-        let (completion, receiver) = mpsc::channel();
-        pending
-            .lock()
-            .map_err(|_| SyncBarrierError::Unavailable {
-                reason: "sync barrier state is unavailable",
-            })?
-            .insert(id, completion);
-        if events.send(EngineEvent::SyncBarrier(id)).is_err() {
-            if let Ok(mut pending) = pending.lock() {
-                pending.remove(&id);
-            }
-            return Err(SyncBarrierError::EngineStopped);
-        }
-        Ok(SyncBarrierWaiter {
-            id,
-            receiver,
-            pending,
-            observer,
-        })
-    }
-
-    /// Authorise the removal batch the engine is currently refusing.
-    ///
-    /// Fire-and-forget by design: what gets authorised is whatever the engine is
-    /// refusing when it folds the event, so there is nothing for the caller to
-    /// pass and nothing it could usefully wait for. The caller reads the
-    /// resulting state from the snapshot it already polls.
-    pub fn confirm_mass_deletion(&self) -> Result<(), EngineCommandError> {
-        let events = {
-            let endpoint = self
-                .0
-                .endpoint
-                .lock()
-                .map_err(|_| EngineCommandError::Unavailable {
-                    reason: "manifest sync engine state is unavailable",
-                })?;
-            endpoint
-                .as_ref()
-                .ok_or(EngineCommandError::Unavailable {
-                    reason: "manifest sync engine is unavailable",
-                })?
-                .events
-                .clone()
-        };
-        events
-            .send(EngineEvent::ConfirmMassDeletion)
-            .map_err(|_| EngineCommandError::EngineStopped)
-    }
-}
-
-/// Why a command to the live engine could not be delivered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EngineCommandError {
-    /// No engine is attached to this snapshot slot.
-    Unavailable { reason: &'static str },
-    /// The engine thread stopped before the command reached it.
-    EngineStopped,
-}
-
-impl EngineCommandError {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Unavailable { reason } => reason,
-            Self::EngineStopped => "manifest sync engine stopped before the command was applied",
-        }
-    }
-}
-
-impl std::fmt::Display for EngineCommandError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl std::error::Error for EngineCommandError {}
-
-/// Why an exact sync barrier produced no snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SyncBarrierError {
-    /// The engine slot exists but cannot answer right now — nothing has attached
-    /// to it yet, or its barrier state is momentarily unusable. Either way a
-    /// caller holding a deadline should ask again.
-    Unavailable { reason: &'static str },
-    /// The remote observer is present but cannot become live without an account
-    /// or device-trust change. Retrying the same barrier would hide the action
-    /// the user must take, so this remains distinct from startup unavailability.
-    ObserverUnavailable,
-    /// This daemon serves no sync workspace at all. Waiting cannot change that,
-    /// so it must never be reported as a daemon that is still coming up.
-    WorkspaceNotServed,
-    /// The caller's cancellation predicate fired: the client disconnected, or
-    /// the request's deadline passed.
-    Cancelled,
-    /// The barrier did not converge before the caller's timeout.
-    TimedOut,
-    /// The engine stopped before completing the barrier.
-    EngineStopped,
-}
-
-impl SyncBarrierError {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Unavailable { reason } => reason,
-            Self::ObserverUnavailable => {
-                "remote manifest observer requires authentication or signer trust"
-            }
-            Self::WorkspaceNotServed => "daemon is not serving a sync workspace",
-            Self::Cancelled => "the sync barrier request was cancelled",
-            Self::TimedOut => "sync barrier did not converge before the deadline",
-            Self::EngineStopped => "manifest sync engine stopped before the barrier completed",
-        }
-    }
-}
-
-impl std::fmt::Display for SyncBarrierError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl std::error::Error for SyncBarrierError {}
-
-/// How often an interruptible barrier wait re-checks its cancellation
-/// predicate. Small enough that a disconnected or expired request frees its
-/// worker thread promptly, large enough to cost nothing while idle.
-const SYNC_BARRIER_POLL: Duration = Duration::from_millis(200);
-
-/// Reactive completion handle for one exact sync barrier.
-pub struct SyncBarrierWaiter {
-    id: SyncBarrierId,
-    receiver: Receiver<EngineSnapshot>,
-    pending: Arc<Mutex<BTreeMap<SyncBarrierId, Sender<EngineSnapshot>>>>,
-    observer: ObserverBarrierGuard,
-}
-
-impl SyncBarrierWaiter {
-    /// Wait for the barrier, re-checking `cancelled` on a short poll interval.
-    ///
-    /// A barrier occupies a bounded RPC worker for its whole duration, so the
-    /// wait must never be an uninterruptible park: without this the executor's
-    /// cancellation machinery writes a `DeadlineExceeded` response to the client
-    /// while the worker stays blocked, and enough concurrent barriers starve the
-    /// lane that serves `daemon.info`.
-    pub fn wait(
-        self,
-        timeout: Duration,
-        mut cancelled: impl FnMut() -> bool,
-    ) -> Result<EngineSnapshot, SyncBarrierError> {
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            self.observer.require_live()?;
-            if cancelled() {
-                return Err(SyncBarrierError::Cancelled);
-            }
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(SyncBarrierError::TimedOut);
-            }
-            match self.receiver.recv_timeout(remaining.min(SYNC_BARRIER_POLL)) {
-                Ok(snapshot) => {
-                    self.observer.require_live()?;
-                    return Ok(snapshot);
-                }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Err(SyncBarrierError::EngineStopped);
-                }
-            }
-        }
-    }
-}
-
-impl Drop for SyncBarrierWaiter {
-    fn drop(&mut self) {
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.remove(&self.id);
-        }
-    }
-}
-
-/// Disjoint high revision band for the daemon's synthetic host-status snapshot.
-/// The live engine's revision grows from 0 and stays small, so a value this large
-/// never aliases a real engine revision in the status projection's equality-based
-/// change detection — the projection republishes the moment a driver takes over.
-///
-/// Caveat: host-status revisions are NOT monotonic with engine revisions across a
-/// pending->active (or active->pending) transition — the number jumps between the
-/// `1 << 60` band and the small live-engine band in both directions. Consumers
-/// must treat a host-status revision as an opaque change token (equality only),
-/// never compare it ordinally against an engine revision.
-const HOST_STATUS_REVISION: u64 = 1 << 60;
-
-/// The `limited` host-status snapshot the daemon publishes while a driver is
-/// waiting to rebuild (lazy-rebuild path, Plan 111 Step 1b). `Stopped` + `Nominal`
-/// maps to `limited` in the v8 adapter; the disjoint revision keeps the status
-/// projection from aliasing it with a live engine revision.
-pub fn host_status_snapshot() -> EngineSnapshot {
-    EngineSnapshot {
-        revision: HOST_STATUS_REVISION,
-        phase: EnginePhase::Stopped,
-        observed_ref: None,
-        applied_manifest: None,
-        pending_intents: 0,
-        dirty: 0,
-        dirty_paths: Arc::new(BTreeSet::new()),
-        dirty_subtree_paths: Arc::new(BTreeSet::new()),
-        pending_intent_paths: Arc::new(BTreeSet::new()),
-        scan_required: false,
-        unattributed_pull_pending: false,
-        cycle_active: false,
-        last_success_at: None,
-        degradation: Degradation::Nominal,
-        unsyncable: Arc::new(BTreeMap::new()),
-        refused_removals: Arc::new(BTreeSet::new()),
-    }
-}
-
-/// The initial snapshot before the engine thread has run its startup cycle.
-fn starting_snapshot() -> EngineSnapshot {
-    EngineSnapshot {
-        revision: 0,
-        phase: EnginePhase::Starting,
-        observed_ref: None,
-        applied_manifest: None,
-        pending_intents: 0,
-        dirty: 0,
-        dirty_paths: Arc::new(BTreeSet::new()),
-        dirty_subtree_paths: Arc::new(BTreeSet::new()),
-        pending_intent_paths: Arc::new(BTreeSet::new()),
-        scan_required: false,
-        unattributed_pull_pending: true,
-        cycle_active: false,
-        last_success_at: None,
-        degradation: Degradation::Nominal,
-        unsyncable: Arc::new(BTreeMap::new()),
-        refused_removals: Arc::new(BTreeSet::new()),
-    }
-}
-
 /// The long-lived driver for one workspace's engine.
 pub struct ManifestDriver {
-    events: Sender<EngineEvent>,
+    events: EventSender<EngineEvent>,
+    watcher_ingress: WatcherIngressHandle,
     snapshot: EngineSnapshotHandle,
     endpoint_sink: EngineSnapshotSink,
-    endpoint_generation: u64,
-    barrier_pending: Arc<Mutex<BTreeMap<SyncBarrierId, Sender<EngineSnapshot>>>>,
+    endpoint_generation: EngineEndpointGeneration,
+    barrier_pending:
+        Arc<Mutex<BTreeMap<EngineConvergenceBarrierId, Sender<EngineBarrierCompletion>>>>,
     // The engine's shared cost meters (Plan 111 Step 5). The same `Arc` the
     // engine thread writes; the daemon metrics RPC reads it lock-free.
     counters: Arc<EngineCounters>,
     thread: Option<JoinHandle<()>>,
     // The ref-change subscription's worker is stopped when this driver drops.
     ref_subscription: Option<RefChangeSubscription>,
-    ref_observer_health: Option<RefObserverHealthHandle>,
+    ref_observer_health: Option<RefObserverSnapshotHandle>,
 }
 
 impl ManifestDriver {
@@ -529,26 +417,40 @@ impl ManifestDriver {
     where
         F: FnOnce(Receiver<EngineEvent>, EngineSnapshotSink) + Send + 'static,
     {
-        let (events, inbox) = mpsc::channel();
+        let (events, inbox) = crossbeam_channel::bounded(MANIFEST_ENGINE_INBOX_CAPACITY);
+        let controls = Arc::new(WorkspaceControlRegistry::new());
+        let watcher_ingress = watcher_ingress::WatcherIngressAccumulator::new();
         let barrier_pending = Arc::new(Mutex::new(BTreeMap::new()));
-        let endpoint_generation = sink.register_engine_endpoint(
+        let endpoint_generation = sink.allocate_engine_endpoint_generation()?;
+        let thread_sink = sink.for_generation(endpoint_generation);
+        let (start, start_gate) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("bowline-manifest-engine".to_string())
+            .spawn(move || {
+                if start_gate.recv().is_ok() {
+                    run(inbox, thread_sink);
+                }
+            })?;
+        if let Err(error) = sink.register_engine_endpoint(
+            endpoint_generation,
             events.clone(),
+            Arc::clone(&controls),
+            Arc::clone(&watcher_ingress),
             Arc::clone(&barrier_pending),
             observer_required,
-        );
-        let thread_sink = sink.clone();
-        let thread = match thread::Builder::new()
-            .name("bowline-manifest-engine".to_string())
-            .spawn(move || run(inbox, thread_sink))
-        {
-            Ok(thread) => thread,
-            Err(error) => {
-                sink.unregister_engine_endpoint(endpoint_generation);
-                return Err(error);
-            }
-        };
+        ) {
+            drop(start);
+            let _joined = thread.join();
+            return Err(error);
+        }
+        if start.send(()).is_err() {
+            sink.unregister_engine_endpoint(endpoint_generation);
+            let _joined = thread.join();
+            return Err(io::Error::other("manifest engine start gate closed"));
+        }
         Ok(Self {
             events,
+            watcher_ingress: watcher_ingress.handle(),
             snapshot: handle,
             endpoint_sink: sink,
             endpoint_generation,
@@ -578,6 +480,10 @@ impl ManifestDriver {
         sink: EngineSnapshotSink,
         handle: EngineSnapshotHandle,
     ) -> io::Result<Self> {
+        validate_engine_context_identity(&config.context)?;
+        let workspace_id = config.context.workspace_identity.clone();
+        let device_id = config.context.device_id.clone();
+        let process_identity = config.context.process_identity.clone();
         let store = ManifestStore::open(&config.store_path)
             .map_err(|error| io::Error::other(error.to_string()))?;
         let engine = ManifestEngine::new(store, config.context);
@@ -585,8 +491,7 @@ impl ManifestDriver {
         // the daemon metrics RPC can read the live tally.
         let counters = engine.counters();
         let transport_client = Arc::clone(&config.client);
-        let workspace_id = config.workspace_id.clone();
-        let device_id = config.device_id.clone();
+        let observer_workspace_id = workspace_id.as_str().to_string();
         let http = config.http;
         let mut driver =
             Self::spawn_with_sink_observer_requirement(sink, handle, true, move |inbox, sink| {
@@ -599,17 +504,19 @@ impl ManifestDriver {
                 let clock = SystemClock::default();
                 run_engine_loop(engine, &transport, &transport, &clock, &inbox, &sink);
             })?;
-        let subscription = RefChangeSubscription::spawn(
+        let subscription = RefChangeSubscription::spawn_for_endpoint(
             config.client,
-            config.workspace_id.as_str().to_string(),
+            observer_workspace_id,
+            process_identity,
             driver.events.clone(),
             config.reconnect_delay,
             config.trust_refresh,
+            RefObserverEndpointGeneration::new(driver.endpoint_generation.0),
         );
-        let observer_health = subscription.health_handle();
+        let observer_health = subscription.snapshot_handle();
         driver
             .endpoint_sink
-            .attach_ref_observer_health(driver.endpoint_generation, observer_health.clone());
+            .attach_ref_observer_snapshot(driver.endpoint_generation, observer_health.clone());
         driver.ref_observer_health = Some(observer_health);
         driver.ref_subscription = Some(subscription);
         driver.counters = counters;
@@ -632,8 +539,13 @@ impl ManifestDriver {
     }
 
     /// A sender for feeding watcher-derived events into the engine.
-    pub fn event_sender(&self) -> Sender<EngineEvent> {
+    pub fn event_sender(&self) -> EventSender<EngineEvent> {
         self.events.clone()
+    }
+
+    /// A bounded, level-triggered handoff for watcher-derived path detail.
+    pub fn watcher_ingress(&self) -> WatcherIngressHandle {
+        self.watcher_ingress.clone()
     }
 
     /// Current remote observer health. Production drivers return `Some`; test
@@ -641,7 +553,7 @@ impl ManifestDriver {
     pub fn ref_observer_health(&self) -> Option<RefObserverHealth> {
         self.ref_observer_health
             .as_ref()
-            .map(RefObserverHealthHandle::current)
+            .map(RefObserverSnapshotHandle::current)
     }
 
     /// What the remote observer currently contributes to status. `Live` requires
@@ -652,7 +564,7 @@ impl ManifestDriver {
         let Some(readiness) = self
             .ref_observer_health
             .as_ref()
-            .map(RefObserverHealthHandle::readiness)
+            .map(RefObserverSnapshotHandle::readiness)
         else {
             return RefObserverReadiness::Retrying;
         };
@@ -719,63 +631,10 @@ pub struct ManifestDriverConfig {
     pub client: Arc<HostedControlPlaneClient>,
     /// The workspace's shared signed-URL HTTP client (one per workspace).
     pub http: SignedUrlHttpClient,
-    pub workspace_id: WorkspaceId,
-    pub device_id: DeviceId,
     pub reconnect_delay: ReconnectDelay,
     /// How the observer learns a device whose signed head it cannot verify —
     /// the workspace's shared device trust, refreshed between stream attempts.
     pub trust_refresh: SignerTrustRefresh,
-}
-
-#[derive(Default)]
-struct WatcherOverflowPriority {
-    applied_generation: u64,
-    queued_fences: u64,
-}
-
-const WATCHER_OVERFLOW_HOLD_POLL: Duration = Duration::from_millis(5);
-
-impl WatcherOverflowPriority {
-    fn refresh<C: Clock>(
-        &mut self,
-        engine: &mut ManifestEngine,
-        counters: &EngineCounters,
-        clock: &C,
-    ) {
-        let latest = counters.watcher_overflow_recovery_generation();
-        let new_fences = latest.saturating_sub(self.applied_generation);
-        if new_fences == 0 {
-            return;
-        }
-        self.applied_generation = latest;
-        self.queued_fences = self.queued_fences.saturating_add(new_fences);
-        engine.on_event(
-            EngineEvent::FullScanRequired(FullScanReason::WatcherOverflow),
-            clock,
-        );
-    }
-
-    fn subsumes(&mut self, event: &EngineEvent) -> bool {
-        if self.queued_fences == 0 {
-            return false;
-        }
-        match event {
-            // These watcher events precede the queued fence that asserted this
-            // generation. The priority full scan re-observes all of them.
-            EngineEvent::Paths(_) | EngineEvent::RecursivePaths(_) => true,
-            EngineEvent::FullScanRequired(FullScanReason::WatcherOverflow) => {
-                self.queued_fences -= 1;
-                true
-            }
-            EngineEvent::FullScanRequired(_)
-            | EngineEvent::RefChanged
-            | EngineEvent::RefObserved(_)
-            | EngineEvent::ConnectivityRestored
-            | EngineEvent::SyncBarrier(_)
-            | EngineEvent::ConfirmMassDeletion
-            | EngineEvent::Shutdown => false,
-        }
-    }
 }
 
 /// Run the engine loop, publishing a snapshot after startup and after every
@@ -809,16 +668,54 @@ pub fn run_engine_loop<O, R, C>(
     }
     let snapshot = engine.snapshot();
     sink.publish(snapshot.clone());
-    sink.complete_barriers(engine.take_completed_barriers(), &snapshot);
-    let counters = engine.counters();
-    let mut watcher_overflow_priority = WatcherOverflowPriority::default();
+    sink.complete_barriers(engine.take_completed_barriers());
+    let Some(controls) = sink.control_registry() else {
+        return;
+    };
+    let control_wake = controls.wake_receiver();
+    let Some(watcher_ingress) = sink.watcher_ingress_endpoint() else {
+        return;
+    };
+    let watcher_wake = watcher_ingress.wake_receiver();
+    let mut coverage_paused = false;
     loop {
-        let received = if counters.watcher_overflow_recovery_pending() {
-            inbox.recv_timeout(WATCHER_OVERFLOW_HOLD_POLL)
+        let mut released_coverage = false;
+        if let Some(action) = controls.take_recovery_action() {
+            match action {
+                RecoveryControlAction::Scan(id) => {
+                    let result = engine.authoritative_local_scan();
+                    coverage_paused = result.is_ok();
+                    sink.publish(engine.snapshot());
+                    controls.complete_scan(id, result);
+                }
+                RecoveryControlAction::Release => {
+                    coverage_paused = false;
+                    released_coverage = true;
+                    // Scan-absorbed paths arm no deadline of their own, so the
+                    // work pass below would find nothing due and the release
+                    // would publish nothing.
+                    engine.schedule_recovered_work(clock);
+                }
+            }
+        }
+        for control in controls.drain_barriers() {
+            engine.on_event(control, clock);
+        }
+        for event in watcher_ingress.drain().into_events() {
+            engine.on_event(event, clock);
+        }
+        let timeout = engine
+            .next_timeout(clock.now_millis())
+            .map(crossbeam_channel::after)
+            .unwrap_or_else(crossbeam_channel::never);
+        let received = if released_coverage {
+            Err(RecvTimeoutError::Timeout)
         } else {
-            match engine.next_timeout(clock.now_millis()) {
-                Some(timeout) => inbox.recv_timeout(timeout),
-                None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            crossbeam_channel::select! {
+                recv(control_wake) -> _ => Err(RecvTimeoutError::Timeout),
+                recv(watcher_wake) -> _ => Err(RecvTimeoutError::Timeout),
+                recv(inbox) -> event => event.map_err(|_| RecvTimeoutError::Disconnected),
+                recv(timeout) -> _ => Err(RecvTimeoutError::Timeout),
             }
         };
         match received {
@@ -828,22 +725,18 @@ pub fn run_engine_loop<O, R, C>(
                 return;
             }
             Ok(event) => {
-                watcher_overflow_priority.refresh(&mut engine, &counters, clock);
-                if !watcher_overflow_priority.subsumes(&event) {
-                    engine.on_event(event, clock);
-                }
+                engine.on_event(event, clock);
                 sink.publish(engine.snapshot());
             }
-            Err(RecvTimeoutError::Timeout) => {
-                watcher_overflow_priority.refresh(&mut engine, &counters, clock);
-            }
+            Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 engine.on_event(EngineEvent::Shutdown, clock);
                 sink.publish(engine.snapshot());
                 return;
             }
         }
-        if counters.watcher_overflow_recovery_pending() {
+        if coverage_paused {
+            sink.publish(engine.snapshot());
             continue;
         }
         if engine.announce_due_work(clock) {
@@ -856,7 +749,7 @@ pub fn run_engine_loop<O, R, C>(
         }
         let snapshot = engine.snapshot();
         sink.publish(snapshot.clone());
-        sink.complete_barriers(engine.take_completed_barriers(), &snapshot);
+        sink.complete_barriers(engine.take_completed_barriers());
     }
 }
 

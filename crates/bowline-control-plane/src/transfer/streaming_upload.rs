@@ -8,15 +8,6 @@ use reqwest::blocking::{Body, Client};
 
 use super::{deadline::signed_url_transfer_timeout, map_http_error};
 
-pub(super) struct StreamingPutRequest<'a> {
-    pub key: &'a ObjectKey,
-    pub source: &'a dyn ReopenableObjectSource,
-    pub byte_len: u64,
-    pub expected_hash: &'a str,
-    pub checksum_sha256: &'a str,
-    pub create_only: bool,
-}
-
 pub(super) fn send_streaming_put(
     http: &Client,
     url: &str,
@@ -26,42 +17,18 @@ pub(super) fn send_streaming_put(
     expected_hash: &str,
     checksum_sha256: &str,
 ) -> Result<reqwest::blocking::Response, ByteStoreError> {
-    send_streaming_put_with_create_only(
-        http,
-        url,
-        StreamingPutRequest {
-            key,
-            source,
-            byte_len,
-            expected_hash,
-            checksum_sha256,
-            create_only: true,
-        },
-    )
-}
-
-/// When `create_only` is false, omits `If-None-Match: *` so a mismatched
-/// pre-existing R2 object (re-sealed ciphertext or greenfield residue) can be
-/// overwritten after create-only put returned 412.
-pub(super) fn send_streaming_put_with_create_only(
-    http: &Client,
-    url: &str,
-    upload: StreamingPutRequest<'_>,
-) -> Result<reqwest::blocking::Response, ByteStoreError> {
     let observed = Arc::new(Mutex::new(ObservedUpload::default()));
     let reader = HashingReader {
-        inner: upload.source.open()?,
+        inner: source.open()?,
         observed: observed.clone(),
     };
-    let mut request = http
+    let request = http
         .put(url)
-        .timeout(signed_url_transfer_timeout(Some(upload.byte_len)))
-        .header(reqwest::header::CONTENT_LENGTH, upload.byte_len)
-        .header("x-amz-checksum-sha256", upload.checksum_sha256)
-        .body(Body::sized(reader, upload.byte_len));
-    if upload.create_only {
-        request = request.header(reqwest::header::IF_NONE_MATCH, "*");
-    }
+        .timeout(signed_url_transfer_timeout(Some(byte_len)))
+        .header(reqwest::header::CONTENT_LENGTH, byte_len)
+        .header("x-amz-checksum-sha256", checksum_sha256)
+        .header(reqwest::header::IF_NONE_MATCH, "*")
+        .body(Body::sized(reader, byte_len));
     let response = request
         .send()
         .map_err(|error| map_http_error(TransferOperation::Upload, error))?;
@@ -69,13 +36,13 @@ pub(super) fn send_streaming_put_with_create_only(
         return Ok(response);
     }
     let observed = observed.lock().map_err(|_| ByteStoreError::CorruptObject {
-        key: upload.key.clone(),
+        key: key.clone(),
         reason: "streamed upload identity state was unavailable",
     })?;
     let observed_hash = format!("b3_{}", observed.hasher.clone().finalize().to_hex());
-    if observed.byte_len != upload.byte_len || observed_hash != upload.expected_hash {
+    if observed.byte_len != byte_len || observed_hash != expected_hash {
         return Err(ByteStoreError::CorruptObject {
-            key: upload.key.clone(),
+            key: key.clone(),
             reason: "streamed upload bytes did not match immutable identity",
         });
     }

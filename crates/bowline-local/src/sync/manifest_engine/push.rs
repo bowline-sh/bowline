@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use bowline_core::ids::{ContentId, DeviceId};
+use bowline_core::ids::{ContentId, DeviceId, WorkspaceId};
 
 use super::endpoint::{NameFolding, StatTrust, TimestampGranularity};
 use super::fs_guard::{ExpectedFile, FileVisit, PRIVATE_FILE_MODE, visit_file_bounded};
@@ -35,8 +35,8 @@ use super::manifest::{
     seal_file_segmented,
 };
 pub use super::remote::{
-    BlobReaderUpload, BlobUpload, CasOutcome, ManifestUpload, RefObservation, RemoteObjects,
-    RemoteRef, TransportError,
+    BlobReaderUpload, BlobUpload, CasOutcome, ManifestBatchUpload, ManifestUpload, RefObservation,
+    RemoteObjects, RemoteRef, TransportError,
 };
 use super::store::{FileRecord, ManifestStore, ManifestStoreError};
 use super::tree_transport::{
@@ -82,6 +82,8 @@ impl Default for EngineConfig {
 /// root, and config.
 #[derive(Clone)]
 pub struct EngineContext {
+    pub process_identity: super::EngineProcessIdentity,
+    pub workspace_identity: WorkspaceId,
     pub crypto: WorkspaceCrypto,
     pub device_id: DeviceId,
     pub workspace_root: PathBuf,
@@ -302,6 +304,12 @@ fn push_scanned<O: RemoteObjects, R: RemoteRef>(
     // retry must not re-seal the blob.
     let sealed = ledger.into_sealed();
     if !sealed.is_empty() {
+        // The rows below claim these blobs are stored, and a later push trusts
+        // that claim and skips re-uploading. Settle first, so a drain failure
+        // fails this cycle instead of stranding bytes the retry will never send.
+        deps.objects
+            .ensure_uploads_settled()
+            .map_err(PushError::Transport)?;
         store.record_sealed_blobs(&sealed)?;
         deps.ctx.counters.record_sqlite_mutation();
     }

@@ -77,7 +77,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc --build tsconfig.json",
     "codegen": "node scripts/generate-guards.mjs",
     "codegen:check": "node scripts/generate-guards.mjs --check",
     "test": "vitest run src",

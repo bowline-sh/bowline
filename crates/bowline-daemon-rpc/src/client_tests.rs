@@ -49,6 +49,30 @@ fn serve_handshake(stream: &mut UnixStream, codec: FrameCodec) {
     codec.write(stream, &hello.hello).expect("server hello");
 }
 
+fn assert_peer_closes_without_transport_frame(stream: &mut UnixStream) {
+    stream
+        .set_nonblocking(true)
+        .expect("nonblocking close observation enables");
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let mut byte = [0_u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => return,
+            Ok(_) => panic!("identity mismatch opened a transport"),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    && std::time::Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                panic!("client did not close after rejecting the server identity");
+            }
+            Err(error) => panic!("client close observation failed: {error}"),
+        }
+    }
+}
+
 fn rejects_server_identity_before_opening_transport(
     name: &str,
     contract_version: u16,
@@ -75,11 +99,7 @@ fn rejects_server_identity_before_opening_transport(
                 },
             )
             .expect("server hello writes");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .expect("read timeout sets");
-        let mut byte = [0_u8; 1];
-        assert_eq!(stream.read(&mut byte).expect("client closes cleanly"), 0);
+        assert_peer_closes_without_transport_frame(&mut stream);
     });
     let error = match DaemonClient::connect(&socket.0, ClientOptions::new("test", "1")) {
         Ok(_) => panic!("identity mismatch opened a transport"),

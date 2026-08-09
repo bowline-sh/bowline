@@ -111,5 +111,7 @@ use sync::{drain_policy, invalidate_policy_cache_for_path};
 #[cfg(all(test, target_os = "linux"))]
 use watcher::send_watcher_signal;
 #[cfg(test)]
+use watcher::start_sync_watcher;
+#[cfg(test)]
 use watcher::watcher_relative_path;
-use watcher::{WatcherSignal, start_sync_watcher};
+use watcher::{WatcherSignal, start_sync_watcher_with_recovery};

@@ -31,6 +31,9 @@ pub(super) fn parse_object_key(key: &str) -> Result<ObjectKey, TransportError> {
 }
 
 pub(super) fn byte_store_error(operation: &'static str, error: ByteStoreError) -> TransportError {
+    if matches!(error, ByteStoreError::IntegrityViolation { .. }) {
+        return TransportError::integrity(operation, error.to_string());
+    }
     TransportError::new(operation, error.to_string())
 }
 

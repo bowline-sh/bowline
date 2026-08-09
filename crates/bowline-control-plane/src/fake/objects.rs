@@ -80,6 +80,26 @@ impl ObjectControlPlaneClient for FakeControlPlaneClient {
         Ok(UploadIntentOutcome::Reserved(intent))
     }
 
+    fn reserve_object_uploads_batch(
+        &self,
+        requests: Vec<UploadIntentRequest>,
+    ) -> ControlPlaneResult<Vec<UploadIntentOutcome>> {
+        if requests.len() > crate::MAX_OBJECT_TRANSFER_BATCH {
+            return Err(ControlPlaneError::Internal {
+                reason: "object upload reservation batch exceeds 64 items",
+            });
+        }
+        self.state
+            .lock()
+            .expect("fake control plane poisoned")
+            .upload_reservation_batch_sizes
+            .push(requests.len());
+        requests
+            .into_iter()
+            .map(|request| self.create_upload_intent(request))
+            .collect()
+    }
+
     fn create_download_intent(
         &self,
         request: DownloadIntentRequest,
@@ -373,6 +393,26 @@ impl ObjectControlPlaneClient for FakeControlPlaneClient {
                 .push(commit.object.clone());
         }
         pointer_storage_metadata(&commit.object)
+    }
+
+    fn commit_uploaded_object_metadata_batch(
+        &self,
+        commits: Vec<ObjectMetadataCommit>,
+    ) -> ControlPlaneResult<Vec<ObjectMetadata>> {
+        if commits.len() > crate::MAX_OBJECT_TRANSFER_BATCH {
+            return Err(ControlPlaneError::Internal {
+                reason: "object metadata commit batch exceeds 64 items",
+            });
+        }
+        self.state
+            .lock()
+            .expect("fake control plane poisoned")
+            .metadata_commit_batch_sizes
+            .push(commits.len());
+        commits
+            .into_iter()
+            .map(|commit| self.commit_uploaded_object_metadata(commit))
+            .collect()
     }
 }
 

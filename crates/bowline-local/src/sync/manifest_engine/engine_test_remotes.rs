@@ -6,7 +6,7 @@
 //! everything that stands in for the hosted object store and the CAS ref.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -21,6 +21,7 @@ use super::push::{
     BlobReaderUpload, BlobUpload, CasOutcome, ManifestUpload, RefObservation, RemoteObjects,
     RemoteRef, TransportError,
 };
+use super::remote::{BlobPrefetchRequest, PrefetchedBlobs};
 
 /// One recorded transport event, so tests can assert ordering (a blob's metadata
 /// commit always precedes the manifest that references it).
@@ -52,21 +53,34 @@ pub(crate) struct FakeRemote {
     reference: RefCell<Option<RefObservation>>,
     version: RefCell<u64>,
     events: RefCell<Vec<Event>>,
+    prefetch_requests: RefCell<Vec<Vec<BlobPrefetchRequest>>>,
     cas_mode: RefCell<CasMode>,
     read_ref_count: Cell<u64>,
     /// When set, every transport call fails — the offline condition the driver's
     /// backoff loop is tested against.
     offline: Cell<bool>,
+    /// Mirrors the production transport, which accepts a blob into a queue and
+    /// stores it on a later drain. `put_blob` returning `Ok` then means accepted,
+    /// not stored.
+    defer_blobs: Cell<bool>,
+    deferred: RefCell<Vec<(String, Vec<u8>)>>,
+    /// Fail this many settles, dropping whatever was queued — what the real
+    /// pipeline does when a drain fails partway.
+    settle_failures: Cell<u32>,
 }
 
 impl FakeRemote {
     pub(crate) fn new() -> Self {
         Self {
             blobs: RefCell::new(BTreeMap::new()),
+            deferred: RefCell::new(Vec::new()),
+            defer_blobs: Cell::new(false),
+            settle_failures: Cell::new(0),
             manifests: RefCell::new(BTreeMap::new()),
             reference: RefCell::new(None),
             version: RefCell::new(0),
             events: RefCell::new(Vec::new()),
+            prefetch_requests: RefCell::new(Vec::new()),
             cas_mode: RefCell::new(CasMode::Normal),
             read_ref_count: Cell::new(0),
             offline: Cell::new(false),
@@ -93,6 +107,30 @@ impl FakeRemote {
         });
     }
 
+    pub(crate) fn force_genesis(&self) {
+        *self.reference.borrow_mut() = None;
+    }
+
+    /// Queue blobs instead of storing them, and fail the next `failures` settles.
+    pub(crate) fn defer_blob_uploads(&self, failures: u32) {
+        self.defer_blobs.set(true);
+        self.settle_failures.set(failures);
+    }
+
+    fn settle(&self) -> Result<(), TransportError> {
+        if self.settle_failures.get() > 0 {
+            self.settle_failures.set(self.settle_failures.get() - 1);
+            // The jobs are gone. Anything that already recorded them as stored is
+            // now lying.
+            self.deferred.borrow_mut().clear();
+            return Err(TransportError::new("settle", "simulated drain failure"));
+        }
+        for (key, sealed) in self.deferred.borrow_mut().drain(..) {
+            self.blobs.borrow_mut().insert(key, sealed);
+        }
+        Ok(())
+    }
+
     fn guard(&self, operation: &'static str) -> Result<(), TransportError> {
         if self.offline.get() {
             return Err(TransportError::new(operation, "simulated offline"));
@@ -100,8 +138,17 @@ impl FakeRemote {
         Ok(())
     }
 
+    /// Keys of blobs this remote has actually stored.
+    pub(crate) fn stored_blob_keys(&self) -> BTreeSet<String> {
+        self.blobs.borrow().keys().cloned().collect()
+    }
+
     pub(crate) fn events(&self) -> Vec<Event> {
         self.events.borrow().clone()
+    }
+
+    pub(crate) fn prefetch_requests(&self) -> Vec<Vec<BlobPrefetchRequest>> {
+        self.prefetch_requests.borrow().clone()
     }
 
     pub(crate) fn blob_put_count(&self) -> usize {
@@ -173,10 +220,15 @@ impl FakeRemote {
     pub(crate) fn clone_state(&self) -> FakeRemote {
         FakeRemote {
             blobs: RefCell::new(self.blobs.borrow().clone()),
+            // A snapshot is for a peer to pull from: settled state only.
+            deferred: RefCell::new(Vec::new()),
+            defer_blobs: Cell::new(false),
+            settle_failures: Cell::new(0),
             manifests: RefCell::new(self.manifests.borrow().clone()),
             reference: RefCell::new(self.reference.borrow().clone()),
             version: RefCell::new(*self.version.borrow()),
             events: RefCell::new(Vec::new()),
+            prefetch_requests: RefCell::new(Vec::new()),
             cas_mode: RefCell::new(CasMode::Normal),
             read_ref_count: Cell::new(0),
             offline: Cell::new(false),
@@ -276,10 +328,21 @@ impl RemoteObjects for FakeRemote {
         self.events
             .borrow_mut()
             .push(Event::PutBlob(upload.key.as_str().to_string()));
+        if self.defer_blobs.get() {
+            self.deferred
+                .borrow_mut()
+                .push((upload.key.as_str().to_string(), upload.sealed.to_vec()));
+            return Ok(());
+        }
         self.blobs
             .borrow_mut()
             .insert(upload.key.as_str().to_string(), upload.sealed.to_vec());
         Ok(())
+    }
+
+    fn ensure_uploads_settled(&self) -> Result<(), TransportError> {
+        self.guard("ensure_uploads_settled")?;
+        self.settle()
     }
 
     fn put_blob_reader(&self, upload: BlobReaderUpload<'_>) -> Result<(), TransportError> {
@@ -316,6 +379,20 @@ impl RemoteObjects for FakeRemote {
             .get(key.as_str())
             .cloned()
             .ok_or_else(|| TransportError::new("get_blob", "missing blob"))
+    }
+
+    fn prefetch_blobs(
+        &self,
+        requests: &[BlobPrefetchRequest],
+    ) -> Result<PrefetchedBlobs, TransportError> {
+        self.prefetch_requests.borrow_mut().push(requests.to_vec());
+        requests
+            .iter()
+            .map(|request| {
+                self.get_blob(&request.key)
+                    .map(|blob| (request.key.clone(), blob))
+            })
+            .collect()
     }
 
     fn get_manifest(&self, key: &ManifestKey) -> Result<Vec<u8>, TransportError> {

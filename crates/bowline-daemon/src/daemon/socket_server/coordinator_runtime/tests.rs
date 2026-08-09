@@ -1,4 +1,7 @@
-use super::watcher_bridge::{WatcherBridgeStartError, forward_watcher_signals};
+use super::watcher_bridge::{
+    RECOVERY_ATTEMPT_DEBOUNCE_CEILING, RecoveryAttemptDebounce, WatcherBridgeStartError,
+    forward_watcher_signals, preserve_watcher_visibility_while_debounced,
+};
 use crate::daemon::socket_server::coordinator_runtime::{
     CoordinatorAction, CoordinatorDeadlineKind, CoordinatorDriver, CoordinatorEvent,
     CoordinatorExecutor, CoordinatorExecutorConfig, CoordinatorJob, CoordinatorJobId,
@@ -29,10 +32,94 @@ use std::time::Instant;
 use time::OffsetDateTime;
 
 use crate::daemon::watcher::WatcherOverflowLane;
+use bowline_daemon::watcher_recovery::ActivityWatermark;
 use bowline_local::sync::manifest_engine::{EngineCounters, EngineEvent, WorkspacePath};
 
 fn watcher_changed(event: Event) -> WatcherSignal {
     WatcherSignal::Changed { event }
+}
+
+#[test]
+fn recovery_attempt_debounce_restarts_on_activity_without_authorizing_closure() {
+    let started = Instant::now();
+    let first = ActivityWatermark::new(1).expect("first watermark");
+    let second = ActivityWatermark::new(2).expect("second watermark");
+    let mut debounce = RecoveryAttemptDebounce::new(first, started);
+
+    assert!(debounce.defers_attempt(first, started + Duration::from_millis(99)));
+    assert!(debounce.defers_attempt(second, started + Duration::from_millis(99)));
+    assert!(debounce.defers_attempt(second, started + Duration::from_millis(198)));
+    assert!(!debounce.defers_attempt(second, started + Duration::from_millis(199)));
+}
+
+// A producer that never pauses for the quiet window used to restart the
+// deferral forever. A continuously written workspace could otherwise postpone
+// covering recovery for as long as it kept writing, which is what a long compile
+// or a working agent looks like.
+#[test]
+fn sustained_activity_cannot_defer_a_recovery_attempt_past_the_ceiling() {
+    let started = Instant::now();
+    let mut watermark_value = 1u64;
+    let mut watermark = ActivityWatermark::new(watermark_value).expect("watermark");
+    let mut debounce = RecoveryAttemptDebounce::new(watermark, started);
+
+    // Observe activity every 50ms, so the 100ms quiet window never elapses.
+    let mut elapsed = Duration::from_millis(0);
+    let mut authorized_at = None;
+    while elapsed < Duration::from_secs(30) {
+        elapsed += Duration::from_millis(50);
+        watermark_value += 1;
+        watermark = ActivityWatermark::new(watermark_value).expect("watermark");
+        if !debounce.defers_attempt(watermark, started + elapsed) {
+            authorized_at = Some(elapsed);
+            break;
+        }
+    }
+
+    let authorized_at = authorized_at.expect(
+        "sustained activity deferred the recovery attempt forever, so a blind daemon never scans",
+    );
+    assert!(
+        authorized_at <= RECOVERY_ATTEMPT_DEBOUNCE_CEILING + Duration::from_millis(50),
+        "attempt authorized after {authorized_at:?}, past the ceiling"
+    );
+}
+
+// The ceiling bounds one attempt's wait, not the bridge's lifetime: once an
+// attempt starts, a later burst gets the full quiet window again.
+#[test]
+fn authorizing_an_attempt_restarts_the_ceiling_for_the_next_one() {
+    let started = Instant::now();
+    let first = ActivityWatermark::new(1).expect("first watermark");
+    let second = ActivityWatermark::new(2).expect("second watermark");
+    let mut debounce = RecoveryAttemptDebounce::new(first, started);
+
+    // Quiet, so this authorizes through the debounce path rather than the ceiling.
+    assert!(!debounce.defers_attempt(first, started + Duration::from_millis(150)));
+
+    // A later observation is deferred again rather than inheriting the elapsed ceiling.
+    assert!(debounce.defers_attempt(second, started + Duration::from_millis(200)));
+}
+
+#[test]
+fn recovery_debounce_reopens_the_callback_lane_before_forwarding() {
+    let lane = Arc::new(WatcherOverflowLane::default());
+    lane.request_recovery();
+    let overflow_lane = Some(Arc::clone(&lane));
+
+    preserve_watcher_visibility_while_debounced(true, &overflow_lane);
+
+    assert!(
+        !lane.recovery_requested(),
+        "debounce left the callback blind instead of letting the bridge drain new detail"
+    );
+
+    lane.request_recovery();
+    preserve_watcher_visibility_while_debounced(false, &overflow_lane);
+    assert!(
+        lane.recovery_requested(),
+        "an attempt about to start must acknowledge overflow inside its close fence"
+    );
 }
 
 /// A manifest driver whose thread records forwarded engine events instead of
@@ -43,13 +130,26 @@ fn recording_driver() -> (
 ) {
     let recorded = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&recorded);
-    let driver = bowline_daemon::manifest_driver::ManifestDriver::spawn(move |inbox, _snapshot| {
-        while let Ok(event) = inbox.recv() {
-            if matches!(event, EngineEvent::Shutdown) {
-                break;
-            }
-            if let Ok(mut recorded) = sink.lock() {
-                recorded.push(event);
+    let driver = bowline_daemon::manifest_driver::ManifestDriver::spawn(move |inbox, snapshot| {
+        let Some(ingress) = snapshot.watcher_ingress_endpoint() else {
+            return;
+        };
+        let watcher_wake = ingress.wake_receiver();
+        loop {
+            crossbeam_channel::select! {
+                recv(inbox) -> event => match event {
+                    Ok(EngineEvent::Shutdown) | Err(_) => break,
+                    Ok(event) => {
+                        if let Ok(mut recorded) = sink.lock() {
+                            recorded.push(event);
+                        }
+                    }
+                },
+                recv(watcher_wake) -> _ => {
+                    if let Ok(mut recorded) = sink.lock() {
+                        recorded.extend(ingress.drain().into_events());
+                    }
+                },
             }
         }
     })
@@ -103,6 +203,23 @@ fn await_recorded_event(
     }
 }
 
+fn await_engine_event(
+    receiver: &crossbeam_channel::Receiver<EngineEvent>,
+    expected: &'static str,
+    predicate: impl Fn(&EngineEvent) -> bool,
+) -> EngineEvent {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let event = receiver
+            .recv_timeout(remaining)
+            .unwrap_or_else(|error| panic!("{expected} never arrived: {error}"));
+        if predicate(&event) {
+            return event;
+        }
+    }
+}
+
 #[test]
 fn watcher_bridge_forwards_rename_as_engine_paths() {
     let temp = crate::daemon::tests::unique_temp_dir("watcher-bridge-engine-rename");
@@ -143,6 +260,232 @@ fn watcher_bridge_forwards_rename_as_engine_paths() {
 }
 
 #[test]
+fn watcher_bridge_coalesces_one_bounded_batch_before_engine_handoff() {
+    let temp = crate::daemon::tests::unique_temp_dir("watcher-bridge-coalesced-batch");
+    let root = temp.join("Code");
+    fs::create_dir_all(root.join("budget")).expect("workspace root");
+    let (signal_tx, signal_rx) = mpsc::channel();
+    for index in 0..64 {
+        let slot = index % 16;
+        let path = root.join(format!("budget/item-{slot}"));
+        fs::write(&path, format!("operation-{index}\n")).expect("dense workload file");
+        signal_tx
+            .send(watcher_changed(
+                Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path),
+            ))
+            .expect("watcher signal");
+    }
+    drop(signal_tx);
+
+    let (engine_tx, engine_rx) = crossbeam_channel::bounded(64);
+    forward_watcher_signals(
+        signal_rx,
+        engine_tx,
+        root,
+        Arc::new(AtomicBool::new(false)),
+        EngineCounters::shared(),
+    );
+    let events = engine_rx.try_iter().collect::<Vec<_>>();
+    let observed = events
+        .iter()
+        .filter_map(|event| match event {
+            EngineEvent::Paths(paths) => Some(paths.iter().cloned()),
+            _ => None,
+        })
+        .flatten()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        observed.len(),
+        16,
+        "repeated paths coalesce in the dirty set"
+    );
+    assert!(events.iter().all(|event| match event {
+        EngineEvent::Paths(paths) | EngineEvent::RecursivePaths(paths) => paths.len() <= 256,
+        EngineEvent::FullScanRequired(_) => true,
+        _ => false,
+    }));
+
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn watcher_bridge_never_emits_an_unbounded_incremental_payload() {
+    let temp = crate::daemon::tests::unique_temp_dir("watcher-bridge-bounded-path-work");
+    let root = temp.join("Code");
+    fs::create_dir_all(root.join("budget")).expect("workspace root");
+    let (signal_tx, signal_rx) = mpsc::channel();
+    let overflow_lane = Arc::new(WatcherOverflowLane::default());
+    signal_tx
+        .send(WatcherSignal::OverflowLane(Arc::clone(&overflow_lane)))
+        .expect("overflow lane");
+    for index in 0..257 {
+        let path = root.join(format!("budget/item-{index}"));
+        fs::write(&path, format!("operation-{index}\n")).expect("dense workload file");
+        signal_tx
+            .send(watcher_changed(
+                Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path),
+            ))
+            .expect("watcher signal");
+    }
+    drop(signal_tx);
+
+    let (engine_tx, engine_rx) = crossbeam_channel::bounded(512);
+    forward_watcher_signals(
+        signal_rx,
+        engine_tx,
+        root,
+        Arc::new(AtomicBool::new(false)),
+        EngineCounters::shared(),
+    );
+    let events = engine_rx.try_iter().collect::<Vec<_>>();
+    assert!(events.iter().all(|event| match event {
+        EngineEvent::Paths(paths) => paths.len() <= 256,
+        EngineEvent::FullScanRequired(
+            bowline_local::sync::manifest_engine::FullScanReason::IngressDetailCollapsed,
+        ) => true,
+        _ => false,
+    }));
+
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn watcher_bridge_accumulates_a_live_dense_producer_before_engine_handoff() {
+    let temp = crate::daemon::tests::unique_temp_dir("watcher-bridge-live-dense-batch");
+    let root = temp.join("Code");
+    fs::create_dir_all(root.join("budget")).expect("workspace root");
+    let (signal_tx, signal_rx) = mpsc::sync_channel(128);
+    let overflow_lane = Arc::new(WatcherOverflowLane::default());
+    signal_tx
+        .send(WatcherSignal::OverflowLane(Arc::clone(&overflow_lane)))
+        .expect("overflow lane");
+    for index in 0..40 {
+        fs::write(
+            root.join(format!("budget/item-{index}")),
+            format!("operation-{index}\n"),
+        )
+        .expect("dense workload file");
+    }
+    let producer_root = root.clone();
+    let producer = std::thread::spawn(move || {
+        for index in 0..40 {
+            let path = producer_root.join(format!("budget/item-{index}"));
+            signal_tx
+                .send(watcher_changed(
+                    Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path),
+                ))
+                .expect("watcher signal");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+
+    let (engine_tx, engine_rx) = crossbeam_channel::bounded(64);
+    forward_watcher_signals(
+        signal_rx,
+        engine_tx,
+        root,
+        Arc::new(AtomicBool::new(false)),
+        EngineCounters::shared(),
+    );
+    producer.join().expect("dense producer joins");
+    let observed = engine_rx
+        .try_iter()
+        .filter_map(|event| match event {
+            EngineEvent::Paths(paths) => Some(paths.into_iter()),
+            _ => None,
+        })
+        .flatten()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(observed.len(), 40);
+
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn watcher_bridge_replaces_a_full_native_drain_with_recovery() {
+    let temp = crate::daemon::tests::unique_temp_dir("watcher-bridge-full-drain");
+    let root = temp.join("Code");
+    fs::create_dir_all(root.join("budget")).expect("workspace root");
+    let (signal_tx, signal_rx) = mpsc::channel();
+    let overflow_lane = Arc::new(WatcherOverflowLane::default());
+    signal_tx
+        .send(WatcherSignal::OverflowLane(Arc::clone(&overflow_lane)))
+        .expect("overflow lane");
+    for index in 1..crate::daemon::WATCHER_DRAIN_BUDGET {
+        let path = root.join(format!("budget/item-{}", index % 256));
+        fs::write(&path, format!("operation-{index}\n")).expect("dense workload file");
+        signal_tx
+            .send(watcher_changed(
+                Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path),
+            ))
+            .expect("watcher signal");
+    }
+    drop(signal_tx);
+
+    let (engine_tx, engine_rx) = crossbeam_channel::bounded(1_024);
+    forward_watcher_signals(
+        signal_rx,
+        engine_tx,
+        root,
+        Arc::new(AtomicBool::new(false)),
+        EngineCounters::shared(),
+    );
+    let events = engine_rx.try_iter().collect::<Vec<_>>();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        EngineEvent::FullScanRequired(
+            bowline_local::sync::manifest_engine::FullScanReason::IngressDetailCollapsed
+        )
+    )));
+    assert!(events.iter().all(|event| match event {
+        EngineEvent::FullScanRequired(
+            bowline_local::sync::manifest_engine::FullScanReason::IngressDetailCollapsed,
+        ) => true,
+        EngineEvent::Paths(paths) | EngineEvent::RecursivePaths(paths) => paths.len() <= 256,
+        _ => false,
+    }));
+
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn watcher_bridge_does_not_queue_behind_a_saturated_engine_inbox() {
+    let temp = crate::daemon::tests::unique_temp_dir("watcher-bridge-engine-backpressure");
+    let root = temp.join("Code");
+    fs::create_dir_all(&root).expect("workspace root");
+    let path = root.join("follow-up.txt");
+    fs::write(&path, "follow-up\n").expect("follow-up file");
+    let (signal_tx, signal_rx) = mpsc::channel();
+    signal_tx
+        .send(watcher_changed(
+            Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path),
+        ))
+        .expect("watcher signal");
+    drop(signal_tx);
+    let (engine_tx, _engine_rx) = crossbeam_channel::bounded(1);
+    engine_tx
+        .send(EngineEvent::RefChanged)
+        .expect("fill engine inbox");
+    let (finished_tx, finished_rx) = mpsc::channel();
+
+    std::thread::spawn(move || {
+        forward_watcher_signals(
+            signal_rx,
+            engine_tx,
+            root,
+            Arc::new(AtomicBool::new(false)),
+            EngineCounters::shared(),
+        );
+        finished_tx.send(()).expect("report bridge completion");
+    });
+
+    finished_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("saturated engine inbox cannot block watcher bridge");
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
 fn watcher_bridge_forwards_overflow_as_full_scan() {
     let temp = crate::daemon::tests::unique_temp_dir("watcher-bridge-engine-overflow");
     let root = temp.join("Code");
@@ -151,13 +494,6 @@ fn watcher_bridge_forwards_overflow_as_full_scan() {
     fs::create_dir_all(&state_root).expect("state root");
     let (mut runtime, signal_tx, recorded) =
         runtime_with_recording_driver(root, state_root, "workspace-engine-overflow");
-    let counters = Arc::clone(
-        &runtime
-            .sync
-            .as_ref()
-            .expect("sync runtime")
-            .manifest_counters,
-    );
     let WatcherBridgeStart::Started(bridge) =
         WatcherBridge::start(&mut runtime).expect("bridge starts")
     else {
@@ -171,11 +507,6 @@ fn watcher_bridge_forwards_overflow_as_full_scan() {
         matches!(event, EngineEvent::FullScanRequired(_))
     });
     assert!(matches!(event, EngineEvent::FullScanRequired(_)));
-    assert_eq!(
-        counters.snapshot().watcher_overflow_recoveries,
-        1,
-        "native recoverable signals count successful watcher-overflow fences"
-    );
 
     drop(signal_tx);
     drop(bridge);
@@ -183,7 +514,7 @@ fn watcher_bridge_forwards_overflow_as_full_scan() {
 }
 
 #[test]
-fn watcher_overflow_collapses_backlog_and_preserves_follow_up_edit() {
+fn fallback_overflow_lane_preserves_rearmed_loss_and_follow_up_edit() {
     let temp = crate::daemon::tests::unique_temp_dir("watcher-overflow-collapse");
     let root = temp.join("Code");
     fs::create_dir_all(&root).expect("workspace root");
@@ -192,17 +523,13 @@ fn watcher_overflow_collapses_backlog_and_preserves_follow_up_edit() {
     signal_tx
         .send(WatcherSignal::OverflowLane(Arc::clone(&overflow_lane)))
         .expect("overflow lane");
-    for index in 0..10_000 {
-        crate::daemon::watcher::send_watcher_signal(
-            &signal_tx,
-            &overflow_lane,
-            Ok(Event::new(EventKind::Modify(ModifyKind::Any))
-                .add_path(root.join(format!("backlog-{index}.txt")))),
-        );
-    }
+    // This regression owns re-arming one level-triggered loss. Native batch
+    // saturation is a separate loss source with its own test; mixing both made
+    // an older covering scan indistinguishable from the explicitly re-armed one.
+    overflow_lane.request_recovery();
     assert!(overflow_lane.recovery_requested());
 
-    let (engine_tx, engine_rx) = mpsc::channel();
+    let (engine_tx, engine_rx) = crossbeam_channel::bounded(64);
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = Arc::clone(&shutdown);
     let worker_root = root.clone();
@@ -219,38 +546,32 @@ fn watcher_overflow_collapses_backlog_and_preserves_follow_up_edit() {
     });
 
     assert!(matches!(
-        engine_rx.recv_timeout(Duration::from_millis(5_300)),
-        Ok(EngineEvent::FullScanRequired(
-            bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
-        ))
+        await_engine_event(&engine_rx, "initial overflow scan", |event| matches!(
+            event,
+            EngineEvent::FullScanRequired(
+                bowline_local::sync::manifest_engine::FullScanReason::IngressDetailCollapsed
+            )
+        )),
+        EngineEvent::FullScanRequired(
+            bowline_local::sync::manifest_engine::FullScanReason::IngressDetailCollapsed
+        )
     ));
-    assert!(
-        engine_rx.recv_timeout(Duration::from_millis(50)).is_err(),
-        "the saturated pre-overflow backlog collapses into one recovery fence"
-    );
-    assert_eq!(counters.snapshot().watcher_overflow_recoveries, 1);
-    assert_eq!(
-        counters.watcher_overflow_recovery_generation(),
-        1,
-        "the bridge asserts engine priority before publishing the FIFO fence"
-    );
 
     // Model another native loss while the engine may still be executing the
     // first scan. A level-triggered lane must re-arm a second fence; clearing
     // the first request cannot erase this later loss.
     overflow_lane.request_recovery();
     assert!(matches!(
-        engine_rx.recv_timeout(Duration::from_millis(5_300)),
-        Ok(EngineEvent::FullScanRequired(
-            bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
-        ))
+        await_engine_event(&engine_rx, "rearmed overflow scan", |event| matches!(
+            event,
+            EngineEvent::FullScanRequired(
+                bowline_local::sync::manifest_engine::FullScanReason::IngressDetailCollapsed
+            )
+        )),
+        EngineEvent::FullScanRequired(
+            bowline_local::sync::manifest_engine::FullScanReason::IngressDetailCollapsed
+        )
     ));
-    assert!(
-        engine_rx.recv_timeout(Duration::from_millis(50)).is_err(),
-        "one re-armed loss produces exactly one additional fence"
-    );
-    assert_eq!(counters.snapshot().watcher_overflow_recoveries, 2);
-    assert_eq!(counters.watcher_overflow_recovery_generation(), 2);
 
     let follow_up = root.join("follow-up.txt");
     fs::write(&follow_up, b"after overflow").expect("follow-up edit");
@@ -259,9 +580,11 @@ fn watcher_overflow_collapses_backlog_and_preserves_follow_up_edit() {
             Event::new(EventKind::Modify(ModifyKind::Any)).add_path(follow_up),
         ))
         .expect("follow-up signal");
-    let event = engine_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("follow-up survives recovery fence");
+    let event = await_engine_event(
+        &engine_rx,
+        "post-recovery path event",
+        |event| matches!(event, EngineEvent::Paths(paths) if paths.contains(&WorkspacePath::new("follow-up.txt"))),
+    );
     let EngineEvent::Paths(paths) = event else {
         panic!("expected follow-up Paths event, got {event:?}");
     };
@@ -289,7 +612,7 @@ fn watcher_overflow_latch_wakes_bridge_after_source_channel_drains() {
             Event::new(EventKind::Modify(ModifyKind::Any)).add_path(observed_path),
         ))
         .expect("ordinary signal");
-    let (engine_tx, engine_rx) = mpsc::channel();
+    let (engine_tx, engine_rx) = crossbeam_channel::bounded(64);
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = Arc::clone(&shutdown);
     let worker_root = root.clone();
@@ -308,22 +631,15 @@ fn watcher_overflow_latch_wakes_bridge_after_source_channel_drains() {
         engine_rx.recv_timeout(Duration::from_secs(1)),
         Ok(EngineEvent::Paths(_))
     ));
-    assert_eq!(
-        counters.snapshot().watcher_overflow_recoveries,
-        0,
-        "ordinary watcher traffic does not increment overflow recovery"
-    );
-
     // No channel send accompanies this latch. The bridge must discover it from
     // the timeout path after the ordinary source queue is already empty.
     overflow_lane.request_recovery();
     assert!(matches!(
         engine_rx.recv_timeout(Duration::from_millis(5_300)),
         Ok(EngineEvent::FullScanRequired(
-            bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
+            bowline_local::sync::manifest_engine::FullScanReason::IngressDetailCollapsed
         ))
     ));
-    assert_eq!(counters.snapshot().watcher_overflow_recoveries, 1);
 
     drop(signal_tx);
     worker.join().expect("bridge worker");
@@ -331,7 +647,7 @@ fn watcher_overflow_latch_wakes_bridge_after_source_channel_drains() {
 }
 
 #[test]
-fn coalesced_callback_activity_delays_the_overflow_fence_until_quiet() {
+fn asserted_overflow_lane_emits_an_immediate_covering_scan() {
     let temp = crate::daemon::tests::unique_temp_dir("watcher-overflow-activity");
     let root = temp.join("Code");
     fs::create_dir_all(&root).expect("workspace root");
@@ -342,7 +658,7 @@ fn coalesced_callback_activity_delays_the_overflow_fence_until_quiet() {
         .expect("overflow lane");
     overflow_lane.request_recovery();
 
-    let (engine_tx, engine_rx) = mpsc::channel();
+    let (engine_tx, engine_rx) = crossbeam_channel::bounded(64);
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = Arc::clone(&shutdown);
     let counters = EngineCounters::shared();
@@ -350,23 +666,10 @@ fn coalesced_callback_activity_delays_the_overflow_fence_until_quiet() {
     let worker = std::thread::spawn(move || {
         forward_watcher_signals(signal_rx, engine_tx, root, worker_shutdown, worker_counters);
     });
-    let activity_lane = Arc::clone(&overflow_lane);
-    let activity = std::thread::spawn(move || {
-        for _ in 0..16 {
-            std::thread::sleep(Duration::from_millis(25));
-            activity_lane.record_recovery_activity();
-        }
-    });
-
-    assert!(
-        engine_rx.recv_timeout(Duration::from_millis(250)).is_err(),
-        "active coalesced callbacks keep the recovery lane open"
-    );
-    activity.join().expect("activity producer");
     assert!(matches!(
-        engine_rx.recv_timeout(Duration::from_millis(5_300)),
+        engine_rx.recv_timeout(Duration::from_secs(1)),
         Ok(EngineEvent::FullScanRequired(
-            bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
+            bowline_local::sync::manifest_engine::FullScanReason::IngressDetailCollapsed
         ))
     ));
 
@@ -415,7 +718,7 @@ fn continuously_replenished_overflow_emits_fence_and_stops_promptly() {
         }
     });
 
-    let (engine_tx, engine_rx) = mpsc::channel();
+    let (engine_tx, engine_rx) = crossbeam_channel::bounded(64);
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = Arc::clone(&shutdown);
     let worker_root = root.clone();
@@ -431,10 +734,15 @@ fn continuously_replenished_overflow_emits_fence_and_stops_promptly() {
         );
     });
     assert!(matches!(
-        engine_rx.recv_timeout(Duration::from_millis(10_300)),
-        Ok(EngineEvent::FullScanRequired(
-            bowline_local::sync::manifest_engine::FullScanReason::WatcherOverflow
-        ))
+        await_engine_event(&engine_rx, "continuous-producer scan", |event| matches!(
+            event,
+            EngineEvent::FullScanRequired(
+                bowline_local::sync::manifest_engine::FullScanReason::IngressDetailCollapsed
+            )
+        )),
+        EngineEvent::FullScanRequired(
+            bowline_local::sync::manifest_engine::FullScanReason::IngressDetailCollapsed
+        )
     ));
 
     shutdown.store(true, Ordering::Release);

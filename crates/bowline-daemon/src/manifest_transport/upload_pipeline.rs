@@ -44,13 +44,21 @@ const MAX_QUEUED_BYTES: usize = 32 * 1024 * 1024;
 /// and make the first drain a long stall with nothing overlapping it.
 const MAX_QUEUED_OBJECTS: usize = 256;
 
+/// Maximum network waves needed to drain the small-object queue.
+///
+/// Each object requires an intent, a create-only PUT, and a metadata commit.
+/// The physical dense-producer proof showed that 32 waves of those round trips
+/// can consume the entire 30-second recovery contract even after native
+/// coverage and engine admission are bounded. Eight waves leaves most of the
+/// contract for scanning, manifest publication, peer observation, and apply.
+const MAX_UPLOAD_WAVES: usize = 8;
+
 /// Concurrent in-flight uploads during a drain.
 ///
-/// The work is round-trip-bound, not CPU-bound, so this is chosen against
-/// hosted concurrency limits rather than core count. Eight keeps a laptop's
-/// upstream busy while staying far below anything a control plane would treat
-/// as abuse.
-const UPLOAD_CONCURRENCY: usize = 8;
+/// This is derived from both queue bounds rather than the laptop's core count:
+/// the work is round-trip-bound, and a full small-object queue must fit inside
+/// [`MAX_UPLOAD_WAVES`]. Memory remains bounded by [`MAX_QUEUED_BYTES`].
+const UPLOAD_CONCURRENCY: usize = MAX_QUEUED_OBJECTS.div_ceil(MAX_UPLOAD_WAVES);
 
 /// One queued sealed blob. Owns its bytes: the engine's borrow ends when
 /// `put_blob` returns, and the worker that uploads it runs later.
@@ -131,16 +139,31 @@ impl UploadQueue {
 /// Returns the failure belonging to the lowest job index, so the error a caller
 /// sees does not depend on which worker lost the race — an engine that reports a
 /// different path on every retry is an engine nobody can debug.
-pub(super) fn drain_in_parallel<F>(
+pub(super) fn map_in_parallel<T, F>(
     jobs: &[QueuedUpload],
-    upload_one: F,
-) -> Result<(), TransportError>
+    map_one: F,
+) -> Result<Vec<T>, TransportError>
 where
-    F: Fn(&QueuedUpload) -> Result<(), TransportError> + Sync,
+    T: Send,
+    F: Fn(usize, &QueuedUpload) -> Result<T, TransportError> + Sync,
 {
-    drain_with_concurrency(jobs, UPLOAD_CONCURRENCY, upload_one)
+    map_with_concurrency(jobs, UPLOAD_CONCURRENCY, map_one)
 }
 
+pub(super) fn map_slice_in_parallel<J, T, F>(
+    jobs: &[J],
+    concurrency: usize,
+    map_one: F,
+) -> Result<Vec<T>, TransportError>
+where
+    J: Sync,
+    T: Send,
+    F: Fn(usize, &J) -> Result<T, TransportError> + Sync,
+{
+    map_with_concurrency(jobs, concurrency, map_one)
+}
+
+#[cfg(test)]
 fn drain_with_concurrency<F>(
     jobs: &[QueuedUpload],
     concurrency: usize,
@@ -149,12 +172,30 @@ fn drain_with_concurrency<F>(
 where
     F: Fn(&QueuedUpload) -> Result<(), TransportError> + Sync,
 {
+    map_with_concurrency(jobs, concurrency, |_index, job| {
+        upload_one(job)?;
+        Ok(())
+    })
+    .map(|_| ())
+}
+
+fn map_with_concurrency<J, T, F>(
+    jobs: &[J],
+    concurrency: usize,
+    map_one: F,
+) -> Result<Vec<T>, TransportError>
+where
+    J: Sync,
+    T: Send,
+    F: Fn(usize, &J) -> Result<T, TransportError> + Sync,
+{
     if jobs.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let next_job = AtomicUsize::new(0);
     let failures: Mutex<Vec<(usize, TransportError)>> = Mutex::new(Vec::new());
+    let results: Mutex<Vec<(usize, T)>> = Mutex::new(Vec::with_capacity(jobs.len()));
     let workers = concurrency.clamp(1, jobs.len());
 
     thread::scope(|scope| {
@@ -163,19 +204,35 @@ where
                 loop {
                     let index = next_job.fetch_add(1, Ordering::Relaxed);
                     let Some(job) = jobs.get(index) else { break };
-                    if let Err(error) = upload_one(job) {
-                        record_failure(&failures, index, error);
-                        // Stop pulling work: the whole push is already lost, and
-                        // continuing only burns bandwidth on objects no ref will
-                        // ever name.
-                        break;
+                    match map_one(index, job) {
+                        Ok(value) => record_result(&results, index, value),
+                        Err(error) => {
+                            record_failure(&failures, index, error);
+                            // Stop pulling work: the whole push is already lost,
+                            // and continuing only burns bandwidth on objects no
+                            // ref will ever name.
+                            break;
+                        }
                     }
                 }
             });
         }
     });
 
-    lowest_indexed_failure(failures)
+    lowest_indexed_failure(failures)?;
+    let mut results = match results.into_inner() {
+        Ok(results) => results,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    results.sort_by_key(|(index, _value)| *index);
+    Ok(results.into_iter().map(|(_index, value)| value).collect())
+}
+
+fn record_result<T>(results: &Mutex<Vec<(usize, T)>>, index: usize, value: T) {
+    match results.lock() {
+        Ok(mut results) => results.push((index, value)),
+        Err(poisoned) => poisoned.into_inner().push((index, value)),
+    }
 }
 
 fn record_failure(
@@ -288,6 +345,12 @@ mod tests {
             "peak concurrency was {}, expected at least 4",
             witness.peak()
         );
+    }
+
+    #[test]
+    fn full_small_object_queue_fits_the_recovery_upload_wave_budget() {
+        const { assert!(UPLOAD_CONCURRENCY > 1) };
+        assert!(MAX_QUEUED_OBJECTS.div_ceil(UPLOAD_CONCURRENCY) <= MAX_UPLOAD_WAVES);
     }
 
     #[test]

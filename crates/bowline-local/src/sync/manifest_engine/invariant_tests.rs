@@ -245,6 +245,61 @@ fn one_local_edit_publishes_the_edit_not_the_workspace() {
 }
 
 #[test]
+fn grouped_local_edits_rewrite_each_affected_tree_node_once() {
+    const GROUPED_FILES: usize = 256;
+
+    let mut harness = DriverHarness::new("inv-grouped-push-cost", "device-a");
+    harness.start();
+    let paths = (0..GROUPED_FILES)
+        .map(|index| format!("src/generated/f{index:05}.dat"))
+        .collect::<Vec<_>>();
+    for path in &paths {
+        harness.write(path, b"before");
+    }
+    let path_refs = paths.iter().map(String::as_str).collect::<Vec<_>>();
+    harness.edit(&path_refs);
+    let before = harness.counters();
+
+    for path in &paths {
+        harness.write(path, b"after");
+    }
+    harness.edit(&path_refs);
+    let after = harness.counters();
+
+    // The invariant is proportionality to the change, not to the workspace: each
+    // publish opens and emits `src/generated`, `src` and root exactly once, and
+    // never walks anything the edit did not touch. A publish is bounded, so a
+    // grouped edit larger than one batch costs that once per publish -- which is
+    // proportional to the change, and is what lets a file written after a burst
+    // reach its peer without waiting for the burst's whole backlog.
+    let publishes = after.cas_attempts - before.cas_attempts;
+    assert!(publishes >= 1, "the grouped edit published at least once");
+    // Bounded publishes, not many small ones. The ceiling is deliberately an
+    // absolute number rather than one derived from the batch size: derived from
+    // it, this assertion would move with the implementation and could never
+    // fail. Eight publishes for a 256-file grouped edit is the product
+    // statement -- a handful, not one per file, which is the blowup this
+    // invariant exists to forbid.
+    const MAX_PUBLISHES_FOR_A_GROUPED_EDIT: u64 = 8;
+    assert!(
+        publishes <= MAX_PUBLISHES_FOR_A_GROUPED_EDIT,
+        "a {GROUPED_FILES}-file grouped edit published {publishes} times; at most \
+         {MAX_PUBLISHES_FOR_A_GROUPED_EDIT} bounded batches is the cost a change may impose"
+    );
+    const NODES_PER_PUBLISH: u64 = 3;
+    assert_eq!(
+        after.manifest_downloads - before.manifest_downloads,
+        NODES_PER_PUBLISH * publishes,
+        "each publish opens `src/generated`, `src`, and root exactly once and nothing else"
+    );
+    assert_eq!(
+        after.manifest_uploads - before.manifest_uploads,
+        NODES_PER_PUBLISH * publishes,
+        "each publish emits each final affected node exactly once"
+    );
+}
+
+#[test]
 fn one_remote_change_fetches_the_changed_subtree_not_the_tree() {
     let (mut harness, paths) = published_fixture("inv-pull-bytes");
     let full = harness.counters();

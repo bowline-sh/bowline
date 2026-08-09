@@ -29,68 +29,13 @@ use super::unsyncable::{UnsyncableReason, UnsyncableRecord};
 mod error;
 #[path = "store/file_queries.rs"]
 mod file_queries;
+#[path = "store/frontier.rs"]
+mod frontier;
+#[path = "store/schema.rs"]
+mod schema;
 pub use error::ManifestStoreError;
-
-const SCHEMA: &str = "\
-CREATE TABLE IF NOT EXISTS files (
-    path TEXT PRIMARY KEY,
-    kind INTEGER NOT NULL,
-    size INTEGER NOT NULL,
-    mode INTEGER NOT NULL,
-    symlink_target TEXT,
-    content_id TEXT,
-    blob_key TEXT,
-    key_epoch INTEGER,
-    mtime_ns INTEGER NOT NULL,
-    ctime_ns INTEGER NOT NULL,
-    inode INTEGER NOT NULL,
-    dev INTEGER NOT NULL,
-    hashed_at INTEGER,
-    verified_at INTEGER
-) STRICT;
-CREATE TABLE IF NOT EXISTS engine_state (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    applied_manifest_key TEXT,
-    last_ref_version INTEGER,
-    highest_verified_ref_version INTEGER,
-    highest_verified_manifest_key TEXT
-) STRICT;
-CREATE TABLE IF NOT EXISTS intents (
-    path TEXT PRIMARY KEY,
-    operation_kind TEXT NOT NULL,
-    temp_name TEXT,
-    expected_preimage TEXT,
-    target_record TEXT,
-    preserved_preimage TEXT,
-    target_manifest_key TEXT,
-    created_at INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS unsyncable (
-    path TEXT PRIMARY KEY,
-    reason TEXT NOT NULL,
-    errno INTEGER,
-    observed_at INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS pending_push (
-    path TEXT PRIMARY KEY
-) STRICT;
-CREATE TABLE IF NOT EXISTS blobs (
-    content_id TEXT PRIMARY KEY,
-    blob_key TEXT NOT NULL,
-    key_epoch INTEGER NOT NULL,
-    byte_len INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS tree_nodes (
-    subtree_hash TEXT PRIMARY KEY,
-    node_key TEXT NOT NULL,
-    key_epoch INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS tree_node_epochs (
-    node_key TEXT PRIMARY KEY,
-    key_epoch INTEGER NOT NULL
-) STRICT;
-CREATE INDEX IF NOT EXISTS files_key_epoch_idx ON files(key_epoch);
-CREATE INDEX IF NOT EXISTS tree_nodes_node_key_idx ON tree_nodes(node_key);";
+pub use frontier::{EngineState, MaterializationRevision};
+use schema::SCHEMA;
 
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
 
@@ -136,16 +81,6 @@ pub struct SealedBlob {
     pub blob_key: BlobKey,
     pub key_epoch: KeyEpoch,
     pub byte_len: u64,
-}
-
-/// The typed singleton engine-state row. Absent fields read as `None` before the
-/// first commit.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct EngineState {
-    pub applied_manifest_key: Option<ManifestKey>,
-    pub last_ref_version: Option<u64>,
-    pub highest_verified_ref_version: Option<u64>,
-    pub highest_verified_manifest_key: Option<ManifestKey>,
 }
 
 /// A change-proportional ancestor mutation: upsert these rows, remove these
@@ -222,8 +157,13 @@ impl ManifestStore {
         connection.busy_timeout(BUSY_TIMEOUT)?;
         // WAL is durable database state; establish it and the schema once.
         connection.pragma_update(None, "journal_mode", "WAL")?;
-        connection.pragma_update(None, "synchronous", "NORMAL")?;
+        // Exact convergence receipts bind to the latest committed applied ref
+        // and materialization revision. FULL makes a successful WAL commit
+        // survive power loss; NORMAL explicitly permits losing the last
+        // transaction and therefore cannot underwrite that receipt.
+        connection.pragma_update(None, "synchronous", "FULL")?;
         connection.execute_batch(SCHEMA)?;
+        ensure_materialization_revision(&connection)?;
         raise_ratchet_floor(&connection)?;
         Ok(Self { connection })
     }
@@ -425,8 +365,9 @@ impl ManifestStore {
         let state = self
             .connection
             .query_row(
-                "SELECT applied_manifest_key, last_ref_version, highest_verified_ref_version, \
-                 highest_verified_manifest_key FROM engine_state WHERE singleton = 1",
+                "SELECT applied_manifest_key, last_ref_version, materialization_revision, \
+                 highest_verified_ref_version, highest_verified_manifest_key \
+                 FROM engine_state WHERE singleton = 1",
                 [],
                 |row| Ok(row_to_engine_state(row)),
             )
@@ -560,10 +501,14 @@ impl ManifestStore {
         intent_ids: &[WorkspacePath],
         push_again: &BTreeSet<WorkspacePath>,
     ) -> Result<(), ManifestStoreError> {
+        let materialization_changed =
+            !commit.upserts.is_empty() || !commit.removals.is_empty() || !intent_ids.is_empty();
         self.in_transaction(|connection| {
             apply_ancestor(connection, commit)?;
             if let Some((manifest_key, ref_version)) = applied {
                 set_applied(connection, manifest_key, to_i64(ref_version)?)?;
+            } else if materialization_changed {
+                advance_materialization_revision(connection)?;
             }
             if let Some((manifest_key, ref_version)) = verified {
                 advance_verified_ratchet(connection, manifest_key, to_i64(ref_version)?)?;
@@ -727,12 +672,59 @@ fn set_applied(
     manifest_key: &ManifestKey,
     ref_version: i64,
 ) -> Result<(), ManifestStoreError> {
+    let next = next_materialization_revision(connection)?;
     connection.execute(
-        "INSERT INTO engine_state (singleton, applied_manifest_key, last_ref_version) \
-         VALUES (1, ?1, ?2) ON CONFLICT(singleton) DO UPDATE SET \
+        "INSERT INTO engine_state (singleton, applied_manifest_key, last_ref_version, \
+         materialization_revision) VALUES (1, ?1, ?2, ?3) \
+         ON CONFLICT(singleton) DO UPDATE SET \
          applied_manifest_key = excluded.applied_manifest_key, \
-         last_ref_version = excluded.last_ref_version",
-        params![manifest_key.as_str(), ref_version],
+         last_ref_version = excluded.last_ref_version, \
+         materialization_revision = excluded.materialization_revision",
+        params![manifest_key.as_str(), ref_version, next],
+    )?;
+    Ok(())
+}
+
+fn advance_materialization_revision(connection: &Connection) -> Result<(), ManifestStoreError> {
+    let next = next_materialization_revision(connection)?;
+    connection.execute(
+        "INSERT INTO engine_state (singleton, materialization_revision) VALUES (1, ?1) \
+         ON CONFLICT(singleton) DO UPDATE SET \
+         materialization_revision = excluded.materialization_revision",
+        [next],
+    )?;
+    Ok(())
+}
+
+fn next_materialization_revision(connection: &Connection) -> Result<i64, ManifestStoreError> {
+    connection
+        .query_row(
+            "SELECT materialization_revision FROM engine_state WHERE singleton = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or(ManifestStoreError::ValueOutOfRange {
+            field: "materialization_revision",
+        })
+}
+
+/// Add the durable materialization frontier to stores created by a preceding
+/// development build. Bowline is greenfield, so this is a one-way schema
+/// upgrade rather than a runtime compatibility shape.
+fn ensure_materialization_revision(connection: &Connection) -> Result<(), ManifestStoreError> {
+    let mut columns = connection.prepare("PRAGMA table_info(engine_state)")?;
+    let names = columns.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == "materialization_revision" {
+            return Ok(());
+        }
+    }
+    connection.execute(
+        "ALTER TABLE engine_state ADD COLUMN materialization_revision INTEGER NOT NULL DEFAULT 0",
+        [],
     )?;
     Ok(())
 }
@@ -818,12 +810,17 @@ fn row_to_sealed_blob(row: &rusqlite::Row<'_>) -> Result<SealedBlob, ManifestSto
 }
 
 fn row_to_engine_state(row: &rusqlite::Row<'_>) -> Result<EngineState, ManifestStoreError> {
-    Ok(EngineState {
+    let state = EngineState {
         applied_manifest_key: row.get::<_, Option<String>>(0)?.map(ManifestKey::new),
         last_ref_version: row.get::<_, Option<i64>>(1)?.map(from_i64).transpose()?,
-        highest_verified_ref_version: row.get::<_, Option<i64>>(2)?.map(from_i64).transpose()?,
-        highest_verified_manifest_key: row.get::<_, Option<String>>(3)?.map(ManifestKey::new),
-    })
+        materialization_revision: MaterializationRevision::from_stored(from_i64(
+            row.get::<_, i64>(2)?,
+        )?),
+        highest_verified_ref_version: row.get::<_, Option<i64>>(3)?.map(from_i64).transpose()?,
+        highest_verified_manifest_key: row.get::<_, Option<String>>(4)?.map(ManifestKey::new),
+    };
+    let _checked = state.applied_ref()?;
+    Ok(state)
 }
 
 fn row_to_intent(row: &rusqlite::Row<'_>) -> Result<Intent, ManifestStoreError> {

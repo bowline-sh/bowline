@@ -1019,6 +1019,3002 @@
       }
     }
   },
+  "DaemonSyncBarrierConvergenceSource.workspaceIdentity.maxLength.invalid": {
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "workspaceIdentity": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    }
+  },
+  "DaemonSyncBarrierConvergenceSource.workspaceIdentity.maxLength.valid": {
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "workspaceIdentity": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    }
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.activityWatermark.maximum.invalid": {
+    "activityWatermark": 9007199254740992,
+    "closingRecoveryRevision": 0,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": 0
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.activityWatermark.maximum.valid": {
+    "activityWatermark": 9007199254740991,
+    "closingRecoveryRevision": 0,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": 0
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.activityWatermark.minimum.invalid": {
+    "activityWatermark": -1,
+    "closingRecoveryRevision": 0,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": 0
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.activityWatermark.minimum.valid": {
+    "activityWatermark": 0,
+    "closingRecoveryRevision": 0,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": 0
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.closingRecoveryRevision.maximum.invalid": {
+    "activityWatermark": 0,
+    "closingRecoveryRevision": 9007199254740992,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": 0
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.closingRecoveryRevision.maximum.valid": {
+    "activityWatermark": 0,
+    "closingRecoveryRevision": 9007199254740991,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": 0
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.closingRecoveryRevision.minimum.invalid": {
+    "activityWatermark": 0,
+    "closingRecoveryRevision": -1,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": 0
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.closingRecoveryRevision.minimum.valid": {
+    "activityWatermark": 0,
+    "closingRecoveryRevision": 0,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": 0
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.recoverySnapshotRevision.maximum.invalid": {
+    "activityWatermark": 0,
+    "closingRecoveryRevision": 0,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": 9007199254740992
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.recoverySnapshotRevision.maximum.valid": {
+    "activityWatermark": 0,
+    "closingRecoveryRevision": 0,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": 9007199254740991
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.recoverySnapshotRevision.minimum.invalid": {
+    "activityWatermark": 0,
+    "closingRecoveryRevision": 0,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": -1
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.recoverySnapshotRevision.minimum.valid": {
+    "activityWatermark": 0,
+    "closingRecoveryRevision": 0,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.boundaryId.maximum.invalid": {
+    "boundaryId": 9007199254740992,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.boundaryId.maximum.valid": {
+    "boundaryId": 9007199254740991,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.boundaryId.minimum.invalid": {
+    "boundaryId": 0,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.boundaryId.minimum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.callbackGeneration.maximum.invalid": {
+    "boundaryId": 1,
+    "callbackGeneration": 9007199254740992,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.callbackGeneration.maximum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 9007199254740991,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.callbackGeneration.minimum.invalid": {
+    "boundaryId": 1,
+    "callbackGeneration": -1,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.callbackGeneration.minimum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.coveredEpoch.maximum.invalid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 9007199254740992,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.coveredEpoch.maximum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 9007199254740991,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.coveredEpoch.minimum.invalid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 0,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.coveredEpoch.minimum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.flushGeneration.maximum.invalid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 9007199254740992,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.flushGeneration.maximum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 9007199254740991,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.flushGeneration.minimum.invalid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 0,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.flushGeneration.minimum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.historyThrough.maximum.invalid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 9007199254740992,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.historyThrough.maximum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 9007199254740991,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.historyThrough.minimum.invalid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": -1,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.historyThrough.minimum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.liveEpoch.maximum.invalid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 9007199254740992,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.liveEpoch.maximum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 9007199254740991,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.liveEpoch.minimum.invalid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 0,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.liveEpoch.minimum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.lossGeneration.maximum.invalid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 9007199254740992,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.lossGeneration.maximum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 9007199254740991,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.lossGeneration.minimum.invalid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": -1,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.lossGeneration.minimum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.sealedThrough.maximum.invalid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 9007199254740992
+  },
+  "DaemonSyncBarrierDarwinCoverage.sealedThrough.maximum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 9007199254740991
+  },
+  "DaemonSyncBarrierDarwinCoverage.sealedThrough.minimum.invalid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": -1
+  },
+  "DaemonSyncBarrierDarwinCoverage.sealedThrough.minimum.valid": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCursorReplay.coveredLastSafe.maximum.invalid": {
+    "coveredLastSafe": 9007199254740992,
+    "recoveryCause": null,
+    "replayFrom": 0
+  },
+  "DaemonSyncBarrierDarwinCursorReplay.coveredLastSafe.maximum.valid": {
+    "coveredLastSafe": 9007199254740991,
+    "recoveryCause": null,
+    "replayFrom": 0
+  },
+  "DaemonSyncBarrierDarwinCursorReplay.coveredLastSafe.minimum.invalid": {
+    "coveredLastSafe": -1,
+    "recoveryCause": null,
+    "replayFrom": 0
+  },
+  "DaemonSyncBarrierDarwinCursorReplay.coveredLastSafe.minimum.valid": {
+    "coveredLastSafe": 0,
+    "recoveryCause": null,
+    "replayFrom": 0
+  },
+  "DaemonSyncBarrierDarwinCursorReplay.replayFrom.maximum.invalid": {
+    "coveredLastSafe": 0,
+    "recoveryCause": null,
+    "replayFrom": 9007199254740992
+  },
+  "DaemonSyncBarrierDarwinCursorReplay.replayFrom.maximum.valid": {
+    "coveredLastSafe": 0,
+    "recoveryCause": null,
+    "replayFrom": 9007199254740991
+  },
+  "DaemonSyncBarrierDarwinCursorReplay.replayFrom.minimum.invalid": {
+    "coveredLastSafe": 0,
+    "recoveryCause": null,
+    "replayFrom": -1
+  },
+  "DaemonSyncBarrierDarwinCursorReplay.replayFrom.minimum.valid": {
+    "coveredLastSafe": 0,
+    "recoveryCause": null,
+    "replayFrom": 0
+  },
+  "DaemonSyncBarrierDarwinFreshStream.freshFrom.maximum.invalid": {
+    "discontinuity": "user_dropped",
+    "freshFrom": 9007199254740992
+  },
+  "DaemonSyncBarrierDarwinFreshStream.freshFrom.maximum.valid": {
+    "discontinuity": "user_dropped",
+    "freshFrom": 9007199254740991
+  },
+  "DaemonSyncBarrierDarwinFreshStream.freshFrom.minimum.invalid": {
+    "discontinuity": "user_dropped",
+    "freshFrom": -1
+  },
+  "DaemonSyncBarrierDarwinFreshStream.freshFrom.minimum.valid": {
+    "discontinuity": "user_dropped",
+    "freshFrom": 0
+  },
+  "DaemonSyncBarrierEngineConvergence.admittedAt.maxLength.invalid": {
+    "admittedAt": {
+      "$boundaryString": {
+        "count": 65,
+        "unit": "x"
+      }
+    },
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.admittedAt.maxLength.valid": {
+    "admittedAt": {
+      "$boundaryString": {
+        "count": 64,
+        "unit": "x"
+      }
+    },
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.barrierId.maxLength.invalid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": {
+      "$boundaryString": {
+        "count": 33,
+        "unit": "x"
+      }
+    },
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.barrierId.maxLength.valid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": {
+      "$boundaryString": {
+        "count": 32,
+        "unit": "x"
+      }
+    },
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.completedAt.maxLength.invalid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": {
+      "$boundaryString": {
+        "count": 65,
+        "unit": "x"
+      }
+    },
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.completedAt.maxLength.valid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": {
+      "$boundaryString": {
+        "count": 64,
+        "unit": "x"
+      }
+    },
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.endpointGeneration.maximum.invalid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 9007199254740992,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.endpointGeneration.maximum.valid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 9007199254740991,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.endpointGeneration.minimum.invalid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 0,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.endpointGeneration.minimum.valid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.engineRevision.maximum.invalid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 9007199254740992,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.engineRevision.maximum.valid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 9007199254740991,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.engineRevision.minimum.invalid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 0,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.engineRevision.minimum.valid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.materializationRevision.maximum.invalid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 9007199254740992,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.materializationRevision.maximum.valid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 9007199254740991,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.materializationRevision.minimum.invalid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": -1,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.materializationRevision.minimum.valid": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierLinuxCoverage.boundaryId.maximum.invalid": {
+    "boundaryId": 9007199254740992,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.boundaryId.maximum.valid": {
+    "boundaryId": 9007199254740991,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.boundaryId.minimum.invalid": {
+    "boundaryId": 0,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.boundaryId.minimum.valid": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.callbackDrainControlId.maximum.invalid": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 9007199254740992,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.callbackDrainControlId.maximum.valid": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 9007199254740991,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.callbackDrainControlId.minimum.invalid": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 0,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.callbackDrainControlId.minimum.valid": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.streamEpoch.maximum.invalid": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 9007199254740992,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.streamEpoch.maximum.valid": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 9007199254740991,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.streamEpoch.minimum.invalid": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 0,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.streamEpoch.minimum.valid": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.watcherReadyControlId.maximum.invalid": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 9007199254740992
+  },
+  "DaemonSyncBarrierLinuxCoverage.watcherReadyControlId.maximum.valid": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 9007199254740991
+  },
+  "DaemonSyncBarrierLinuxCoverage.watcherReadyControlId.minimum.invalid": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 0
+  },
+  "DaemonSyncBarrierLinuxCoverage.watcherReadyControlId.minimum.valid": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierObserverLiveness.endpointGeneration.maximum.invalid": {
+    "endpointGeneration": 9007199254740992,
+    "lifecycleRevision": 1,
+    "observedAt": "fixture",
+    "observedRef": {
+      "version": 42
+    },
+    "state": "live"
+  },
+  "DaemonSyncBarrierObserverLiveness.endpointGeneration.maximum.valid": {
+    "endpointGeneration": 9007199254740991,
+    "lifecycleRevision": 1,
+    "observedAt": "fixture",
+    "observedRef": {
+      "version": 42
+    },
+    "state": "live"
+  },
+  "DaemonSyncBarrierObserverLiveness.endpointGeneration.minimum.invalid": {
+    "endpointGeneration": 0,
+    "lifecycleRevision": 1,
+    "observedAt": "fixture",
+    "observedRef": {
+      "version": 42
+    },
+    "state": "live"
+  },
+  "DaemonSyncBarrierObserverLiveness.endpointGeneration.minimum.valid": {
+    "endpointGeneration": 1,
+    "lifecycleRevision": 1,
+    "observedAt": "fixture",
+    "observedRef": {
+      "version": 42
+    },
+    "state": "live"
+  },
+  "DaemonSyncBarrierObserverLiveness.lifecycleRevision.maximum.invalid": {
+    "endpointGeneration": 1,
+    "lifecycleRevision": 9007199254740992,
+    "observedAt": "fixture",
+    "observedRef": {
+      "version": 42
+    },
+    "state": "live"
+  },
+  "DaemonSyncBarrierObserverLiveness.lifecycleRevision.maximum.valid": {
+    "endpointGeneration": 1,
+    "lifecycleRevision": 9007199254740991,
+    "observedAt": "fixture",
+    "observedRef": {
+      "version": 42
+    },
+    "state": "live"
+  },
+  "DaemonSyncBarrierObserverLiveness.lifecycleRevision.minimum.invalid": {
+    "endpointGeneration": 1,
+    "lifecycleRevision": 0,
+    "observedAt": "fixture",
+    "observedRef": {
+      "version": 42
+    },
+    "state": "live"
+  },
+  "DaemonSyncBarrierObserverLiveness.lifecycleRevision.minimum.valid": {
+    "endpointGeneration": 1,
+    "lifecycleRevision": 1,
+    "observedAt": "fixture",
+    "observedRef": {
+      "version": 42
+    },
+    "state": "live"
+  },
+  "DaemonSyncBarrierObserverLiveness.observedAt.maxLength.invalid": {
+    "endpointGeneration": 1,
+    "lifecycleRevision": 1,
+    "observedAt": {
+      "$boundaryString": {
+        "count": 65,
+        "unit": "x"
+      }
+    },
+    "observedRef": {
+      "version": 42
+    },
+    "state": "live"
+  },
+  "DaemonSyncBarrierObserverLiveness.observedAt.maxLength.valid": {
+    "endpointGeneration": 1,
+    "lifecycleRevision": 1,
+    "observedAt": {
+      "$boundaryString": {
+        "count": 64,
+        "unit": "x"
+      }
+    },
+    "observedRef": {
+      "version": 42
+    },
+    "state": "live"
+  },
+  "DaemonSyncBarrierProcessIdentity.bootId.maxLength.invalid": {
+    "bootId": {
+      "$boundaryString": {
+        "count": 129,
+        "unit": "x"
+      }
+    },
+    "sessionId": "fixture",
+    "startedAt": "fixture"
+  },
+  "DaemonSyncBarrierProcessIdentity.bootId.maxLength.valid": {
+    "bootId": {
+      "$boundaryString": {
+        "count": 128,
+        "unit": "x"
+      }
+    },
+    "sessionId": "fixture",
+    "startedAt": "fixture"
+  },
+  "DaemonSyncBarrierProcessIdentity.sessionId.maxLength.invalid": {
+    "bootId": "fixture",
+    "sessionId": {
+      "$boundaryString": {
+        "count": 129,
+        "unit": "x"
+      }
+    },
+    "startedAt": "fixture"
+  },
+  "DaemonSyncBarrierProcessIdentity.sessionId.maxLength.valid": {
+    "bootId": "fixture",
+    "sessionId": {
+      "$boundaryString": {
+        "count": 128,
+        "unit": "x"
+      }
+    },
+    "startedAt": "fixture"
+  },
+  "DaemonSyncBarrierProcessIdentity.startedAt.maxLength.invalid": {
+    "bootId": "fixture",
+    "sessionId": "fixture",
+    "startedAt": {
+      "$boundaryString": {
+        "count": 65,
+        "unit": "x"
+      }
+    }
+  },
+  "DaemonSyncBarrierProcessIdentity.startedAt.maxLength.valid": {
+    "bootId": "fixture",
+    "sessionId": "fixture",
+    "startedAt": {
+      "$boundaryString": {
+        "count": 64,
+        "unit": "x"
+      }
+    }
+  },
+  "DaemonSyncBarrierRecoveryClosure.attemptCount.maximum.invalid": {
+    "attemptCount": 9007199254740992,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.attemptCount.maximum.valid": {
+    "attemptCount": 9007199254740991,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.attemptCount.minimum.invalid": {
+    "attemptCount": 0,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.attemptCount.minimum.valid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.authoritativeScanRevision.maximum.invalid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 9007199254740992,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.authoritativeScanRevision.maximum.valid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 9007199254740991,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.authoritativeScanRevision.minimum.invalid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": -1,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.authoritativeScanRevision.minimum.valid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.capturedActivityWatermark.maximum.invalid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 9007199254740992,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.capturedActivityWatermark.maximum.valid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 9007199254740991,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.capturedActivityWatermark.minimum.invalid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": -1,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.capturedActivityWatermark.minimum.valid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.closedAt.maxLength.invalid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": {
+      "$boundaryString": {
+        "count": 65,
+        "unit": "x"
+      }
+    },
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.closedAt.maxLength.valid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": {
+      "$boundaryString": {
+        "count": 64,
+        "unit": "x"
+      }
+    },
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.closingAttemptId.maxLength.invalid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": {
+      "$boundaryString": {
+        "count": 33,
+        "unit": "x"
+      }
+    },
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.closingAttemptId.maxLength.valid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": {
+      "$boundaryString": {
+        "count": 32,
+        "unit": "x"
+      }
+    },
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.closingRecoveryRevision.maximum.invalid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 9007199254740992,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.closingRecoveryRevision.maximum.valid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 9007199254740991,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.closingRecoveryRevision.minimum.invalid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 0,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.closingRecoveryRevision.minimum.valid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.finalActivityWatermark.maximum.invalid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 9007199254740992,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.finalActivityWatermark.maximum.valid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 9007199254740991,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.finalActivityWatermark.minimum.invalid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": -1,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.finalActivityWatermark.minimum.valid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.incidentId.maxLength.invalid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": {
+      "$boundaryString": {
+        "count": 33,
+        "unit": "x"
+      }
+    },
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.incidentId.maxLength.valid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": {
+      "$boundaryString": {
+        "count": 32,
+        "unit": "x"
+      }
+    },
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.scanCount.maximum.invalid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 9007199254740992
+  },
+  "DaemonSyncBarrierRecoveryClosure.scanCount.maximum.valid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 9007199254740991
+  },
+  "DaemonSyncBarrierRecoveryClosure.scanCount.minimum.invalid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 0
+  },
+  "DaemonSyncBarrierRecoveryClosure.scanCount.minimum.valid": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRefIdentity.manifestKey.maxLength.invalid": {
+    "manifestKey": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "version": 42
+  },
+  "DaemonSyncBarrierRefIdentity.manifestKey.maxLength.valid": {
+    "manifestKey": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "version": 42
+  },
+  "DaemonSyncBarrierRefIdentity.version.maximum.invalid": {
+    "version": 9007199254740992
+  },
+  "DaemonSyncBarrierRefIdentity.version.maximum.valid": {
+    "version": 9007199254740991
+  },
+  "DaemonSyncBarrierRefIdentity.version.minimum.invalid": {
+    "version": -1
+  },
+  "DaemonSyncBarrierRefIdentity.version.minimum.valid": {
+    "version": 0
+  },
+  "DaemonSyncBarrierResult.barrierId.maxLength.invalid": {
+    "barrierId": {
+      "$boundaryString": {
+        "count": 41,
+        "unit": "x"
+      }
+    },
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "linearizedAt": "fixture",
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "recoveryClosure": null,
+    "workspaceIdentity": "fixture",
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierResult.barrierId.maxLength.valid": {
+    "barrierId": {
+      "$boundaryString": {
+        "count": 40,
+        "unit": "x"
+      }
+    },
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "linearizedAt": "fixture",
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "recoveryClosure": null,
+    "workspaceIdentity": "fixture",
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierResult.linearizedAt.maxLength.invalid": {
+    "barrierId": "fixture",
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "linearizedAt": {
+      "$boundaryString": {
+        "count": 65,
+        "unit": "x"
+      }
+    },
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "recoveryClosure": null,
+    "workspaceIdentity": "fixture",
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierResult.linearizedAt.maxLength.valid": {
+    "barrierId": "fixture",
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "linearizedAt": {
+      "$boundaryString": {
+        "count": 64,
+        "unit": "x"
+      }
+    },
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "recoveryClosure": null,
+    "workspaceIdentity": "fixture",
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierResult.workspaceIdentity.maxLength.invalid": {
+    "barrierId": "fixture",
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "linearizedAt": "fixture",
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "recoveryClosure": null,
+    "workspaceIdentity": {
+      "$boundaryString": {
+        "count": 513,
+        "unit": "x"
+      }
+    },
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierResult.workspaceIdentity.maxLength.valid": {
+    "barrierId": "fixture",
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "linearizedAt": "fixture",
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "recoveryClosure": null,
+    "workspaceIdentity": {
+      "$boundaryString": {
+        "count": 512,
+        "unit": "x"
+      }
+    },
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierWorkspaceStatus.observedAt.maxLength.invalid": {
+    "observedAt": {
+      "$boundaryString": {
+        "count": 65,
+        "unit": "x"
+      }
+    },
+    "state": "ready"
+  },
+  "DaemonSyncBarrierWorkspaceStatus.observedAt.maxLength.valid": {
+    "observedAt": {
+      "$boundaryString": {
+        "count": 64,
+        "unit": "x"
+      }
+    },
+    "state": "ready"
+  },
   "DaemonSyncResource.conflictId.maxLength.invalid": {
     "conflictId": {
       "$boundaryString": {
@@ -9263,6 +12259,46 @@
       }
     }
   },
+  "HostedObjectsCommitUploadedObjectMetadataBatchRequest.requests.maxItems.invalid": {
+    "requests": {
+      "$boundaryArray": {
+        "count": 65,
+        "item": {
+          "committedByDeviceId": "device_1",
+          "committedByDeviceProof": "proof_commit_metadata",
+          "object": {
+            "byteLength": 256,
+            "contentId": "cid_fixture",
+            "hash": "b3_fixture",
+            "keyEpoch": 1,
+            "kind": "blob",
+            "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
+          },
+          "workspaceId": "ws_code"
+        }
+      }
+    }
+  },
+  "HostedObjectsCommitUploadedObjectMetadataBatchRequest.requests.maxItems.valid": {
+    "requests": {
+      "$boundaryArray": {
+        "count": 64,
+        "item": {
+          "committedByDeviceId": "device_1",
+          "committedByDeviceProof": "proof_commit_metadata",
+          "object": {
+            "byteLength": 256,
+            "contentId": "cid_fixture",
+            "hash": "b3_fixture",
+            "keyEpoch": 1,
+            "kind": "blob",
+            "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture"
+          },
+          "workspaceId": "ws_code"
+        }
+      }
+    }
+  },
   "HostedObjectsCommitUploadedObjectMetadataRequest.committedByDeviceId.maxLength.invalid": {
     "committedByDeviceId": {
       "$boundaryString": {
@@ -10578,6 +13614,40 @@
       "$boundaryString": {
         "count": 512,
         "unit": "x"
+      }
+    }
+  },
+  "HostedObjectsReserveObjectUploadsBatchRequest.requests.maxItems.invalid": {
+    "requests": {
+      "$boundaryArray": {
+        "count": 65,
+        "item": {
+          "authorityFormatVersion": 2,
+          "byteLength": 256,
+          "checksumSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          "createdByDeviceId": "device_1",
+          "createdByDeviceProof": "proof_upload_intent",
+          "kind": "blob",
+          "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+          "workspaceId": "ws_code"
+        }
+      }
+    }
+  },
+  "HostedObjectsReserveObjectUploadsBatchRequest.requests.maxItems.valid": {
+    "requests": {
+      "$boundaryArray": {
+        "count": 64,
+        "item": {
+          "authorityFormatVersion": 2,
+          "byteLength": 256,
+          "checksumSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          "createdByDeviceId": "device_1",
+          "createdByDeviceProof": "proof_upload_intent",
+          "kind": "blob",
+          "objectKey": "b_0000000000000000000000000000000000000000000000000000000000000000ixture",
+          "workspaceId": "ws_code"
+        }
       }
     }
   },

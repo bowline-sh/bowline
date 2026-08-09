@@ -10,8 +10,10 @@
 use std::path::Path;
 
 use bowline_control_plane::{
-    ControlPlaneClient, ControlPlaneTimestamp, ObjectKind as ControlObjectKind,
-    ObjectMetadataCommit, ObjectPointer, PutOutcome, SignedUrlByteStore, SignedUrlHttpClient,
+    ControlPlaneClient, ControlPlaneTimestamp, MAX_OBJECT_TRANSFER_BATCH,
+    ObjectKind as ControlObjectKind, ObjectMetadataCommit, ObjectPointer, PutOutcome,
+    Sha256Checksum, SignedUrlByteStore, SignedUrlHttpClient, UploadIntentOutcome,
+    UploadIntentRequest,
 };
 use bowline_core::ids::{ContentId, DeviceId, WorkspaceId};
 use bowline_local::sync::manifest_engine::{KeyEpoch, TransportError};
@@ -24,6 +26,7 @@ use super::helpers::{
     SpoolSource, byte_store_error, committed_metadata_error, control_plane_error, hash_spool,
     parse_object_key,
 };
+use super::upload_pipeline::{QueuedUpload, map_in_parallel};
 
 /// `stable_object_hash` prefixes every digest with `b3_`; the sealed-hash suffix
 /// after it must equal the physical object key's hex, which is the entire
@@ -171,6 +174,104 @@ impl<'a, C: ControlPlaneClient> ObjectUploader<'a, C> {
         )
     }
 
+    /// Reserve and commit control-plane metadata in deterministic groups while
+    /// the create-only object PUTs occupy the bounded worker pool.
+    pub(super) fn upload_buffered_batch(
+        &self,
+        uploads: &[QueuedUpload],
+    ) -> Result<(), TransportError>
+    where
+        C: Sync,
+    {
+        for batch in uploads.chunks(MAX_OBJECT_TRANSFER_BATCH) {
+            let requests = batch
+                .iter()
+                .map(|upload| {
+                    UploadIntentRequest::new(
+                        self.workspace_id.as_str(),
+                        upload.kind.control_kind(),
+                        upload.sealed.len() as u64,
+                        Sha256Checksum::for_bytes(&upload.sealed),
+                    )
+                    .with_content_id(upload.content_id.as_str())
+                    .with_object_key(upload.key.clone())
+                })
+                .collect();
+            let reservations = self
+                .control_plane
+                .reserve_object_uploads_batch(requests)
+                .map_err(|error| control_plane_error("reserve-object-uploads-batch", error))?;
+            if reservations.len() != batch.len() {
+                return Err(committed_metadata_error("reservation-batch-cardinality"));
+            }
+            let pending = map_in_parallel(batch, |index, upload| {
+                let reservation = reservations
+                    .get(index)
+                    .cloned()
+                    .ok_or_else(|| committed_metadata_error("reservation-batch-cardinality"))?;
+                self.transfer_reserved(upload, reservation)
+            })?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+            if pending.is_empty() {
+                continue;
+            }
+            let commits = pending.iter().map(|item| item.commit.clone()).collect();
+            let committed = self
+                .control_plane
+                .commit_uploaded_object_metadata_batch(commits)
+                .map_err(|error| {
+                    control_plane_error("commit-uploaded-object-metadata-batch", error)
+                })?;
+            if committed.len() != pending.len() {
+                return Err(committed_metadata_error("commit-batch-cardinality"));
+            }
+            for (pending, committed) in pending.iter().zip(&committed) {
+                pending.validate(committed)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn transfer_reserved(
+        &self,
+        upload: &QueuedUpload,
+        reservation: UploadIntentOutcome,
+    ) -> Result<Option<PendingCommit>, TransportError> {
+        let object_key = parse_object_key(&upload.key)?;
+        let outcome = self
+            .store()
+            .put_object_with_upload_intent(
+                PutObjectRequest {
+                    key: object_key,
+                    kind: upload.kind.storage_kind(),
+                    content_id: ObjectContentId::new(upload.content_id.as_str()),
+                    source: PutObjectSource::Bytes(&upload.sealed),
+                    byte_len: upload.sealed.len() as u64,
+                    expected_hash: ObjectHash::from_stable_hash(stable_object_hash(&upload.sealed)),
+                    key_epoch: upload.key_epoch.get(),
+                    created_by_device_id: Some(&self.device_id),
+                },
+                reservation,
+            )
+            .map_err(|error| byte_store_error(upload.kind.put_operation(), error))?;
+        match outcome {
+            PutOutcome::Uploaded(metadata) => Ok(Some(PendingCommit::new(self, upload, metadata))),
+            PutOutcome::AlreadyCommitted(committed) => {
+                validate_committed_metadata(CommittedMetadataExpectation {
+                    key_prefix: upload.kind.key_prefix(),
+                    key: &upload.key,
+                    expected_hash: &committed.hash,
+                    expected_byte_len: upload.sealed.len() as u64,
+                    expected_key_epoch: upload.key_epoch,
+                    committed: &committed,
+                })?;
+                Ok(None)
+            }
+        }
+    }
+
     /// Reserve + streamed create-only PUT of a sealed object spooled to disk.
     pub(super) fn upload_streaming(
         &self,
@@ -301,6 +402,58 @@ struct CompletionRequest<'a> {
     key: &'a str,
     expected_byte_len: u64,
     key_epoch: KeyEpoch,
+}
+
+struct PendingCommit {
+    kind: UploadKind,
+    key: String,
+    expected_hash: String,
+    expected_byte_len: u64,
+    expected_key_epoch: KeyEpoch,
+    commit: ObjectMetadataCommit,
+}
+
+impl PendingCommit {
+    fn new<C: ControlPlaneClient>(
+        uploader: &ObjectUploader<'_, C>,
+        upload: &QueuedUpload,
+        metadata: ObjectMetadata,
+    ) -> Self {
+        let pointer = ObjectPointer {
+            object_key: metadata.key.as_str().to_string(),
+            content_id: upload.content_id.clone(),
+            byte_len: metadata.byte_len,
+            hash: metadata.hash.clone(),
+            key_epoch: metadata.key_epoch,
+            kind: upload.kind.control_kind(),
+            created_at: ControlPlaneTimestamp {
+                tick: metadata.created_at_unix_ms,
+            },
+        };
+        Self {
+            kind: upload.kind,
+            key: upload.key.clone(),
+            expected_hash: metadata.hash,
+            expected_byte_len: upload.sealed.len() as u64,
+            expected_key_epoch: upload.key_epoch,
+            commit: ObjectMetadataCommit {
+                workspace_id: uploader.workspace_id.clone(),
+                object: pointer,
+                committed_by_device_id: uploader.device_id.clone(),
+            },
+        }
+    }
+
+    fn validate(&self, committed: &ObjectMetadata) -> Result<(), TransportError> {
+        validate_committed_metadata(CommittedMetadataExpectation {
+            key_prefix: self.kind.key_prefix(),
+            key: &self.key,
+            expected_hash: &self.expected_hash,
+            expected_byte_len: self.expected_byte_len,
+            expected_key_epoch: self.expected_key_epoch,
+            committed,
+        })
+    }
 }
 
 // ---- committed metadata validation -----------------------------------------

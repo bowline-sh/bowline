@@ -9,8 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use bowline_core::ids::{ContentId, DeviceId};
+use bowline_core::ids::{ContentId, DeviceId, WorkspaceId};
 
+use super::EngineProcessIdentity;
 use super::counters::EngineCounters;
 use super::endpoint::{
     NameFolding, probe_name_folding, probe_timestamp_granularity, sample_endpoint_clock,
@@ -139,6 +140,8 @@ pub(crate) fn test_crypto() -> WorkspaceCrypto {
 
 pub(crate) fn test_context(root: PathBuf, device: &str) -> EngineContext {
     EngineContext {
+        process_identity: EngineProcessIdentity::current(),
+        workspace_identity: WorkspaceId::new("ws_code"),
         crypto: test_crypto(),
         device_id: DeviceId::new(device.to_string()),
         engine_state_dir: root.join(super::ENGINE_STATE_DIR),
@@ -173,6 +176,8 @@ impl TestEngine {
         let root = workspace.root().to_path_buf();
         let store = ManifestStore::open(root.join("manifest_engine.sqlite3")).expect("open store");
         let ctx = EngineContext {
+            process_identity: EngineProcessIdentity::current(),
+            workspace_identity: WorkspaceId::new("ws_code"),
             crypto: WorkspaceCrypto::new("ws_code", KEY_BYTES, KeyEpoch::new(1)),
             device_id: DeviceId::new(format!("device-{name}")),
             engine_state_dir: root.join(super::ENGINE_STATE_DIR),
@@ -519,6 +524,23 @@ impl DriverHarness {
         self.event(EngineEvent::Paths(set));
         self.clock.advance(1_001);
         self.run_due();
+        // A publish is bounded, so a batch larger than one carries over. Drive to
+        // quiescence: a fixture is setup, and its cost is not what a test measures.
+        self.drain_pending_publishes();
+    }
+
+    /// Run cycles until nothing is left to publish, bounded so a genuine stall
+    /// fails the test instead of hanging it.
+    pub(crate) fn drain_pending_publishes(&mut self) {
+        for _ in 0..64 {
+            if self.engine.snapshot().dirty == 0 {
+                return;
+            }
+            self.clock.advance(1_001);
+            self.run_due();
+        }
+        // Not an assertion: an engine deliberately backing off has work it is
+        // choosing not to do, and a fixture helper must not call that a stall.
     }
 
     pub(crate) fn write(&self, rel: &str, bytes: &[u8]) {

@@ -25,6 +25,34 @@ pub enum Retryability {
     TrustRefreshRequired,
 }
 
+/// Domain classification shared by every long-lived dependency consumer.
+///
+/// `Retryability` remains the narrow hosted-client retry contract. This richer
+/// class is what lifecycle coordinators use: an observer must distinguish a
+/// transport failure from authority loss, untrusted data, and a peer speaking
+/// a different contract rather than laundering all four into one reconnect
+/// loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DependencyFailureClass {
+    Retryable,
+    AuthenticationRequired,
+    AuthorizationLost,
+    Integrity,
+    FatalContract,
+}
+
+impl DependencyFailureClass {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Retryable => "retryable",
+            Self::AuthenticationRequired => "authentication-required",
+            Self::AuthorizationLost => "authorization-lost",
+            Self::Integrity => "integrity",
+            Self::FatalContract => "fatal-contract",
+        }
+    }
+}
+
 /// Which half of a hosted endpoint call failed its declared wire contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireContractFailure {
@@ -83,6 +111,16 @@ impl CompareAndSwapError {
             // rebases onto the returned current ref and swaps again.
             Self::StaleRef(_) => Retryability::Retryable,
             Self::Rejected(error) | Self::Ambiguous(error) => error.retryability(),
+        }
+    }
+
+    pub fn dependency_failure_class(&self) -> DependencyFailureClass {
+        match self {
+            Self::StaleRef(_) => DependencyFailureClass::Retryable,
+            Self::Rejected(error) | Self::Ambiguous(error) => error.dependency_failure_class(),
+            Self::WorkspaceMissing { .. } | Self::Unsupported { .. } => {
+                DependencyFailureClass::FatalContract
+            }
         }
     }
 }
@@ -265,12 +303,10 @@ pub enum ControlPlaneError {
 }
 
 impl ControlPlaneError {
-    pub fn retryability(&self) -> Retryability {
+    pub fn dependency_failure_class(&self) -> DependencyFailureClass {
         match self {
-            // A server exception may be a transient dependency failure; the
-            // caller's backoff decides how many times that is worth believing.
             Self::Timeout { .. } | Self::Transport { .. } | Self::ServerError { .. } => {
-                Retryability::Retryable
+                DependencyFailureClass::Retryable
             }
             Self::Rejected {
                 code:
@@ -279,8 +315,25 @@ impl ControlPlaneError {
                     | RejectionCode::AccountSessionRevoked
                     | RejectionCode::Unauthorized,
                 ..
-            } => Retryability::AuthExpired,
-            Self::UnknownSigningDevice { .. } => Retryability::TrustRefreshRequired,
+            } => DependencyFailureClass::AuthenticationRequired,
+            Self::Rejected {
+                code:
+                    RejectionCode::DeviceNotTrusted
+                    | RejectionCode::WorkspaceMembershipRequired
+                    | RejectionCode::WorkspaceOwnerRequired,
+                ..
+            }
+            | Self::UnknownSigningDevice { .. } => DependencyFailureClass::AuthorizationLost,
+            // A response that violates the generated wire contract or cannot
+            // be interpreted as its signed domain value is untrusted input,
+            // not a transport problem. Request violations are local/peer
+            // contract skew instead.
+            Self::ContractViolation {
+                failure: WireContractFailure::Response,
+                ..
+            }
+            | Self::ResponseShape { .. } => DependencyFailureClass::Integrity,
+            Self::CompareAndSwap(error) => error.dependency_failure_class(),
             Self::Rejected { .. }
             | Self::WorkspaceMissing { .. }
             | Self::InvalidObjectKey { .. }
@@ -288,11 +341,25 @@ impl ControlPlaneError {
             | Self::DeviceRequestMissing { .. }
             | Self::Unsupported { .. }
             | Self::Conflict { .. }
-            | Self::ContractViolation { .. }
+            | Self::ContractViolation {
+                failure: WireContractFailure::Request,
+                ..
+            }
             | Self::ContractSkew { .. }
-            | Self::ResponseShape { .. }
-            | Self::Internal { .. } => Retryability::Fatal,
-            Self::CompareAndSwap(error) => error.retryability(),
+            | Self::Internal { .. } => DependencyFailureClass::FatalContract,
+        }
+    }
+
+    pub fn retryability(&self) -> Retryability {
+        if self.unknown_signing_device().is_some() {
+            return Retryability::TrustRefreshRequired;
+        }
+        match self.dependency_failure_class() {
+            DependencyFailureClass::Retryable => Retryability::Retryable,
+            DependencyFailureClass::AuthenticationRequired => Retryability::AuthExpired,
+            DependencyFailureClass::AuthorizationLost
+            | DependencyFailureClass::Integrity
+            | DependencyFailureClass::FatalContract => Retryability::Fatal,
         }
     }
 
@@ -466,7 +533,11 @@ impl From<CompareAndSwapError> for ControlPlaneError {
 }
 #[cfg(test)]
 mod rejection_code_tests {
-    use super::RejectionCode;
+    use bowline_core::ids::{DeviceId, WorkspaceId};
+
+    use super::{
+        CompareAndSwapError, ControlPlaneError, DependencyFailureClass, RejectionCode, Retryability,
+    };
 
     #[test]
     fn workspace_access_codes_round_trip_the_canonical_wire_values() {
@@ -480,5 +551,57 @@ mod rejection_code_tests {
         ] {
             assert_eq!(RejectionCode::from_wire(code.as_wire()), code);
         }
+    }
+
+    #[test]
+    fn dependency_failures_preserve_action_required_and_integrity_classes() {
+        let authentication = ControlPlaneError::Rejected {
+            code: RejectionCode::AccountSessionRevoked,
+            message: "redacted".to_string(),
+        };
+        let authorization = ControlPlaneError::Rejected {
+            code: RejectionCode::DeviceNotTrusted,
+            message: "redacted".to_string(),
+        };
+        let integrity = ControlPlaneError::ResponseShape {
+            reason: "invalid signed ref",
+            field: Some("workspaceRef"),
+        };
+        let fatal = ControlPlaneError::Internal {
+            reason: "contract invariant",
+        };
+
+        assert_eq!(
+            authentication.dependency_failure_class(),
+            DependencyFailureClass::AuthenticationRequired
+        );
+        assert_eq!(
+            authorization.dependency_failure_class(),
+            DependencyFailureClass::AuthorizationLost
+        );
+        assert_eq!(
+            integrity.dependency_failure_class(),
+            DependencyFailureClass::Integrity
+        );
+        assert_eq!(
+            fatal.dependency_failure_class(),
+            DependencyFailureClass::FatalContract
+        );
+    }
+
+    #[test]
+    fn wrapped_unknown_signer_retains_the_explicit_trust_refresh_contract() {
+        let wrapped = ControlPlaneError::CompareAndSwap(CompareAndSwapError::ambiguous(
+            ControlPlaneError::UnknownSigningDevice {
+                workspace_id: WorkspaceId::new("ws_wrapped_signer"),
+                device_id: DeviceId::new("device_wrapped_signer"),
+            },
+        ));
+
+        assert_eq!(
+            wrapped.dependency_failure_class(),
+            DependencyFailureClass::AuthorizationLost
+        );
+        assert_eq!(wrapped.retryability(), Retryability::TrustRefreshRequired);
     }
 }

@@ -381,6 +381,1479 @@
       "workspaceId": "ws_fixture"
     }
   },
+  "DaemonSyncBarrierConvergenceSource.missing.processIdentity": {
+    "workspaceIdentity": "fixture"
+  },
+  "DaemonSyncBarrierConvergenceSource.missing.workspaceIdentity": {
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    }
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.missing.activityWatermark": {
+    "closingRecoveryRevision": 0,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": 0
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.missing.closingRecoveryRevision": {
+    "activityWatermark": 0,
+    "lifecycle": "nominal",
+    "recoverySnapshotRevision": 0
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.missing.lifecycle": {
+    "activityWatermark": 0,
+    "closingRecoveryRevision": 0,
+    "recoverySnapshotRevision": 0
+  },
+  "DaemonSyncBarrierCoordinatorFrontier.missing.recoverySnapshotRevision": {
+    "activityWatermark": 0,
+    "closingRecoveryRevision": 0,
+    "lifecycle": "nominal"
+  },
+  "DaemonSyncBarrierDarwinCoverage.missing.boundaryId": {
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.missing.callbackGeneration": {
+    "boundaryId": 1,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.missing.coverageStart": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.missing.coveredEpoch": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.missing.flushGeneration": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.missing.historyDone": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.missing.historyThrough": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.missing.liveEpoch": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.missing.lossGeneration": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "mustScanSubdirs": false,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.missing.mustScanSubdirs": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "sealedThrough": 0
+  },
+  "DaemonSyncBarrierDarwinCoverage.missing.sealedThrough": {
+    "boundaryId": 1,
+    "callbackGeneration": 0,
+    "coverageStart": {
+      "coveredLastSafe": 0,
+      "kind": "cursor-replay",
+      "recoveryCause": null,
+      "replayFrom": 0
+    },
+    "coveredEpoch": 1,
+    "flushGeneration": 1,
+    "historyDone": false,
+    "historyThrough": 0,
+    "liveEpoch": 1,
+    "lossGeneration": 0,
+    "mustScanSubdirs": false
+  },
+  "DaemonSyncBarrierDarwinCursorReplay.missing.coveredLastSafe": {
+    "recoveryCause": null,
+    "replayFrom": 0
+  },
+  "DaemonSyncBarrierDarwinCursorReplay.missing.recoveryCause": {
+    "coveredLastSafe": 0,
+    "replayFrom": 0
+  },
+  "DaemonSyncBarrierDarwinCursorReplay.missing.replayFrom": {
+    "coveredLastSafe": 0,
+    "recoveryCause": null
+  },
+  "DaemonSyncBarrierDarwinFreshStream.missing.discontinuity": {
+    "freshFrom": 0
+  },
+  "DaemonSyncBarrierDarwinFreshStream.missing.freshFrom": {
+    "discontinuity": "user_dropped"
+  },
+  "DaemonSyncBarrierEngineConvergence.missing.admittedAt": {
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.missing.appliedRef": {
+    "admittedAt": "fixture",
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.missing.barrierId": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.missing.completedAt": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.missing.endpointGeneration": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.missing.engineRevision": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.missing.materializationRevision": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "observedRef": {
+      "version": 42
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.missing.observedRef": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierEngineConvergence.missing.source": {
+    "admittedAt": "fixture",
+    "appliedRef": {
+      "version": 42
+    },
+    "barrierId": "fixture",
+    "completedAt": "fixture",
+    "endpointGeneration": 1,
+    "engineRevision": 1,
+    "materializationRevision": 0,
+    "observedRef": {
+      "version": 42
+    }
+  },
+  "DaemonSyncBarrierLinuxCoverage.missing.boundaryId": {
+    "callbackDrainControlId": 1,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.missing.callbackDrainControlId": {
+    "boundaryId": 1,
+    "streamEpoch": 1,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.missing.streamEpoch": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 1,
+    "watcherReadyControlId": 1
+  },
+  "DaemonSyncBarrierLinuxCoverage.missing.watcherReadyControlId": {
+    "boundaryId": 1,
+    "callbackDrainControlId": 1,
+    "streamEpoch": 1
+  },
+  "DaemonSyncBarrierNativeLoss.unknown": "unknown.DaemonSyncBarrierNativeLoss",
+  "DaemonSyncBarrierObserverConvergence.missing.admission": {
+    "completion": {
+      "endpointGeneration": 1,
+      "lifecycleRevision": 1,
+      "observedAt": "fixture",
+      "observedRef": {
+        "version": 42
+      },
+      "state": "live"
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierObserverConvergence.missing.completion": {
+    "admission": {
+      "endpointGeneration": 1,
+      "lifecycleRevision": 1,
+      "observedAt": "fixture",
+      "observedRef": {
+        "version": 42
+      },
+      "state": "live"
+    },
+    "source": {
+      "processIdentity": {
+        "bootId": "fixture",
+        "sessionId": "fixture",
+        "startedAt": "fixture"
+      },
+      "workspaceIdentity": "fixture"
+    }
+  },
+  "DaemonSyncBarrierObserverConvergence.missing.source": {
+    "admission": {
+      "endpointGeneration": 1,
+      "lifecycleRevision": 1,
+      "observedAt": "fixture",
+      "observedRef": {
+        "version": 42
+      },
+      "state": "live"
+    },
+    "completion": {
+      "endpointGeneration": 1,
+      "lifecycleRevision": 1,
+      "observedAt": "fixture",
+      "observedRef": {
+        "version": 42
+      },
+      "state": "live"
+    }
+  },
+  "DaemonSyncBarrierObserverLiveness.missing.endpointGeneration": {
+    "lifecycleRevision": 1,
+    "observedAt": "fixture",
+    "observedRef": {
+      "version": 42
+    },
+    "state": "live"
+  },
+  "DaemonSyncBarrierObserverLiveness.missing.lifecycleRevision": {
+    "endpointGeneration": 1,
+    "observedAt": "fixture",
+    "observedRef": {
+      "version": 42
+    },
+    "state": "live"
+  },
+  "DaemonSyncBarrierObserverLiveness.missing.observedAt": {
+    "endpointGeneration": 1,
+    "lifecycleRevision": 1,
+    "observedRef": {
+      "version": 42
+    },
+    "state": "live"
+  },
+  "DaemonSyncBarrierObserverLiveness.missing.observedRef": {
+    "endpointGeneration": 1,
+    "lifecycleRevision": 1,
+    "observedAt": "fixture",
+    "state": "live"
+  },
+  "DaemonSyncBarrierObserverLiveness.missing.state": {
+    "endpointGeneration": 1,
+    "lifecycleRevision": 1,
+    "observedAt": "fixture",
+    "observedRef": {
+      "version": 42
+    }
+  },
+  "DaemonSyncBarrierObserverState.unknown": "unknown.DaemonSyncBarrierObserverState",
+  "DaemonSyncBarrierProcessIdentity.missing.bootId": {
+    "sessionId": "fixture",
+    "startedAt": "fixture"
+  },
+  "DaemonSyncBarrierProcessIdentity.missing.sessionId": {
+    "bootId": "fixture",
+    "startedAt": "fixture"
+  },
+  "DaemonSyncBarrierProcessIdentity.missing.startedAt": {
+    "bootId": "fixture",
+    "sessionId": "fixture"
+  },
+  "DaemonSyncBarrierRecoveryClosure.missing.attemptCount": {
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.missing.authoritativeScanRevision": {
+    "attemptCount": 1,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.missing.capturedActivityWatermark": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.missing.closedAt": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.missing.closingAttemptId": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.missing.closingRecoveryRevision": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.missing.finalActivityWatermark": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.missing.incidentId": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.missing.nativeBoundary": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.missing.processIdentity": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "scanCount": 1
+  },
+  "DaemonSyncBarrierRecoveryClosure.missing.scanCount": {
+    "attemptCount": 1,
+    "authoritativeScanRevision": 0,
+    "capturedActivityWatermark": 0,
+    "closedAt": "fixture",
+    "closingAttemptId": "fixture",
+    "closingRecoveryRevision": 1,
+    "finalActivityWatermark": 0,
+    "incidentId": "fixture",
+    "nativeBoundary": {
+      "boundaryId": 1,
+      "callbackGeneration": 0,
+      "coverageStart": {
+        "coveredLastSafe": 0,
+        "kind": "cursor-replay",
+        "recoveryCause": null,
+        "replayFrom": 0
+      },
+      "coveredEpoch": 1,
+      "flushGeneration": 1,
+      "historyDone": false,
+      "historyThrough": 0,
+      "kind": "fsevents-post-scan-seal",
+      "liveEpoch": 1,
+      "lossGeneration": 0,
+      "mustScanSubdirs": false,
+      "sealedThrough": 0
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    }
+  },
+  "DaemonSyncBarrierRecoveryLifecycle.unknown": "unknown.DaemonSyncBarrierRecoveryLifecycle",
+  "DaemonSyncBarrierRefIdentity.missing.version": {},
+  "DaemonSyncBarrierRefIdentity.null.manifestKey": {
+    "manifestKey": null,
+    "version": 42
+  },
+  "DaemonSyncBarrierResult.missing.barrierId": {
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "linearizedAt": "fixture",
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "recoveryClosure": null,
+    "workspaceIdentity": "fixture",
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierResult.missing.coordinatorNominalFrontier": {
+    "barrierId": "fixture",
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "linearizedAt": "fixture",
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "recoveryClosure": null,
+    "workspaceIdentity": "fixture",
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierResult.missing.engineConvergence": {
+    "barrierId": "fixture",
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "linearizedAt": "fixture",
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "recoveryClosure": null,
+    "workspaceIdentity": "fixture",
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierResult.missing.linearizedAt": {
+    "barrierId": "fixture",
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "recoveryClosure": null,
+    "workspaceIdentity": "fixture",
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierResult.missing.observer": {
+    "barrierId": "fixture",
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "linearizedAt": "fixture",
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "recoveryClosure": null,
+    "workspaceIdentity": "fixture",
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierResult.missing.processIdentity": {
+    "barrierId": "fixture",
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "linearizedAt": "fixture",
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "recoveryClosure": null,
+    "workspaceIdentity": "fixture",
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierResult.missing.recoveryClosure": {
+    "barrierId": "fixture",
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "linearizedAt": "fixture",
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "workspaceIdentity": "fixture",
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierResult.missing.workspaceIdentity": {
+    "barrierId": "fixture",
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "linearizedAt": "fixture",
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "recoveryClosure": null,
+    "workspaceStatus": {
+      "observedAt": "fixture",
+      "state": "ready"
+    }
+  },
+  "DaemonSyncBarrierResult.missing.workspaceStatus": {
+    "barrierId": "fixture",
+    "coordinatorNominalFrontier": {
+      "activityWatermark": 0,
+      "closingRecoveryRevision": 0,
+      "lifecycle": "nominal",
+      "recoverySnapshotRevision": 0
+    },
+    "engineConvergence": {
+      "admittedAt": "fixture",
+      "appliedRef": {
+        "version": 42
+      },
+      "barrierId": "fixture",
+      "completedAt": "fixture",
+      "endpointGeneration": 1,
+      "engineRevision": 1,
+      "materializationRevision": 0,
+      "observedRef": {
+        "version": 42
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "linearizedAt": "fixture",
+    "observer": {
+      "admission": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "completion": {
+        "endpointGeneration": 1,
+        "lifecycleRevision": 1,
+        "observedAt": "fixture",
+        "observedRef": {
+          "version": 42
+        },
+        "state": "live"
+      },
+      "source": {
+        "processIdentity": {
+          "bootId": "fixture",
+          "sessionId": "fixture",
+          "startedAt": "fixture"
+        },
+        "workspaceIdentity": "fixture"
+      }
+    },
+    "processIdentity": {
+      "bootId": "fixture",
+      "sessionId": "fixture",
+      "startedAt": "fixture"
+    },
+    "recoveryClosure": null,
+    "workspaceIdentity": "fixture"
+  },
+  "DaemonSyncBarrierWorkspaceState.unknown": "unknown.DaemonSyncBarrierWorkspaceState",
+  "DaemonSyncBarrierWorkspaceStatus.missing.observedAt": {
+    "state": "ready"
+  },
+  "DaemonSyncBarrierWorkspaceStatus.missing.state": {
+    "observedAt": "fixture"
+  },
   "DaemonSyncResource.missing.kind": {
     "workspaceId": "ws_fixture"
   },
@@ -3752,6 +5225,7 @@
     "requestedByDeviceId": "device_1",
     "requestedByDeviceProof": "proof_head_metadata"
   },
+  "HostedObjectsCommitUploadedObjectMetadataBatchRequest.missing.requests": {},
   "HostedObjectsCommitUploadedObjectMetadataRequest.missing.committedByDeviceId": {
     "committedByDeviceProof": "proof_commit_metadata",
     "object": {
@@ -4202,6 +5676,7 @@
     "requestedByDeviceProof": "proof_retention",
     "retentionState": "retained"
   },
+  "HostedObjectsReserveObjectUploadsBatchRequest.missing.requests": {},
   "HostedProjectionMetadata.missing.generatedAt": {
     "repairState": "current",
     "schemaVersion": 1,

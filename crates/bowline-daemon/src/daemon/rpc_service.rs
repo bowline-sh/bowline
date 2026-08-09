@@ -1,13 +1,9 @@
-use bowline_control_plane::DeviceControlPlaneClient;
 use std::io::Write;
 
 use super::server_state::ProjectStatusScope;
 
-use crate::daemon::{
-    DaemonServerState, StatusSubscription, current_timestamp, hosted_control_plane, key_store,
-};
+use crate::daemon::{DaemonServerState, StatusSubscription};
 use bowline_core::ids::WorkspaceId;
-use bowline_local::trust::grants;
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::net::UnixStream;
@@ -16,15 +12,25 @@ use std::time::Duration;
 
 mod connection_pump;
 mod deletions;
+mod device_actions;
 mod method_registry;
 mod request_context;
 mod rpc_executor;
 mod work_views;
 
 use bowline_core::wire::generated::{
-    DaemonClientHello, DaemonDeviceActionParams, DaemonRpcError, DaemonRpcErrorCode,
-    DaemonRpcRequest, DaemonRpcResponse, DaemonStatusScopeParams, DaemonStatusSnapshotResult,
-    DaemonStatusSubscribeResult,
+    DaemonClientHello, DaemonRpcError, DaemonRpcErrorCode, DaemonRpcRequest, DaemonRpcResponse,
+    DaemonStatusScopeParams, DaemonStatusSnapshotResult, DaemonStatusSubscribeResult,
+    DaemonSyncBarrierConvergenceSource, DaemonSyncBarrierCoordinatorFrontier,
+    DaemonSyncBarrierDarwinCoverage, DaemonSyncBarrierDarwinCoverageStart,
+    DaemonSyncBarrierDarwinCursorReplay, DaemonSyncBarrierDarwinFreshStream,
+    DaemonSyncBarrierEngineConvergence, DaemonSyncBarrierLinuxCoverage,
+    DaemonSyncBarrierNativeCoverage, DaemonSyncBarrierNativeLoss,
+    DaemonSyncBarrierObserverConvergence, DaemonSyncBarrierObserverLiveness,
+    DaemonSyncBarrierObserverState, DaemonSyncBarrierProcessIdentity,
+    DaemonSyncBarrierRecoveryClosure, DaemonSyncBarrierRecoveryLifecycle,
+    DaemonSyncBarrierRefIdentity, DaemonSyncBarrierResult, DaemonSyncBarrierWorkspaceState,
+    DaemonSyncBarrierWorkspaceStatus,
 };
 use bowline_core::wire::{StatusTransportError, status_command_to_wire};
 use bowline_daemon_rpc::{
@@ -196,14 +202,14 @@ fn route_request(
                 RpcMethod::WorkAccept => {
                     work_views::work_accept(context, state, request.params, peer_credential_checked)
                 }
-                RpcMethod::DeviceApprove => device_action(
+                RpcMethod::DeviceApprove => device_actions::device_action(
                     context,
                     state,
                     request.params,
                     peer_credential_checked,
                     true,
                 ),
-                RpcMethod::DeviceDeny => device_action(
+                RpcMethod::DeviceDeny => device_actions::device_action(
                     context,
                     state,
                     request.params,
@@ -256,16 +262,268 @@ fn sync_barrier_result(
     }
     checkpoint(context, CancellationPoint::BeforeExternalCall)?;
     let timeout = Duration::from_millis(params.timeout_ms.max(1)).min(SYNC_BARRIER_MAX_TIMEOUT);
-    let snapshot = state
+    let receipt = state
         .request_sync_barrier(timeout, || {
             context
                 .checkpoint(CancellationPoint::BeforeExternalCall)
                 .is_err()
         })
         .map_err(|error| barrier_error(context, error))?;
-    Ok(serde_json::json!({
-        "convergenceRevision": snapshot.revision,
+    let observer_frontier = receipt
+        .engine_observer()
+        .observer_frontier()
+        .ok_or_else(exact_receipt_encoding_error)?;
+    let process_identity = process_identity(receipt.recovery())?;
+    let workspace_identity = receipt
+        .recovery()
+        .source_identity()
+        .workspace_id()
+        .as_str()
+        .to_string();
+    let source = DaemonSyncBarrierConvergenceSource {
+        process_identity: process_identity.clone(),
+        workspace_identity: workspace_identity.clone(),
+    };
+    let engine = receipt.engine_observer().engine();
+    let engine_convergence = live_engine_convergence(receipt.engine_observer(), source.clone());
+    let observer = live_observer_convergence(receipt.engine_observer(), observer_frontier, source)?;
+    let recovery_frontier = receipt.recovery().frontier();
+    let closing_recovery_revision = recovery_frontier
+        .last_closure()
+        .map(|closure| closure.closing_recovery_revision().get())
+        .unwrap_or(0);
+    let result = DaemonSyncBarrierResult {
+        barrier_id: format!("workspace-barrier:{}", engine.barrier_id().0),
+        process_identity,
+        workspace_identity,
+        engine_convergence,
+        observer,
+        coordinator_nominal_frontier: DaemonSyncBarrierCoordinatorFrontier {
+            lifecycle: DaemonSyncBarrierRecoveryLifecycle::Nominal,
+            recovery_snapshot_revision: recovery_frontier.recovery_revision().get(),
+            closing_recovery_revision,
+            activity_watermark: recovery_frontier.activity_watermark().get(),
+        },
+        recovery_closure: recovery_closure(receipt.recovery())?,
+        workspace_status: DaemonSyncBarrierWorkspaceStatus {
+            state: DaemonSyncBarrierWorkspaceState::Ready,
+            observed_at: receipt.linearized_at().to_string(),
+        },
+        linearized_at: receipt.linearized_at().to_string(),
+    };
+    serde_json::to_value(result).map_err(|_| {
+        rpc_error(
+            DaemonRpcErrorCode::Internal,
+            "failed to encode exact workspace barrier receipt",
+            false,
+        )
+    })
+}
+
+fn engine_ref_identity(
+    value: &bowline_local::sync::manifest_engine::EngineRef,
+) -> DaemonSyncBarrierRefIdentity {
+    use bowline_local::sync::manifest_engine::EngineRef;
+    match value {
+        EngineRef::Genesis => DaemonSyncBarrierRefIdentity {
+            version: 0,
+            manifest_key: None,
+        },
+        EngineRef::Head(observation) => DaemonSyncBarrierRefIdentity {
+            version: observation.version,
+            manifest_key: Some(observation.manifest_key.as_str().to_string()),
+        },
+    }
+}
+
+fn process_identity(
+    attestation: &bowline_daemon::watcher_recovery::RecoveryAttestation,
+) -> RpcResult<DaemonSyncBarrierProcessIdentity> {
+    let identity = attestation.source_identity().process_identity();
+    Ok(DaemonSyncBarrierProcessIdentity {
+        boot_id: identity.boot_id().to_string(),
+        session_id: identity.session_id().to_string(),
+        started_at: recovery_timestamp(identity.started_at())?,
+    })
+}
+
+fn live_engine_convergence(
+    receipt: &bowline_daemon::manifest_driver::EngineObserverConvergenceReceipt,
+    source: DaemonSyncBarrierConvergenceSource,
+) -> DaemonSyncBarrierEngineConvergence {
+    let engine = receipt.engine();
+    DaemonSyncBarrierEngineConvergence {
+        source,
+        barrier_id: format!("barrier:{}", engine.barrier_id().0),
+        endpoint_generation: engine.endpoint_generation().0,
+        engine_revision: engine.engine_revision(),
+        materialization_revision: engine.materialization_revision().get(),
+        admitted_at: receipt.engine_admitted_at().as_str().to_string(),
+        completed_at: receipt.engine_completed_at().as_str().to_string(),
+        observed_ref: engine_ref_identity(engine.observed_ref()),
+        applied_ref: engine_ref_identity(engine.applied_ref()),
+    }
+}
+
+fn live_observer_convergence(
+    receipt: &bowline_daemon::manifest_driver::EngineObserverConvergenceReceipt,
+    frontier: &bowline_daemon::manifest_transport::RefObserverFrontier,
+    source: DaemonSyncBarrierConvergenceSource,
+) -> RpcResult<DaemonSyncBarrierObserverConvergence> {
+    let admitted_at = receipt
+        .observer_admitted_at()
+        .ok_or_else(exact_receipt_encoding_error)?;
+    let completed_at = receipt
+        .observer_completed_at()
+        .ok_or_else(exact_receipt_encoding_error)?;
+    let liveness = |observed_at: &str| DaemonSyncBarrierObserverLiveness {
+        state: DaemonSyncBarrierObserverState::Live,
+        endpoint_generation: frontier.authority_source.endpoint_generation().get(),
+        lifecycle_revision: frontier.lifecycle_revision.get(),
+        observed_at: observed_at.to_string(),
+        observed_ref: observer_ref_identity(&frontier.verified_ref),
+    };
+    Ok(DaemonSyncBarrierObserverConvergence {
+        source,
+        admission: liveness(admitted_at.as_str()),
+        completion: liveness(completed_at.as_str()),
+    })
+}
+
+fn recovery_closure(
+    attestation: &bowline_daemon::watcher_recovery::RecoveryAttestation,
+) -> RpcResult<Option<DaemonSyncBarrierRecoveryClosure>> {
+    let Some(closure) = attestation.last_closure() else {
+        return Ok(None);
+    };
+    let source_identity = attestation.source_identity();
+    let process = source_identity.process_identity();
+    let process_identity = DaemonSyncBarrierProcessIdentity {
+        boot_id: process.boot_id().to_string(),
+        session_id: process.session_id().to_string(),
+        started_at: recovery_timestamp(process.started_at())?,
+    };
+    Ok(Some(DaemonSyncBarrierRecoveryClosure {
+        process_identity,
+        incident_id: closure.incident_id().to_string(),
+        closing_attempt_id: closure.attempt_id().to_string(),
+        attempt_count: closure.attempt_count().get(),
+        scan_count: closure.scan_count().get(),
+        captured_activity_watermark: closure.native_boundary().activity_watermark().get(),
+        final_activity_watermark: closure.activity_watermark().get(),
+        authoritative_scan_revision: closure.authoritative_scan_revision().get(),
+        native_boundary: native_coverage(closure.native_boundary().proof()),
+        closing_recovery_revision: closure.closing_recovery_revision().get(),
+        closed_at: recovery_timestamp(closure.completed_at())?,
     }))
+}
+
+fn observer_ref_identity(
+    value: &bowline_daemon::manifest_transport::VerifiedWorkspaceRef,
+) -> DaemonSyncBarrierRefIdentity {
+    use bowline_daemon::manifest_transport::VerifiedWorkspaceRefView;
+    match value.view() {
+        VerifiedWorkspaceRefView::Genesis => DaemonSyncBarrierRefIdentity {
+            version: 0,
+            manifest_key: None,
+        },
+        VerifiedWorkspaceRefView::Head {
+            version,
+            manifest_key,
+        } => DaemonSyncBarrierRefIdentity {
+            version,
+            manifest_key: Some(manifest_key.as_str().to_string()),
+        },
+    }
+}
+
+fn native_coverage(
+    boundary: bowline_daemon::watcher_coverage::WatcherCoverageBoundary,
+) -> DaemonSyncBarrierNativeCoverage {
+    use bowline_daemon::watcher_coverage::{DarwinCoverageStart, WatcherCoverageBoundary};
+    match boundary {
+        WatcherCoverageBoundary::Darwin(boundary) => {
+            let coverage_start = match boundary.start() {
+                DarwinCoverageStart::CursorReplay {
+                    covered_last_safe,
+                    replay_from,
+                    recovery_cause,
+                } => DaemonSyncBarrierDarwinCoverageStart::CursorReplay(Box::new(
+                    DaemonSyncBarrierDarwinCursorReplay {
+                        covered_last_safe: covered_last_safe.get(),
+                        replay_from: replay_from.get(),
+                        recovery_cause: recovery_cause.map(native_loss),
+                    },
+                )),
+                DarwinCoverageStart::FreshStream {
+                    fresh_from,
+                    discontinuity,
+                } => DaemonSyncBarrierDarwinCoverageStart::FreshStream(Box::new(
+                    DaemonSyncBarrierDarwinFreshStream {
+                        fresh_from: fresh_from.get(),
+                        discontinuity: native_loss(discontinuity),
+                    },
+                )),
+            };
+            DaemonSyncBarrierNativeCoverage::FseventsPostScanSeal(Box::new(
+                DaemonSyncBarrierDarwinCoverage {
+                    boundary_id: boundary.boundary_id().get(),
+                    covered_epoch: boundary.covered_epoch().get(),
+                    live_epoch: boundary.live_epoch().get(),
+                    coverage_start,
+                    history_through: boundary.history_through().get(),
+                    history_done: true,
+                    must_scan_subdirs: boundary.must_scan_subdirs(),
+                    sealed_through: boundary.sealed_through().get(),
+                    flush_generation: boundary.flush_generation().get(),
+                    loss_generation: boundary.loss_generation().get(),
+                    callback_generation: boundary.callback_generation().get(),
+                },
+            ))
+        }
+        WatcherCoverageBoundary::Linux(boundary) => {
+            DaemonSyncBarrierNativeCoverage::InotifyLiveDrain(Box::new(
+                DaemonSyncBarrierLinuxCoverage {
+                    boundary_id: boundary.boundary_id().get(),
+                    stream_epoch: boundary.stream_epoch().get(),
+                    watcher_ready_control_id: boundary.watcher_ready().control_id().get(),
+                    callback_drain_control_id: boundary.callback_drain().control_id().get(),
+                },
+            ))
+        }
+    }
+}
+
+fn native_loss(
+    loss: bowline_daemon::watcher_coverage::WatcherCoverageLoss,
+) -> DaemonSyncBarrierNativeLoss {
+    use bowline_daemon::watcher_coverage::WatcherCoverageLoss;
+    match loss {
+        WatcherCoverageLoss::UserDropped => DaemonSyncBarrierNativeLoss::UserDropped,
+        WatcherCoverageLoss::KernelDropped => DaemonSyncBarrierNativeLoss::KernelDropped,
+        WatcherCoverageLoss::EventIdsWrapped => DaemonSyncBarrierNativeLoss::EventIdsWrapped,
+        WatcherCoverageLoss::RootChanged => DaemonSyncBarrierNativeLoss::RootChanged,
+        WatcherCoverageLoss::StreamStopped => DaemonSyncBarrierNativeLoss::StreamStopped,
+        WatcherCoverageLoss::NonMonotonicCursor => DaemonSyncBarrierNativeLoss::NonMonotonicCursor,
+        WatcherCoverageLoss::QueueOverflow => DaemonSyncBarrierNativeLoss::QueueOverflow,
+        WatcherCoverageLoss::BackendFailure => DaemonSyncBarrierNativeLoss::BackendFailure,
+    }
+}
+
+fn recovery_timestamp(
+    value: bowline_daemon::watcher_recovery::RecoveryTimestamp,
+) -> RpcResult<String> {
+    value
+        .to_rfc3339()
+        .map_err(|_| exact_receipt_encoding_error())
+}
+
+fn exact_receipt_encoding_error() -> Box<DaemonRpcError> {
+    rpc_error(
+        DaemonRpcErrorCode::Internal,
+        "failed to compose exact workspace barrier receipt",
+        false,
+    )
 }
 
 fn barrier_error(
@@ -290,8 +548,11 @@ fn barrier_error(
         SyncBarrierError::Unavailable { .. } | SyncBarrierError::EngineStopped => {
             rpc_error(DaemonRpcErrorCode::Unavailable, error.as_str(), true)
         }
-        SyncBarrierError::ObserverUnavailable => {
+        SyncBarrierError::ObserverBlocked { .. } | SyncBarrierError::RecoveryBlocked { .. } => {
             rpc_error(DaemonRpcErrorCode::PermissionDenied, error.as_str(), false)
+        }
+        SyncBarrierError::FatalContract { .. } => {
+            rpc_error(DaemonRpcErrorCode::Internal, error.as_str(), false)
         }
         SyncBarrierError::WorkspaceNotServed => {
             rpc_error(DaemonRpcErrorCode::NotFound, error.as_str(), false)
@@ -435,158 +696,6 @@ fn cancel_subscription(
     subscriptions.remove(subscription_id);
     let cancelled = state.cancel_subscription(subscription_id);
     Ok(serde_json::json!({"cancelled": cancelled}))
-}
-
-fn device_action(
-    context: &RequestContext,
-    state: &DaemonServerState,
-    params: serde_json::Value,
-    peer_credential_checked: bool,
-    approve: bool,
-) -> RpcResult<serde_json::Value> {
-    if !peer_credential_checked {
-        return Err(rpc_error(
-            DaemonRpcErrorCode::PermissionDenied,
-            "device actions require a verified same-user local socket peer",
-            false,
-        ));
-    }
-    let params = serde_json::from_value::<DaemonDeviceActionParams>(params).map_err(|_| {
-        rpc_error(
-            DaemonRpcErrorCode::InvalidRequest,
-            "device action params are invalid",
-            false,
-        )
-    })?;
-    if params.request_id.is_empty()
-        || params.request_id.len() > 512
-        || params.idempotency_key.is_empty()
-        || params.idempotency_key.len() > 128
-    {
-        return Err(rpc_error(
-            DaemonRpcErrorCode::InvalidRequest,
-            "device action identifiers are outside their bounded contract",
-            false,
-        ));
-    }
-    let Some((workspace_id, device_id)) = state.sync_identity() else {
-        return Err(rpc_error(
-            DaemonRpcErrorCode::Unavailable,
-            "device actions require a configured daemon workspace",
-            false,
-        ));
-    };
-    checkpoint(context, CancellationPoint::BeforeExternalCall)?;
-    let key_store = key_store().map_err(|error| {
-        rpc_error(
-            DaemonRpcErrorCode::Unavailable,
-            &format!("device key store is unavailable: {error}"),
-            true,
-        )
-    })?;
-    let control_plane = hosted_control_plane(&*key_store, workspace_id.clone(), device_id.clone())
-        .map_err(|error| {
-            rpc_error(
-                DaemonRpcErrorCode::Unavailable,
-                &format!("device trust service is unavailable: {error}"),
-                true,
-            )
-        })?;
-    checkpoint(context, CancellationPoint::BeforeExternalCall)?;
-    let trust = control_plane
-        .list_device_trust(&workspace_id)
-        .map_err(|error| {
-            rpc_error(
-                DaemonRpcErrorCode::Unavailable,
-                &format!("device trust state is unavailable: {error}"),
-                true,
-            )
-        })?;
-    if !trust
-        .pending_requests
-        .iter()
-        .any(|request| request.request_id.as_str() == params.request_id)
-    {
-        return Ok(serde_json::json!({
-            "requestId": params.request_id,
-            "state": "already-resolved",
-        }));
-    }
-
-    if approve {
-        context
-            .begin_commit_fence()
-            .map_err(|error| request_context_error(context, error))?;
-        bowline_local::trust::approve_device_request(
-            &control_plane,
-            &*key_store,
-            bowline_local::trust::ApproveDeviceOptions {
-                workspace_id,
-                request_id: bowline_core::ids::DeviceApprovalRequestId::new(
-                    params.request_id.clone(),
-                ),
-                approver_device_id: device_id,
-                generated_at: current_timestamp(),
-            },
-        )
-        .map_err(|error| {
-            rpc_error(
-                DaemonRpcErrorCode::Internal,
-                &format!("device approval failed: {error}"),
-                false,
-            )
-        })?;
-    } else {
-        checkpoint(context, CancellationPoint::BeforeExternalCall)?;
-        let identity = key_store
-            .load_or_create_device_identity()
-            .map_err(|error| {
-                rpc_error(
-                    DaemonRpcErrorCode::Unavailable,
-                    &format!("device identity is unavailable: {error}"),
-                    true,
-                )
-            })?;
-        let proof = grants::device_authorization_proof(
-            &identity,
-            &workspace_id,
-            &device_id,
-            "deny-device-request",
-            &grants::device_request_proof_subject(
-                &bowline_core::ids::DeviceApprovalRequestId::new(params.request_id.clone()),
-            ),
-        )
-        .map_err(|error| {
-            rpc_error(
-                DaemonRpcErrorCode::Internal,
-                &format!("device denial proof failed: {error}"),
-                false,
-            )
-        })?;
-        context
-            .begin_commit_fence()
-            .map_err(|error| request_context_error(context, error))?;
-        control_plane
-            .deny_device_request(bowline_control_plane::DeviceDenialInput {
-                request_id: bowline_core::ids::DeviceApprovalRequestId::new(
-                    params.request_id.clone(),
-                ),
-                denied_by_device_id: device_id,
-                denied_by_device_proof: proof,
-                reason: "denied by Bowline menu bar".to_string(),
-            })
-            .map_err(|error| {
-                rpc_error(
-                    DaemonRpcErrorCode::Internal,
-                    &format!("device denial failed: {error}"),
-                    false,
-                )
-            })?;
-    }
-    Ok(serde_json::json!({
-        "requestId": params.request_id,
-        "state": "resolved",
-    }))
 }
 
 fn checkpoint(context: &RequestContext, point: CancellationPoint) -> RpcResult<()> {

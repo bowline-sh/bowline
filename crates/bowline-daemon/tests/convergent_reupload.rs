@@ -25,9 +25,10 @@ use bowline_control_plane::{FakeControlPlaneClient, WorkspaceControlPlaneClient}
 use bowline_core::ids::{DeviceId, WorkspaceId};
 use bowline_daemon::manifest_transport::ManifestTransport;
 use bowline_local::sync::manifest_engine::{
-    CasOutcome, ENGINE_STATE_DIR, EngineConfig, EngineContext, EngineCounters, KeyEpoch,
-    ManifestKey, ManifestStore, PushDeps, PushOutcome, RefObservation, RemoteRef, TransportError,
-    WorkspaceCrypto, WorkspacePath, probe_name_folding, probe_timestamp_granularity, push,
+    CasOutcome, ENGINE_STATE_DIR, EngineConfig, EngineContext, EngineCounters,
+    EngineProcessIdentity, KeyEpoch, ManifestKey, ManifestStore, PushDeps, PushOutcome,
+    RefObservation, RemoteRef, TransportError, WorkspaceCrypto, WorkspacePath, probe_name_folding,
+    probe_timestamp_granularity, push,
 };
 
 const WORKSPACE: &str = "ws_convergent_reupload";
@@ -179,6 +180,8 @@ impl Fixture {
     fn engine_context(&self) -> EngineContext {
         let engine_state_dir = self.root.join(ENGINE_STATE_DIR);
         EngineContext {
+            process_identity: EngineProcessIdentity::current(),
+            workspace_identity: WorkspaceId::new(WORKSPACE),
             crypto: WorkspaceCrypto::new(WORKSPACE, [11_u8; 32], KeyEpoch::new(1)),
             device_id: DeviceId::new(DEVICE),
             names: probe_name_folding(&engine_state_dir),

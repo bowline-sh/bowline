@@ -16,7 +16,8 @@ pub use collector::{
 };
 pub use delivery::LatestProjectionReceiver;
 pub use engine_status::{
-    EngineConvergenceFacts, EngineStatusCollector, engine_convergence_facts,
+    EngineConvergenceFacts, EngineStatusCollector, ObservationAuthority,
+    ObservationAuthoritySource, apply_observation_authority, engine_convergence_facts,
     scoped_engine_convergence_facts,
 };
 pub use input::StatusProjectionInput;

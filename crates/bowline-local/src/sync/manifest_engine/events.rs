@@ -16,17 +16,26 @@ use super::{RefObservation, WorkspacePath};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FullScanReason {
     WatcherOverflow,
+    IngressDetailCollapsed,
     WatcherDisconnected,
     RootReplaced,
     PeriodicAudit,
     /// An explicit caller boundary: re-observe disk and the hosted ref before
     /// acknowledging that sync is caught up.
-    SyncBarrier,
+    EngineConvergenceBarrier,
 }
 
-/// Opaque identity for one caller-requested convergence barrier.
+/// Opaque identity for one engine-internal convergence barrier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SyncBarrierId(pub u64);
+pub struct EngineConvergenceBarrierId(pub u64);
+
+/// Identity of the daemon engine endpoint that admitted a barrier.
+///
+/// A restarted engine may reach the same engine revision as its predecessor;
+/// binding every receipt to this separately allocated generation prevents a
+/// stale completion from being mistaken for convergence of the replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EngineEndpointGeneration(pub u64);
 
 /// The events the daemon (Plan 111) feeds the engine. No event carries durable
 /// authority: paths are re-derived from disk, while a verified ref observation
@@ -49,7 +58,17 @@ pub enum EngineEvent {
     ConnectivityRestored,
     /// Re-observe both authorities and acknowledge this exact request only after
     /// the resulting work has settled.
-    SyncBarrier(SyncBarrierId),
+    EngineConvergenceBarrier {
+        id: EngineConvergenceBarrierId,
+        endpoint_generation: EngineEndpointGeneration,
+    },
+    /// Withdraw an exact barrier whose requester stopped waiting. The endpoint
+    /// generation prevents a stale waiter from cancelling an identically
+    /// numbered request admitted by a replacement engine.
+    CancelEngineConvergenceBarrier {
+        id: EngineConvergenceBarrierId,
+        endpoint_generation: EngineEndpointGeneration,
+    },
     /// An operator authorised the currently refused removal batch. Carries no
     /// payload: what is authorised is whatever the engine is refusing right now,
     /// never a batch the caller describes.

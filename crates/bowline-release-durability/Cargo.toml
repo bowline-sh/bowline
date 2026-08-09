@@ -1,0 +1,24 @@
+[package]
+name = "bowline-release-durability"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "bowline-release-durability"
+path = "src/main.rs"
+
+[lints]
+workspace = true

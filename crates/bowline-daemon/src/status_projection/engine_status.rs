@@ -73,6 +73,69 @@ impl BlockedDeletions {
     }
 }
 
+/// Whether the daemon can still see the workspace it reports on.
+///
+/// The engine only knows about work that reached it. While a watcher overflow
+/// request is asserted the callback deliberately withholds ordinary changes, so
+/// an engine with nothing to do is indistinguishable from an engine that is
+/// being told nothing. Readiness has to compose both, or a blind daemon reports
+/// itself ready and no surface anywhere contradicts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObservationAuthority {
+    pub recovery_open: bool,
+    pub overflow_pending: bool,
+}
+
+impl ObservationAuthority {
+    /// Authority is intact only when no recovery is in flight and no overflow
+    /// request is still withholding changes from the engine.
+    pub fn is_authoritative(self) -> bool {
+        !self.recovery_open && !self.overflow_pending
+    }
+}
+
+/// Downgrade convergence facts that an engine snapshot alone would call ready.
+///
+/// This never upgrades: an engine that knows it has work stays not-ready
+/// regardless of observation authority.
+pub fn apply_observation_authority(
+    facts: &mut EngineConvergenceFacts,
+    authority: ObservationAuthority,
+) {
+    if authority.is_authoritative() {
+        return;
+    }
+    // Only a state the engine called Ready is downgraded. Anything else already
+    // says the workspace is not settled, and several of those states are more
+    // severe than Converging: overwriting them would hide a limited or blocked
+    // workspace behind a milder word.
+    if facts.summary.state != ConvergenceReadinessState::Ready {
+        facts.ready = false;
+        return;
+    }
+    facts.summary.state = ConvergenceReadinessState::Converging;
+    // readiness_reasons sorts and dedupes through a BTreeSet before collecting,
+    // so keep that ordering rather than appending out of band.
+    if !facts
+        .summary
+        .reasons
+        .contains(&ConvergenceReadinessReason::WatcherRecoveryRequired)
+    {
+        facts
+            .summary
+            .reasons
+            .push(ConvergenceReadinessReason::WatcherRecoveryRequired);
+        facts.summary.reasons.sort();
+        facts.summary.reasons.dedup();
+    }
+    facts.ready = false;
+    let (availability, attention) = presentation_impacts(facts.summary.state);
+    facts.availability = availability;
+    facts.attention = attention;
+    facts.presentation_summary = presentation_summary(facts.summary.state, facts.revision);
+    facts.limited = facts.summary.state == ConvergenceReadinessState::Limited;
+}
+
 /// Map one engine snapshot to the v8 convergence + sync-queue facts.
 pub fn engine_convergence_facts(snapshot: &EngineSnapshot) -> EngineConvergenceFacts {
     let state = readiness_state(snapshot);
@@ -392,13 +455,27 @@ fn presentation_summary(state: ConvergenceReadinessState, revision: u64) -> Stri
     format!("Workspace sync is {label} at revision {revision}.")
 }
 
+/// Supplies whether the daemon can still see its workspace.
+///
+/// Kept as a trait so this projection does not depend on the recovery
+/// coordinator directly, and so tests can drive authority without a live
+/// watcher. `revision` must change whenever `authority` could: the collector
+/// keys change detection on it, and recovery moves while the engine sits still.
+pub trait ObservationAuthoritySource: Send + Sync + std::fmt::Debug {
+    fn authority(&self) -> ObservationAuthority;
+    fn revision(&self) -> u64;
+}
+
 /// Reads the engine's live snapshot into the projection at the `Convergence`
-/// source slot. Change detection keys on the engine revision, which bumps only
-/// on a real state transition, so an idle poll never republishes.
+/// source slot. Change detection keys on the engine revision paired with the
+/// observation-authority revision: recovery can open and close while the engine
+/// revision never moves, and keying on the engine alone would pin a stale ready
+/// onto a daemon that has stopped seeing the workspace.
 #[derive(Debug)]
 pub struct EngineStatusCollector {
     snapshot: EngineSnapshotHandle,
-    committed_revision: Option<u64>,
+    authority: Option<Box<dyn ObservationAuthoritySource>>,
+    committed_key: Option<(u64, u64)>,
     staged: Option<StatusSourceCollection>,
 }
 
@@ -406,8 +483,33 @@ impl EngineStatusCollector {
     pub fn new(snapshot: EngineSnapshotHandle) -> Self {
         Self {
             snapshot,
-            committed_revision: None,
+            authority: None,
+            committed_key: None,
             staged: None,
+        }
+    }
+
+    /// Compose observation authority into convergence readiness. Without this
+    /// the collector reports whatever the engine believes, which is the exact
+    /// shape of a daemon that has been made blind and calls itself ready.
+    pub fn with_observation_authority(
+        mut self,
+        authority: Box<dyn ObservationAuthoritySource>,
+    ) -> Self {
+        self.authority = Some(authority);
+        self
+    }
+
+    fn current_authority(&self) -> (ObservationAuthority, u64) {
+        match self.authority.as_ref() {
+            Some(source) => (source.authority(), source.revision()),
+            None => (
+                ObservationAuthority {
+                    recovery_open: false,
+                    overflow_pending: false,
+                },
+                0,
+            ),
         }
     }
 }
@@ -432,12 +534,17 @@ impl StatusSourceCollector for EngineStatusCollector {
             return Ok(staged.clone());
         }
         let snapshot = self.snapshot.current();
-        if self.committed_revision == Some(snapshot.revision) {
+        let (authority, authority_revision) = self.current_authority();
+        // Recovery can open and close while the engine revision never moves, so
+        // keying on the engine alone would pin a stale ready to a blind daemon.
+        let key = (snapshot.revision, authority_revision);
+        if self.committed_key == Some(key) {
             return Ok(StatusSourceCollection::Unchanged);
         }
-        let facts = engine_convergence_facts(&snapshot);
+        let mut facts = engine_convergence_facts(&snapshot);
+        apply_observation_authority(&mut facts, authority);
         let staged = StatusSourceCollection::Updated {
-            revision: StatusSourceRevision::new(snapshot.revision),
+            revision: StatusSourceRevision::new(snapshot.revision.max(authority_revision)),
             observed_at,
             facts: StatusSourceFacts::Convergence(Box::new(facts)),
         };
@@ -449,7 +556,8 @@ impl StatusSourceCollector for EngineStatusCollector {
         if let Some(StatusSourceCollection::Updated { facts, .. }) = self.staged.take()
             && let StatusSourceFacts::Convergence(facts) = facts
         {
-            self.committed_revision = Some(facts.revision);
+            let (_, authority_revision) = self.current_authority();
+            self.committed_key = Some((facts.revision, authority_revision));
         }
     }
 
@@ -461,293 +569,5 @@ impl StatusSourceCollector for EngineStatusCollector {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{collections::BTreeSet, sync::Arc};
-
-    use bowline_core::status::{ConvergenceReadinessReason, ConvergenceReadinessState};
-    use bowline_local::sync::manifest_engine::{
-        Degradation, EnginePhase, EngineSnapshot, FullScanReason, WorkspacePath,
-    };
-
-    use super::{engine_convergence_facts, scoped_engine_convergence_facts};
-
-    fn snapshot(
-        phase: EnginePhase,
-        degradation: Degradation,
-        dirty: usize,
-        pending_intents: usize,
-    ) -> EngineSnapshot {
-        EngineSnapshot {
-            revision: 7,
-            phase,
-            observed_ref: None,
-            applied_manifest: None,
-            pending_intents,
-            dirty,
-            dirty_paths: Arc::new(BTreeSet::new()),
-            dirty_subtree_paths: Arc::new(BTreeSet::new()),
-            pending_intent_paths: Arc::new(BTreeSet::new()),
-            scan_required: false,
-            unattributed_pull_pending: false,
-            cycle_active: false,
-            last_success_at: None,
-            degradation,
-            unsyncable: Arc::new(std::collections::BTreeMap::new()),
-            refused_removals: Arc::new(BTreeSet::new()),
-        }
-    }
-
-    fn scoped_snapshot(
-        dirty: &[&str],
-        dirty_subtrees: &[&str],
-        intents: &[&str],
-    ) -> EngineSnapshot {
-        let paths = |values: &[&str]| {
-            Arc::new(
-                values
-                    .iter()
-                    .map(|value| WorkspacePath::new(*value))
-                    .collect::<BTreeSet<_>>(),
-            )
-        };
-        EngineSnapshot {
-            dirty: dirty.len().saturating_add(dirty_subtrees.len()),
-            pending_intents: intents.len(),
-            dirty_paths: paths(dirty),
-            dirty_subtree_paths: paths(dirty_subtrees),
-            pending_intent_paths: paths(intents),
-            ..snapshot(EnginePhase::Syncing, Degradation::Nominal, 0, 0)
-        }
-    }
-
-    #[test]
-    fn idle_maps_to_ready_settled() {
-        let facts =
-            engine_convergence_facts(&snapshot(EnginePhase::Idle, Degradation::Nominal, 0, 0));
-        assert!(facts.ready);
-        assert_eq!(facts.summary.state, ConvergenceReadinessState::Ready);
-        assert!(facts.summary.reasons.is_empty());
-        // The settledness inputs `classify_daemon_sync` reads: Ready, no reasons,
-        // and an empty queue.
-        assert!(!facts.queue.has_pending_work());
-    }
-
-    #[test]
-    fn syncing_maps_to_converging_with_causes() {
-        let facts =
-            engine_convergence_facts(&snapshot(EnginePhase::Syncing, Degradation::Nominal, 3, 0));
-        assert!(!facts.ready);
-        assert_eq!(facts.summary.state, ConvergenceReadinessState::Converging);
-        assert!(
-            facts
-                .summary
-                .reasons
-                .contains(&ConvergenceReadinessReason::CausesPending)
-        );
-        assert_eq!(facts.queue.queued, 3);
-    }
-
-    #[test]
-    fn debounced_dirty_work_cannot_present_as_ready() {
-        let facts =
-            engine_convergence_facts(&snapshot(EnginePhase::Idle, Degradation::Nominal, 3, 0));
-        assert!(!facts.ready);
-        assert_eq!(facts.summary.state, ConvergenceReadinessState::Converging);
-        assert!(
-            facts
-                .summary
-                .reasons
-                .contains(&ConvergenceReadinessReason::CausesPending)
-        );
-        assert_eq!(facts.queue.queued, 3);
-    }
-
-    #[test]
-    fn offline_retry_maps_to_recovering() {
-        let facts = engine_convergence_facts(&snapshot(
-            EnginePhase::BackingOff,
-            Degradation::OfflineRetrying { attempt: 2 },
-            1,
-            0,
-        ));
-        assert_eq!(facts.summary.state, ConvergenceReadinessState::Recovering);
-        assert!(
-            facts
-                .summary
-                .reasons
-                .contains(&ConvergenceReadinessReason::AttemptWaitingRetry)
-        );
-        assert_eq!(facts.queue.waiting_retry, 1);
-    }
-
-    #[test]
-    fn stopped_maps_to_limited_with_attention() {
-        // The daemon publishes a `Stopped`/`Nominal` host-status snapshot while the
-        // manifest driver is waiting to rebuild (lazy-rebuild path). It must read
-        // as `limited` with a truthful reason, never as settled.
-        let facts =
-            engine_convergence_facts(&snapshot(EnginePhase::Stopped, Degradation::Nominal, 0, 0));
-        assert!(!facts.ready);
-        assert!(facts.limited);
-        assert_eq!(facts.summary.state, ConvergenceReadinessState::Limited);
-        assert!(
-            facts
-                .summary
-                .reasons
-                .contains(&ConvergenceReadinessReason::AttentionRequired)
-        );
-    }
-
-    #[test]
-    fn a_blocked_deletion_is_distinguishable_from_the_other_attention_states() {
-        let blocked = engine_convergence_facts(&snapshot(
-            EnginePhase::Stalled,
-            Degradation::MassDeletionBlocked {
-                removals: 72,
-                entries: 121,
-            },
-            0,
-            0,
-        ));
-
-        assert!(blocked.limited);
-        assert_eq!(
-            blocked.blocked_deletions,
-            Some(super::BlockedDeletions {
-                removals: 72,
-                entries: 121,
-                // max(64, 121/4) — derived, never a stored second copy.
-                threshold: 64,
-            }),
-            "status carries the counts a user needs to judge the batch"
-        );
-        // The three other conditions that share `attention-required` carry no
-        // block, so a consumer can tell them apart on this field alone.
-        for degradation in [
-            Degradation::IntegrityStalled,
-            Degradation::StoreUnavailable,
-            Degradation::RootUnavailable(bowline_local::sync::manifest_engine::RootFault::Missing),
-        ] {
-            let other =
-                engine_convergence_facts(&snapshot(EnginePhase::Stalled, degradation, 0, 0));
-            assert!(other.limited);
-            assert_eq!(other.blocked_deletions, None, "{degradation:?}");
-        }
-    }
-
-    #[test]
-    fn a_project_scope_reports_the_workspace_wide_deletion_block() {
-        let blocked = scoped_engine_convergence_facts(
-            &snapshot(
-                EnginePhase::Stalled,
-                Degradation::MassDeletionBlocked {
-                    removals: 72,
-                    entries: 121,
-                },
-                0,
-                0,
-            ),
-            &WorkspacePath::new("projects/app"),
-        );
-
-        assert!(!blocked.ready);
-        assert!(
-            blocked.blocked_deletions.is_some(),
-            "sync publishes nothing for any project while the batch is refused"
-        );
-    }
-
-    #[test]
-    fn integrity_stall_maps_to_limited() {
-        let facts = engine_convergence_facts(&snapshot(
-            EnginePhase::Stalled,
-            Degradation::IntegrityStalled,
-            0,
-            2,
-        ));
-        assert!(facts.limited);
-        assert_eq!(facts.summary.state, ConvergenceReadinessState::Limited);
-        assert!(
-            facts
-                .summary
-                .reasons
-                .contains(&ConvergenceReadinessReason::AttentionRequired)
-        );
-        assert_eq!(facts.queue.attention, 1);
-        assert_eq!(facts.queue.reconciliation_required, 2);
-    }
-
-    #[test]
-    fn project_scope_ignores_sibling_work_but_counts_its_own_paths() {
-        let project = WorkspacePath::new("projects/app");
-        let sibling_only = scoped_snapshot(
-            &["projects/app2/src/main.rs"],
-            &["projects/other"],
-            &["projects/app2/config.json"],
-        );
-        let ready = scoped_engine_convergence_facts(&sibling_only, &project);
-        assert!(ready.ready);
-        assert_eq!(ready.queue.queued, 0);
-        assert_eq!(ready.queue.reconciliation_required, 0);
-
-        let relevant = scoped_snapshot(
-            &["projects/app/src/main.rs"],
-            &[],
-            &["projects/app/config.json"],
-        );
-        let converging = scoped_engine_convergence_facts(&relevant, &project);
-        assert!(!converging.ready);
-        assert_eq!(converging.queue.queued, 1);
-        assert_eq!(converging.queue.reconciliation_required, 1);
-    }
-
-    #[test]
-    fn project_scope_counts_an_ancestor_recursive_dirty_root() {
-        let snapshot = scoped_snapshot(&[], &["projects"], &[]);
-        let facts = scoped_engine_convergence_facts(&snapshot, &WorkspacePath::new("projects/app"));
-        assert!(!facts.ready);
-        assert_eq!(facts.queue.queued, 1);
-    }
-
-    #[test]
-    fn project_scope_fails_closed_while_attribution_is_incomplete() {
-        let project = WorkspacePath::new("projects/app");
-        let mut scan = scoped_snapshot(&[], &[], &[]);
-        scan.scan_required = true;
-        assert!(!scoped_engine_convergence_facts(&scan, &project).ready);
-
-        let mut pull = scoped_snapshot(&[], &[], &[]);
-        pull.unattributed_pull_pending = true;
-        assert!(!scoped_engine_convergence_facts(&pull, &project).ready);
-        assert!(
-            scoped_engine_convergence_facts(&pull, &project)
-                .summary
-                .reasons
-                .contains(&ConvergenceReadinessReason::MaterializationIncomplete)
-        );
-
-        let mut active = scoped_snapshot(&[], &[], &[]);
-        active.cycle_active = true;
-        assert!(!scoped_engine_convergence_facts(&active, &project).ready);
-
-        for (phase, degradation) in [
-            (EnginePhase::Starting, Degradation::Nominal),
-            (EnginePhase::Stopped, Degradation::Nominal),
-            (
-                EnginePhase::Syncing,
-                Degradation::FullScanRequired(FullScanReason::WatcherOverflow),
-            ),
-            (
-                EnginePhase::BackingOff,
-                Degradation::OfflineRetrying { attempt: 1 },
-            ),
-            (EnginePhase::Stalled, Degradation::IntegrityStalled),
-        ] {
-            let degraded = snapshot(phase, degradation, 0, 0);
-            assert!(
-                !scoped_engine_convergence_facts(&degraded, &project).ready,
-                "{phase:?}/{degradation:?} must block project readiness"
-            );
-        }
-    }
-}
+#[path = "engine_status/tests.rs"]
+mod tests;

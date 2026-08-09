@@ -1,22 +1,35 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use bowline_core::git_paths::{is_git_derivable_volatile_path, is_git_directory_path};
 use bowline_core::policy::{MaterializationMode, PathClassification};
 use bowline_core::workspace_graph::normalize_workspace_path;
+use bowline_daemon::watcher_coverage::{
+    CoverageCancellation, CoverageWait, NativeEventHandler, NativeWatcherCoverageAdapter,
+    WatcherCoverageAdapter, WatcherCoverageError, WatcherCoverageHandoff, WatcherCoverageIds,
+    WatcherCoveragePreparation, start_native_adapter,
+};
+use bowline_daemon::watcher_recovery::{RecoveryCause, WatcherRecoveryCoordinator};
 use bowline_local::policy::{
     PathFacts, UserPolicy, classify_path, is_private_workspace_state_path,
     is_work_view_namespace_path, policy_should_recurse,
 };
+use notify::Event;
 use notify::event::{AccessKind, AccessMode, EventKind, ModifyKind, RemoveKind};
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 
-use super::sync::{drain_policy, invalidate_policy_cache_for_path};
+use super::sync::{RecoveryClock, drain_policy, invalidate_policy_cache_for_path};
 use crate::daemon::WATCHER_DRAIN_BUDGET;
+
+#[path = "watcher/destination.rs"]
+mod destination;
+use destination::watcher_destination;
+
+const WATCHER_COVERAGE_START_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A watcher-kernel signal. The overflow lane is installed once ahead of native
 /// events, then retained by the bridge as out-of-band recovery state.
@@ -33,12 +46,10 @@ pub(super) enum WatcherSignal {
 #[derive(Debug, Default)]
 pub(super) struct WatcherOverflowLane {
     recovery_requested: AtomicBool,
-    activity_generation: AtomicU64,
 }
 
 impl WatcherOverflowLane {
     pub(super) fn request_recovery(&self) {
-        self.record_recovery_activity();
         self.recovery_requested.store(true, Ordering::Release);
     }
 
@@ -49,27 +60,77 @@ impl WatcherOverflowLane {
     pub(super) fn take_recovery_request(&self) -> bool {
         self.recovery_requested.swap(false, Ordering::AcqRel)
     }
-
-    pub(super) fn record_recovery_activity(&self) {
-        self.activity_generation.fetch_add(1, Ordering::AcqRel);
-    }
-
-    pub(super) fn activity_generation(&self) -> u64 {
-        self.activity_generation.load(Ordering::Acquire)
-    }
 }
 
 /// The workspace filesystem watcher kernel: a recursive notify watch on the
 /// workspace root whose callback read-filters events into [`WatcherSignal`]s.
 /// Dropping it tears down the native watch.
-#[derive(Debug)]
 pub(in crate::daemon) struct SyncWatcher {
-    _watcher: RecommendedWatcher,
+    coverage: Arc<Mutex<NativeWatcherCoverageAdapter>>,
 }
 
+#[derive(Clone)]
+pub(in crate::daemon) struct SyncWatcherCoverageHandle {
+    coverage: Arc<Mutex<NativeWatcherCoverageAdapter>>,
+}
+
+impl SyncWatcher {
+    pub(in crate::daemon) fn coverage_handle(&self) -> SyncWatcherCoverageHandle {
+        SyncWatcherCoverageHandle {
+            coverage: Arc::clone(&self.coverage),
+        }
+    }
+}
+
+#[cfg(test)]
 pub(in crate::daemon) fn start_sync_watcher(
     root: &Path,
-) -> Result<(SyncWatcher, Receiver<WatcherSignal>), notify::Error> {
+    ids: WatcherCoverageIds,
+) -> Result<(SyncWatcher, Receiver<WatcherSignal>), WatcherCoverageError> {
+    start_sync_watcher_internal(root, ids, None)
+}
+
+pub(in crate::daemon) fn start_sync_watcher_with_recovery(
+    root: &Path,
+    ids: WatcherCoverageIds,
+    recovery: Arc<WatcherRecoveryCoordinator>,
+    recovery_clock: Arc<RecoveryClock>,
+) -> Result<(SyncWatcher, Receiver<WatcherSignal>), WatcherCoverageError> {
+    start_sync_watcher_internal(
+        root,
+        ids,
+        Some(WatcherRecoveryIngress {
+            coordinator: recovery,
+            clock: recovery_clock,
+        }),
+    )
+}
+
+#[derive(Clone)]
+struct WatcherRecoveryIngress {
+    coordinator: Arc<WatcherRecoveryCoordinator>,
+    clock: Arc<RecoveryClock>,
+}
+
+impl WatcherRecoveryIngress {
+    fn observe_activity(&self) {
+        let _admission = self.coordinator.observe_activity(self.clock.now());
+    }
+
+    fn observe_suppressed(&self) {
+        let _admission = self.coordinator.observe_suppressed(self.clock.now());
+    }
+
+    fn observe_loss(&self, cause: RecoveryCause) {
+        let _admission = self.coordinator.observe_loss(cause, self.clock.now());
+    }
+}
+
+fn start_sync_watcher_internal(
+    root: &Path,
+    ids: WatcherCoverageIds,
+    recovery: Option<WatcherRecoveryIngress>,
+) -> Result<(SyncWatcher, Receiver<WatcherSignal>), WatcherCoverageError> {
     let (change_tx, change_rx) = mpsc::sync_channel(WATCHER_DRAIN_BUDGET);
     let overflow_lane = Arc::new(WatcherOverflowLane::default());
     change_tx
@@ -80,15 +141,118 @@ pub(in crate::daemon) fn start_sync_watcher(
     let reported_root = root.to_path_buf();
     let watch_root = fs::canonicalize(root).unwrap_or_else(|_| reported_root.clone());
     let callback_watch_root = watch_root.clone();
-    let mut watcher =
-        notify::recommended_watcher(move |mut event: notify::Result<notify::Event>| {
+    let handler: NativeEventHandler =
+        Arc::new(move |_epoch, mut event: notify::Result<notify::Event>| {
             if let Ok(event) = &mut event {
                 remap_watcher_event_root(event, &callback_watch_root, &reported_root);
             }
-            send_watcher_signal(&callback_tx, &callback_overflow_lane, event);
-        })?;
-    watcher.watch(&watch_root, RecursiveMode::Recursive)?;
-    Ok((SyncWatcher { _watcher: watcher }, change_rx))
+            send_watcher_signal_with_recovery(
+                &callback_tx,
+                &callback_overflow_lane,
+                event,
+                recovery.as_ref(),
+            );
+        });
+    let wait = CoverageWait::new(
+        Instant::now() + WATCHER_COVERAGE_START_TIMEOUT,
+        CoverageCancellation::new(),
+    );
+    let coverage = start_native_adapter(&watch_root, handler, ids, &wait)?;
+    Ok((
+        SyncWatcher {
+            coverage: Arc::new(Mutex::new(coverage)),
+        },
+        change_rx,
+    ))
+}
+
+impl std::fmt::Debug for SyncWatcher {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SyncWatcher")
+            .field("coverage", &"native")
+            .finish()
+    }
+}
+
+impl WatcherCoverageAdapter for SyncWatcher {
+    fn begin_recovery(
+        &mut self,
+        wait: &CoverageWait,
+    ) -> Result<WatcherCoveragePreparation, WatcherCoverageError> {
+        self.coverage
+            .lock()
+            .map_err(|_| WatcherCoverageError::CoverageUnavailable)?
+            .begin_recovery(wait)
+    }
+
+    fn seal_after_scan(
+        &mut self,
+        preparation: WatcherCoveragePreparation,
+        wait: &CoverageWait,
+    ) -> Result<WatcherCoverageHandoff, WatcherCoverageError> {
+        self.coverage
+            .lock()
+            .map_err(|_| WatcherCoverageError::CoverageUnavailable)?
+            .seal_after_scan(preparation, wait)
+    }
+
+    fn validate_boundary(
+        &self,
+        handoff: &WatcherCoverageHandoff,
+    ) -> Result<(), WatcherCoverageError> {
+        self.coverage
+            .lock()
+            .map_err(|_| WatcherCoverageError::CoverageUnavailable)?
+            .validate_boundary(handoff)
+    }
+
+    fn shutdown(&mut self) -> Result<(), WatcherCoverageError> {
+        self.coverage
+            .lock()
+            .map_err(|_| WatcherCoverageError::CoverageUnavailable)?
+            .shutdown()
+    }
+}
+
+impl WatcherCoverageAdapter for SyncWatcherCoverageHandle {
+    fn begin_recovery(
+        &mut self,
+        wait: &CoverageWait,
+    ) -> Result<WatcherCoveragePreparation, WatcherCoverageError> {
+        self.coverage
+            .lock()
+            .map_err(|_| WatcherCoverageError::CoverageUnavailable)?
+            .begin_recovery(wait)
+    }
+
+    fn seal_after_scan(
+        &mut self,
+        preparation: WatcherCoveragePreparation,
+        wait: &CoverageWait,
+    ) -> Result<WatcherCoverageHandoff, WatcherCoverageError> {
+        self.coverage
+            .lock()
+            .map_err(|_| WatcherCoverageError::CoverageUnavailable)?
+            .seal_after_scan(preparation, wait)
+    }
+
+    fn validate_boundary(
+        &self,
+        handoff: &WatcherCoverageHandoff,
+    ) -> Result<(), WatcherCoverageError> {
+        self.coverage
+            .lock()
+            .map_err(|_| WatcherCoverageError::CoverageUnavailable)?
+            .validate_boundary(handoff)
+    }
+
+    fn shutdown(&mut self) -> Result<(), WatcherCoverageError> {
+        self.coverage
+            .lock()
+            .map_err(|_| WatcherCoverageError::CoverageUnavailable)?
+            .shutdown()
+    }
 }
 
 fn remap_watcher_event_root(event: &mut Event, watched_root: &Path, reported_root: &Path) {
@@ -99,18 +263,63 @@ fn remap_watcher_event_root(event: &mut Event, watched_root: &Path, reported_roo
     }
 }
 
+#[cfg(test)]
 pub(super) fn send_watcher_signal(
     change_tx: &mpsc::SyncSender<WatcherSignal>,
     overflow_lane: &WatcherOverflowLane,
     event: notify::Result<notify::Event>,
 ) {
+    send_watcher_signal_with_recovery(change_tx, overflow_lane, event, None);
+}
+
+fn send_watcher_signal_with_recovery(
+    change_tx: &mpsc::SyncSender<WatcherSignal>,
+    overflow_lane: &WatcherOverflowLane,
+    event: notify::Result<notify::Event>,
+    recovery: Option<&WatcherRecoveryIngress>,
+) {
     let signal = match event {
-        Ok(event) if event.need_rescan() => WatcherSignal::Changed { event },
+        Ok(event) if event.need_rescan() => {
+            if let Some(recovery) = recovery {
+                recovery.observe_loss(RecoveryCause::NativeRescanRequired);
+            }
+            WatcherSignal::Changed { event }
+        }
         Ok(event) if watcher_operation(&event.kind).is_none() => return,
-        Ok(event) => WatcherSignal::Changed { event },
-        Err(error) if watcher_error_needs_rescan(&error) => WatcherSignal::Recoverable,
+        Ok(event) if overflow_lane.recovery_requested() => {
+            // The latch is asserted, so this event is about to be dropped below.
+            // Admit the drop as lost fidelity before returning: that admission is
+            // the only record the write ever happened, and it is what stops the
+            // incident closing over it. Ordering is safe either way -- an
+            // admission landing before `offer_close` invalidates it, and one
+            // landing after closure opens a fresh incident that must rescan.
+            if let Some(recovery) = recovery {
+                recovery.observe_suppressed();
+            }
+            WatcherSignal::Changed { event }
+        }
+        Ok(event) => {
+            // Forwarded activity is durable in the ingress and does not gate the
+            // close; it still advances the activity frontier that exact barriers
+            // fence on.
+            if let Some(recovery) = recovery {
+                recovery.observe_activity();
+            }
+            WatcherSignal::Changed { event }
+        }
+        Err(error) if watcher_error_needs_rescan(&error) => {
+            if let Some(recovery) = recovery {
+                recovery.observe_loss(RecoveryCause::NativeRescanRequired);
+            }
+            WatcherSignal::Recoverable
+        }
         Err(error) => WatcherSignal::Limited {
-            reason: error.to_string(),
+            reason: {
+                if let Some(recovery) = recovery {
+                    recovery.observe_loss(RecoveryCause::RecoverableAdapterLoss);
+                }
+                error.to_string()
+            },
         },
     };
     if overflow_lane.recovery_requested()
@@ -119,18 +328,20 @@ pub(super) fn send_watcher_signal(
             WatcherSignal::Changed { .. } | WatcherSignal::Recoverable
         )
     {
-        overflow_lane.record_recovery_activity();
         return;
     }
     match change_tx.try_send(signal) {
         Ok(()) => {}
         Err(mpsc::TrySendError::Full(_)) => {
-            // The native callback must never wait behind its own saturated
-            // event queue. The bridge drains the obsolete backlog before
-            // emitting the recovery fence; a later overflow re-arms the bit.
+            if let Some(recovery) = recovery {
+                recovery.observe_loss(RecoveryCause::NativeCallbackLaneSaturated);
+            }
             overflow_lane.request_recovery();
         }
         Err(mpsc::TrySendError::Disconnected(_)) => {
+            if let Some(recovery) = recovery {
+                recovery.observe_loss(RecoveryCause::WatcherDisconnected);
+            }
             eprintln!("bowline-daemon watcher signal receiver disconnected");
         }
     }
@@ -364,388 +575,5 @@ pub(super) fn rename_source_dirty_path(source_path: Option<&str>) -> Option<&str
     Some(source)
 }
 
-struct WatcherDestination {
-    relative_path: String,
-}
-
-fn watcher_destination(
-    root: &Path,
-    path: &Path,
-    policy_cache: &mut HashMap<String, UserPolicy>,
-) -> Option<WatcherDestination> {
-    let relative_path = watcher_relative_path(root, path)?;
-    if relative_path.is_empty()
-        || is_private_workspace_state_path(&relative_path)
-        || is_work_view_namespace_path(&relative_path)
-        || is_git_derivable_volatile_path(&relative_path)
-    {
-        return None;
-    }
-    invalidate_policy_cache_for_path(&relative_path, policy_cache);
-    let metadata = fs::symlink_metadata(path).ok();
-    let is_dir = metadata.as_ref().is_some_and(|metadata| metadata.is_dir());
-    let byte_len = metadata
-        .as_ref()
-        .filter(|metadata| !metadata.is_dir())
-        .map(|metadata| metadata.len());
-    let policy = drain_policy(root, &relative_path, policy_cache);
-    let decision = classify_path(
-        &PathFacts {
-            relative_path: relative_path.clone(),
-            is_dir,
-            byte_len,
-        },
-        policy,
-    );
-    watcher_should_record(decision.classification, decision.mode)
-        .then_some(WatcherDestination { relative_path })
-}
-
 #[cfg(test)]
-mod tests {
-    use super::{
-        WatcherSignal, rename_source_dirty_path, watcher_destination, watcher_operation,
-        watcher_recursive_root,
-    };
-    use bowline_core::git_paths::is_git_derivable_volatile_path;
-    use notify::{
-        Event,
-        event::{AccessKind, AccessMode, EventKind, Flag},
-    };
-    use std::path::Path;
-    use std::sync::{Arc, mpsc};
-
-    fn overflow_lane() -> Arc<super::WatcherOverflowLane> {
-        Arc::new(super::WatcherOverflowLane::default())
-    }
-
-    #[test]
-    fn rename_signal_forwards_source_and_destination_paths() {
-        use bowline_local::sync::manifest_engine::{EngineEvent, WorkspacePath};
-        let temp = std::env::temp_dir().join(format!(
-            "bowline-watcher-normalize-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
-        let root = temp.join("Code");
-        std::fs::create_dir_all(root.join("src")).expect("workspace root");
-        let source = root.join("src/old.rs");
-        let destination = root.join("src/new.rs");
-        std::fs::write(&destination, "fn renamed() {}\n").expect("destination");
-        let event = Event::new(EventKind::Modify(notify::event::ModifyKind::Name(
-            notify::event::RenameMode::Both,
-        )))
-        .add_path(source)
-        .add_path(destination);
-        let signal = super::WatcherSignal::Changed { event };
-        let engine_event = super::watcher_signal_engine_event(
-            &root,
-            &signal,
-            &mut std::collections::HashMap::new(),
-        )
-        .expect("rename yields an engine event");
-        let EngineEvent::Paths(paths) = engine_event else {
-            panic!("expected Paths event");
-        };
-        assert!(paths.contains(&WorkspacePath::new("src/old.rs")));
-        assert!(paths.contains(&WorkspacePath::new("src/new.rs")));
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn macos_directory_rename_any_signals_reconcile_both_roots() {
-        use bowline_local::sync::manifest_engine::{EngineEvent, WorkspacePath};
-        let temp = std::env::temp_dir().join(format!(
-            "bowline-watcher-macos-directory-rename-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
-        let root = temp.join("Code");
-        let source = root.join("src");
-        let destination = root.join("source");
-        std::fs::create_dir_all(source.join("nested")).expect("source tree");
-        std::fs::write(source.join("nested/main.rs"), "fn main() {}\n").expect("source file");
-        std::fs::rename(&source, &destination).expect("directory rename");
-
-        for (path, expected) in [(&source, "src"), (&destination, "source")] {
-            let event = Event::new(EventKind::Modify(notify::event::ModifyKind::Name(
-                notify::event::RenameMode::Any,
-            )))
-            .add_path(path.clone());
-            let signal = super::WatcherSignal::Changed { event };
-            let engine_event = super::watcher_signal_engine_event(
-                &root,
-                &signal,
-                &mut std::collections::HashMap::new(),
-            )
-            .expect("rename half yields an engine event");
-
-            let EngineEvent::RecursivePaths(roots) = engine_event else {
-                panic!("expected RecursivePaths event for {expected}");
-            };
-            assert_eq!(roots, [WorkspacePath::new(expected)].into_iter().collect());
-        }
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn created_directory_signal_requests_recursive_manifest_discovery() {
-        use bowline_local::sync::manifest_engine::{EngineEvent, WorkspacePath};
-        let temp = std::env::temp_dir().join(format!(
-            "bowline-watcher-recursive-create-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
-        let root = temp.join("Code");
-        let project = root.join("repo");
-        std::fs::create_dir_all(project.join(".git/objects/ab")).expect("git tree");
-        std::fs::write(project.join(".git/objects/ab/cdef"), b"opaque").expect("git object");
-        let event =
-            Event::new(EventKind::Create(notify::event::CreateKind::Folder)).add_path(project);
-        let signal = super::WatcherSignal::Changed { event };
-
-        let engine_event = super::watcher_signal_engine_event(
-            &root,
-            &signal,
-            &mut std::collections::HashMap::new(),
-        )
-        .expect("directory creation yields an engine event");
-
-        let EngineEvent::RecursivePaths(roots) = engine_event else {
-            panic!("expected RecursivePaths event");
-        };
-        assert_eq!(roots, [WorkspacePath::new("repo")].into_iter().collect());
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn excluded_directory_with_included_descendants_requests_recursive_discovery() {
-        use bowline_local::sync::manifest_engine::{EngineEvent, WorkspacePath};
-        let temp = std::env::temp_dir().join(format!(
-            "bowline-watcher-recursive-include-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
-        let root = temp.join("Code");
-        let vendor = root.join("vendor");
-        std::fs::create_dir_all(vendor.join("kept")).expect("included tree");
-        std::fs::write(root.join(".bowlineignore"), b"vendor/**\n!vendor/kept/**\n")
-            .expect("policy");
-        std::fs::write(vendor.join("kept/source.rs"), b"pub fn kept() {}\n")
-            .expect("included child");
-        let event =
-            Event::new(EventKind::Create(notify::event::CreateKind::Folder)).add_path(vendor);
-        let signal = super::WatcherSignal::Changed { event };
-
-        let engine_event = super::watcher_signal_engine_event(
-            &root,
-            &signal,
-            &mut std::collections::HashMap::new(),
-        )
-        .expect("included descendants keep the traversal root");
-
-        let EngineEvent::RecursivePaths(roots) = engine_event else {
-            panic!("expected RecursivePaths event");
-        };
-        assert_eq!(roots, [WorkspacePath::new("vendor")].into_iter().collect());
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn watcher_git_churn_predicate_skips_derivable_state_only() {
-        assert!(!is_git_derivable_volatile_path("repo/.git/index"));
-        assert!(is_git_derivable_volatile_path("repo/.git/logs"));
-        assert!(!is_git_derivable_volatile_path("repo/.git/HEAD"));
-    }
-
-    #[test]
-    fn read_access_events_do_not_wake_sync_or_saturate_the_backlog() {
-        let root = Path::new("/ws");
-        for kind in [
-            AccessKind::Open(AccessMode::Read),
-            AccessKind::Read,
-            AccessKind::Close(AccessMode::Read),
-        ] {
-            let event = Event::new(EventKind::Access(kind)).add_path(root.join(".env"));
-            assert_eq!(watcher_operation(&event.kind), None);
-        }
-        assert_eq!(
-            watcher_operation(&EventKind::Access(AccessKind::Close(AccessMode::Write))),
-            Some(super::WatcherOperation::Modify)
-        );
-    }
-
-    #[test]
-    fn read_access_events_consume_no_watcher_channel_capacity() {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let overflow_lane = overflow_lane();
-        for _ in 0..10 {
-            super::send_watcher_signal(
-                &sender,
-                &overflow_lane,
-                Ok(
-                    Event::new(EventKind::Access(AccessKind::Close(AccessMode::Read)))
-                        .add_path("/ws/.env".into()),
-                ),
-            );
-        }
-        assert!(matches!(
-            receiver.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        ));
-
-        super::send_watcher_signal(
-            &sender,
-            &overflow_lane,
-            Ok(
-                Event::new(EventKind::Access(AccessKind::Close(AccessMode::Write)))
-                    .add_path("/ws/.env".into()),
-            ),
-        );
-        assert!(matches!(
-            receiver.try_recv(),
-            Ok(WatcherSignal::Changed { .. })
-        ));
-    }
-
-    #[test]
-    fn rescan_flag_takes_precedence_over_read_filtering() {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let overflow_lane = overflow_lane();
-        super::send_watcher_signal(
-            &sender,
-            &overflow_lane,
-            Ok(
-                Event::new(EventKind::Access(AccessKind::Close(AccessMode::Read)))
-                    .add_path("/ws/.env".into())
-                    .set_flag(Flag::Rescan),
-            ),
-        );
-
-        assert!(matches!(
-            receiver.try_recv(),
-            Ok(WatcherSignal::Changed { event, .. }) if event.need_rescan()
-        ));
-    }
-
-    #[test]
-    fn saturated_watcher_callback_requests_recovery_without_blocking() {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        sender
-            .send(WatcherSignal::Recoverable)
-            .expect("fill watcher channel");
-        let overflow_lane = overflow_lane();
-        let callback_lane = Arc::clone(&overflow_lane);
-        let (done_tx, done_rx) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            super::send_watcher_signal(
-                &sender,
-                &callback_lane,
-                Ok(
-                    Event::new(EventKind::Modify(notify::event::ModifyKind::Any))
-                        .add_path("/ws/follow-up.txt".into()),
-                ),
-            );
-            done_tx.send(()).expect("completion");
-        });
-
-        let completed_without_capacity = done_rx.recv_timeout(std::time::Duration::from_secs(1));
-        if completed_without_capacity.is_err() {
-            let _ = receiver.recv();
-        }
-        worker.join().expect("callback worker");
-
-        assert!(
-            completed_without_capacity.is_ok(),
-            "a saturated native callback must return without channel capacity"
-        );
-        assert!(overflow_lane.recovery_requested());
-    }
-
-    #[test]
-    fn asserted_overflow_lane_coalesces_follow_on_callback_events() {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let overflow_lane = overflow_lane();
-        overflow_lane.request_recovery();
-        let generation_before = overflow_lane.activity_generation();
-
-        super::send_watcher_signal(
-            &sender,
-            &overflow_lane,
-            Ok(
-                Event::new(EventKind::Modify(notify::event::ModifyKind::Any))
-                    .add_path("/ws/follow-up.txt".into()),
-            ),
-        );
-
-        assert!(
-            matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)),
-            "a latched recovery scan covers ordinary follow-on callback events"
-        );
-        assert_eq!(
-            overflow_lane.activity_generation(),
-            generation_before + 1,
-            "coalesced callbacks remain visible to the recovery quiet window"
-        );
-    }
-
-    #[test]
-    fn rename_source_is_dirtied_even_when_destination_is_filtered() {
-        // A tracked file moved anywhere must mark its source dirty so a scoped
-        // reconcile drops the stale entry, regardless of the destination.
-        assert_eq!(
-            rename_source_dirty_path(Some("src/app.rs")),
-            Some("src/app.rs")
-        );
-        assert_eq!(rename_source_dirty_path(None), None);
-        // Sources that were never synced need no rescan.
-        assert_eq!(rename_source_dirty_path(Some("")), None);
-        assert_eq!(rename_source_dirty_path(Some(".bowline/state.json")), None);
-        assert_eq!(
-            rename_source_dirty_path(Some(".work/app/feature/src/auth.rs")),
-            None
-        );
-        assert_eq!(
-            rename_source_dirty_path(Some("repo/.work/feature/src/auth.rs")),
-            None
-        );
-        assert_eq!(
-            rename_source_dirty_path(Some("src/.bowline-materialize-app_rs-abcdef123456.tmp")),
-            None
-        );
-        for ordinary_path in [
-            ".env",
-            ".git/HEAD",
-            ".bowline-conflicts/conflict/local/app.env",
-            "repo/.git/index",
-        ] {
-            assert_eq!(
-                rename_source_dirty_path(Some(ordinary_path)),
-                Some(ordinary_path)
-            );
-        }
-    }
-
-    #[test]
-    fn work_view_git_state_never_enters_watcher_reconciliation() {
-        let temp = std::env::temp_dir().join(format!(
-            "bowline-watcher-local-work-view-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
-        let root = temp.join("Code");
-        let work_git = root.join(".work/app/feature/.git");
-        std::fs::create_dir_all(&work_git).expect("create local work-view Git state");
-        std::fs::write(work_git.join("HEAD"), "ref: refs/heads/main\n")
-            .expect("write local work-view Git head");
-        let mut policy_cache = std::collections::HashMap::new();
-
-        assert!(!watcher_recursive_root(
-            &root,
-            ".work/app/feature/.git",
-            &mut policy_cache,
-        ));
-        assert!(watcher_destination(&root, &work_git.join("HEAD"), &mut policy_cache).is_none());
-        let _ = std::fs::remove_dir_all(temp);
-    }
-}
+mod tests;

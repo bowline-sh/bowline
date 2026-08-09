@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use super::super::engine_test_support::{TestClock, engine_io, open_engine_store, test_context};
 use super::super::push::{RemoteObjects, RemoteRef};
-use super::super::{EngineError, EngineEvent, ManifestEngine, SyncBarrierId};
+use super::super::{Degradation, EngineError, EngineEvent, FullScanReason, ManifestEngine};
 use super::tree::TreeSpec;
 use crate::workspace::TempWorkspace;
 
@@ -89,7 +89,6 @@ pub(crate) struct Device {
     device_id: String,
     engine: ManifestEngine,
     clock: TestClock,
-    next_barrier: u64,
     crashes: u64,
 }
 
@@ -111,7 +110,6 @@ impl Device {
             device_id: device_id.to_string(),
             engine,
             clock: TestClock::new(),
-            next_barrier: 0,
             crashes: 0,
         })
     }
@@ -151,21 +149,23 @@ impl Device {
     /// Re-observe both authorities and run cycles until this device has nothing
     /// left due.
     ///
-    /// Uses the engine's own `SyncBarrier` acknowledgement as the definition of
-    /// "caught up" rather than a harness-invented predicate, then additionally
-    /// requires an empty dirty set and no immediately-due deadline so a barrier
-    /// that completes mid-conflict (aside materialized, re-push still pending)
-    /// does not read as settled.
+    /// This is a work-drain operation, not exact workspace authorization. The
+    /// generative corpus intentionally plants unsyncable filesystem objects: an
+    /// engine can finish every actionable scan/pull/push while that represented
+    /// blocker correctly prevents an exact convergence receipt. Re-observe both
+    /// authorities directly, then stop only once the actionable frontier is
+    /// drained, the authoritative and applied refs agree, and no transient
+    /// degradation remains.
     pub(crate) fn settle<T>(&mut self, remote: &T) -> Result<SettleOutcome, FleetError>
     where
         T: RemoteObjects + RemoteRef,
     {
-        let barrier = SyncBarrierId(self.next_barrier);
-        self.next_barrier = self.next_barrier.saturating_add(1);
-        self.engine
-            .on_event(EngineEvent::SyncBarrier(barrier), &self.clock);
+        self.engine.on_event(
+            EngineEvent::FullScanRequired(FullScanReason::PeriodicAudit),
+            &self.clock,
+        );
+        self.engine.on_event(EngineEvent::RefChanged, &self.clock);
 
-        let mut acknowledged = false;
         for cycle in 0..MAX_SETTLE_CYCLES {
             let outcome = {
                 let io = engine_io(remote, &self.clock);
@@ -175,12 +175,15 @@ impl Device {
                 device: self.device_id.clone(),
                 error,
             })?;
-            acknowledged |= self.engine.take_completed_barriers().contains(&barrier);
-
             let now = self.clock.millis();
             let due = self.engine.next_timeout(now);
             let work_due_now = due.is_some_and(|timeout| timeout.is_zero());
-            if acknowledged && !work_due_now && self.engine.dirty_paths().is_empty() {
+            let snapshot = self.engine.snapshot();
+            if snapshot.is_work_drained()
+                && snapshot.degradation == Degradation::Nominal
+                && snapshot.exact_observed_ref() == snapshot.applied_ref
+                && !work_due_now
+            {
                 return Ok(SettleOutcome { cycles: cycle + 1 });
             }
             // Nothing due at this instant: jump the virtual clock to the next
@@ -192,7 +195,12 @@ impl Device {
                     self.clock.advance(millis.saturating_add(1));
                 }
                 Some(_) => {}
-                None => return Ok(SettleOutcome { cycles: cycle + 1 }),
+                None => {
+                    return Err(FleetError::Unsettled {
+                        device: self.device_id.clone(),
+                        cycles: cycle + 1,
+                    });
+                }
             }
         }
         Err(FleetError::Unsettled {

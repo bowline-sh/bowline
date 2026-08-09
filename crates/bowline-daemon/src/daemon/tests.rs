@@ -351,7 +351,11 @@ fn a_refused_credential_reports_the_observer_unavailable() {
         StatusSourceState::Degraded
     );
     assert_eq!(
-        super::server_state::observer_status_source_state(RefObserverReadiness::Unauthenticated),
+        super::server_state::observer_status_source_state(RefObserverReadiness::Blocked {
+            class: bowline_control_plane::DependencyFailureClass::AuthenticationRequired,
+            code:
+                bowline_daemon::manifest_transport::RefObserverFailureCode::AuthenticationRequired,
+        }),
         StatusSourceState::Unavailable
     );
 }
@@ -430,6 +434,7 @@ pub(super) fn watcher_test_runtime(
     manifest_snapshot
         .0
         .publish(bowline_daemon::manifest_driver::host_status_snapshot());
+    let recovery_clock = Arc::new(super::sync::RecoveryClock::new());
     ContinuousSyncRuntime {
         args: SyncArgs {
             root,
@@ -437,6 +442,17 @@ pub(super) fn watcher_test_runtime(
             workspace_id: WorkspaceId::new(workspace_id),
             device_id: DeviceId::new("device-test"),
         },
+        recovery_coordinator: Arc::new(
+            bowline_daemon::watcher_recovery::WatcherRecoveryCoordinator::startup_reconciliation(
+                bowline_daemon::watcher_recovery::RecoverySourceIdentity::new(
+                    super::sync::recovery_process_identity(),
+                    WorkspaceId::new(workspace_id),
+                ),
+                recovery_clock.now(),
+                bowline_daemon::watcher_recovery::BackoffPolicy::standard(),
+            ),
+        ),
+        recovery_clock,
         watcher: super::sync::WatcherHost::unarmed(Instant::now()),
         status_publisher: noop_status_publisher(),
         next_status_publish: Instant::now() + STATUS_PUBLISH_INTERVAL,
@@ -452,6 +468,53 @@ pub(super) fn watcher_test_runtime(
         manifest_snapshot,
         manifest_counters: bowline_local::sync::manifest_engine::EngineCounters::shared(),
     }
+}
+
+#[test]
+fn recovery_authority_survives_subordinate_task_reconstruction() {
+    let temp = unique_temp_dir("bowline-recovery-runtime-lifecycle");
+    let runtime = watcher_test_runtime(
+        temp.join("Code"),
+        temp.join(".state"),
+        "ws_recovery_lifecycle",
+    );
+    let original = Arc::clone(&runtime.recovery_coordinator);
+
+    let watcher_task = Arc::clone(&runtime.recovery_coordinator);
+    let driver_task = Arc::clone(&runtime.recovery_coordinator);
+    let observer_task = Arc::clone(&runtime.recovery_coordinator);
+    drop(watcher_task);
+    drop(driver_task);
+    drop(observer_task);
+
+    let reconstructed_watcher_task = Arc::clone(&runtime.recovery_coordinator);
+    assert!(Arc::ptr_eq(&original, &reconstructed_watcher_task));
+    let snapshot = reconstructed_watcher_task
+        .snapshot()
+        .expect("recovery snapshot remains available");
+    assert_eq!(
+        snapshot.lifecycle(),
+        bowline_daemon::watcher_recovery::RecoveryLifecycle::Recovering
+    );
+    assert_eq!(
+        snapshot.primary_cause(),
+        Some(bowline_daemon::watcher_recovery::RecoveryCause::StartupReconciliation)
+    );
+    let second_runtime = watcher_test_runtime(
+        temp.join("OtherCode"),
+        temp.join(".other-state"),
+        "ws_recovery_lifecycle_other",
+    );
+    let second_snapshot = second_runtime
+        .recovery_coordinator
+        .snapshot()
+        .expect("second workspace recovery snapshot remains available");
+    assert_eq!(
+        snapshot.process_identity(),
+        second_snapshot.process_identity()
+    );
+    assert_ne!(snapshot.workspace_id(), second_snapshot.workspace_id());
+    let _ = fs::remove_dir_all(temp);
 }
 
 #[test]

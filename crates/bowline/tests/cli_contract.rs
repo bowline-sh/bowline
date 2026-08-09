@@ -22,6 +22,17 @@ use serde_json::Value;
 
 fn bowline() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_bowline"));
+    // These contracts assert what the CLI does for a given configuration, so
+    // they must not inherit the developer's. A shell holding
+    // BOWLINE_CONTROL_PLANE_TOKEN makes `setup` treat the hosted session as
+    // authenticated and persist metadata, which silently inverted the pending
+    // hosted login assertion in discovery_workspace. Clear the whole
+    // configuration surface here; a test needing a variable sets it below.
+    for (key, _) in std::env::vars() {
+        if key.starts_with("BOWLINE_") || key.starts_with("CONVEX_") {
+            command.env_remove(&key);
+        }
+    }
     command.env(
         "BOWLINE_SECRET_STORE_PATH",
         unique_secret_store("cli-contract").display().to_string(),

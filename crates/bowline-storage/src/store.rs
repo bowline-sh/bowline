@@ -623,6 +623,10 @@ pub enum ByteStoreError {
         key: ObjectKey,
         reason: &'static str,
     },
+    IntegrityViolation {
+        key: ObjectKey,
+        reason: &'static str,
+    },
     CorruptJournal {
         component: &'static str,
         reason: &'static str,
@@ -692,6 +696,12 @@ impl fmt::Display for ByteStoreError {
             Self::CorruptObject { key, reason } => {
                 write!(formatter, "corrupt object `{key}`: {reason}")
             }
+            Self::IntegrityViolation { key, reason } => {
+                write!(
+                    formatter,
+                    "immutable object `{key}` violated identity: {reason}"
+                )
+            }
             Self::CorruptJournal { component, reason } => {
                 write!(formatter, "corrupt {component}: {reason}")
             }
@@ -724,6 +734,7 @@ impl Error for ByteStoreError {
             | Self::ObjectAlreadyExists(_)
             | Self::MissingObject { .. }
             | Self::CorruptObject { .. }
+            | Self::IntegrityViolation { .. }
             | Self::CorruptJournal { .. }
             | Self::RangeOutOfBounds { .. }
             | Self::UnsupportedOperation(_) => None,

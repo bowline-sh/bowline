@@ -37,7 +37,9 @@ fn canonical_convergence_status_owns_readiness_and_queue_projection() {
         revision: 42,
         phase: EnginePhase::Idle,
         observed_ref: None,
-        applied_manifest: None,
+        applied_ref: bowline_local::sync::manifest_engine::EngineRef::Genesis,
+        materialization_revision:
+            bowline_local::sync::manifest_engine::MaterializationRevision::INITIAL,
         pending_intents: 0,
         dirty: 0,
         dirty_paths: Arc::new(BTreeSet::new()),

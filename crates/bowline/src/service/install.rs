@@ -200,14 +200,45 @@ pub(crate) fn wait_for_stable_socket_absence(
     stable_for: Duration,
     probe_interval: Duration,
 ) -> Result<(), String> {
+    wait_for_stable_socket_absence_with_probe(socket, stable_for, probe_interval, || {})
+}
+
+fn wait_for_stable_socket_absence_with_probe<F>(
+    socket: &Path,
+    stable_for: Duration,
+    probe_interval: Duration,
+    mut after_absence_probe: F,
+) -> Result<(), String>
+where
+    F: FnMut(),
+{
     let absent_since = Instant::now();
     loop {
         require_socket_path_absent(socket)?;
+        after_absence_probe();
         if absent_since.elapsed() >= stable_for {
             return Ok(());
         }
         thread::sleep(probe_interval);
     }
+}
+
+#[cfg(test)]
+pub(crate) fn wait_for_stable_socket_absence_with_test_probe<F>(
+    socket: &Path,
+    stable_for: Duration,
+    probe_interval: Duration,
+    after_absence_probe: F,
+) -> Result<(), String>
+where
+    F: FnMut(),
+{
+    wait_for_stable_socket_absence_with_probe(
+        socket,
+        stable_for,
+        probe_interval,
+        after_absence_probe,
+    )
 }
 
 #[cfg(test)]
