@@ -448,10 +448,9 @@ impl WorkspaceControlRegistry {
             return;
         };
         // A waiter that times out mid-scan drops to `ReleaseRequested` while this
-        // scan is still executing. Taking that residue and discarding it left
-        // nothing to unpause the engine -- the `Scan` arm had already set
-        // `coverage_paused`, so publication stopped until some later incident
-        // happened to close. Put back anything that is not this scan's `Running`.
+        // scan is still executing. Preserve that residue so the abandoned lease
+        // is retired before a later consumer reuses the single scan slot. Put
+        // back anything that is not this scan's `Running`.
         let taken = state.recovery.take();
         let Some(RecoverySlot::Running {
             id: running_id,

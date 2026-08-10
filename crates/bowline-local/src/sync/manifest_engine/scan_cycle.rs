@@ -7,7 +7,8 @@
 //! unproven root must stop a scan before the scan can mistake it for an empty
 //! workspace.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::endpoint::{prepare_endpoint_probe_root, refresh_endpoint_capabilities};
@@ -34,6 +35,39 @@ impl AuthoritativeScanRevision {
 pub struct AuthoritativeScanReceipt {
     revision: AuthoritativeScanRevision,
     dirty_paths: usize,
+}
+
+#[derive(Debug)]
+/// Immutable filesystem work for an authoritative scan.
+///
+/// Preparing the plan snapshots policy and the committed ancestor on the
+/// engine thread. Executing it performs only the filesystem walk, so a daemon
+/// may move that expensive work off the engine thread while convergence keeps
+/// running.
+pub struct AuthoritativeScanPlan {
+    root: PathBuf,
+    policy: crate::policy::UserPolicy,
+    ancestor: BTreeMap<WorkspacePath, super::store::FileRecord>,
+    observation_seq: super::dirty_set::DirtySeq,
+}
+
+#[derive(Debug)]
+/// Complete result of an off-thread authoritative filesystem walk.
+pub struct AuthoritativeScanResult {
+    walk: Result<StatWalk, RootFault>,
+    observation_seq: super::dirty_set::DirtySeq,
+}
+
+impl AuthoritativeScanPlan {
+    /// Execute the complete stat walk without accessing mutable engine state.
+    pub fn execute(self) -> AuthoritativeScanResult {
+        let walk = stat_walk(&self.root, &self.policy, &self.ancestor)
+            .map_err(|_error| RootFault::Missing);
+        AuthoritativeScanResult {
+            walk,
+            observation_seq: self.observation_seq,
+        }
+    }
 }
 
 impl AuthoritativeScanReceipt {
@@ -144,23 +178,74 @@ impl ManifestEngine {
         Ok(())
     }
 
-    /// Merge one authoritative local scan into the existing dirty set without
-    /// pulling, uploading, publishing, applying, or observing remote state.
-    pub fn authoritative_local_scan(
+    /// Snapshot the inputs for an authoritative scan without walking the tree.
+    /// Normal convergence remains runnable until the complete result is merged.
+    pub fn begin_authoritative_local_scan(
         &mut self,
-    ) -> Result<AuthoritativeScanReceipt, AuthoritativeScanError> {
-        if self.cycle_active {
+    ) -> Result<AuthoritativeScanPlan, AuthoritativeScanError> {
+        if self.cycle_active || self.authoritative_scan_active {
             return Err(AuthoritativeScanError::CycleActive);
         }
         self.phase = super::EnginePhase::Syncing;
-        self.cycle_active = true;
+        self.authoritative_scan_active = true;
         self.bump_revision_if_changed();
-        let result = self.guard_root().and_then(|()| self.full_scan());
-        self.cycle_active = false;
-        match result {
-            Ok(()) => {
-                self.scan_required = false;
-                Arc::make_mut(&mut self.dirty_subtrees).clear();
+        if let Err(error) = self.guard_root() {
+            self.authoritative_scan_active = false;
+            match error {
+                CycleError::RootUnavailable(fault) => {
+                    self.set_degradation(Degradation::RootUnavailable(fault));
+                    self.scan_required = true;
+                    self.phase = super::EnginePhase::Stalled;
+                    self.bump_revision_if_changed();
+                    return Err(AuthoritativeScanError::RootUnavailable(fault));
+                }
+                other => return Err(authoritative_cycle_error(other)),
+            }
+        }
+        let inputs = (|| {
+            let policy = crate::policy::UserPolicy::load(&self.ctx.workspace_root)
+                .map_err(|error| AuthoritativeScanError::Fatal(EngineError::Io(error)))?;
+            let ancestor = self
+                .store
+                .all_files()
+                .map_err(|error| AuthoritativeScanError::Fatal(EngineError::Store(error)))?;
+            Ok((policy, ancestor))
+        })();
+        let (policy, ancestor) = match inputs {
+            Ok(inputs) => inputs,
+            Err(error) => {
+                self.authoritative_scan_active = false;
+                return Err(error);
+            }
+        };
+        self.counters.record_ancestor_rows_read(ancestor.len());
+
+        // This scan owns only the work that existed when it began. A watcher
+        // event arriving during the walk may set either flag again and must not
+        // be erased when the older scan completes.
+        self.scan_required = false;
+        Arc::make_mut(&mut self.dirty_subtrees).clear();
+        Ok(AuthoritativeScanPlan {
+            root: self.ctx.workspace_root.clone(),
+            policy,
+            ancestor,
+            observation_seq: self.next_dirty_seq,
+        })
+    }
+
+    /// Atomically merge a completed authoritative walk into live engine state.
+    pub fn complete_authoritative_local_scan(
+        &mut self,
+        result: AuthoritativeScanResult,
+    ) -> Result<AuthoritativeScanReceipt, AuthoritativeScanError> {
+        self.authoritative_scan_active = false;
+        let observation_seq = result.observation_seq;
+        match result.walk {
+            Ok(walk) => {
+                self.counters.record_stat_walk(walk.scanned, walk.hashes);
+                self.record_walk_unsyncable(&walk, WalkScope::WholeWorkspace)
+                    .map_err(authoritative_cycle_error)?;
+                self.absorb_authoritative_dirty(walk.dirty, observation_seq);
                 if matches!(self.degradation, Degradation::FullScanRequired(_)) {
                     self.set_degradation(Degradation::Nominal);
                 }
@@ -172,20 +257,13 @@ impl ManifestEngine {
                     dirty_paths: self.dirty.len(),
                 })
             }
-            Err(CycleError::RootUnavailable(fault)) => {
+            Err(fault) => {
                 self.set_degradation(Degradation::RootUnavailable(fault));
                 self.scan_required = true;
                 self.phase = super::EnginePhase::Stalled;
                 self.bump_revision_if_changed();
                 Err(AuthoritativeScanError::RootUnavailable(fault))
             }
-            Err(CycleError::Fatal(error)) => Err(AuthoritativeScanError::Fatal(error)),
-            Err(
-                CycleError::Transport
-                | CycleError::Integrity
-                | CycleError::MassDeletionBlocked { .. }
-                | CycleError::PathScoped,
-            ) => Err(AuthoritativeScanError::Fatal(EngineError::Internal)),
         }
     }
 
@@ -261,6 +339,17 @@ impl ManifestEngine {
 /// fatal that kills the engine over a disk that will come back.
 fn walk_cycle_error(_error: std::io::Error) -> CycleError {
     CycleError::RootUnavailable(RootFault::Missing)
+}
+
+fn authoritative_cycle_error(error: CycleError) -> AuthoritativeScanError {
+    match error {
+        CycleError::RootUnavailable(fault) => AuthoritativeScanError::RootUnavailable(fault),
+        CycleError::Fatal(error) => AuthoritativeScanError::Fatal(error),
+        CycleError::Transport
+        | CycleError::Integrity
+        | CycleError::MassDeletionBlocked { .. }
+        | CycleError::PathScoped => AuthoritativeScanError::Fatal(EngineError::Internal),
+    }
 }
 
 /// How much of the workspace a walk actually visited, and therefore how much of

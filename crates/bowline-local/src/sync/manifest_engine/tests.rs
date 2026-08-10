@@ -57,6 +57,70 @@ fn path_set(paths: &[&str]) -> BTreeSet<WorkspacePath> {
     paths.iter().map(|path| WorkspacePath::new(*path)).collect()
 }
 
+#[test]
+fn watcher_observation_keeps_priority_over_an_older_scan() {
+    let mut harness = DriverHarness::new("scan-watcher-priority", "device-a");
+    harness.start();
+    let plan = harness
+        .engine
+        .begin_authoritative_local_scan()
+        .expect("authoritative scan begins");
+
+    harness.write("sentinel.txt", b"newer watcher edit");
+    let sentinel = WorkspacePath::new("sentinel.txt");
+    harness.event(EngineEvent::Paths(BTreeSet::from([sentinel.clone()])));
+    let watcher_priority = harness
+        .engine
+        .dirty_seen
+        .get(&sentinel)
+        .copied()
+        .expect("watcher stamps the path");
+
+    harness
+        .engine
+        .complete_authoritative_local_scan(plan.execute())
+        .expect("older scan merges");
+    assert_eq!(
+        harness.engine.dirty_seen.get(&sentinel),
+        Some(&watcher_priority),
+        "a late scan result must not re-stamp newer watcher input"
+    );
+}
+
+#[test]
+fn completed_scan_cannot_delete_a_path_recreated_while_it_ran() {
+    let mut harness = DriverHarness::new("scan-recreated-path", "device-a");
+    harness.start();
+    harness.write("kept.txt", b"old");
+    harness.edit(&["kept.txt"]);
+
+    let plan = harness
+        .engine
+        .begin_authoritative_local_scan()
+        .expect("authoritative scan begins");
+    std::fs::remove_file(harness.root.join("kept.txt")).expect("remove before scan");
+    let stale_deletion = plan.execute();
+
+    harness.write("kept.txt", b"recreated");
+    harness.event(EngineEvent::Paths(BTreeSet::from([WorkspacePath::new(
+        "kept.txt",
+    )])));
+    harness.clock.advance(1_001);
+    harness.run_due();
+    harness
+        .engine
+        .complete_authoritative_local_scan(stale_deletion)
+        .expect("complete older scan");
+    harness.clock.advance(1_001);
+    harness.run_due();
+
+    assert_eq!(
+        head_content_id(&harness.remote, &test_crypto(), "kept.txt"),
+        test_crypto().content_id(b"recreated"),
+        "scan-derived deletion must be revalidated against current filesystem state"
+    );
+}
+
 fn write_file(root: &Path, rel: &str, bytes: &[u8]) {
     let path = root.join(rel);
     if let Some(parent) = path.parent() {

@@ -50,4 +50,26 @@ impl ManifestEngine {
             .map(|path| self.ctx.names.canonical_spelling(&path))
             .collect()
     }
+
+    /// Merge scan-discovered work at the scan's observation watermark.
+    /// Watcher observations admitted after the walk began retain their newer
+    /// priority instead of being lexically re-stamped by a late scan result.
+    pub(super) fn absorb_authoritative_dirty(
+        &mut self,
+        paths: BTreeSet<WorkspacePath>,
+        observation_seq: DirtySeq,
+    ) {
+        let folded = self.canonical_paths(paths);
+        for path in &folded {
+            self.dirty_seen
+                .entry(path.clone())
+                .and_modify(|current| {
+                    if *current < observation_seq {
+                        *current = observation_seq;
+                    }
+                })
+                .or_insert(observation_seq);
+        }
+        Arc::make_mut(&mut self.dirty).extend(folded);
+    }
 }

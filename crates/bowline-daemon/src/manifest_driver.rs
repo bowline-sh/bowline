@@ -23,9 +23,10 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender as EventSender};
 
 use bowline_control_plane::{HostedControlPlaneClient, SignedUrlHttpClient};
 use bowline_local::sync::manifest_engine::{
-    Clock, EngineContext, EngineConvergenceBarrierId, EngineConvergenceReceipt, EngineCounters,
-    EngineEndpointGeneration, EngineEvent, EngineIo, EngineSnapshot, ManifestEngine, ManifestStore,
-    RemoteObjects, RemoteRef, SystemClock,
+    AuthoritativeScanPlan, AuthoritativeScanResult, Clock, EngineContext,
+    EngineConvergenceBarrierId, EngineConvergenceReceipt, EngineCounters, EngineEndpointGeneration,
+    EngineEvent, EngineIo, EngineSnapshot, ManifestEngine, ManifestStore, RemoteObjects, RemoteRef,
+    SystemClock,
 };
 
 use crate::manifest_transport::{
@@ -645,12 +646,36 @@ pub struct ManifestDriverConfig {
 /// terminal snapshot; transport and integrity faults are handled inside the
 /// engine and never reach here.
 pub fn run_engine_loop<O, R, C>(
+    engine: ManifestEngine,
+    objects: &O,
+    refs: &R,
+    clock: &C,
+    inbox: &Receiver<EngineEvent>,
+    sink: &EngineSnapshotSink,
+) where
+    O: RemoteObjects,
+    R: RemoteRef,
+    C: Clock,
+{
+    run_engine_loop_with_scan_executor(
+        engine,
+        objects,
+        refs,
+        clock,
+        inbox,
+        sink,
+        Arc::new(AuthoritativeScanPlan::execute),
+    );
+}
+
+fn run_engine_loop_with_scan_executor<O, R, C>(
     mut engine: ManifestEngine,
     objects: &O,
     refs: &R,
     clock: &C,
     inbox: &Receiver<EngineEvent>,
     sink: &EngineSnapshotSink,
+    scan_executor: Arc<dyn Fn(AuthoritativeScanPlan) -> AuthoritativeScanResult + Send + Sync>,
 ) where
     O: RemoteObjects,
     R: RemoteRef,
@@ -677,23 +702,27 @@ pub fn run_engine_loop<O, R, C>(
         return;
     };
     let watcher_wake = watcher_ingress.wake_receiver();
-    let mut coverage_paused = false;
+    let (scan_result_tx, scan_result_rx) = crossbeam_channel::bounded(1);
     loop {
-        let mut released_coverage = false;
         if let Some(action) = controls.take_recovery_action() {
             match action {
-                RecoveryControlAction::Scan(id) => {
-                    let result = engine.authoritative_local_scan();
-                    coverage_paused = result.is_ok();
-                    sink.publish(engine.snapshot());
-                    controls.complete_scan(id, result);
-                }
+                RecoveryControlAction::Scan(id) => match engine.begin_authoritative_local_scan() {
+                    Ok(plan) => {
+                        let sender = scan_result_tx.clone();
+                        let execute = Arc::clone(&scan_executor);
+                        thread::spawn(move || {
+                            let _sent = sender.send((id, execute(plan)));
+                        });
+                    }
+                    Err(error) => {
+                        sink.publish(engine.snapshot());
+                        controls.complete_scan(id, Err(error));
+                    }
+                },
                 RecoveryControlAction::Release => {
-                    coverage_paused = false;
-                    released_coverage = true;
-                    // Scan-absorbed paths arm no deadline of their own, so the
-                    // work pass below would find nothing due and the release
-                    // would publish nothing.
+                    // Release remains an idempotent scheduling edge for callers
+                    // using the scan lease, but convergence is never suspended
+                    // while that lease is held.
                     engine.schedule_recovered_work(clock);
                 }
             }
@@ -708,15 +737,24 @@ pub fn run_engine_loop<O, R, C>(
             .next_timeout(clock.now_millis())
             .map(crossbeam_channel::after)
             .unwrap_or_else(crossbeam_channel::never);
-        let received = if released_coverage {
-            Err(RecvTimeoutError::Timeout)
-        } else {
-            crossbeam_channel::select! {
-                recv(control_wake) -> _ => Err(RecvTimeoutError::Timeout),
-                recv(watcher_wake) -> _ => Err(RecvTimeoutError::Timeout),
-                recv(inbox) -> event => event.map_err(|_| RecvTimeoutError::Disconnected),
-                recv(timeout) -> _ => Err(RecvTimeoutError::Timeout),
-            }
+        let received = crossbeam_channel::select! {
+            recv(scan_result_rx) -> completed => {
+                if let Ok((id, result)) = completed {
+                    let result = engine.complete_authoritative_local_scan(result);
+                    if result.is_ok() {
+                        // The complete walk is now ordinary dirty input. Publish
+                        // it immediately; do not wait for native watcher sealing.
+                        engine.schedule_recovered_work(clock);
+                    }
+                    sink.publish(engine.snapshot());
+                    controls.complete_scan(id, result);
+                }
+                Err(RecvTimeoutError::Timeout)
+            },
+            recv(control_wake) -> _ => Err(RecvTimeoutError::Timeout),
+            recv(watcher_wake) -> _ => Err(RecvTimeoutError::Timeout),
+            recv(inbox) -> event => event.map_err(|_| RecvTimeoutError::Disconnected),
+            recv(timeout) -> _ => Err(RecvTimeoutError::Timeout),
         };
         match received {
             Ok(EngineEvent::Shutdown) => {
@@ -734,10 +772,6 @@ pub fn run_engine_loop<O, R, C>(
                 sink.publish(engine.snapshot());
                 return;
             }
-        }
-        if coverage_paused {
-            sink.publish(engine.snapshot());
-            continue;
         }
         if engine.announce_due_work(clock) {
             sink.publish(engine.snapshot());

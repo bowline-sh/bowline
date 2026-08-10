@@ -124,7 +124,10 @@ pub use remote::{
     ManifestUpload, PrefetchedBlobs, RefObservation, RefVersionLookup, RemoteObjects, RemoteRef,
     TransportError, TransportFailureClass,
 };
-pub use scan_cycle::{AuthoritativeScanError, AuthoritativeScanReceipt, AuthoritativeScanRevision};
+pub use scan_cycle::{
+    AuthoritativeScanError, AuthoritativeScanPlan, AuthoritativeScanReceipt,
+    AuthoritativeScanResult, AuthoritativeScanRevision,
+};
 pub use stat_walk::{
     StatWalk, project_view_verification_paths, stat_walk, stat_walk_project_view,
     stat_walk_subtrees,
@@ -265,6 +268,7 @@ pub struct ManifestEngine {
     startup_reconcile: bool,
     startup_pending: BTreeSet<WorkspacePath>,
     cycle_active: bool,
+    authoritative_scan_active: bool,
 
     debounce_deadline: Option<u64>,
     max_latency_deadline: Option<u64>,
@@ -323,6 +327,7 @@ impl ManifestEngine {
             startup_reconcile: true,
             startup_pending: BTreeSet::new(),
             cycle_active: false,
+            authoritative_scan_active: false,
             debounce_deadline: None,
             max_latency_deadline: None,
             backoff_deadline: None,
@@ -837,7 +842,7 @@ impl ManifestEngine {
         // NOTHING in a cycle may touch the workspace before the root is proven.
         self.guard_root()?;
         let mut observation = LocalObservation::Reactive;
-        if self.scan_required {
+        if self.scan_required && !self.authoritative_scan_active {
             self.full_scan()?;
             self.scan_required = false;
             Arc::make_mut(&mut self.dirty_subtrees).clear();

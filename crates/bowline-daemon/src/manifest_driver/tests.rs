@@ -1,7 +1,7 @@
 use crate::manifest_driver::{
     EngineConvergenceBarrierError, EngineSnapshotHandle, MANIFEST_ENGINE_DB_FILE,
     MANIFEST_ENGINE_INBOX_CAPACITY, ManifestDriver, SyncBarrierError, run_engine_loop,
-    shared_engine_snapshot,
+    run_engine_loop_with_scan_executor, shared_engine_snapshot,
 };
 use crate::manifest_transport::{
     RefObserverAuthoritySource, RefObserverEndpointGeneration, RefObserverFailure,
@@ -17,7 +17,7 @@ use bowline_core::ids::WorkspaceId;
 use bowline_local::sync::manifest_engine::{
     EngineEvent, EngineIo, EnginePhase, EngineProcessIdentity, ManifestKey, RefObservation,
 };
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 
 use bowline_local::sync::manifest_engine::empty_genesis::{
     EmptyGenesisTransport, empty_genesis_engine, empty_genesis_engine_context,
@@ -365,12 +365,12 @@ fn driver_reaches_idle_on_an_empty_genesis_workspace() {
         .wait(Duration::from_secs(5), || false)
         .expect("authoritative local scan completes independently");
     assert!(scan_lease.receipt().revision().get() > 0);
-    driver.send(EngineEvent::RefChanged);
-    std::thread::sleep(Duration::from_millis(20));
-    assert!(
-        !driver.snapshot().cycle_active,
-        "normal distributed cycles remain paused while the scan lease is held"
-    );
+    driver
+        .snapshot_handle()
+        .request_engine_convergence_barrier()
+        .expect("convergence remains available while the scan lease is held")
+        .wait(Duration::from_secs(5), || false)
+        .expect("a scan lease never suspends ordinary convergence");
     scan_lease.release();
 
     let receipt = driver
@@ -395,6 +395,86 @@ fn driver_reaches_idle_on_an_empty_genesis_workspace() {
     assert_eq!(receipt.observed_ref(), receipt.applied_ref());
     assert_eq!(receipt.materialization_revision().get(), 0);
 
+    drop(driver);
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn scan_in_progress_does_not_block_watcher_publication() {
+    let temp = std::env::temp_dir().join(format!(
+        "bowline-manifest-driver-live-scan-{}-{}",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    ));
+    let root = temp.join("Code");
+    std::fs::create_dir_all(&root).expect("workspace root");
+    let engine = empty_genesis_engine(
+        root.clone(),
+        temp.join(MANIFEST_ENGINE_DB_FILE),
+        GENESIS_WORKSPACE_ID,
+    );
+    let counters = engine.counters();
+    let (scan_entered_tx, scan_entered_rx) = mpsc::channel();
+    let (release_scan_tx, release_scan_rx) = mpsc::channel();
+    let release_scan_rx = Arc::new(Mutex::new(release_scan_rx));
+
+    let driver = ManifestDriver::spawn(move |inbox, sink| {
+        let transport = EmptyGenesisTransport;
+        let clock = SystemClock::default();
+        let release_scan_rx = Arc::clone(&release_scan_rx);
+        let executor = Arc::new(move |plan: super::AuthoritativeScanPlan| {
+            scan_entered_tx.send(()).expect("report scan entry");
+            release_scan_rx
+                .lock()
+                .expect("scan gate lock")
+                .recv()
+                .expect("release scan walk");
+            plan.execute()
+        });
+        run_engine_loop_with_scan_executor(
+            engine, &transport, &transport, &clock, &inbox, &sink, executor,
+        );
+    })
+    .expect("driver spawns");
+
+    let scan_waiter = driver
+        .snapshot_handle()
+        .request_coverage_scan(None)
+        .expect("coverage scan admits");
+    scan_entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("filesystem walk starts");
+
+    std::fs::write(root.join("sentinel.txt"), b"published during scan").expect("write sentinel");
+    assert_eq!(
+        driver.watcher_ingress().observe(EngineEvent::Paths(
+            [bowline_local::sync::manifest_engine::WorkspacePath::new(
+                "sentinel.txt"
+            )]
+            .into_iter()
+            .collect(),
+        )),
+        super::WatcherIngressObservation::Accumulated
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while counters
+        .content_hashes
+        .load(std::sync::atomic::Ordering::Acquire)
+        == 0
+    {
+        assert!(
+            Instant::now() < deadline,
+            "watcher edit did not enter a publication pass while the scan was blocked"
+        );
+        std::thread::yield_now();
+    }
+
+    release_scan_tx.send(()).expect("release scan");
+    scan_waiter
+        .wait(Duration::from_secs(5), || false)
+        .expect("scan completes after publication")
+        .release();
     drop(driver);
     let _ = std::fs::remove_dir_all(temp);
 }
