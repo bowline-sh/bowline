@@ -49,7 +49,7 @@ impl WatcherRecoveryWorker {
         })
     }
 
-    pub fn recover_once(
+    pub fn recover_once<BeforeClose>(
         &self,
         coverage: &mut impl WatcherCoverageAdapter,
         engine: &EngineSnapshotHandle,
@@ -59,8 +59,11 @@ impl WatcherRecoveryWorker {
         moment: &Arc<dyn Fn() -> RecoveryMoment + Send + Sync>,
         cancelled: &impl Fn() -> bool,
         coverage_cancellation: &CoverageCancellation,
-        before_close: &mut impl FnMut() -> Result<(), WatcherRecoveryCoordinatorError>,
-    ) -> Result<RecoveryWorkDisposition, WatcherRecoveryCoordinatorError> {
+        before_close: &mut BeforeClose,
+    ) -> Result<RecoveryWorkDisposition, WatcherRecoveryCoordinatorError>
+    where
+        BeforeClose: FnMut() -> Result<(), WatcherRecoveryCoordinatorError> + ?Sized,
+    {
         if let Some(disposition) = self.prepare_recovery(moment)? {
             return Ok(disposition);
         }
@@ -120,6 +123,14 @@ impl WatcherRecoveryWorker {
             })?;
         self.coordinator
             .record_scan_completed(self.ownership, token, scan_revision, moment())?;
+        // The authoritative scan has already absorbed local reality. Native
+        // sealing can still block on platform history/stream teardown, but none
+        // of that work needs the distributed engine paused. Releasing here lets
+        // scan-proven edits publish while the native boundary finishes. The
+        // close remains fail-closed: the seal, the final bridge drain, the
+        // attempt-scoped scan revision, and the loss-watermark equality below
+        // are unchanged, so any new fidelity loss still rejects this attempt.
+        lease.release();
         let handoff = match coverage.seal_after_scan(preparation, &wait) {
             Ok(handoff) => handoff,
             Err(error) => {
@@ -138,16 +149,12 @@ impl WatcherRecoveryWorker {
             .coordinator
             .offer_close(self.ownership, token, scan_revision, moment())?
         {
-            CloseDisposition::Closed(_) => {
-                lease.release();
-                Ok(RecoveryWorkDisposition::Closed)
-            }
+            CloseDisposition::Closed(_) => Ok(RecoveryWorkDisposition::Closed),
             CloseDisposition::RetryRequired { .. } => {
                 // One attempt's scan, seal, and close offer remain atomic. The
                 // caller gets a forwarding opportunity before it starts the
                 // next attempt, so queued watcher detail cannot repeatedly
                 // collapse inside the next close fence.
-                lease.release();
                 Ok(RecoveryWorkDisposition::RetryRequired)
             }
         }

@@ -1,6 +1,7 @@
 use super::watcher_bridge::{
-    RECOVERY_ATTEMPT_DEBOUNCE_CEILING, RecoveryAttemptDebounce, WatcherBridgeStartError,
-    forward_watcher_signals, preserve_watcher_visibility_while_debounced,
+    BridgeIngress, RECOVERY_ATTEMPT_DEBOUNCE_CEILING, RecoveryAttemptDebounce,
+    RecoveryAttemptForwarding, WatcherBridgeStartError, forward_watcher_signals,
+    preserve_watcher_visibility_while_debounced, pump_recovery_attempt,
 };
 use crate::daemon::socket_server::coordinator_runtime::{
     CoordinatorAction, CoordinatorDeadlineKind, CoordinatorDriver, CoordinatorEvent,
@@ -31,8 +32,14 @@ use std::time::Duration;
 use std::time::Instant;
 use time::OffsetDateTime;
 
+use crate::daemon::sync::{RecoveryClock, recovery_process_identity};
 use crate::daemon::watcher::WatcherOverflowLane;
-use bowline_daemon::watcher_recovery::ActivityWatermark;
+use bowline_daemon::manifest_driver::WatcherIngressAccumulator;
+use bowline_daemon::watcher_coverage::{CoverageCancellation, WatcherCoverageIds};
+use bowline_daemon::watcher_recovery::{
+    ActivityWatermark, BackoffPolicy, RecoverySourceIdentity, RecoveryWorkDisposition,
+    WatcherRecoveryCoordinator,
+};
 use bowline_local::sync::manifest_engine::{EngineCounters, EngineEvent, WorkspacePath};
 
 fn watcher_changed(event: Event) -> WatcherSignal {
@@ -120,6 +127,80 @@ fn recovery_debounce_reopens_the_callback_lane_before_forwarding() {
         lane.recovery_requested(),
         "an attempt about to start must acknowledge overflow inside its close fence"
     );
+}
+
+#[test]
+fn active_recovery_keeps_forwarding_watcher_detail_before_close() {
+    let temp = crate::daemon::tests::unique_temp_dir("active-recovery-forwarding");
+    let root = temp.join("Code");
+    fs::create_dir_all(&root).expect("workspace root");
+    let sentinel = root.join("sentinel.txt");
+    fs::write(&sentinel, "sentinel\n").expect("sentinel exists");
+    let (signal_tx, signal_rx) = mpsc::channel();
+    let lane = Arc::new(WatcherOverflowLane::default());
+    lane.request_recovery();
+    signal_tx
+        .send(WatcherSignal::OverflowLane(Arc::clone(&lane)))
+        .expect("overflow lane queues");
+    signal_tx
+        .send(watcher_changed(
+            Event::new(EventKind::Modify(ModifyKind::Any)).add_path(sentinel),
+        ))
+        .expect("sentinel queues");
+
+    let accumulator = WatcherIngressAccumulator::new();
+    let observed = Arc::clone(&accumulator);
+    let (forwarded_tx, forwarded_rx) = mpsc::sync_channel(0);
+    let observer = std::thread::spawn(move || {
+        observed
+            .wake_receiver()
+            .recv_timeout(Duration::from_secs(2))
+            .expect("active attempt forwards before its close request");
+        let forwarded = observed.drain().into_events().into_iter().any(|event| {
+            matches!(event, EngineEvent::Paths(paths) if paths.contains(&WorkspacePath::new("sentinel.txt")))
+        });
+        forwarded_tx.send(forwarded).expect("observation returns");
+    });
+    let clock = Arc::new(RecoveryClock::new());
+    let coordinator = Arc::new(WatcherRecoveryCoordinator::startup_reconciliation(
+        RecoverySourceIdentity::new(
+            recovery_process_identity(),
+            WorkspaceId::new("ws_active_recovery_forwarding"),
+        ),
+        clock.now(),
+        BackoffPolicy::standard(),
+    ));
+    let ids = WatcherCoverageIds::new();
+    let mut policy_cache = std::collections::HashMap::new();
+    let mut overflow_lane = None;
+    let outcome = pump_recovery_attempt(
+        RecoveryAttemptForwarding {
+            source: &signal_rx,
+            ingress: &BridgeIngress::Production(accumulator.handle()),
+            root: &root,
+            policy_cache: &mut policy_cache,
+            overflow_lane: &mut overflow_lane,
+            coordinator,
+            clock,
+            observations: ids.observation_receiver(),
+            cancellation: CoverageCancellation::new(),
+        },
+        move |before_close| {
+            assert!(
+                forwarded_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("forwarding observation arrives"),
+                "sentinel detail collapsed while recovery owned the bridge"
+            );
+            before_close()?;
+            Ok(RecoveryWorkDisposition::Closed)
+        },
+    )
+    .expect("active recovery completes");
+    assert_eq!(outcome, RecoveryWorkDisposition::Closed);
+    assert!(!lane.recovery_requested());
+    observer.join().expect("observer joins");
+    let _ = fs::remove_dir_all(temp);
 }
 
 /// A manifest driver whose thread records forwarded engine events instead of

@@ -10,7 +10,7 @@
 //! authoritative scans, and the real recovery coordinator.
 
 use bowline_daemon::watcher_recovery::RecoveryMoment;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -52,7 +52,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[path = "watcher_overflow_coverage_fixture.rs"]
 mod watcher_overflow_coverage_fixture;
-use watcher_overflow_coverage_fixture::GateSecondPreparation;
+use watcher_overflow_coverage_fixture::{GateSeal, GateSecondPreparation};
+
+static EARLY_RELEASE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn serialize_early_release_test() -> std::sync::MutexGuard<'static, ()> {
+    EARLY_RELEASE_TEST_LOCK
+        .lock()
+        .expect("early-release seam test lock")
+}
 
 /// A real manifest engine over `root` whose loop services authoritative
 /// coverage scans — the one dependency `recover_once` cannot fake, because the
@@ -66,6 +74,7 @@ use watcher_overflow_coverage_fixture::GateSecondPreparation;
 enum ProbeTransport {
     Plain(EmptyGenesisTransport),
     Probing(PreWalkProbeTransport),
+    Shared(SharedRemote),
 }
 
 impl RemoteObjects for ProbeTransport {
@@ -73,44 +82,162 @@ impl RemoteObjects for ProbeTransport {
         match self {
             Self::Plain(inner) => inner.put_blob(upload),
             Self::Probing(inner) => inner.put_blob(upload),
+            Self::Shared(inner) => inner.put_blob(upload),
         }
     }
     fn put_blob_reader(&self, upload: BlobReaderUpload<'_>) -> Result<(), TransportError> {
         match self {
             Self::Plain(inner) => inner.put_blob_reader(upload),
             Self::Probing(inner) => inner.put_blob_reader(upload),
+            Self::Shared(inner) => inner.put_blob_reader(upload),
         }
     }
     fn put_manifest(&self, upload: ManifestUpload<'_>) -> Result<(), TransportError> {
         match self {
             Self::Plain(inner) => inner.put_manifest(upload),
             Self::Probing(inner) => inner.put_manifest(upload),
+            Self::Shared(inner) => inner.put_manifest(upload),
         }
     }
     fn get_blob(&self, key: &BlobKey) -> Result<Vec<u8>, TransportError> {
         match self {
             Self::Plain(inner) => inner.get_blob(key),
             Self::Probing(inner) => inner.get_blob(key),
+            Self::Shared(inner) => inner.get_blob(key),
         }
     }
     fn get_manifest(&self, key: &ManifestKey) -> Result<Vec<u8>, TransportError> {
         match self {
             Self::Plain(inner) => inner.get_manifest(key),
             Self::Probing(inner) => inner.get_manifest(key),
+            Self::Shared(inner) => inner.get_manifest(key),
         }
     }
 }
 
 impl RemoteRef for ProbeTransport {
     fn read_ref(&self) -> Result<Option<RefObservation>, TransportError> {
-        Ok(None)
+        match self {
+            Self::Plain(_) | Self::Probing(_) => Ok(None),
+            Self::Shared(inner) => inner.read_ref(),
+        }
     }
     fn compare_and_swap(
         &self,
-        _expected_version: Option<u64>,
-        _new_manifest_key: &ManifestKey,
+        expected_version: Option<u64>,
+        new_manifest_key: &ManifestKey,
     ) -> Result<CasOutcome, TransportError> {
-        Ok(CasOutcome::Ambiguous)
+        match self {
+            Self::Plain(_) | Self::Probing(_) => Ok(CasOutcome::Ambiguous),
+            Self::Shared(inner) => inner.compare_and_swap(expected_version, new_manifest_key),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct SharedRemote {
+    state: Arc<Mutex<SharedRemoteState>>,
+}
+
+#[derive(Default)]
+struct SharedRemoteState {
+    blobs: BTreeMap<BlobKey, Vec<u8>>,
+    manifests: BTreeMap<ManifestKey, Vec<u8>>,
+    head: Option<RefObservation>,
+    ref_visible: bool,
+}
+
+impl SharedRemote {
+    fn expose_ref(&self) {
+        self.state.lock().expect("remote state lock").ref_visible = true;
+    }
+
+    fn head(&self) -> Option<RefObservation> {
+        self.state.lock().expect("remote state lock").head.clone()
+    }
+}
+
+impl RemoteObjects for SharedRemote {
+    fn put_blob(&self, upload: BlobUpload<'_>) -> Result<(), TransportError> {
+        self.state
+            .lock()
+            .map_err(|_| TransportError::new("put-blob", "remote state lock"))?
+            .blobs
+            .insert(upload.key.clone(), upload.sealed.to_vec());
+        Ok(())
+    }
+
+    fn put_blob_reader(&self, upload: BlobReaderUpload<'_>) -> Result<(), TransportError> {
+        let sealed = std::fs::read(upload.spool_path)
+            .map_err(|error| TransportError::new("put-blob-reader", error.to_string()))?;
+        self.state
+            .lock()
+            .map_err(|_| TransportError::new("put-blob-reader", "remote state lock"))?
+            .blobs
+            .insert(upload.key.clone(), sealed);
+        Ok(())
+    }
+
+    fn put_manifest(&self, upload: ManifestUpload<'_>) -> Result<(), TransportError> {
+        self.state
+            .lock()
+            .map_err(|_| TransportError::new("put-manifest", "remote state lock"))?
+            .manifests
+            .insert(upload.key.clone(), upload.sealed.to_vec());
+        Ok(())
+    }
+
+    fn get_blob(&self, key: &BlobKey) -> Result<Vec<u8>, TransportError> {
+        self.state
+            .lock()
+            .map_err(|_| TransportError::new("get-blob", "remote state lock"))?
+            .blobs
+            .get(key)
+            .cloned()
+            .ok_or_else(|| TransportError::new("get-blob", "blob absent"))
+    }
+
+    fn get_manifest(&self, key: &ManifestKey) -> Result<Vec<u8>, TransportError> {
+        self.state
+            .lock()
+            .map_err(|_| TransportError::new("get-manifest", "remote state lock"))?
+            .manifests
+            .get(key)
+            .cloned()
+            .ok_or_else(|| TransportError::new("get-manifest", "manifest absent"))
+    }
+}
+
+impl RemoteRef for SharedRemote {
+    fn read_ref(&self) -> Result<Option<RefObservation>, TransportError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| TransportError::new("read-ref", "remote state lock"))?;
+        Ok(state.ref_visible.then(|| state.head.clone()).flatten())
+    }
+
+    fn compare_and_swap(
+        &self,
+        expected_version: Option<u64>,
+        new_manifest_key: &ManifestKey,
+    ) -> Result<CasOutcome, TransportError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| TransportError::new("compare-and-swap", "remote state lock"))?;
+        let current_version = state.head.as_ref().map(|head| head.version);
+        if current_version != expected_version {
+            return state.head.clone().map(CasOutcome::Lost).ok_or_else(|| {
+                TransportError::new("compare-and-swap", "genesis expectation mismatch")
+            });
+        }
+        let advanced = RefObservation {
+            version: current_version.unwrap_or(0).saturating_add(1),
+            manifest_key: new_manifest_key.clone(),
+        };
+        state.head = Some(advanced.clone());
+        Ok(CasOutcome::Advanced(advanced))
     }
 }
 
@@ -189,6 +316,34 @@ fn empty_genesis_driver(
             run_engine_loop(engine, &transport, &transport, &clock, &inbox, &sink);
         })
         .expect("empty genesis engine driver spawns");
+    (driver, sink, handle, counters)
+}
+
+fn shared_remote_driver(
+    root: &Path,
+    state_root: &Path,
+    workspace_id: &str,
+    remote: SharedRemote,
+) -> (
+    ManifestDriver,
+    EngineSnapshotSink,
+    EngineSnapshotHandle,
+    Arc<EngineCounters>,
+) {
+    let engine = empty_genesis_engine(
+        root.to_path_buf(),
+        state_root.join(MANIFEST_ENGINE_DB_FILE),
+        workspace_id,
+    );
+    let counters = engine.counters();
+    let (sink, handle) = shared_engine_snapshot();
+    let driver =
+        ManifestDriver::spawn_with_sink(sink.clone(), handle.clone(), move |inbox, sink| {
+            let transport = ProbeTransport::Shared(remote);
+            let clock = SystemClock::default();
+            run_engine_loop(engine, &transport, &transport, &clock, &inbox, &sink);
+        })
+        .expect("shared remote engine driver spawns");
     (driver, sink, handle, counters)
 }
 
@@ -320,6 +475,19 @@ fn recover_once_harness_with(
         _watch: watch,
         _native_signals: native_signals,
         _driver: driver,
+    }
+}
+
+fn content_hash_advances(counters: &EngineCounters, baseline: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if counters.content_hashes.load(Ordering::Acquire) > baseline {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::yield_now();
     }
 }
 
@@ -611,224 +779,8 @@ fn a_rejected_close_returns_after_releasing_publication() {
     let _ = std::fs::remove_dir_all(harness.temp.clone());
 }
 
-// The engine pause spans one attempt so its scan, seal and close offer stay
-// atomic. Holding it across attempts as well meant a close that kept being
-// invalidated by continuing activity withheld publication for the whole chase:
-// the release proof measured one incident taking 66s over 9 attempts, during
-// which nothing could reach the peer, against a 30s budget for an edit to
-// arrive. This drives the production recover_once loop, forces a retry the way
-// the close-race test does, and pins that a cycle runs between the attempts.
-#[test]
-fn publication_is_not_withheld_between_recovery_attempts() {
-    let harness = recover_once_harness("watcher-overflow-publish-gap", "ws_overflow_publish_gap");
-    // Dirty work for the released window to find; without it a cycle has
-    // nothing to hash and the counter could never move.
-    std::fs::write(harness.temp.join("Code").join("pending.txt"), b"pending")
-        .expect("workspace write");
-
-    let worker =
-        WatcherRecoveryWorker::claim(Arc::clone(&harness.coordinator), harness.clock.now())
-            .expect("recovery worker claims ownership");
-    let lane = Arc::new(WatcherOverflowLane::default());
-    lane.request_recovery();
-    let fence_lane = Arc::clone(&lane);
-    let fence_coordinator = Arc::clone(&harness.coordinator);
-    let fence_clock = Arc::clone(&harness.clock);
-    let fence_counters = Arc::clone(&harness.counters);
-    let fence_root = harness.temp.join("Code");
-    let raced = std::cell::Cell::new(false);
-    let observed_between = Arc::new(AtomicBool::new(false));
-    let fence_observed = Arc::clone(&observed_between);
-    // The baseline is taken at the first fence, not before recovery: the engine
-    // runs freely between the incident opening and the first scan pausing it, so
-    // a baseline from before then is already stale and any later reading would
-    // pass whether or not the pause was released.
-    let baseline = std::cell::Cell::new(0u64);
-
-    let mut before_close = move || {
-        let _covered = fence_lane.take_recovery_request();
-        if !raced.replace(true) {
-            baseline.set(fence_counters.content_hashes.load(Ordering::Relaxed));
-            // Dirty the workspace so the released window has work to hash, then
-            // force RetryRequired so a second attempt follows.
-            std::fs::write(fence_root.join("between.txt"), b"written mid-incident")
-                .expect("mid-incident write");
-            fence_coordinator.observe_suppressed(fence_clock.now())?;
-            return Ok(());
-        }
-        // Second fence: sample, do not wait. The release is ordered before the
-        // scan that leads here -- the engine loop skips its blocking select after
-        // a release, so the work pass completes before the next Scan is taken.
-        // Waiting here instead delayed the close enough to push the retry past
-        // its deadline on a loaded machine, which is a property of the test, not
-        // of the code under test.
-        if fence_counters.content_hashes.load(Ordering::Relaxed) > baseline.get() {
-            fence_observed.store(true, Ordering::Relaxed);
-        }
-        Ok(())
-    };
-    let mut coverage = harness.coverage.clone();
-
-    let disposition = recover_to_completion(
-        &worker,
-        &mut coverage,
-        &harness.engine,
-        &harness.clock,
-        &mut before_close,
-    )
-    .expect("recovery completes");
-
-    assert_eq!(disposition, RecoveryWorkDisposition::Closed);
-    assert!(
-        observed_between.load(Ordering::Relaxed),
-        "the engine published nothing between recovery attempts, so a close that keeps being \
-         retried withholds every local edit for the whole chase"
-    );
-    let snapshot = harness
-        .coordinator
-        .snapshot()
-        .expect("recovery snapshot stays readable");
-    // The close conditions are untouched: the raced activity still forced a
-    // rescan. Releasing the pause between attempts must not make closing easier.
-    let closure = snapshot
-        .last_closure()
-        .expect("a closed incident records its closure receipt");
-    assert!(
-        closure.scan_count().get() >= 2,
-        "the raced activity must still invalidate the first close"
-    );
-    let _ = std::fs::remove_dir_all(harness.temp.clone());
-}
-
-// The release must precede native preparation for the next attempt, not merely
-// its scan. Darwin history replay can consume most of the edit-delivery SLO;
-// keeping the successful scan lease paused during that wait starves every local
-// publication even though the previous close has already been rejected.
-#[test]
-fn publication_continues_while_the_next_recovery_attempt_prepares_native_coverage() {
-    let harness = recover_once_harness(
-        "watcher-overflow-native-preparation-gap",
-        "ws_overflow_native_preparation_gap",
-    );
-
-    let worker =
-        WatcherRecoveryWorker::claim(Arc::clone(&harness.coordinator), harness.clock.now())
-            .expect("recovery worker claims ownership");
-    let baseline = Arc::new(AtomicU64::new(0));
-    let fence_baseline = Arc::clone(&baseline);
-    let fence_counters = Arc::clone(&harness.counters);
-    let fence_coordinator = Arc::clone(&harness.coordinator);
-    let fence_clock = Arc::clone(&harness.clock);
-    let fence_ingress = harness.ingress.clone();
-    let fence_root = harness.temp.join("Code");
-    let raced = Arc::new(AtomicBool::new(false));
-    let fence_raced = Arc::clone(&raced);
-    let gate_enabled = Arc::new(AtomicBool::new(false));
-    let fence_gate_enabled = Arc::clone(&gate_enabled);
-    let mut before_close = move || {
-        if !fence_raced.swap(true, Ordering::AcqRel) {
-            fence_baseline.store(
-                fence_counters.content_hashes.load(Ordering::Acquire),
-                Ordering::Release,
-            );
-            std::fs::write(fence_root.join("during-recovery.txt"), b"during recovery")
-                .expect("mid-incident write");
-            let observation =
-                fence_ingress.observe(EngineEvent::Paths(BTreeSet::from([WorkspacePath::new(
-                    "during-recovery.txt",
-                )])));
-            assert_eq!(
-                observation,
-                bowline_daemon::manifest_driver::WatcherIngressObservation::Accumulated,
-                "the publication probe enters the bounded watcher handoff"
-            );
-            fence_gate_enabled.store(true, Ordering::Release);
-            fence_coordinator.observe_suppressed(fence_clock.now())?;
-        }
-        Ok(())
-    };
-
-    let (entered_tx, entered_rx) = mpsc::sync_channel(0);
-    let (release_tx, release_rx) = mpsc::sync_channel(0);
-    let mut coverage = GateSecondPreparation {
-        inner: harness.coverage.clone(),
-        gate_enabled,
-        gated: false,
-        entered: entered_tx,
-        release: release_rx,
-    };
-    let engine = harness.engine.clone();
-    let clock = Arc::clone(&harness.clock);
-    let recovery = std::thread::spawn(move || {
-        let moment_clock = Arc::clone(&clock);
-        let moment_source: Arc<dyn Fn() -> RecoveryMoment + Send + Sync> =
-            Arc::new(move || moment_clock.now());
-        loop {
-            match worker.recover_once(
-                &mut coverage,
-                &engine,
-                &moment_source,
-                &|| false,
-                &CoverageCancellation::new(),
-                &mut before_close,
-            ) {
-                Ok(
-                    RecoveryWorkDisposition::RetryRequired | RecoveryWorkDisposition::RetryDeferred,
-                ) => {
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                outcome => break outcome,
-            }
-        }
-    });
-
-    if let Err(error) = entered_rx.recv_timeout(Duration::from_secs(10)) {
-        // Disconnect the gate before joining: if the worker reached the gate at
-        // the timeout boundary, its blocking receive must be allowed to fail.
-        drop(release_tx);
-        panic!(
-            "second native preparation starts: {error}; recovery result: {:?}",
-            recovery.join()
-        );
-    }
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let published_while_blocked = loop {
-        if harness.counters.content_hashes.load(Ordering::Acquire)
-            > baseline.load(Ordering::Acquire)
-        {
-            break true;
-        }
-        if Instant::now() >= deadline {
-            break false;
-        }
-        std::thread::yield_now();
-    };
-    release_tx
-        .send(())
-        .expect("second native preparation resumes");
-    let disposition = recovery
-        .join()
-        .expect("recovery worker joins")
-        .expect("recovery completes");
-
-    assert!(
-        published_while_blocked,
-        "publication stayed paused while the next native coverage preparation was blocked"
-    );
-    assert_eq!(disposition, RecoveryWorkDisposition::Closed);
-    let snapshot = harness
-        .coordinator
-        .snapshot()
-        .expect("recovery snapshot stays readable");
-    let closure = snapshot
-        .last_closure()
-        .expect("retry closes with complete evidence");
-    assert!(
-        closure.scan_count().get() >= 2,
-        "releasing publication must not let the rejected attempt authorize closure"
-    );
-    let _ = std::fs::remove_dir_all(harness.temp.clone());
-}
+#[path = "watcher_recovery_early_release_tests.rs"]
+mod early_release_tests;
 
 // The fence fails closed: a `before_close` error means the incident never
 // accounted for what the fence was supposed to admit, so it must not authorise

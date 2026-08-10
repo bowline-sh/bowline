@@ -15,6 +15,54 @@ pub(super) struct GateSecondPreparation {
     pub(super) release: mpsc::Receiver<()>,
 }
 
+pub(super) struct GateSeal {
+    pub(super) inner: SyncWatcherCoverageHandle,
+    pub(super) gated: bool,
+    pub(super) fail_after_gate: bool,
+    pub(super) entered: mpsc::SyncSender<()>,
+    pub(super) release: mpsc::Receiver<()>,
+}
+
+impl WatcherCoverageAdapter for GateSeal {
+    fn begin_recovery(
+        &mut self,
+        wait: &CoverageWait,
+    ) -> Result<WatcherCoveragePreparation, WatcherCoverageError> {
+        self.inner.begin_recovery(wait)
+    }
+
+    fn seal_after_scan(
+        &mut self,
+        preparation: WatcherCoveragePreparation,
+        wait: &CoverageWait,
+    ) -> Result<WatcherCoverageHandoff, WatcherCoverageError> {
+        if !self.gated {
+            self.gated = true;
+            self.entered
+                .send(())
+                .map_err(|_| WatcherCoverageError::CoverageUnavailable)?;
+            self.release
+                .recv()
+                .map_err(|_| WatcherCoverageError::CoverageUnavailable)?;
+            if self.fail_after_gate {
+                return Err(WatcherCoverageError::CoverageUnavailable);
+            }
+        }
+        self.inner.seal_after_scan(preparation, wait)
+    }
+
+    fn validate_boundary(
+        &self,
+        handoff: &WatcherCoverageHandoff,
+    ) -> Result<(), WatcherCoverageError> {
+        self.inner.validate_boundary(handoff)
+    }
+
+    fn shutdown(&mut self) -> Result<(), WatcherCoverageError> {
+        self.inner.shutdown()
+    }
+}
+
 impl WatcherCoverageAdapter for GateSecondPreparation {
     fn begin_recovery(
         &mut self,

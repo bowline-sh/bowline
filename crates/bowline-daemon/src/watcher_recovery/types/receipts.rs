@@ -6,7 +6,9 @@ use super::{
     RecoveryTransitionError,
 };
 
-/// Evidence offered while the engine coverage-scan lease is still held.
+/// Evidence offered after the authoritative scan and native boundary are bound
+/// to one attempt. Distributed work may already have resumed; closure authority
+/// still comes only from this evidence and the loss-watermark fence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloseOffer {
     attempt: AttemptToken,

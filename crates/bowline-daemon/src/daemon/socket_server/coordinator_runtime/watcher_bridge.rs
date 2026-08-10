@@ -50,7 +50,7 @@ enum WatcherBatchForward {
     EngineStopped,
 }
 
-enum BridgeIngress {
+pub(super) enum BridgeIngress {
     Production(WatcherIngressHandle),
 }
 
@@ -379,7 +379,8 @@ fn forward_watcher_signals_with_recovery(
                 };
                 preserve_watcher_visibility_while_debounced(attempt_is_debounced, &overflow_lane);
                 if !attempt_is_debounced {
-                    match recovery.recover_once(
+                    match run_recovery_attempt_while_forwarding(
+                        recovery,
                         &source,
                         &ingress,
                         &root,
@@ -421,19 +422,19 @@ fn forward_watcher_signals_with_recovery(
         {
             break;
         }
-        let signal = match source.recv_timeout(WATCHER_FORWARD_POLL) {
-            Ok(signal) => signal,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        };
-        match accumulate_watcher_signals(
-            signal,
+        let forward = match receive_watcher_batch(
             &source,
             &ingress,
             &root,
             &mut policy_cache,
             &mut overflow_lane,
         ) {
+            Ok(Some(forward)) => forward,
+            Ok(None) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        match forward {
             WatcherBatchForward::Forwarded => {}
             WatcherBatchForward::Saturated(cause) => {
                 if let Some(recovery) = recovery.as_ref() {
@@ -586,14 +587,7 @@ impl LiveBridgeRecovery {
     }
 
     fn drain_native_observations(&self) {
-        while let Ok(observation) = self.observations.try_recv() {
-            if let Err(error) = self
-                .coordinator
-                .observe_native_coverage(observation, self.clock.now())
-            {
-                eprintln!("bowline-daemon native watcher loss could not be admitted: {error}");
-            }
-        }
+        drain_native_observations(&self.observations, &self.coordinator, &self.clock);
     }
 
     fn is_open(&self) -> Result<bool, WatcherRecoveryCoordinatorError> {
@@ -618,28 +612,14 @@ impl LiveBridgeRecovery {
         Ok(())
     }
 
-    fn recover_once(
+    fn recover_once<BeforeClose>(
         &mut self,
-        source: &mpsc::Receiver<WatcherSignal>,
-        ingress: &BridgeIngress,
-        root: &std::path::Path,
-        policy_cache: &mut HashMap<String, bowline_local::policy::UserPolicy>,
-        overflow_lane: &mut Option<Arc<WatcherOverflowLane>>,
         shutdown: &AtomicBool,
-    ) -> Result<RecoveryWorkDisposition, WatcherRecoveryCoordinatorError> {
-        let coordinator = Arc::clone(&self.coordinator);
-        let clock = Arc::clone(&self.clock);
-        let mut before_close = || {
-            drain_pending_signals(
-                source,
-                ingress,
-                root,
-                policy_cache,
-                overflow_lane,
-                &coordinator,
-                &clock,
-            )
-        };
+        before_close: &mut BeforeClose,
+    ) -> Result<RecoveryWorkDisposition, WatcherRecoveryCoordinatorError>
+    where
+        BeforeClose: FnMut() -> Result<(), WatcherRecoveryCoordinatorError> + ?Sized,
+    {
         let moment_clock = Arc::clone(&self.clock);
         let moment_source: Arc<
             dyn Fn() -> bowline_daemon::watcher_recovery::RecoveryMoment + Send + Sync,
@@ -650,12 +630,142 @@ impl LiveBridgeRecovery {
             &moment_source,
             &|| shutdown.load(Ordering::Acquire),
             &self.coverage_cancellation,
-            &mut before_close,
+            before_close,
         )
     }
 
     fn worker_exited(self) -> Result<IncidentId, WatcherRecoveryCoordinatorError> {
         self.worker.worker_exited(self.clock.now())
+    }
+}
+
+fn run_recovery_attempt_while_forwarding(
+    recovery: &mut LiveBridgeRecovery,
+    source: &mpsc::Receiver<WatcherSignal>,
+    ingress: &BridgeIngress,
+    root: &std::path::Path,
+    policy_cache: &mut HashMap<String, bowline_local::policy::UserPolicy>,
+    overflow_lane: &mut Option<Arc<WatcherOverflowLane>>,
+    shutdown: &AtomicBool,
+) -> Result<RecoveryWorkDisposition, WatcherRecoveryCoordinatorError> {
+    let forwarding = RecoveryAttemptForwarding {
+        source,
+        ingress,
+        root,
+        policy_cache,
+        overflow_lane,
+        coordinator: Arc::clone(&recovery.coordinator),
+        clock: Arc::clone(&recovery.clock),
+        observations: recovery.observations.clone(),
+        cancellation: recovery.coverage_cancellation.clone(),
+    };
+    pump_recovery_attempt(forwarding, |before_close| {
+        recovery.recover_once(shutdown, before_close)
+    })
+}
+
+pub(super) struct RecoveryAttemptForwarding<'a> {
+    pub(super) source: &'a mpsc::Receiver<WatcherSignal>,
+    pub(super) ingress: &'a BridgeIngress,
+    pub(super) root: &'a std::path::Path,
+    pub(super) policy_cache: &'a mut HashMap<String, bowline_local::policy::UserPolicy>,
+    pub(super) overflow_lane: &'a mut Option<Arc<WatcherOverflowLane>>,
+    pub(super) coordinator: Arc<WatcherRecoveryCoordinator>,
+    pub(super) clock: Arc<RecoveryClock>,
+    pub(super) observations: NativeCoverageObservationReceiver,
+    pub(super) cancellation: CoverageCancellation,
+}
+
+pub(super) fn pump_recovery_attempt(
+    forwarding: RecoveryAttemptForwarding<'_>,
+    execute: impl FnOnce(
+        &mut dyn FnMut() -> Result<(), WatcherRecoveryCoordinatorError>,
+    ) -> Result<RecoveryWorkDisposition, WatcherRecoveryCoordinatorError>
+    + Send,
+) -> Result<RecoveryWorkDisposition, WatcherRecoveryCoordinatorError> {
+    let RecoveryAttemptForwarding {
+        source,
+        ingress,
+        root,
+        policy_cache,
+        overflow_lane,
+        coordinator,
+        clock,
+        observations,
+        cancellation,
+    } = forwarding;
+    std::thread::scope(|scope| {
+        let (drain_request_tx, drain_request_rx) = mpsc::sync_channel(0);
+        let mut bridge_error = None;
+        let attempt = scope.spawn(move || {
+            let mut before_close = || {
+                let (result_tx, result_rx) = mpsc::sync_channel(0);
+                drain_request_tx
+                    .send(result_tx)
+                    .map_err(|_| WatcherRecoveryCoordinatorError::StateUnavailable)?;
+                result_rx
+                    .recv()
+                    .map_err(|_| WatcherRecoveryCoordinatorError::StateUnavailable)?
+            };
+            execute(&mut before_close)
+        });
+
+        while !attempt.is_finished() {
+            drain_native_observations(&observations, &coordinator, &clock);
+            acknowledge_recovery_owned_overflow(overflow_lane);
+            if let Ok(result_tx) = drain_request_rx.try_recv() {
+                drain_native_observations(&observations, &coordinator, &clock);
+                let result = drain_pending_signals(
+                    source,
+                    ingress,
+                    root,
+                    policy_cache,
+                    overflow_lane,
+                    &coordinator,
+                    &clock,
+                );
+                let _sent = result_tx.send(result);
+                continue;
+            }
+            match receive_watcher_batch(source, ingress, root, policy_cache, overflow_lane) {
+                Ok(Some(WatcherBatchForward::Saturated(cause))) => {
+                    if let Err(error) = coordinator.observe_loss(cause, clock.now()) {
+                        cancellation.cancel();
+                        bridge_error = Some(error);
+                    }
+                }
+                Ok(Some(WatcherBatchForward::EngineStopped)) => cancellation.cancel(),
+                Ok(Some(WatcherBatchForward::Forwarded) | None) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    if let Err(error) =
+                        coordinator.observe_loss(RecoveryCause::WatcherDisconnected, clock.now())
+                    {
+                        cancellation.cancel();
+                        bridge_error = Some(error);
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+        let attempt_result = attempt
+            .join()
+            .map_err(|_| WatcherRecoveryCoordinatorError::StateUnavailable)?;
+        match bridge_error {
+            Some(error) => Err(error),
+            None => attempt_result,
+        }
+    })
+}
+
+fn drain_native_observations(
+    observations: &NativeCoverageObservationReceiver,
+    coordinator: &WatcherRecoveryCoordinator,
+    clock: &RecoveryClock,
+) {
+    while let Ok(observation) = observations.try_recv() {
+        if let Err(error) = coordinator.observe_native_coverage(observation, clock.now()) {
+            eprintln!("bowline-daemon native watcher loss could not be admitted: {error}");
+        }
     }
 }
 
@@ -726,6 +836,28 @@ fn drain_pending_signals(
             }
         }
     }
+}
+
+fn receive_watcher_batch(
+    source: &mpsc::Receiver<WatcherSignal>,
+    ingress: &BridgeIngress,
+    root: &std::path::Path,
+    policy_cache: &mut HashMap<String, bowline_local::policy::UserPolicy>,
+    overflow_lane: &mut Option<Arc<WatcherOverflowLane>>,
+) -> Result<Option<WatcherBatchForward>, mpsc::RecvTimeoutError> {
+    let signal = match source.recv_timeout(WATCHER_FORWARD_POLL) {
+        Ok(signal) => signal,
+        Err(mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+        Err(error @ mpsc::RecvTimeoutError::Disconnected) => return Err(error),
+    };
+    Ok(Some(accumulate_watcher_signals(
+        signal,
+        source,
+        ingress,
+        root,
+        policy_cache,
+        overflow_lane,
+    )))
 }
 
 #[cfg(test)]
