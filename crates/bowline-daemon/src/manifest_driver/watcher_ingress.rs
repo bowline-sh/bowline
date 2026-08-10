@@ -37,17 +37,17 @@ pub struct WatcherIngressSnapshot {
 
 impl WatcherIngressSnapshot {
     pub fn into_events(self) -> Vec<EngineEvent> {
-        if self.scan_required {
-            return vec![EngineEvent::FullScanRequired(
-                FullScanReason::IngressDetailCollapsed,
-            )];
-        }
-        let mut events = Vec::with_capacity(2);
+        let mut events = Vec::with_capacity(3);
         if !self.paths.is_empty() {
             events.push(EngineEvent::Paths(self.paths));
         }
         if !self.recursive_paths.is_empty() {
             events.push(EngineEvent::RecursivePaths(self.recursive_paths));
+        }
+        if self.scan_required {
+            events.push(EngineEvent::FullScanRequired(
+                FullScanReason::IngressDetailCollapsed,
+            ));
         }
         events
     }
@@ -152,11 +152,37 @@ impl WatcherIngressAccumulator {
         event: EngineEvent,
     ) -> WatcherIngressObservation {
         match event {
-            EngineEvent::Paths(paths) => state.paths.extend(paths),
-            EngineEvent::RecursivePaths(paths) => state.recursive_paths.extend(paths),
+            EngineEvent::Paths(paths) => {
+                if state
+                    .paths
+                    .len()
+                    .saturating_add(state.recursive_paths.len())
+                    .saturating_add(paths.len())
+                    > MAX_ACCUMULATED_ROOTS
+                {
+                    self.retain_latest_paths(state, paths, false);
+                    return WatcherIngressObservation::DetailCollapsed(
+                        WatcherIngressLoss::CapacityExceeded,
+                    );
+                }
+                state.paths.extend(paths);
+            }
+            EngineEvent::RecursivePaths(paths) => {
+                if state
+                    .paths
+                    .len()
+                    .saturating_add(state.recursive_paths.len())
+                    .saturating_add(paths.len())
+                    > MAX_ACCUMULATED_ROOTS
+                {
+                    self.retain_latest_paths(state, paths, true);
+                    return WatcherIngressObservation::DetailCollapsed(
+                        WatcherIngressLoss::CapacityExceeded,
+                    );
+                }
+                state.recursive_paths.extend(paths);
+            }
             EngineEvent::FullScanRequired(_) => {
-                state.paths.clear();
-                state.recursive_paths.clear();
                 self.detail_collapsed.store(true, Ordering::Release);
                 return WatcherIngressObservation::DetailCollapsed(
                     WatcherIngressLoss::ExplicitFullScan,
@@ -169,19 +195,27 @@ impl WatcherIngressAccumulator {
                 );
             }
         }
-        if state
-            .paths
-            .len()
-            .saturating_add(state.recursive_paths.len())
-            > MAX_ACCUMULATED_ROOTS
-        {
-            state.paths.clear();
-            state.recursive_paths.clear();
-            self.detail_collapsed.store(true, Ordering::Release);
-            WatcherIngressObservation::DetailCollapsed(WatcherIngressLoss::CapacityExceeded)
-        } else {
-            WatcherIngressObservation::Accumulated
+        WatcherIngressObservation::Accumulated
+    }
+
+    fn retain_latest_paths(
+        &self,
+        state: &mut AccumulatorState,
+        paths: BTreeSet<WorkspacePath>,
+        recursive: bool,
+    ) {
+        state.paths.clear();
+        state.recursive_paths.clear();
+        if paths.len() <= MAX_ACCUMULATED_ROOTS {
+            if recursive {
+                state.recursive_paths = paths;
+            } else {
+                state.paths = paths;
+            }
         }
+        // The retained paths are only the newest exact observation. Everything
+        // discarded before them is still recovered by the covering scan.
+        self.detail_collapsed.store(true, Ordering::Release);
     }
 
     fn arm_wake(&self) {
@@ -250,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn capacity_collapse_discards_detail_and_requires_one_scan() {
+    fn capacity_collapse_preserves_the_newest_edit_and_requires_one_scan() {
         let accumulator = WatcherIngressAccumulator::new();
         let handle = accumulator.handle();
         for index in 0..MAX_ACCUMULATED_ROOTS {
@@ -265,10 +299,36 @@ mod tests {
             handle.observe(EngineEvent::Paths(BTreeSet::from([path("overflow")]))),
             WatcherIngressObservation::DetailCollapsed(WatcherIngressLoss::CapacityExceeded)
         );
-        let snapshot = accumulator.drain();
-        assert!(snapshot.scan_required);
-        assert!(snapshot.paths.is_empty());
-        assert!(snapshot.recursive_paths.is_empty());
+        assert_eq!(
+            accumulator.drain().into_events(),
+            vec![
+                EngineEvent::Paths(BTreeSet::from([path("overflow")])),
+                EngineEvent::FullScanRequired(FullScanReason::IngressDetailCollapsed),
+            ]
+        );
+    }
+
+    #[test]
+    fn exact_detail_after_a_collapse_survives_the_same_drain() {
+        let accumulator = WatcherIngressAccumulator::new();
+        let handle = accumulator.handle();
+        assert_eq!(
+            handle.observe(EngineEvent::FullScanRequired(
+                FullScanReason::WatcherOverflow
+            )),
+            WatcherIngressObservation::DetailCollapsed(WatcherIngressLoss::ExplicitFullScan)
+        );
+        assert_eq!(
+            handle.observe(EngineEvent::Paths(BTreeSet::from([path("sentinel")]))),
+            WatcherIngressObservation::Accumulated
+        );
+        assert_eq!(
+            accumulator.drain().into_events(),
+            vec![
+                EngineEvent::Paths(BTreeSet::from([path("sentinel")])),
+                EngineEvent::FullScanRequired(FullScanReason::IngressDetailCollapsed),
+            ]
+        );
     }
 
     #[test]
