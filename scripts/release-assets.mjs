@@ -6,6 +6,7 @@ import { chmod, copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { signReleaseFile } from "./release-signing.mjs";
+import { releaseManifestKey } from "./release/manifest-key.mjs";
 import { assertReleaseVersion } from "./release-version.mjs";
 import { registry } from "./verify.mjs";
 import { reuseDecision } from "./verify-receipt.mjs";
@@ -341,7 +342,7 @@ async function writeReleaseManifest(version, assets, urgency) {
     urgency,
     artifacts: Object.fromEntries(
       assets.map((asset) => [
-        manifestKey(asset.name),
+        releaseManifestKey(asset.name),
         {
           url: releaseUrl(version, asset.name),
           sha256: asset.sha256,
@@ -373,36 +374,6 @@ function sha256File(file) {
 
 function releaseUrl(version, name) {
   return `${installHost}/releases/v${version}/${name}`;
-}
-
-function manifestKey(name) {
-  if (name === "install.sh") return "installer";
-  if (name === "checksums.txt") return "checksums";
-  if (name === "checksums.txt.sig") return "checksums_sig";
-  if (name === "release-manifest.json") return "manifest";
-  if (name === "appcast.xml") return "macos_appcast";
-  if (name === "Bowline-aarch64-apple-darwin.app.zip") {
-    return "macos_app_aarch64";
-  }
-  if (
-    name === "bowline-aarch64-apple-darwin.tar.gz" ||
-    name === "bowline-aarch64-apple-darwin.tar.xz"
-  ) {
-    return "macos_cli_aarch64";
-  }
-  if (
-    name === "bowline-x86_64-unknown-linux-gnu.tar.gz" ||
-    name === "bowline-x86_64-unknown-linux-gnu.tar.xz"
-  ) {
-    return "linux_cli_x86_64";
-  }
-  if (
-    name === "bowline-aarch64-unknown-linux-gnu.tar.gz" ||
-    name === "bowline-aarch64-unknown-linux-gnu.tar.xz"
-  ) {
-    return "linux_cli_aarch64";
-  }
-  return name.replace(/[^0-9A-Za-z]+/gu, "_").replace(/^_|_$/gu, "");
 }
 
 function contentType(name) {
